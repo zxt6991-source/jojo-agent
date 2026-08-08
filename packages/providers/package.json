@@ -1,0 +1,1 @@
+{"name":"@desktop-agent/providers","version":"0.1.0","type":"module","exports":"./src/index.ts","dependencies":{"@desktop-agent/contracts":"workspace:*","zod":"^4.1.13"}}

@@ -1,0 +1,29 @@
+import { contextBridge, ipcRenderer } from 'electron';
+import { IPC, type AgentEvent, type DesktopApi } from '@desktop-agent/contracts';
+
+const api: DesktopApi = {
+  listSessions: () => ipcRenderer.invoke(IPC.listSessions),
+  createSession: (input) => ipcRenderer.invoke(IPC.createSession, input),
+  renameSession: (input) => ipcRenderer.invoke(IPC.renameSession, input),
+  deleteSession: (sessionId) => ipcRenderer.invoke(IPC.deleteSession, sessionId),
+  loadMessages: (sessionId) => ipcRenderer.invoke(IPC.loadMessages, sessionId),
+  getWorkspaceChanges: (sessionId) => ipcRenderer.invoke(IPC.getWorkspaceChanges, sessionId),
+  startTurn: (input) => ipcRenderer.invoke(IPC.startTurn, input),
+  cancelTurn: (sessionId) => ipcRenderer.invoke(IPC.cancelTurn, sessionId),
+  resolveApproval: (input) => ipcRenderer.invoke(IPC.resolveApproval, input),
+  chooseDirectory: () => ipcRenderer.invoke(IPC.chooseDirectory),
+  getSettings: () => ipcRenderer.invoke(IPC.getSettings),
+  saveSettings: (input) => ipcRenderer.invoke(IPC.saveSettings, input),
+  onAgentEvent: (listener) => {
+    const handler = (_event: Electron.IpcRendererEvent, value: AgentEvent) => listener(value);
+    ipcRenderer.on(IPC.agentEvent, handler);
+    return () => ipcRenderer.removeListener(IPC.agentEvent, handler);
+  },
+  onSessionsChanged: (listener) => {
+    const handler = () => listener();
+    ipcRenderer.on(IPC.sessionsChanged, handler);
+    return () => ipcRenderer.removeListener(IPC.sessionsChanged, handler);
+  }
+};
+
+contextBridge.exposeInMainWorld('desktopAgent', api);
