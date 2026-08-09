@@ -1,6 +1,7 @@
 import { describe, expect, expectTypeOf, it } from 'vitest';
 import {
   ContentBlockSchema,
+  DEFAULT_SESSION_TITLE,
   IPC,
   ListModelsInputSchema,
   MessageSchema,
@@ -8,6 +9,9 @@ import {
   SaveSettingsInputSchema,
   SessionRecordSchema,
   StartTurnInputSchema,
+  SESSION_TITLE_MAX_LENGTH,
+  sessionTitleFromPrompt,
+  isPlaceholderSessionTitle,
   type DesktopApi,
   type Message
 } from '../src';
@@ -58,6 +62,16 @@ describe('contracts', () => {
       baseUrl: 'https://provider.example/v1'
     });
     expect(() => ListModelsInputSchema.parse({ baseUrl: 'not-a-url' })).toThrow();
+  });
+
+  it('creates a compact session title from the first prompt', () => {
+    expect(DEFAULT_SESSION_TITLE).toBe('新会话');
+    expect(sessionTitleFromPrompt('  第一行\n\n第二行   内容  ')).toBe('第一行 第二行 内容');
+    const emojiTitle = sessionTitleFromPrompt('🙂'.repeat(SESSION_TITLE_MAX_LENGTH + 5));
+    expect(emojiTitle).toHaveLength(SESSION_TITLE_MAX_LENGTH);
+    expect(emojiTitle.endsWith('\ud83d')).toBe(false);
+    expect(isPlaceholderSessionTitle('project', '/workspace/project')).toBe(true);
+    expect(isPlaceholderSessionTitle('手动标题', '/workspace/project')).toBe(false);
   });
 
   it('keeps the root barrel API usable by consumers', () => {

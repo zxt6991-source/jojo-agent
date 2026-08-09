@@ -1,6 +1,6 @@
 # TypeScript Desktop Agent：MVP 与后续开发规划
 
-> 文档状态：2026-08-08（依据 `docs/current-features.md` 标记完成度，当前版本 0.1.0 MVP）
+> 文档状态：2026-08-09（已按当前源码、测试与 CI 配置重新核对，当前版本 0.1.0）
 > 状态标记：
 > - ✅ 已完成
 > - 🚧 部分完成 / 已开始但未全部完成
@@ -20,7 +20,46 @@ octo-agent、Codex 和 Claude Code，但第一阶段只解决一件事：让用�
 - MVP 之后到可公开发布版本的演进路线；
 - 安全、测试、数据兼容和范围控制原则。
 
-> ✅ 总览：MVP（第 7～9 节）已基本完成并发布为 0.1.0；Phase 1（代码修改能力）仅有 Git 工作区修改摘要 / Diff 审阅部分完成，其余阶段未开始。
+> 🚧 总览：核心对话 MVP 已可用，但“可公开发布”门槛仍未全部满足：UI/E2E、IPC 安全测试、干净机器安装验证、代码签名等仍缺失。Phase 1 仅完成 Git 工作区修改摘要 / Diff 审阅；Phase 2 已提前完成同一 OpenAI 兼容 Provider 下的模型发现与逐轮选择，但多协议 Provider 和上下文管理尚未开始。
+
+### 1.1 2026-08-09 实现快照
+
+| 范围 | 当前状态 | 说明 |
+|---|---|---|
+| 核心对话、流式输出、Tool Call | ✅ | OpenAI Chat Completions 兼容协议可用 |
+| 项目与会话 | ✅ | 按目录分组；同项目多会话；首条提问生成标题；可重命名和删除 |
+| 模型选择 | 🚧 | 已通过 `/models` 获取列表并支持逐轮选择；仍只有一种 Provider 协议，且不支持不兼容 `/models` 的手动回退 |
+| 内置工具与审批 | ✅ | `read_file`、`list_files`、`terminal` |
+| 代码修改能力 | 🚧 | 只有只读 Git Diff 审阅；没有安全的写入、补丁、冲突检测与回收站 |
+| 持久化 | 🚧 | JSONL 会话和配置迁移可用；错误状态不持久化，运行中删除会话存在取消/删除竞态 |
+| 自动化测试 | 🚧 | 当前 6 个测试文件、43 个 Vitest 用例通过；没有 Renderer UI、IPC 集成和 E2E 测试 |
+| 发布工程 | 🚧 | Forge、ASAR、Fuses 和 Linux CI package 已配置；干净机器验证、签名、notarization、自动更新未完成 |
+
+### 1.2 当前剩余工作优先级
+
+#### P0：先补可靠性和发布底线
+
+- ⬜ 删除运行中会话时，等待 Worker 确认停止后再删除 JSONL，避免文件被异步写回并重新创建；
+- ⬜ 为 Main/Preload/Worker IPC 增加运行时事件校验和自动化测试；
+- ⬜ 增加至少两个离线 Electron E2E 冒烟测试；
+- ⬜ 在 macOS / Windows / Linux 的干净环境验证安装、首次启动、配置、对话和卸载；
+- ⬜ 增加 Renderer 首屏错误兜底，避免模块或初始化异常只显示空白/黑屏。
+
+#### P1：补齐 Coding Agent 的核心能力
+
+- ⬜ `write_file`、`edit_file` 或补丁应用工具；
+- ⬜ 写入前 Diff 审批、内容哈希/mtime 冲突检测、覆盖与删除回收站；
+- ⬜ `grep`、`glob` 等高效项目检索；
+- ⬜ Tool Result 大输出回收、上下文窗口估算和安全历史压缩；
+- ⬜ 在 UI 展示 token usage，并支持清除已保存的 API Key；
+- ⬜ Provider 不支持 `/models` 时提供可控的手动模型回退。
+
+#### P2：扩展协议与生态
+
+- ⬜ 第二种 Provider 协议及 Vendor/Model 注册表；
+- ⬜ MCP、Skills、浏览器、多模态、子 Agent、工作流；
+- ⬜ 记忆、定时任务、后台任务与通知；
+- ⬜ 签名、notarization、自动更新、崩溃日志导出和正式兼容策略。
 
 ## 2. 产品定位
 
@@ -58,12 +97,12 @@ octo-agent、Codex 和 Claude Code，但第一阶段只解决一件事：让用�
 |---|---|---|
 | 桌面框架 | Electron | ✅ 已采用（当前 v39） |
 | 构建与打包 | Electron Forge | ✅ 已采用（Forge + Vite 插件） |
-| 前端 | React + Zustand 或 Svelte | ✅ 已采用 React 19 + Zustand |
+| 前端 | React + Zustand 或 Svelte | ✅ 已采用 React 19；当前状态主要使用 React Hooks，Zustand 已安装但尚未实际接入 |
 | Monorepo | pnpm workspace | ✅ 已采用（pnpm 10 workspace） |
 | Schema | Zod | ✅ 已采用（v4） |
 | Agent 进程 | Electron `utilityProcess` | ✅ 已采用（Agent Utility Process / Worker） |
 | 会话存储 | JSONL | ✅ 已采用 |
-| 单元测试 | Vitest | ✅ 已采用（当前 12 个单元测试） |
+| 单元测试 | Vitest | ✅ 已采用（当前 6 个测试文件、43 个用例） |
 | UI 测试 | Testing Library | ⬜ 未引入 |
 | 端到端测试 | Playwright（MVP 后期） | ⬜ 未引入 |
 
@@ -169,9 +208,10 @@ flowchart LR
 - 只传递结构化、可校验、可序列化的数据；
 - 对事件回调移除 Electron 原始事件对象。
 
-#### Main ✅
+#### Main 🚧
 
-- 管理窗口、托盘预留、应用生命周期和单实例；
+- ✅ 管理窗口、应用生命周期和单实例；
+- ⬜ 托盘、通知和开机启动尚未实现；
 - 验证所有 Renderer IPC 的来源与参数；
 - 启停和监督 Agent Utility Process；
 - Worker 崩溃时回收状态并向 UI 报告；
@@ -266,19 +306,24 @@ UI、日志和未来的 CLI/WebSocket 都使用同一套事件。
 - ✅ 单窗口、单实例；
 - ✅ Renderer/Main/Worker 三层通信可用；
 - ✅ 开发模式支持热更新；
-- ✅ 可以生成至少一个目标平台安装包（CI 已产出 Linux 包；Forge 已配置 deb / squirrel / zip maker）。
+- 🚧 Forge 已配置 deb / squirrel / zip maker，CI 会执行 Linux package；尚无仓库内证据证明多平台安装产物已完成验收。
 
 #### 会话
 
 - ✅ 创建、选择、重命名和删除会话；
 - ✅ 每个会话绑定一个本地工作目录；
+- ✅ 按工作目录分组项目，并允许一个项目创建多个会话；
+- ✅ 新会话使用第一条提问生成标题，仍允许用户手动重命名；
 - ✅ 会话消息以 JSONL 保存；
 - ✅ 应用重启后可恢复会话；
 - ✅ 文件尾损坏时忽略不完整记录，不丢失此前完整历史。
 
 #### 模型
 
-- ✅ 支持一个 Provider 和一个模型配置；
+- ✅ 支持一个 OpenAI Chat Completions 兼容 Provider；
+- ✅ 从 Provider `/models` 获取并缓存模型列表，兼容旧单模型配置迁移；
+- ✅ Composer 支持为每一轮选择模型；
+- 🚧 Provider 不支持标准 `/models` 时没有手动模型回退；
 - ✅ 支持流式文本；
 - ✅ 支持流式 Tool Call 参数聚合；
 - ✅ 支持取消当前请求；
@@ -326,7 +371,7 @@ MVP 只实现三个工具：
 - ✅ Provider/API Key/模型设置；
 - ✅ 空状态、加载状态和错误状态。
 
-> ✅ 额外已实现：当前 Agent 轮次的 Git 工作区修改摘要、逐行 Diff 预览与审阅面板（对应 Phase 1 的部分内容）。
+> ✅ 额外已实现：项目分组与同目录多会话、首条提问自动标题、Provider 模型发现与逐轮模型选择，以及当前 Agent 轮次的 Git 工作区修改摘要、逐行 Diff 预览与审阅面板。
 
 ### 7.2 明确不做
 
@@ -422,16 +467,17 @@ MVP 只实现三个工具：
 - ✅ 目录外读取不能绕过审批（已有对应单元测试）；
 - ✅ 关闭或取消会正确回收子进程（进程组回收）。
 
-### M4：持久化和可恢复性（3～5 天） ✅ 已完成
+### M4：持久化和可恢复性（3～5 天） 🚧 主要完成
 
 任务：
 
 - ✅ 实现 JSONL Session Store；
 - ✅ 实现会话列表、标题、工作目录和消息恢复；
-- ✅ 保存 Tool Call、Tool Result 和错误状态；
+- 🚧 保存 Tool Call 和 Tool Result；`turn.failed` 等错误状态不会写入永久记录；
 - ✅ 增加不完整文件尾恢复；
 - ✅ 增加单会话运行锁，避免同时执行两个 turn；
-- ✅ 首轮失败时回滚未成功提交的输入。
+- ⬜ 首轮失败时回滚未成功提交的输入（当前用户消息在调用 Provider 前即追加，失败后仍保留）；
+- ⬜ 删除运行中会话时等待 Worker 完成取消，避免删除后的 JSONL 被异步写回；
 
 验收：
 
@@ -439,18 +485,22 @@ MVP 只实现三个工具：
 - ✅ 人为截断 JSONL 最后一行，之前的记录仍可读取（已有对应单元测试）；
 - ✅ 恢复会话后可以继续调用模型；
 - ✅ 同一会话不会并行运行两轮导致历史交错（已有对应单元测试）。
+- 🚧 删除未运行会话会移除对应 JSONL；运行中删除的竞态尚未覆盖。
 
 ### M5：MVP UI 和打包（5～7 天） 🚧 部分完成
 
 任务：
 
 - ✅ 完成会话侧栏、聊天区、Composer、工具卡片和设置页；
+- ✅ 会话侧栏按项目目录分组，支持同项目多会话及首条提问自动标题；
+- ✅ 模型列表自动发现、缓存和逐轮模型选择；
 - ✅ Markdown 消毒和代码块展示（DOMPurify）；
 - ✅ 增加首次启动配置流程（设置页可配置 Provider）；
 - ✅ 配置 CSP、context isolation、sandbox 和导航限制；
 - ✅ 配置 Electron Fuses 和 ASAR；
-- ✅ 生成 macOS 或 Windows 安装包（Forge 已配置 maker；CI 实际构建 Linux 包，macOS/Windows 安装包未在 CI 验证）；
+- 🚧 生成 macOS 或 Windows 安装包（Forge 已配置 maker；CI 只执行 Linux package，macOS/Windows 产物未验证）；
 - ⬜ 完成端到端冒烟测试（未引入 Playwright / E2E）。
+- ⬜ Renderer Error Boundary / 首屏失败提示（当前已修复 Vite workspace 缓存黑屏根因，但没有通用错误兜底）。
 
 验收：
 
@@ -458,25 +508,25 @@ MVP 只实现三个工具：
 - ✅ 可以选择目录、读取文件、审批并执行一条命令；
 - ✅ 重启应用后会话可以恢复；
 - ✅ Renderer 无 Node.js 权限；
-- 🚧 安装包可在一台干净机器上启动（Linux 包已产出，干净机器冒烟未验证）。
+- 🚧 安装包可在一台干净机器上启动（CI 配置了 Linux package，干净机器冒烟未验证）。
 
 ## 9. MVP 发布门槛
 
 只有同时满足以下条件才算 MVP 完成：
 
-> ✅ 整体判断：功能、稳定性、安全、质量门槛均已满足（0.1.0 MVP 已发布）。
+> 🚧 整体判断：核心功能门槛基本满足，但发布门槛未全部满足。缺口主要是运行中会话删除竞态、IPC/UI/E2E 测试、干净机器安装验证，以及多平台签名与发布流程。
 
 ### 功能
 
 - ✅ 至少一个模型 Provider 可稳定完成对话和 Tool Call；
 - ✅ 三个工具的成功、失败、拒绝和取消路径完整；
 - ✅ 会话可保存和恢复；
-- ✅ 应用可打包安装。
+- 🚧 Forge 可以 package，CI 配置了 Linux package；尚未完成多平台安装包与干净机器验收。
 
 ### 稳定性
 
 - ✅ Agent Worker 崩溃不会导致整个桌面应用直接退出（Main 监督 Worker 生命周期）；
-- ✅ 模型断流、工具超时和用户取消不会破坏会话；
+- 🚧 模型断流、工具超时和用户取消具备处理路径；运行中删除会话仍可能与 Worker 写入竞态；
 - ✅ 后台不存在遗留 terminal 子进程（进程组回收）；
 - ✅ 单轮迭代和单次输出都有硬上限。
 
@@ -493,8 +543,9 @@ MVP 只实现三个工具：
 
 ### 质量
 
-- ✅ Agent Core 核心分支有单元测试；
-- ✅ 路径、权限、Session 恢复有测试；
+- 🚧 Agent Core 关键工具循环有单元测试，但取消、最大迭代、未知工具和纯文本直出等分支仍缺用例；
+- ✅ 路径、权限、Session 恢复有单元测试；
+- ⬜ Renderer UI、Main/Preload/Worker IPC 和 Electron E2E 测试；
 - ✅ CI 执行 lint、typecheck、test 和至少一个平台的 package（GitHub Actions，Linux）；
 - ✅ 不依赖真实模型的测试可以离线运行。
 
@@ -522,20 +573,22 @@ MVP 只实现三个工具：
 - ⬜ Agent 读取文件、生成 diff、等待批准、写入并执行测试；
 - ⬜ 外部编辑器同时修改文件时，Agent 拒绝盲目覆盖。
 
-### Phase 2：多 Provider 与上下文管理 ⬜ 未开始
+### Phase 2：多 Provider 与上下文管理 🚧 少量开始
 
 目标：提高模型选择自由和长会话稳定性。
 
 功能：
 
 - ⬜ 第二种 Provider 协议；
-- ⬜ Vendor/Model 配置注册表；
+- 🚧 模型配置与选择：已完成单个 OpenAI 兼容 Provider 的 `/models` 发现、缓存、默认模型和逐轮选择；Vendor/多 Provider 注册表未实现；
 - ⬜ Prompt Cache 统计归一化；
 - ⬜ 上下文窗口估算；
 - ⬜ Tool Result 大输出回收；
 - ⬜ 安全边界上的历史压缩；
 - ⬜ 输出截断恢复；
 - ⬜ 便宜模型用于标题和摘要。
+
+已实现但不等同于本阶段完成：当前会话标题直接取第一条提问，不调用便宜模型生成摘要。
 
 验收场景：
 
@@ -616,13 +669,13 @@ MVP 只实现三个工具：
 - ⬜ 用户保存编码偏好后，新会话能够遵守；
 - ⬜ 定时任务在无人值守模式下不能绕过权限边界执行高风险操作。
 
-### Phase 7：发布与生态 ⬜ 未开始
+### Phase 7：发布与生态 🚧 基础打包已开始
 
 目标：达到可公开分发和持续升级的产品质量。
 
 功能：
 
-- 🚧 macOS、Windows、Linux 安装包（Forge maker 已配置，CI 仅构建 Linux）；
+- 🚧 macOS、Windows、Linux 安装包（Forge maker 已配置，CI 仅执行 Linux package，产物验收未记录）；
 - ⬜ 代码签名与 notarization；
 - ⬜ 自动更新和校验；
 - ⬜ 崩溃日志导出，但默认不上传遥测；
@@ -633,54 +686,55 @@ MVP 只实现三个工具：
 
 ## 11. 测试策略
 
-### 11.1 Agent Core ✅ 主要分支已覆盖
+### 11.1 Agent Core 🚧 部分分支已覆盖
 
 使用脚本化 Fake Provider 覆盖：
 
-- ✅ 直接文本回复；
-- ✅ 一次和多次 Tool Call（Agent 调用工具后继续输出）；
-- ✅ 工具失败与拒绝（用户拒绝后继续循环）；
-- ✅ 无效 Tool Call 参数；
-- ✅ 最大迭代数；
-- ✅ 用户取消；
-- ✅ Provider 首轮失败；
-- ✅ 重复 Tool Call（只执行一次）；
-- ✅ Tool Call/Tool Result 配对修复。
+- ✅ Tool Call 执行并把结果交回下一次模型请求；
+- ✅ 工具异常与用户拒绝转为失败 Tool Result 后继续；
+- ✅ 重复 Tool Call ID 只执行一次；
+- ✅ Provider 无事件时产生分类失败；
+- ⬜ 纯文本直出独立用例；
+- ⬜ 多个不同 Tool Call 的顺序与配对；
+- ⬜ 最大迭代数耗尽；
+- ⬜ Agent Core 层取消；
+- ⬜ 未知工具、非法工具参数和 Tool Call/Tool Result 修复的独立用例；
+- ⬜ 首轮 Provider 失败后的历史一致性与重试行为。
 
-> 注：current-features.md 明确列出的测试为“Agent 调用工具后继续输出、重复 Tool Call 防护、用户拒绝后继续循环”，其余条目依据实现推断为已覆盖。
-
-### 11.2 工具 ✅ 主要路径已覆盖
+### 11.2 工具 🚧 主要路径已覆盖
 
 所有文件测试运行在临时目录：
 
 - ✅ 工作目录内外路径；
-- ✅ `..` 路径穿越；
-- ✅ 符号链接逃逸（已有对应单元测试）；
+- 🚧 `..` 路径穿越与真实路径：实现存在，仍缺少完整的跨工具矩阵测试；
+- ✅ `list_files` 符号链接逃逸；
 - ✅ 大文件截断（已有对应单元测试）；
 - ✅ Terminal 超时和取消；
-- ✅ stdout/stderr 大输出；
-- ✅ 子进程树回收。
+- ✅ Terminal 非零退出、取消和超时；
+- ⬜ stdout/stderr 字节上限和截断；
+- ⬜ 子进程树回收的集成测试；
+- ⬜ `read_file` 自身的符号链接逃逸测试。
 
-> 注：current-features.md 明确列出的测试为“大文件截断、目录符号链接逃逸、工作目录外读取审批”。
-
-### 11.3 IPC ⬜ 未覆盖
+### 11.3 IPC 🚧 只有契约测试
 
 - ⬜ Renderer 只能调用白名单方法；
-- ⬜ 非法参数被 Zod 拒绝；
+- 🚧 `StartTurn`、模型列表等 Schema 有单元测试；真实 IPC handler 的非法参数路径未覆盖；
 - ⬜ Worker 事件校验失败不会传入 UI；
 - ⬜ 窗口销毁后订阅正确清理；
 - ⬜ 伪造来源的 IPC 被拒绝。
 
-> 注：IPC 校验在实现中存在（来源校验 + Zod），但对应单元测试未列入 current-features.md。
+> 注：IPC 来源校验和 Zod 参数校验已实现；缺少的是对真实 Main handler、Preload 白名单和 Worker 消息边界的自动化验证。
 
-### 11.4 Session ✅ 已覆盖
+### 11.4 Session 🚧 部分覆盖
 
-- ✅ 正常追加；
+- ✅ 正常追加与读取（通过损坏尾恢复用例间接覆盖）；
 - ✅ 不完整尾记录（已有对应单元测试）；
-- ✅ 重复保存；
+- ⬜ 重复保存与幂等行为；
 - ✅ 并发写入保护（单会话锁，已有对应单元测试）；
-- ✅ 版本字段迁移；
-- ✅ Tool Call/Tool Result 跨重启恢复。
+- 🚧 配置 v1→v2 迁移已覆盖；Session 记录未来版本迁移未覆盖；
+- ⬜ Tool Call/Tool Result 跨重启恢复；
+- ✅ 首条提问标题与手动重命名优先级；
+- ⬜ 删除普通会话与运行中会话取消/删除竞态。
 
 ### 11.5 端到端 ⬜ 未开始
 
@@ -742,8 +796,9 @@ type SessionRecord =
 |---|---|---|
 | 第一版功能膨胀 | 严格执行“不做列表”，新增功能必须替换而非叠加 MVP 任务 | ✅ 已执行 |
 | Agent Core 被 Electron 污染 | 通过 workspace 依赖和 lint 规则禁止 Electron/Node import | ✅ 依赖方向已落实 |
-| Provider 流式协议复杂 | 先支持一个 Provider；用 adapter 归一化并保存原始测试 fixture | ✅ 已落实 |
-| Terminal 留下孤儿进程 | 统一 Process Manager，取消时回收进程树，增加集成测试 | ✅ 已落实 |
+| Provider 流式协议复杂 | 先支持一个 Provider；用 adapter 归一化并保存测试 fixture | 🚧 adapter 与内联流测试已落实，独立 fixture 库未建立 |
+| Terminal 留下孤儿进程 | 统一取消与进程组回收，增加集成测试 | 🚧 进程组回收已实现，子进程树集成测试未完成 |
+| 删除运行中会话产生残留 | 等待 Worker 停止并确认不会再写入后再删除 JSONL | ⬜ 待修复 |
 | pnpm 与 Electron 打包冲突 | 使用 hoisted node linker，并在早期 M0 就执行一次 package | ✅ 已落实（`node-linker=hoisted`） |
 | 会话被异常退出破坏 | JSONL 追加、尾记录容错、单会话锁和原子元数据写入 | ✅ 已落实 |
 | IPC 扩展后失控 | 所有通道集中注册，contracts 定义 schema，禁止通用 send/invoke | ✅ 已落实 |
@@ -758,12 +813,14 @@ type SessionRecord =
 2. ✅ 定义 `contracts` 中的 IPC 与 Agent Event；
 3. ✅ 建立 Renderer → Preload → Main → Worker 的假流式链路；
 4. ✅ 在 `agent-core` 用 Fake Provider 实现工具循环；
-5. ✅ 为 Agent Core 写完离线测试；
+5. 🚧 已有 Agent Core 离线测试，仍需补齐取消、最大迭代、未知工具和历史一致性；
 6. ✅ 接入一个真实 Provider；
 7. ✅ 实现工作目录和三个只读/受控工具；
 8. ✅ 实现审批弹窗和 Terminal 取消；
 9. ✅ 加入 JSONL Session；
-10. 🚧 完成安装包和干净机器冒烟测试（Linux 安装包已产出；干净机器冒烟测试未完成）。
+10. 🚧 完成安装包和干净机器冒烟测试（CI 配置 Linux package；多平台产物和干净机器冒烟未完成）；
+11. ⬜ 修复运行中会话删除竞态，并增加回归测试；
+12. ⬜ 建立 Renderer UI、IPC 集成和 Electron E2E 测试。
 
 在第 4 步完成之前，不投入复杂 UI；在第 8 步完成之前，不增加文件写入；在 MVP 发布之前，
 不开始 MCP、浏览器或子 Agent。

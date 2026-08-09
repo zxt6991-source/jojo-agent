@@ -10,7 +10,7 @@
 - `read_file`、`list_files`、`terminal` 三个工具；
 - 工作目录约束、真实路径与符号链接检查、输入/输出上限、Terminal 超时与进程组回收；
 - Terminal 每次审批，工作目录外文件读取逐次审批；
-- JSONL 会话创建、重命名、删除、恢复和损坏尾记录容错；
+- 按项目目录分组的多会话侧边栏，首条提问自动生成标题，以及会话创建、重命名、删除、恢复和损坏尾记录容错；
 - 操作系统安全存储加密 API Key；
 - Markdown 消毒、工具卡片、审批弹窗、停止按钮、Provider 设置与输入框模型选择；
 - Electron Forge、ASAR 和 Electron Fuses 生产打包配置。

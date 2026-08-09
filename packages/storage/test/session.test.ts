@@ -26,6 +26,19 @@ describe('JsonlSessionStore', () => {
     release();
     expect(() => store.acquire('one')).not.toThrow();
   });
+
+  it('uses the first prompt as the displayed title until the user renames the session', async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), 'desktop-agent-title-'));
+    const store = new JsonlSessionStore(directory);
+    const session = await store.create(path.basename(directory), directory);
+    await store.appendMessage(session.id, {
+      id: 'm1', role: 'user', createdAt: new Date().toISOString(), content: [{ type: 'text', text: '  分析这个项目\n并给出建议  ' }]
+    });
+
+    expect((await store.list())[0]?.title).toBe('分析这个项目 并给出建议');
+    await store.rename(session.id, '手动标题');
+    expect((await store.list())[0]?.title).toBe('手动标题');
+  });
 });
 
 describe('JsonConfigStore', () => {

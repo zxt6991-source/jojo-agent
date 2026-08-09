@@ -4,7 +4,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   ApprovalInputSchema, CreateSessionInputSchema, IPC, ListModelsInputSchema, RenameSessionInputSchema, SaveSettingsInputSchema,
-  SessionIdInputSchema, StartTurnInputSchema, type WorkerCommand, type WorkerMessage
+  SessionIdInputSchema, StartTurnInputSchema, isPlaceholderSessionTitle, sessionTitleFromPrompt,
+  type WorkerCommand, type WorkerMessage
 } from '@desktop-agent/contracts';
 import { OpenAICompatibleProvider } from '@desktop-agent/providers';
 import { JsonConfigStore, JsonlSessionStore } from '@desktop-agent/storage';
@@ -99,6 +100,15 @@ function registerIpc(): void {
   ipcMain.handle(IPC.startTurn, async (event, raw) => {
     assertTrusted(event); const payload = StartTurnInputSchema.parse(raw);
     if (!worker) throw new Error('Agent runtime is not available.');
+    const session = await sessionStore.get(payload.sessionId);
+    if (!session) throw new Error('Session not found.');
+    if (isPlaceholderSessionTitle(session.title, session.workingDirectory)) {
+      const messages = await sessionStore.messages(payload.sessionId);
+      if (!messages.some((message) => message.role === 'user')) {
+        await sessionStore.rename(payload.sessionId, sessionTitleFromPrompt(payload.text));
+        sendToRenderer(IPC.sessionsChanged);
+      }
+    }
     worker.postMessage({ type: 'turn.start', payload } satisfies WorkerCommand);
   });
   ipcMain.handle(IPC.cancelTurn, async (event, raw) => {

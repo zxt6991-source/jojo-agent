@@ -5,10 +5,12 @@ import { marked } from 'marked';
 import type {
   AgentEvent, ApprovalRequest, Message, ProviderSettings, SessionMeta, ToolResult, WorkspaceChanges
 } from '@desktop-agent/contracts';
+import { DEFAULT_SESSION_TITLE, projectNameFromDirectory } from '@desktop-agent/contracts';
 import './styles.css';
 
 type ToolCard = { id: string; name: string; input: unknown; progress: string; result?: ToolResult };
 type DiffLine = { type: 'addition' | 'deletion' | 'context' | 'hunk' | 'meta'; oldLine?: number; newLine?: number; text: string };
+type ProjectGroup = { path: string; name: string; sessions: SessionMeta[] };
 
 const defaultSettings: ProviderSettings = {
   baseUrl: 'https://api.openai.com/v1',
@@ -17,9 +19,29 @@ const defaultSettings: ProviderSettings = {
   hasApiKey: false
 };
 
+function groupSessions(sessions: SessionMeta[]): ProjectGroup[] {
+  const projects = new Map<string, ProjectGroup>();
+  for (const session of sessions) {
+    const existing = projects.get(session.workingDirectory);
+    if (existing) existing.sessions.push(session);
+    else projects.set(session.workingDirectory, {
+      path: session.workingDirectory,
+      name: projectNameFromDirectory(session.workingDirectory),
+      sessions: [session]
+    });
+  }
+  return [...projects.values()];
+}
+
 function Markdown({ text }: { text: string }) {
   const html = useMemo(() => DOMPurify.sanitize(marked.parse(text, { async: false }) as string), [text]);
   return <div className="markdown" dangerouslySetInnerHTML={{ __html: html }} />;
+}
+
+function FolderIcon() {
+  return <svg className="project-folder" viewBox="0 0 20 20" aria-hidden="true">
+    <path d="M2.5 5.75c0-1.1.9-2 2-2h3l1.45 1.7h6.55c1.1 0 2 .9 2 2v6.75c0 1.1-.9 2-2 2h-11c-1.1 0-2-.9-2-2V5.75Z" />
+  </svg>;
 }
 
 function messageText(message: Message): string {
@@ -155,6 +177,7 @@ function App() {
   const [modelsFresh, setModelsFresh] = useState(true);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsError, setModelsError] = useState('');
+  const [collapsedProjects, setCollapsedProjects] = useState<string[]>([]);
   const [workspaceChanges, setWorkspaceChanges] = useState<WorkspaceChanges | null>(null);
   const [workspaceChangesError, setWorkspaceChangesError] = useState('');
   const [reviewOpen, setReviewOpen] = useState(false);
@@ -285,11 +308,51 @@ function App() {
     }
   };
 
-  const createSession = async () => {
+  const createSessionForDirectory = async (directory: string) => {
+    const session = await window.desktopAgent.createSession({ title: DEFAULT_SESSION_TITLE, workingDirectory: directory });
+    setCollapsedProjects((items) => items.filter((path) => path !== directory));
+    if (session) await selectSession(session.id);
+  };
+
+  const createProject = async () => {
     const directory = await window.desktopAgent.chooseDirectory();
     if (!directory) return;
-    const session = await window.desktopAgent.createSession({ title: directory.split(/[\\/]/).pop() || '新会话', workingDirectory: directory });
-    if (session) await selectSession(session.id);
+    await createSessionForDirectory(directory);
+  };
+
+  const createSession = async () => {
+    const activeSession = sessions.find((session) => session.id === activeIdRef.current);
+    if (activeSession) await createSessionForDirectory(activeSession.workingDirectory);
+    else await createProject();
+  };
+
+  const renameSession = async (session: SessionMeta) => {
+    const title = prompt('会话名称', session.title);
+    if (!title?.trim() || title.trim() === session.title) return;
+    await window.desktopAgent.renameSession({ sessionId: session.id, title });
+    await refreshSessions();
+  };
+
+  const deleteSession = async (session: SessionMeta) => {
+    if (!confirm(`确定删除会话“${session.title}”？`)) return;
+    const wasActive = activeIdRef.current === session.id;
+    if (wasActive) {
+      activeIdRef.current = null;
+      setActiveId(null);
+      setRunning(false);
+      setApproval(null);
+      setMessages([]);
+      setWorkspaceChanges(null);
+      setReviewOpen(false);
+      setStreamingText('');
+      setTools([]);
+    }
+    await window.desktopAgent.deleteSession(session.id);
+    const remaining = sessions.filter((item) => item.id !== session.id);
+    if (wasActive) {
+      const next = remaining.find((item) => item.workingDirectory === session.workingDirectory) ?? remaining[0];
+      if (next) await selectSession(next.id);
+    }
   };
 
   const send = async () => {
@@ -305,6 +368,7 @@ function App() {
   };
 
   const active = sessions.find((session) => session.id === activeId);
+  const projects = useMemo(() => groupSessions(sessions), [sessions]);
   const openReview = (path?: string) => {
     if (!workspaceChanges?.files.length) return;
     setReviewPath(path ?? workspaceChanges.files[0]!.path);
@@ -314,11 +378,30 @@ function App() {
   return <div className="app-shell">
     <aside className="sidebar">
       <div className="brand"><span className="brand-mark">⌁</span><span>Desktop Agent</span></div>
-      <button className="new-session" onClick={createSession}>＋ 新建会话</button>
-      <div className="session-list">
-        {sessions.map((session) => <button key={session.id} className={`session ${session.id === activeId ? 'active' : ''}`} onClick={() => void selectSession(session.id)}>
-          <span className="session-title">{session.title}</span><span className="session-path">{session.workingDirectory}</span>
-        </button>)}
+      <button className="new-session" onClick={() => void createSession()}><span aria-hidden="true">＋</span> 新对话</button>
+      <div className="projects-heading"><span>项目</span><button aria-label="打开新项目目录" title="打开新项目目录" onClick={() => void createProject()}>＋</button></div>
+      <div className="project-list">
+        {projects.map((project) => {
+          const collapsed = collapsedProjects.includes(project.path);
+          return <section className="project-group" key={project.path}>
+            <div className="project-row">
+              <button className="project-toggle" title={project.path} onClick={() => setCollapsedProjects((items) => collapsed ? items.filter((path) => path !== project.path) : [...items, project.path])}>
+                <FolderIcon /><span>{project.name}</span><span className="project-chevron" aria-hidden="true">{collapsed ? '›' : '⌄'}</span>
+              </button>
+              <button className="project-new-chat" aria-label={`在 ${project.name} 中新建会话`} title="在此项目中新建会话" onClick={() => void createSessionForDirectory(project.path)}>＋</button>
+            </div>
+            {!collapsed && <div className="project-sessions">
+              {project.sessions.map((session) => <div key={session.id} className={`session-row ${session.id === activeId ? 'active' : ''}`}>
+                <button className="session" title={session.title} onClick={() => void selectSession(session.id)}><span className="session-title">{session.title}</span></button>
+                <div className="session-actions">
+                  <button aria-label={`重命名 ${session.title}`} title="重命名会话" onClick={() => void renameSession(session)}>✎</button>
+                  <button className="delete-session" aria-label={`删除 ${session.title}`} title="删除会话" onClick={() => void deleteSession(session)}>×</button>
+                </div>
+              </div>)}
+            </div>}
+          </section>;
+        })}
+        {projects.length === 0 && <div className="projects-empty">还没有项目</div>}
       </div>
       <button className="settings-button" onClick={() => { setSettingsDraft(settings); setApiKey(''); setModelsFresh(true); setModelsError(''); setSettingsOpen(true); }}>⚙ 设置</button>
     </aside>
@@ -326,10 +409,6 @@ function App() {
       {active ? <>
         <header className="topbar">
           <div><h1>{active.title}</h1><div className="working-directory">{active.workingDirectory}</div></div>
-          <div className="top-actions">
-            <button onClick={async () => { const title = prompt('会话名称', active.title); if (title?.trim()) await window.desktopAgent.renameSession({ sessionId: active.id, title }); }}>重命名</button>
-            <button className="danger" onClick={async () => { if (confirm('确定删除此会话？')) { await window.desktopAgent.deleteSession(active.id); activeIdRef.current = null; setActiveId(null); setMessages([]); setWorkspaceChanges(null); setReviewOpen(false); } }}>删除</button>
-          </div>
         </header>
         <div className={`workspace-content ${reviewOpen ? 'reviewing' : ''}`}>
         <div className="chat-pane">
@@ -369,7 +448,7 @@ function App() {
         </div>
         {reviewOpen && workspaceChanges && <ReviewPanel changes={workspaceChanges} selectedPath={reviewPath} onSelect={setReviewPath} onClose={() => setReviewOpen(false)} />}
         </div>
-      </> : <section className="welcome"><div className="empty-icon">⌁</div><h1>Desktop Agent</h1><p>选择一个本地目录，开始安全、可控的 AI 协作。</p><button className="primary" onClick={createSession}>选择项目目录</button></section>}
+      </> : <section className="welcome"><div className="empty-icon">⌁</div><h1>Desktop Agent</h1><p>选择一个本地目录，开始安全、可控的 AI 协作。</p><button className="primary" onClick={() => void createProject()}>选择项目目录</button></section>}
     </main>
     {approval && <div className="approval-layer"><div className="approval-panel" role="dialog" aria-modal="true" aria-labelledby="approval-title">
       <div className="approval-tool"><span className="approval-tool-icon" aria-hidden="true">›_</span><span>{approvalToolLabel(approval)}</span></div>

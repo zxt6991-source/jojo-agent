@@ -2,16 +2,17 @@ import { z } from 'zod';
 import type { AgentEvent } from './agent';
 import type { Message } from './messages';
 import type { ProviderSettings, SessionMeta } from './persistence';
+import { SESSION_TITLE_MAX_LENGTH } from './persistence';
 import type { WorkspaceChanges } from './workspace';
 
 export const CreateSessionInputSchema = z.object({
-  title: z.string().trim().min(1).max(120),
+  title: z.string().trim().min(1).max(SESSION_TITLE_MAX_LENGTH),
   workingDirectory: z.string().min(1)
 });
 
 export const RenameSessionInputSchema = z.object({
   sessionId: z.string(),
-  title: z.string().trim().min(1).max(120)
+  title: z.string().trim().min(1).max(SESSION_TITLE_MAX_LENGTH)
 });
 
 export const StartTurnInputSchema = z.object({

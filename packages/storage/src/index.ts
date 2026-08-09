@@ -6,6 +6,8 @@ import {
   ProviderSettingsSchema,
   SessionMetaSchema,
   SessionRecordSchema,
+  isPlaceholderSessionTitle,
+  sessionTitleFromPrompt,
   type Message,
   type ProviderSettings,
   type SessionMeta,
@@ -51,7 +53,15 @@ export class JsonlSessionStore {
       try {
         const loaded = await this.load(id);
         const info = await stat(this.file(id));
-        return loaded.meta ? { ...loaded.meta, updatedAt: info.mtime.toISOString() } : null;
+        if (!loaded.meta) return null;
+        const firstPrompt = loaded.messages.find((message) => message.role === 'user')?.content
+          .filter((block) => block.type === 'text')
+          .map((block) => block.text)
+          .join('');
+        const derivedTitle = firstPrompt && isPlaceholderSessionTitle(loaded.meta.title, loaded.meta.workingDirectory)
+          ? sessionTitleFromPrompt(firstPrompt)
+          : loaded.meta.title;
+        return { ...loaded.meta, title: derivedTitle, updatedAt: info.mtime.toISOString() };
       } catch { return null; }
     }));
     return sessions.filter((item): item is SessionMeta => item !== null).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
