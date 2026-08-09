@@ -308,7 +308,7 @@ userData/
 | 修改 React 界面和交互 | `apps/desktop/src/renderer/main.tsx` |
 | 修改全局样式 | `apps/desktop/src/renderer/styles.css` |
 | 修改 Renderer 可调用的 API | `apps/desktop/src/preload/preload.ts` |
-| 新增或修改 IPC | `packages/contracts/src/index.ts` → `apps/desktop/src/preload/preload.ts` → `apps/desktop/src/main/main.ts` |
+| 新增或修改 IPC | `packages/contracts/src/desktop.ts`（由 `src/index.ts` 聚合导出）→ `apps/desktop/src/preload/preload.ts` → `apps/desktop/src/main/main.ts` |
 | 修改窗口、安全存储或 Worker 管理 | `apps/desktop/src/main/main.ts` |
 | 修改 Git 文件变化采集 | `apps/desktop/src/main/workspace-changes.ts` |
 | 修改一轮 Agent 的执行逻辑 | `packages/agent-core/src/index.ts` |

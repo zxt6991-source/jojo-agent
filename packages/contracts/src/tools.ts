@@ -1,0 +1,21 @@
+import { z } from 'zod';
+import type { ToolResult } from './messages';
+
+export const ToolDefinitionSchema = z.object({
+  name: z.string(),
+  description: z.string(),
+  inputSchema: z.record(z.string(), z.unknown())
+});
+export type ToolDefinition = z.infer<typeof ToolDefinitionSchema>;
+
+export type ToolContext = {
+  workingDirectory: string;
+  signal: AbortSignal;
+  approved: boolean;
+  onProgress: (text: string) => void;
+};
+
+export interface Tool {
+  definition: ToolDefinition;
+  execute(input: unknown, context: ToolContext): Promise<ToolResult>;
+}
