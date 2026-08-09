@@ -76,6 +76,26 @@ describe('runAgentTurn', () => {
     expect(execute).toHaveBeenCalledTimes(1);
   });
 
+  it('allows a small coding task to continue beyond eight model iterations', async () => {
+    const execute = vi.fn(echoTool.execute);
+    const toolRounds = Array.from({ length: 9 }, (_, index) => [
+      { type: 'tool_call_completed' as const, call: { id: `call-${index}`, name: 'echo', input: { index } } },
+      { type: 'response_completed' as const, stopReason: 'tool_calls' }
+    ]);
+    const provider = new ScriptedProvider([
+      ...toolRounds,
+      [
+        { type: 'text_delta', text: 'done' },
+        { type: 'response_completed', stopReason: 'stop' }
+      ]
+    ]);
+
+    await expect(runAgentTurn(createOptions(provider, {
+      tools: [{ ...echoTool, execute }]
+    }))).resolves.toMatchObject({ stopReason: 'stop' });
+    expect(execute).toHaveBeenCalledTimes(9);
+  });
+
   it('turns a denied approval into a tool result and continues', async () => {
     const ask: PermissionGate = {
       check: async (call) => ({
@@ -132,6 +152,29 @@ describe('runAgentTurn', () => {
       code: 'tool_error',
       content: 'tool exploded'
     });
+  });
+
+  it('preserves a classified tool error code', async () => {
+    const conflictingTool: Tool = {
+      ...echoTool,
+      execute: async () => {
+        throw Object.assign(new Error('file changed'), { code: 'file_conflict' });
+      }
+    };
+    const provider = new ScriptedProvider([
+      [
+        { type: 'tool_call_completed', call: { id: 'c1', name: 'echo', input: {} } },
+        { type: 'response_completed', stopReason: 'tool_calls' }
+      ],
+      [{ type: 'response_completed', stopReason: 'stop' }]
+    ]);
+
+    const result = await runAgentTurn(createOptions(provider, { tools: [conflictingTool] }));
+    const resultBlock = result.messages
+      .flatMap((message) => message.content)
+      .find((block) => block.type === 'tool_result');
+
+    expect(resultBlock?.type === 'tool_result' && resultBlock.result.code).toBe('file_conflict');
   });
 
   it('emits a classified failure when the provider returns no events', async () => {

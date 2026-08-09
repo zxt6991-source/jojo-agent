@@ -22,7 +22,7 @@ async function executeKnownTool(
   });
 
   if (decision.decision === 'deny') {
-    return failureResult(call, decision.reason, 'permission_denied');
+    return failureResult(call, decision.reason, decision.code ?? 'permission_denied');
   }
 
   if (decision.decision === 'ask') {
@@ -35,6 +35,7 @@ async function executeKnownTool(
 
   try {
     const result = await tool.execute(call.input, {
+      sessionId: options.sessionId,
       workingDirectory: options.workingDirectory,
       signal: options.signal,
       approved: decision.decision === 'ask',
@@ -43,7 +44,10 @@ async function executeKnownTool(
     return { ...result, callId: call.id };
   } catch (error) {
     if (options.signal.aborted) throw error;
-    return failureResult(call, errorMessage(error), 'tool_error');
+    const code = error && typeof error === 'object' && 'code' in error && typeof error.code === 'string'
+      ? error.code
+      : 'tool_error';
+    return failureResult(call, errorMessage(error), code);
   }
 }
 

@@ -51,18 +51,21 @@ function messageText(message: Message): string {
 function approvalTitle(request: ApprovalRequest): string {
   if (request.call.name === 'terminal') return '运行本地命令';
   if (request.call.name === 'read_file') return '读取工作区外的文件';
+  if (request.preview) return `${request.preview.kind === 'create' ? '创建' : request.preview.kind === 'delete' ? '删除' : '修改'}文件`;
   return request.reason;
 }
 
 function approvalToolLabel(request: ApprovalRequest): string {
   if (request.call.name === 'terminal') return '终端';
   if (request.call.name === 'read_file') return '文件';
+  if (request.preview) return '文件修改';
   return request.call.name;
 }
 
 function approvalQuestion(request: ApprovalRequest): string {
   if (request.call.name === 'terminal') return '是否允许运行此本地命令？';
   if (request.call.name === 'read_file') return '是否允许读取工作区外的文件？';
+  if (request.preview) return `是否允许${approvalTitle(request)}？`;
   return `是否允许${approvalTitle(request)}？`;
 }
 
@@ -71,6 +74,7 @@ function quoteCommandPart(value: string): string {
 }
 
 function approvalSummary(request: ApprovalRequest): string {
+  if (request.preview) return request.preview.path;
   const input = request.call.input;
   if (!input || typeof input !== 'object' || Array.isArray(input)) return JSON.stringify(input);
   const record = input as Record<string, unknown>;
@@ -80,6 +84,23 @@ function approvalSummary(request: ApprovalRequest): string {
   }
   if (request.call.name === 'read_file' && typeof record.path === 'string') return record.path;
   return JSON.stringify(input, null, 2);
+}
+
+function ApprovalDiff({ request }: { request: ApprovalRequest }) {
+  if (!request.preview) return null;
+  const lines = parseDiff(request.preview.patch);
+  return <div className="approval-diff-wrap">
+    <div className="approval-diff-head">
+      <span title={request.preview.path}>{request.preview.path}</span>
+      <strong><b>+{request.preview.additions}</b><i>-{request.preview.deletions}</i></strong>
+    </div>
+    <div className="approval-diff diff-view" role="table" aria-label={`${request.preview.path} 的待批准差异`}>
+      {lines.map((line, index) => <div className={`diff-line ${line.type}`} role="row" key={`${index}-${line.text}`}>
+        <span className="diff-number">{line.oldLine ?? ''}</span><span className="diff-number">{line.newLine ?? ''}</span><code>{line.text || ' '}</code>
+      </div>)}
+    </div>
+    {request.preview.truncated && <div className="diff-truncated">此差异过大，已截断显示。</div>}
+  </div>;
 }
 
 function parseDiff(patch: string): DiffLine[] {
@@ -434,7 +455,7 @@ function App() {
           <textarea value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="随心输入" rows={2}
             onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void send(); } }} />
           <div className="composer-toolbar">
-            <div className="composer-context"><span className="approval-status">⌁ Terminal 需批准</span></div>
+            <div className="composer-context"><span className="approval-status">⌁ 文件修改与 Terminal 需批准</span></div>
             <div className="composer-actions">
               <select className="model-select" aria-label="本轮使用的模型" title="选择本轮使用的模型" value={selectedModel} disabled={running} onChange={(event) => setSelectedModel(event.target.value)}>
                 {settings.models.map((model) => <option key={model} value={model}>{model}</option>)}
@@ -453,7 +474,7 @@ function App() {
     {approval && <div className="approval-layer"><div className="approval-panel" role="dialog" aria-modal="true" aria-labelledby="approval-title">
       <div className="approval-tool"><span className="approval-tool-icon" aria-hidden="true">›_</span><span>{approvalToolLabel(approval)}</span></div>
       <h2 id="approval-title">{approvalQuestion(approval)}</h2>
-      <pre className="approval-command">{approvalSummary(approval)}</pre>
+      {approval.preview ? <ApprovalDiff request={approval} /> : <pre className="approval-command">{approvalSummary(approval)}</pre>}
       <div className="approval-actions">
         <button className="approval-reject" onClick={() => { void window.desktopAgent.resolveApproval({ requestId: approval.requestId, allow: false }); setApproval(null); }}><span>拒绝</span><kbd>Esc</kbd></button>
         <button className="approval-allow" onClick={() => { void window.desktopAgent.resolveApproval({ requestId: approval.requestId, allow: true }); setApproval(null); }}><span>允许一次</span><kbd>↵</kbd></button>

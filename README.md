@@ -1,21 +1,22 @@
 # TypeScript Desktop Agent
 
-一个本地优先的 Electron AI Agent MVP。它可以流式对话、读取项目文件、列出目录，并在用户逐次批准后执行本地命令。实现以 [`ts-desktop-agent-mvp-roadmap.md`](./ts-desktop-agent-mvp-roadmap.md) 为范围基准。
+一个本地优先的 Electron Coding Agent。它可以流式对话、检索和读取项目，在用户审阅 Diff 并逐次批准后修改文件或执行本地命令。实现以 [`ts-desktop-agent-mvp-roadmap.md`](./ts-desktop-agent-mvp-roadmap.md) 为范围基准。
 
 ## 已实现
 
 - Electron Main / sandboxed Preload / React Renderer / Utility Process 四层运行时；
 - OpenAI Chat Completions 兼容 Provider，支持流式文本、分片 Tool Call、超时、取消和错误分类；
 - 纯 TypeScript Agent Core，支持多轮工具循环、拒绝回填、重复调用保护和最大迭代限制；
-- `read_file`、`list_files`、`terminal` 三个工具；
+- `read_file`、`list_files`、`grep`、`glob`、`write_file`、`edit_file`、`delete_file`、`terminal` 八个工具；
+- 修改前读取检查、SHA-256/mtime/大小冲突检测、精确文本编辑、原子替换与应用回收站；
 - 工作目录约束、真实路径与符号链接检查、输入/输出上限、Terminal 超时与进程组回收；
-- Terminal 每次审批，工作目录外文件读取逐次审批；
+- 文件修改展示逐行 Diff 并每次审批；Terminal 每次审批，工作目录外文件读取逐次审批；
 - 按项目目录分组的多会话侧边栏，首条提问自动生成标题，以及会话创建、重命名、删除、恢复和损坏尾记录容错；
 - 操作系统安全存储加密 API Key；
 - Markdown 消毒、工具卡片、审批弹窗、停止按钮、Provider 设置与输入框模型选择；
 - Electron Forge、ASAR 和 Electron Fuses 生产打包配置。
 
-明确未实现路线图中 MVP 之后的写文件、代码编辑、MCP、Skills、浏览器、子 Agent、记忆与自动化。
+尚未实现 MCP、Skills、浏览器、子 Agent、记忆、自动化和专用 Git 写操作。
 
 ## 开发
 
@@ -30,7 +31,7 @@ pnpm dev
 
 1. 打开“设置”，填写 OpenAI 兼容 API Base URL 和 API Key，再从 Provider 获取模型列表并选择默认模型；
 2. 选择一个本地项目目录创建会话；
-3. 在输入框右下角选择本轮模型并输入任务。文件读取与目录列出默认限制在项目中，Terminal 始终弹出审批。
+3. 在输入框右下角选择本轮模型并输入任务。项目内检索默认允许；每次文件修改会先展示 Diff，Terminal 也始终弹出审批。
 
 常用质量命令：
 
@@ -65,7 +66,7 @@ packages/storage/     JSONL Session 与普通配置
 ## 当前验证范围
 
 - Agent Core：工具循环、重复 Tool Call、拒绝后继续；
-- Tools：大文件截断、符号链接逃逸、目录外审批；
+- Tools：大文件截断、项目检索、修改 Diff、读后写冲突、精确编辑、回收站、权限位保留、符号链接逃逸和目录外审批；
 - Storage：JSONL 损坏尾恢复、单会话运行锁；
 - TypeScript、ESLint、Vitest；
 - macOS arm64 Electron 生产 package。

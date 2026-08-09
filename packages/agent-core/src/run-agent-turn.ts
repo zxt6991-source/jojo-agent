@@ -10,7 +10,7 @@ import { runModelStep } from './model-step.js';
 import { executeToolCall } from './tool-execution.js';
 import type { AgentRunOptions, AgentRunResult } from './types.js';
 
-const DEFAULT_MAX_ITERATIONS = 8;
+const DEFAULT_MAX_ITERATIONS = 12;
 
 type TurnState = {
   messages: Message[];

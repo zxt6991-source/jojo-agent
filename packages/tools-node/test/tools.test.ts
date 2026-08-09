@@ -7,10 +7,13 @@ import {
   ListFilesTool,
   ReadFileTool,
   TerminalTool,
-  createDefaultTools
+  createTerminalEnvironment,
+  createDefaultTools,
+  redactSensitiveEnvironmentAssignments
 } from '../src/index.js';
 
 const context = (workingDirectory: string, options: { approved?: boolean; signal?: AbortSignal } = {}) => ({
+  sessionId: 's1',
   workingDirectory,
   approved: options.approved ?? false,
   signal: options.signal ?? new AbortController().signal,
@@ -96,6 +99,44 @@ describe('node tools', () => {
     expect(decision).toMatchObject({ decision: 'deny' });
   });
 
+  it('rejects terminal arguments embedded in the command field', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'desktop-agent-terminal-input-'));
+    const decision = await new DefaultPermissionGate().check(
+      { id: 'c3', name: 'terminal', input: { command: 'pnpm test' } },
+      { sessionId: 's1', workingDirectory: root }
+    );
+
+    expect(decision).toMatchObject({ decision: 'deny', code: 'invalid_input' });
+  });
+
+  it('removes credentials and unsafe Node flags from the terminal environment', () => {
+    const environment = createTerminalEnvironment({
+      PATH: '/usr/bin',
+      OPENAI_API_KEY: 'secret',
+      ANTHROPIC_AUTH_TOKEN: 'secret',
+      DATABASE_PASSWORD: 'secret',
+      NODE_OPTIONS: '--require attacker.js',
+      ELECTRON_RUN_AS_NODE: '1',
+      SSH_AUTH_SOCK: '/tmp/agent.sock'
+    });
+
+    expect(environment).toEqual({ PATH: '/usr/bin', SSH_AUTH_SOCK: '/tmp/agent.sock' });
+  });
+
+  it('redacts credential assignments from terminal results and legacy history', () => {
+    expect(redactSensitiveEnvironmentAssignments([
+      'PATH=/usr/bin',
+      'OPENAI_API_KEY=secret',
+      'export SERVICE_AUTH_TOKEN=secret',
+      'SSH_AUTH_SOCK=/tmp/agent.sock'
+    ].join('\n'))).toBe([
+      'PATH=/usr/bin',
+      'OPENAI_API_KEY=[REDACTED]',
+      'export SERVICE_AUTH_TOKEN=[REDACTED]',
+      'SSH_AUTH_SOCK=/tmp/agent.sock'
+    ].join('\n'));
+  });
+
   it('requires approval when TerminalTool is called directly', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'desktop-agent-terminal-'));
 
@@ -119,6 +160,17 @@ describe('node tools', () => {
     expect(result.content).toContain('hello');
     expect(result.content).toContain('[exit 2]');
     expect(progress.join('')).toContain('hello');
+  });
+
+  it('resolves a bare executable name through the inherited PATH', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'desktop-agent-terminal-path-'));
+    const result = await new TerminalTool().execute(
+      { command: path.basename(process.execPath), args: ['--version'] },
+      context(root, { approved: true })
+    );
+
+    expect(result).toMatchObject({ ok: true });
+    expect(result.content).toContain(process.version);
   });
 
   it('distinguishes terminal cancellation from a process failure', async () => {
@@ -155,7 +207,9 @@ describe('node tools', () => {
     const first = createDefaultTools();
     const second = createDefaultTools();
 
-    expect(first.map((tool) => tool.definition.name)).toEqual(['read_file', 'list_files', 'terminal']);
+    expect(first.map((tool) => tool.definition.name)).toEqual([
+      'read_file', 'list_files', 'grep', 'glob', 'write_file', 'edit_file', 'delete_file', 'terminal'
+    ]);
     expect(first[0]).not.toBe(second[0]);
   });
 });

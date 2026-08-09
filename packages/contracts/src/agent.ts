@@ -5,11 +5,19 @@ export type ApprovalRequest = {
   sessionId: string;
   call: ToolCall;
   reason: string;
+  preview?: {
+    kind: 'create' | 'update' | 'delete';
+    path: string;
+    patch: string;
+    additions: number;
+    deletions: number;
+    truncated?: boolean;
+  };
 };
 
 export type PermissionDecision =
   | { decision: 'allow' }
-  | { decision: 'deny'; reason: string }
+  | { decision: 'deny'; reason: string; code?: string }
   | { decision: 'ask'; request: ApprovalRequest };
 
 export interface PermissionGate {

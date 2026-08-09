@@ -63,7 +63,7 @@ stateDiagram-v2
 
 ## 5. 正确性保护
 
-- 默认最多 8 次模型迭代，防止无限工具循环。
+- 默认最多 12 次模型迭代，兼顾小型代码任务的检索、修改和验证步骤，同时防止无限工具循环。
 - `executedCallIds` 保证同一个 Tool Call ID 不会执行两次。
 - 未知工具生成 `unknown_tool` 结果，而不是抛出并丢失上下文。
 - 策略拒绝与用户拒绝分别使用 `permission_denied` 和 `user_denied`。

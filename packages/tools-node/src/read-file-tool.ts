@@ -1,8 +1,10 @@
 import { open, type FileHandle } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import type { Tool, ToolContext, ToolResult } from '@desktop-agent/contracts';
 import { ReadFileInput } from './inputs.js';
 import { toolResult } from './tool-result.js';
 import { resolveWorkspacePath } from './workspace-paths.js';
+import { FileSnapshotRegistry } from './file-snapshots.js';
 
 const DEFAULT_MAX_BYTES = 512_000;
 
@@ -18,7 +20,10 @@ export class ReadFileTool implements Tool {
     }
   };
 
-  constructor(private readonly maxBytes = DEFAULT_MAX_BYTES) {}
+  constructor(
+    private readonly maxBytes = DEFAULT_MAX_BYTES,
+    private readonly snapshots?: FileSnapshotRegistry
+  ) {}
 
   async execute(input: unknown, context: ToolContext): Promise<ToolResult> {
     const { path } = ReadFileInput.parse(input);
@@ -38,6 +43,19 @@ export class ReadFileTool implements Tool {
       const bytes = await this.readPrefix(file);
       const truncated = bytes.byteLength > this.maxBytes;
       const content = bytes.subarray(0, this.maxBytes).toString('utf8');
+      if (this.snapshots) {
+        const finalInfo = await file.stat();
+        if (!truncated && info.size === bytes.byteLength && finalInfo.size === info.size && finalInfo.mtimeMs === info.mtimeMs) {
+          this.snapshots.set(resolved.target, {
+            sha256: createHash('sha256').update(bytes).digest('hex'),
+            mtimeMs: finalInfo.mtimeMs,
+            size: finalInfo.size,
+            completeRead: true
+          });
+        } else {
+          await this.snapshots.record(resolved.target, false);
+        }
+      }
       return truncated
         ? toolResult(true, `${content}\n\n[truncated at ${this.maxBytes} bytes]`, { truncated: true })
         : toolResult(true, content);

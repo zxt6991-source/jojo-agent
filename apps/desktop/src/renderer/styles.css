@@ -217,6 +217,13 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .approval-tool-icon { width: 24px; height: 24px; display: grid; place-items: center; border: 1.5px solid #858990; border-radius: 5px; color: #62666d; font: 700 13px "SFMono-Regular", monospace; line-height: 1; }
 .approval-panel h2 { margin: 20px 0 25px; color: #202124; font-size: 20px; line-height: 1.35; font-weight: 650; letter-spacing: -.012em; }
 .approval-command { max-height: 96px; margin: 0; overflow: auto; color: #96999f; font: 14px/1.55 "SFMono-Regular", "Cascadia Code", Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.approval-diff-wrap { overflow: hidden; border: 1px solid #dedfe2; border-radius: 12px; }
+.approval-diff-head { min-height: 42px; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 0 13px; border-bottom: 1px solid #dedfe2; background: #fafafa; color: #42454b; font-size: 12px; }
+.approval-diff-head > span { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.approval-diff-head strong { flex: 0 0 auto; font-size: 11px; }
+.approval-diff-head b { color: #36a853; }
+.approval-diff-head i { margin-left: 7px; color: #d14b45; font-style: normal; }
+.approval-diff { max-height: min(42vh, 420px); }
 .approval-actions { display: flex; justify-content: flex-end; gap: 12px; margin-top: 29px; }
 .approval-actions button { min-height: 42px; display: inline-flex; align-items: center; gap: 10px; padding: 0 15px; border: 1px solid #dedfe2; border-radius: 22px; background: #ffffff; color: #27292d; font-size: 14px; font-weight: 610; }
 .approval-actions button:hover { background: #f4f4f5; }

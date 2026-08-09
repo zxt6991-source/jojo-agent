@@ -6,17 +6,38 @@ import { resolveWorkspacePath } from './workspace-paths.js';
 
 const DEFAULT_MAX_BYTES = 1_000_000;
 const FORCE_KILL_GRACE_MS = 1_000;
+const SENSITIVE_ENV_NAME = /(?:^|_)(?:API_?KEY|AUTH(?:ORIZATION)?|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?|PRIVATE_?KEY|ACCESS_?KEY)(?:_|$)/i;
+const SAFE_ENV_EXCEPTIONS = new Set(['SSH_AUTH_SOCK']);
+const BLOCKED_RUNTIME_ENV = new Set(['NODE_OPTIONS', 'ELECTRON_RUN_AS_NODE']);
 
 type StopReason = 'cancelled' | 'timeout';
+
+export function createTerminalEnvironment(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const environment: NodeJS.ProcessEnv = {};
+  for (const [name, value] of Object.entries(source)) {
+    if (value === undefined || BLOCKED_RUNTIME_ENV.has(name)) continue;
+    if (SENSITIVE_ENV_NAME.test(name) && !SAFE_ENV_EXCEPTIONS.has(name)) continue;
+    environment[name] = value;
+  }
+  return environment;
+}
+
+export function redactSensitiveEnvironmentAssignments(text: string): string {
+  return text.split('\n').map((line) => {
+    const match = /^(\s*(?:export\s+)?)([A-Za-z_][A-Za-z0-9_]*)(=.*)$/.exec(line);
+    if (!match || !SENSITIVE_ENV_NAME.test(match[2]!) || SAFE_ENV_EXCEPTIONS.has(match[2]!)) return line;
+    return `${match[1]}${match[2]}=[REDACTED]`;
+  }).join('\n');
+}
 
 export class TerminalTool implements Tool {
   readonly definition = {
     name: 'terminal',
-    description: 'Run one executable with an argument array. This tool always requires user approval.',
+    description: 'Run one executable with an argument array. command must be only the executable name or path, for example command="pnpm", args=["test"]. Never put arguments in command. This tool always requires user approval.',
     inputSchema: {
       type: 'object',
       properties: {
-        command: { type: 'string' },
+        command: { type: 'string', description: 'Executable name or path only. Put all command-line arguments in args.' },
         args: { type: 'array', items: { type: 'string' }, default: [] },
         cwd: { type: 'string', default: '.' },
         timeoutMs: { type: 'integer', minimum: 1000, maximum: 300000, default: 120000 }
@@ -55,7 +76,7 @@ export class TerminalTool implements Tool {
         cwd,
         shell: false,
         detached: process.platform !== 'win32',
-        env: process.env,
+        env: createTerminalEnvironment(),
         stdio: ['ignore', 'pipe', 'pipe']
       });
       let output = '';
@@ -107,7 +128,10 @@ export class TerminalTool implements Tool {
         if (settled) return;
         settled = true;
         cleanup();
-        resolve(toolResult(false, error.message, { code: 'spawn_failed' }));
+        const detail = (error as NodeJS.ErrnoException).code === 'ENOENT'
+          ? `Executable not found: ${command}. command must contain only the executable name or path; put every argument in args.`
+          : error.message;
+        resolve(toolResult(false, detail, { code: 'spawn_failed' }));
       });
 
       child.on('close', (code, signal) => {
@@ -116,14 +140,15 @@ export class TerminalTool implements Tool {
         cleanup();
 
         if (stopReason) {
-          resolve(toolResult(false, `${output}\n[${stopReason}]`, { truncated, code: stopReason }));
+          resolve(toolResult(false, `${redactSensitiveEnvironmentAssignments(output)}\n[${stopReason}]`, { truncated, code: stopReason }));
           return;
         }
 
         const ok = code === 0;
         const truncationNotice = truncated ? '\n[output truncated]' : '';
         const exitNotice = `\n[exit ${code ?? signal ?? 'unknown'}]`;
-        resolve(toolResult(ok, `${output}${truncationNotice}${exitNotice}`, ok
+        const safeOutput = redactSensitiveEnvironmentAssignments(output);
+        resolve(toolResult(ok, `${safeOutput}${truncationNotice}${exitNotice}`, ok
           ? { truncated }
           : { truncated, code: 'nonzero_exit' }));
       });

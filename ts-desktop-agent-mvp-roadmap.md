@@ -20,7 +20,7 @@ octo-agent、Codex 和 Claude Code，但第一阶段只解决一件事：让用�
 - MVP 之后到可公开发布版本的演进路线；
 - 安全、测试、数据兼容和范围控制原则。
 
-> 🚧 总览：核心对话 MVP 已可用，但“可公开发布”门槛仍未全部满足：UI/E2E、IPC 安全测试、干净机器安装验证、代码签名等仍缺失。Phase 1 仅完成 Git 工作区修改摘要 / Diff 审阅；Phase 2 已提前完成同一 OpenAI 兼容 Provider 下的模型发现与逐轮选择，但多协议 Provider 和上下文管理尚未开始。
+> 🚧 总览：核心对话 MVP 与 Phase 1 小型代码任务能力已完成，但“可公开发布”门槛仍未全部满足：UI/E2E、IPC 安全测试、干净机器安装验证、代码签名等仍缺失。Phase 2 已提前完成同一 OpenAI 兼容 Provider 下的模型发现与逐轮选择，但多协议 Provider 和上下文管理尚未开始。
 
 ### 1.1 2026-08-09 实现快照
 
@@ -29,10 +29,10 @@ octo-agent、Codex 和 Claude Code，但第一阶段只解决一件事：让用�
 | 核心对话、流式输出、Tool Call | ✅ | OpenAI Chat Completions 兼容协议可用 |
 | 项目与会话 | ✅ | 按目录分组；同项目多会话；首条提问生成标题；可重命名和删除 |
 | 模型选择 | 🚧 | 已通过 `/models` 获取列表并支持逐轮选择；仍只有一种 Provider 协议，且不支持不兼容 `/models` 的手动回退 |
-| 内置工具与审批 | ✅ | `read_file`、`list_files`、`terminal` |
-| 代码修改能力 | 🚧 | 只有只读 Git Diff 审阅；没有安全的写入、补丁、冲突检测与回收站 |
+| 内置工具与审批 | ✅ | 读取、目录、grep、glob、写入、精确编辑、删除、终端共八个工具 |
+| 代码修改能力 | ✅ | 修改前 Diff 审批、读后冲突检测、原子替换与按会话回收站 |
 | 持久化 | 🚧 | JSONL 会话和配置迁移可用；错误状态不持久化，运行中删除会话存在取消/删除竞态 |
-| 自动化测试 | 🚧 | 当前 6 个测试文件、43 个 Vitest 用例通过；没有 Renderer UI、IPC 集成和 E2E 测试 |
+| 自动化测试 | 🚧 | 当前 7 个测试文件、59 个 Vitest 用例通过；没有 Renderer UI、IPC 集成和 E2E 测试 |
 | 发布工程 | 🚧 | Forge、ASAR、Fuses 和 Linux CI package 已配置；干净机器验证、签名、notarization、自动更新未完成 |
 
 ### 1.2 当前剩余工作优先级
@@ -47,9 +47,9 @@ octo-agent、Codex 和 Claude Code，但第一阶段只解决一件事：让用�
 
 #### P1：补齐 Coding Agent 的核心能力
 
-- ⬜ `write_file`、`edit_file` 或补丁应用工具；
-- ⬜ 写入前 Diff 审批、内容哈希/mtime 冲突检测、覆盖与删除回收站；
-- ⬜ `grep`、`glob` 等高效项目检索；
+- ✅ `write_file`、`edit_file` 与 `delete_file`；
+- ✅ 写入前 Diff 审批、内容哈希/mtime 冲突检测、覆盖与删除回收站；
+- ✅ `grep`、`glob` 项目检索；
 - ⬜ Tool Result 大输出回收、上下文窗口估算和安全历史压缩；
 - ⬜ 在 UI 展示 token usage，并支持清除已保存的 API Key；
 - ⬜ Provider 不支持 `/models` 时提供可控的手动模型回退。
@@ -102,7 +102,7 @@ octo-agent、Codex 和 Claude Code，但第一阶段只解决一件事：让用�
 | Schema | Zod | ✅ 已采用（v4） |
 | Agent 进程 | Electron `utilityProcess` | ✅ 已采用（Agent Utility Process / Worker） |
 | 会话存储 | JSONL | ✅ 已采用 |
-| 单元测试 | Vitest | ✅ 已采用（当前 6 个测试文件、43 个用例） |
+| 单元测试 | Vitest | ✅ 已采用（当前 7 个测试文件、59 个用例） |
 | UI 测试 | Testing Library | ⬜ 未引入 |
 | 端到端测试 | Playwright（MVP 后期） | ⬜ 未引入 |
 
@@ -183,7 +183,7 @@ flowchart LR
     MAIN --> WORKER["Utility Process\nAgent Runtime"]
     WORKER --> PROVIDER["Model Provider"]
     WORKER --> GATE["Permission Gate"]
-    GATE --> TOOLS["Read File / List Files / Terminal"]
+    GATE --> TOOLS["Read / Search / Modify / Terminal"]
     WORKER --> STORE["Session JSONL"]
     WORKER --> MAIN
     MAIN --> PRELOAD
@@ -256,7 +256,7 @@ export interface Tool {
 
 `ToolDefinition` 使用 JSON Schema 描述模型可见参数；执行前再通过 Zod Schema 验证输入。
 
-> ✅ 已实现：`read_file`、`list_files`、`terminal` 均按此接口实现，参数执行前经 Zod 校验。
+> ✅ 已实现：八个默认工具均按此接口实现，参数执行前经 Zod 校验。
 
 ### 6.3 Permission Gate
 
@@ -335,7 +335,7 @@ UI、日志和未来的 CLI/WebSocket 都使用同一套事件。
 - ✅ 用户消息进入历史；
 - ✅ 模型返回 Tool Call 后能够执行工具并回填结果；
 - ✅ 模型不再调用工具时正常结束；
-- ✅ 每轮有最大迭代次数（默认最多 8 次）；
+- ✅ 每轮有最大迭代次数（Coding Agent 默认最多 12 次）；
 - ✅ 每个 Tool Call 必须对应一个 Tool Result（重复 Tool Call ID 只执行一次）；
 - ✅ 首次模型请求失败时不会在重试后复制用户消息（失败直接发出 `turn.failed`）；
 - ✅ 取消后历史仍可继续使用。
@@ -371,13 +371,13 @@ MVP 只实现三个工具：
 - ✅ Provider/API Key/模型设置；
 - ✅ 空状态、加载状态和错误状态。
 
-> ✅ 额外已实现：项目分组与同目录多会话、首条提问自动标题、Provider 模型发现与逐轮模型选择，以及当前 Agent 轮次的 Git 工作区修改摘要、逐行 Diff 预览与审阅面板。
+> ✅ 额外已实现：项目分组与同目录多会话、首条提问自动标题、Provider 模型发现与逐轮模型选择、Phase 1 安全文件修改，以及当前 Agent 轮次的 Git 工作区修改摘要与审阅面板。
 
 ### 7.2 明确不做
 
-以下功能全部推迟到 MVP 之后（依据 `docs/current-features.md` 第 11 节，仍均未实现）：
+以下功能在 MVP 基线中推迟；其中代码修改已在后续 Phase 1 完成：
 
-- ⬜ 文件写入和代码编辑；
+- ✅ 文件写入和代码编辑（Phase 1）；
 - ⬜ MCP；
 - ⬜ Skills；
 - ⬜ 子 Agent；
@@ -553,25 +553,25 @@ MVP 只实现三个工具：
 
 后续按照“先可控写入，再扩展生态，再增加自治程度”的顺序推进。
 
-### Phase 1：代码修改能力 🚧 部分完成
+### Phase 1：代码修改能力 ✅ 已完成
 
 目标：从只读助手升级为可完成小型代码任务的 Coding Agent。
 
 功能：
 
-- ⬜ `write_file` 和 `edit_file`；
-- ⬜ 修改前读取检查；
-- ⬜ mtime/内容哈希冲突检测；
-- ⬜ 覆盖或删除前进入应用回收站；
-- 🚧 Diff 预览与批准（✅ Git 工作区修改摘要与逐行 Diff 审阅面板已实现；写入前 Diff 批准尚未实现）；
-- ⬜ `grep`、`glob` 和更高效的项目搜索；
+- ✅ `write_file`、`edit_file` 和 `delete_file`；
+- ✅ 修改前读取检查（新文件创建除外，完整覆盖要求完整读取）；
+- ✅ SHA-256、mtime 与文件大小冲突检测，审批执行时二次复核；
+- ✅ 覆盖或删除前进入按会话隔离的应用回收站；
+- ✅ 写入前逐行 Diff 预览与批准；
+- ✅ `grep`、`glob` 项目搜索；
 - ✅ Git diff/status 集成，但不自动提交（当前 Agent 轮次修改摘要，并过滤轮次前已有改动）。
 
 验收场景：
 
-- ⬜ 用户要求修改一个函数并运行测试；
-- ⬜ Agent 读取文件、生成 diff、等待批准、写入并执行测试；
-- ⬜ 外部编辑器同时修改文件时，Agent 拒绝盲目覆盖。
+- ✅ 用户可要求修改一个函数并运行测试；
+- ✅ Agent 可读取文件、生成 diff、等待批准、写入并通过 `terminal` 执行测试；
+- ✅ 外部编辑器在读取后或审批期间修改文件时，Agent 拒绝盲目覆盖（自动化用例覆盖）。
 
 ### Phase 2：多 Provider 与上下文管理 🚧 少量开始
 
@@ -711,6 +711,9 @@ MVP 只实现三个工具：
 - ✅ 大文件截断（已有对应单元测试）；
 - ✅ Terminal 超时和取消；
 - ✅ Terminal 非零退出、取消和超时；
+- ✅ 文件修改前读取、Diff 审批、精确替换、读后冲突与越界符号链接；
+- ✅ 覆盖/删除应用回收站与覆盖权限位保留；
+- ✅ `grep` / `glob` 过滤、忽略目录和结果上限；
 - ⬜ stdout/stderr 字节上限和截断；
 - ⬜ 子进程树回收的集成测试；
 - ⬜ `read_file` 自身的符号链接逃逸测试。
@@ -769,6 +772,7 @@ MVP 只实现三个工具：
 - ✅ 不将 API Key、环境变量和凭据写入模型可见日志（API Key 与普通配置分离并加密）；
 - ✅ 工作目录之外的访问默认拒绝或询问；
 - ✅ 用户拒绝被记录为 Tool Result，不被静默绕过。
+- ✅ 文件修改只允许工作目录内文本，审批后再次复核快照；覆盖和删除前保存可恢复副本。
 
 ## 13. 数据与兼容策略
 
@@ -821,6 +825,7 @@ type SessionRecord =
 10. 🚧 完成安装包和干净机器冒烟测试（CI 配置 Linux package；多平台产物和干净机器冒烟未完成）；
 11. ⬜ 修复运行中会话删除竞态，并增加回归测试；
 12. ⬜ 建立 Renderer UI、IPC 集成和 Electron E2E 测试。
+13. ✅ 完成 Phase 1：项目检索、可审阅文件修改、冲突检测与回收站。
 
 在第 4 步完成之前，不投入复杂 UI；在第 8 步完成之前，不增加文件写入；在 MVP 发布之前，
 不开始 MCP、浏览器或子 Agent。

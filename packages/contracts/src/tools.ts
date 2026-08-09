@@ -9,6 +9,7 @@ export const ToolDefinitionSchema = z.object({
 export type ToolDefinition = z.infer<typeof ToolDefinitionSchema>;
 
 export type ToolContext = {
+  sessionId: string;
   workingDirectory: string;
   signal: AbortSignal;
   approved: boolean;
