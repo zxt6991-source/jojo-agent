@@ -31,20 +31,21 @@ function waitForApproval(request: ApprovalRequest, signal: AbortSignal): Promise
   });
 }
 
-async function startTurn(sessionId: string, text: string): Promise<void> {
+async function startTurn(sessionId: string, text: string, model: string): Promise<void> {
   let release: (() => void) | null = null;
   let controller: AbortController | null = null;
   let failureEmitted = false;
   try {
     release = store.acquire(sessionId);
     if (!runtime?.apiKey) throw new Error('请先在设置中配置模型 API Key。');
+    if (!runtime.settings.models.includes(model)) throw new Error(`模型“${model}”不在当前配置的可用模型中。`);
     const session = await store.get(sessionId);
     if (!session) throw new Error('Session not found.');
     const history = await store.messages(sessionId);
     controller = new AbortController();
     controllers.set(sessionId, controller);
     await runAgentTurn({
-      sessionId, workingDirectory: session.workingDirectory, model: runtime.settings.model,
+      sessionId, workingDirectory: session.workingDirectory, model,
       history, userText: text,
       provider: new OpenAICompatibleProvider({ apiKey: runtime.apiKey, baseUrl: runtime.settings.baseUrl }),
       tools: createDefaultTools(), permissionGate: new DefaultPermissionGate(), signal: controller.signal,
@@ -71,7 +72,7 @@ async function startTurn(sessionId: string, text: string): Promise<void> {
 parentPort.on('message', (event) => {
   const command = event.data;
   if (command.type === 'config.update') runtime = { settings: command.settings, apiKey: command.apiKey };
-  else if (command.type === 'turn.start') void startTurn(command.payload.sessionId, command.payload.text);
+  else if (command.type === 'turn.start') void startTurn(command.payload.sessionId, command.payload.text, command.payload.model);
   else if (command.type === 'turn.cancel') {
     controllers.get(command.sessionId)?.abort();
     for (const approval of approvals.values()) if (approval.sessionId === command.sessionId) approval.resolve(false);

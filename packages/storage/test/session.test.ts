@@ -1,8 +1,8 @@
-import { appendFile, mkdtemp } from 'node:fs/promises';
+import { appendFile, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { JsonlSessionStore } from '../src/index.js';
+import { JsonConfigStore, JsonlSessionStore } from '../src/index.js';
 
 describe('JsonlSessionStore', () => {
   it('recovers complete records before a damaged tail', async () => {
@@ -25,5 +25,41 @@ describe('JsonlSessionStore', () => {
     expect(() => store.acquire('one')).toThrow(/already running/);
     release();
     expect(() => store.acquire('one')).not.toThrow();
+  });
+});
+
+describe('JsonConfigStore', () => {
+  it('migrates a single-model v1 config to the model list', async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), 'desktop-agent-config-'));
+    const file = path.join(directory, 'config.json');
+    await writeFile(file, JSON.stringify({
+      schemaVersion: 1,
+      provider: { baseUrl: 'https://provider.example/v1', model: 'legacy-model' }
+    }));
+
+    await expect(new JsonConfigStore(file).get(true)).resolves.toEqual({
+      baseUrl: 'https://provider.example/v1',
+      model: 'legacy-model',
+      models: ['legacy-model'],
+      hasApiKey: true
+    });
+  });
+
+  it('persists multiple models in the v2 config format', async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), 'desktop-agent-config-'));
+    const file = path.join(directory, 'config.json');
+    const store = new JsonConfigStore(file);
+    await store.save({ baseUrl: 'https://provider.example/v1', model: 'model-b', models: ['model-a', 'model-b'] });
+
+    expect(JSON.parse(await readFile(file, 'utf8'))).toEqual({
+      schemaVersion: 2,
+      provider: { baseUrl: 'https://provider.example/v1', model: 'model-b', models: ['model-a', 'model-b'] }
+    });
+    await expect(store.get()).resolves.toEqual({
+      baseUrl: 'https://provider.example/v1',
+      model: 'model-b',
+      models: ['model-a', 'model-b'],
+      hasApiKey: false
+    });
   });
 });

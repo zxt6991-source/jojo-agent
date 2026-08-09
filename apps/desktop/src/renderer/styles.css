@@ -21,9 +21,9 @@
 * { box-sizing: border-box; }
 html, body, #root { width: 100%; height: 100%; }
 body { margin: 0; min-width: 900px; min-height: 600px; overflow: hidden; background: var(--bg); }
-button, input, textarea { font: inherit; }
+button, input, select, textarea { font: inherit; }
 button { color: inherit; cursor: pointer; }
-button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px solid #758bec; outline-offset: 2px; }
+button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid #758bec; outline-offset: 2px; }
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-thumb { background: #c9cbd0; border: 3px solid transparent; border-radius: 999px; background-clip: padding-box; }
 ::-webkit-scrollbar-track { background: transparent; }
@@ -127,7 +127,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .composer-context, .composer-actions { display: flex; align-items: center; }
 .approval-status { color: #9a9da3; font-size: 12px; }
 .composer-actions { min-width: 0; gap: 12px; }
-.model-name { max-width: 200px; overflow: hidden; color: #565960; font-size: 13px; white-space: nowrap; text-overflow: ellipsis; }
+.model-select { max-width: 220px; min-width: 0; padding: 6px 25px 6px 9px; overflow: hidden; border: 1px solid transparent; border-radius: 8px; outline: 0; background: #f5f5f6; color: #565960; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+.model-select:hover { border-color: #dedfe2; background: #efeff0; }
+.model-select:disabled { cursor: default; opacity: .62; }
 .composer button { width: 36px; height: 36px; display: grid; flex: 0 0 36px; place-items: center; padding: 0; border: 1px solid #191a1c; border-radius: 50%; background: #202124; color: #ffffff; font-size: 19px; font-weight: 500; line-height: 1; }
 .composer button:hover { background: #0f1011; }
 .composer .send:disabled { border-color: #e1e2e4; background: #f0f0f1; color: #b4b6bb; cursor: default; }
@@ -176,9 +178,18 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .modal h2 { margin: 12px 0 21px; color: #202124; font-size: 23px; line-height: 1.2; font-weight: 680; letter-spacing: -.02em; }
 .modal label { display: block; margin: 14px 0; color: #5f636b; font-size: 12px; }
 .modal label span { color: #969aa2; }
-.modal label input { display: block; width: 100%; margin-top: 7px; padding: 10px 11px; border: 1px solid #d8d9dd; border-radius: 9px; outline: 0; background: #fafafa; color: #242529; transition: border-color .15s ease; }
-.modal label input:focus { border-color: #7182cf; }
+.modal label input, .modal select { display: block; width: 100%; margin-top: 7px; padding: 10px 11px; border: 1px solid #d8d9dd; border-radius: 9px; outline: 0; background: #fafafa; color: #242529; transition: border-color .15s ease; }
+.modal label input:focus, .modal select:focus { border-color: #7182cf; }
 .settings-fields { margin-top: 2px; }
+.model-setting { margin: 14px 0; }
+.model-setting-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.modal .model-setting-head label { margin: 0; }
+.model-setting-head button { padding: 4px 8px; border: 1px solid #d7d8dc; border-radius: 7px; background: #fff; color: #565a62; font-size: 11px; }
+.model-setting-head button:hover { background: #f3f3f4; }
+.model-setting-head button:disabled { cursor: default; opacity: .55; }
+.model-setting select { margin-top: 7px; }
+.models-status { min-height: 16px; margin-top: 6px; color: #8a8e96; font-size: 10px; line-height: 1.5; }
+.models-status.failed { color: #b2464b; }
 .security-note { margin: 17px 0 0; color: #858991; font-size: 11px; line-height: 1.5; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 25px; }
 .modal-actions button { min-height: 40px; padding: 0 15px; border: 1px solid #d7d8dc; border-radius: 9px; background: #ffffff; color: #3f4248; font-size: 12px; font-weight: 560; }

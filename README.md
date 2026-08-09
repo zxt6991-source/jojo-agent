@@ -12,7 +12,7 @@
 - Terminal 每次审批，工作目录外文件读取逐次审批；
 - JSONL 会话创建、重命名、删除、恢复和损坏尾记录容错；
 - 操作系统安全存储加密 API Key；
-- Markdown 消毒、工具卡片、审批弹窗、停止按钮与 Provider 设置；
+- Markdown 消毒、工具卡片、审批弹窗、停止按钮、Provider 设置与输入框模型选择；
 - Electron Forge、ASAR 和 Electron Fuses 生产打包配置。
 
 明确未实现路线图中 MVP 之后的写文件、代码编辑、MCP、Skills、浏览器、子 Agent、记忆与自动化。
@@ -28,9 +28,9 @@ pnpm dev
 
 首次启动后：
 
-1. 打开“设置”，填写 OpenAI 兼容 API Base URL、模型和 API Key；
+1. 打开“设置”，填写 OpenAI 兼容 API Base URL 和 API Key，再从 Provider 获取模型列表并选择默认模型；
 2. 选择一个本地项目目录创建会话；
-3. 输入任务。文件读取与目录列出默认限制在项目中，Terminal 始终弹出审批。
+3. 在输入框右下角选择本轮模型并输入任务。文件读取与目录列出默认限制在项目中，Terminal 始终弹出审批。
 
 常用质量命令：
 

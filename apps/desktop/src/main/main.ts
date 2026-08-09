@@ -3,9 +3,10 @@ import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  ApprovalInputSchema, CreateSessionInputSchema, IPC, RenameSessionInputSchema, SaveSettingsInputSchema,
+  ApprovalInputSchema, CreateSessionInputSchema, IPC, ListModelsInputSchema, RenameSessionInputSchema, SaveSettingsInputSchema,
   SessionIdInputSchema, StartTurnInputSchema, type WorkerCommand, type WorkerMessage
 } from '@desktop-agent/contracts';
+import { OpenAICompatibleProvider } from '@desktop-agent/providers';
 import { JsonConfigStore, JsonlSessionStore } from '@desktop-agent/storage';
 import { collectWorkspaceChanges } from './workspace-changes';
 
@@ -113,10 +114,17 @@ function registerIpc(): void {
     return result.canceled ? null : result.filePaths[0] ?? null;
   });
   ipcMain.handle(IPC.getSettings, async (event) => { assertTrusted(event); return configStore.get(Boolean(await readApiKey())); });
+  ipcMain.handle(IPC.listModels, async (event, raw) => {
+    assertTrusted(event);
+    const input = ListModelsInputSchema.parse(raw);
+    const apiKey = input.apiKey || await readApiKey();
+    if (!apiKey) throw new Error('请先填写模型 API Key。');
+    return new OpenAICompatibleProvider({ baseUrl: input.baseUrl, apiKey, timeoutMs: 15_000 }).listModels();
+  });
   ipcMain.handle(IPC.saveSettings, async (event, raw) => {
     assertTrusted(event); const input = SaveSettingsInputSchema.parse(raw);
     if (input.apiKey) await saveApiKey(input.apiKey);
-    await configStore.save({ baseUrl: input.baseUrl, model: input.model });
+    await configStore.save({ baseUrl: input.baseUrl, model: input.model, models: input.models });
     await pushConfig(); return configStore.get(Boolean(await readApiKey()));
   });
 }

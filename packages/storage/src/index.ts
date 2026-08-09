@@ -12,10 +12,17 @@ import {
   type SessionRecord
 } from '@desktop-agent/contracts';
 
-const StoredConfigSchema = z.object({
+const StoredConfigV1Schema = z.object({
   schemaVersion: z.literal(1),
+  provider: ProviderSettingsSchema.omit({ hasApiKey: true, models: true })
+});
+
+const StoredConfigV2Schema = z.object({
+  schemaVersion: z.literal(2),
   provider: ProviderSettingsSchema.omit({ hasApiKey: true })
 });
+
+const StoredConfigSchema = z.union([StoredConfigV1Schema, StoredConfigV2Schema]);
 
 export class JsonlSessionStore {
   private readonly locks = new Set<string>();
@@ -108,16 +115,17 @@ export class JsonConfigStore {
   async get(hasApiKey = false): Promise<ProviderSettings> {
     try {
       const stored = StoredConfigSchema.parse(JSON.parse(await readFile(this.filePath, 'utf8')));
+      if (stored.schemaVersion === 1) return { ...stored.provider, models: [stored.provider.model], hasApiKey };
       return { ...stored.provider, hasApiKey };
     } catch {
-      return { baseUrl: 'https://api.openai.com/v1', model: 'gpt-5-mini', hasApiKey };
+      return { baseUrl: 'https://api.openai.com/v1', model: 'gpt-5-mini', models: ['gpt-5-mini'], hasApiKey };
     }
   }
   async save(provider: Omit<ProviderSettings, 'hasApiKey'>): Promise<void> {
     await mkdir(path.dirname(this.filePath), { recursive: true });
     try { await copyFile(this.filePath, `${this.filePath}.bak`); } catch { /* first save */ }
     const temporary = `${this.filePath}.tmp`;
-    await writeFile(temporary, JSON.stringify({ schemaVersion: 1, provider }, null, 2), { encoding: 'utf8', mode: 0o600 });
+    await writeFile(temporary, JSON.stringify({ schemaVersion: 2, provider }, null, 2), { encoding: 'utf8', mode: 0o600 });
     await rename(temporary, this.filePath);
   }
 }

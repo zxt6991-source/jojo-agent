@@ -20,6 +20,7 @@ export type SessionRecord = z.infer<typeof SessionRecordSchema>;
 export const ProviderSettingsSchema = z.object({
   baseUrl: z.string().url().default('https://api.openai.com/v1'),
   model: z.string().min(1).default('gpt-5-mini'),
+  models: z.array(z.string().trim().min(1)).min(1).default(['gpt-5-mini']),
   hasApiKey: z.boolean().default(false)
 });
 export type ProviderSettings = z.infer<typeof ProviderSettingsSchema>;

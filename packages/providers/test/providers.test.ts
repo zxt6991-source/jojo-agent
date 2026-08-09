@@ -120,6 +120,32 @@ describe('Chat Completions stream parsing', () => {
 });
 
 describe('OpenAICompatibleProvider', () => {
+  it('loads, normalizes, and sorts models from the provider', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      object: 'list',
+      data: [{ id: 'model-z' }, { id: ' model-a ' }, { id: 'model-z' }, { missing: true }]
+    }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const provider = new OpenAICompatibleProvider({
+      apiKey: 'secret',
+      baseUrl: 'https://provider.example/v1///'
+    });
+
+    await expect(provider.listModels()).resolves.toEqual(['model-a', 'model-z']);
+    expect(fetchMock).toHaveBeenCalledWith('https://provider.example/v1/models', expect.objectContaining({
+      method: 'GET',
+      headers: { authorization: 'Bearer secret' }
+    }));
+  });
+
+  it('rejects invalid or empty model-list responses', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ data: [] }), { status: 200 })));
+    const provider = new OpenAICompatibleProvider({ apiKey: 'secret' });
+
+    await expect(provider.listModels()).rejects.toThrow('no available models');
+  });
+
   it('normalizes the base URL and sends the expected authorization header', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(
       'data: {"choices":[{"finish_reason":"stop","delta":{}}]}\n\n',

@@ -32,6 +32,43 @@ export class OpenAICompatibleProvider implements ModelProvider {
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   }
 
+  async listModels(): Promise<string[]> {
+    const controller = new AbortController();
+    const timeout = setTimeout(
+      () => controller.abort(new Error('Provider request timed out.')),
+      this.timeoutMs
+    );
+
+    try {
+      const response = await fetch(`${this.baseUrl}/models`, {
+        method: 'GET',
+        headers: { authorization: `Bearer ${this.options.apiKey}` },
+        signal: controller.signal
+      });
+      if (!response.ok) {
+        const detail = (await response.text()).slice(0, MAX_ERROR_DETAIL_LENGTH);
+        throw new Error(`Provider returned HTTP ${response.status}${detail ? `: ${detail}` : ''}`);
+      }
+
+      const payload: unknown = await response.json();
+      if (!payload || typeof payload !== 'object' || !Array.isArray((payload as { data?: unknown }).data)) {
+        throw new Error('The provider returned an invalid model list.');
+      }
+      const models = Array.from(new Set((payload as { data: unknown[] }).data.flatMap((item) => {
+        if (!item || typeof item !== 'object') return [];
+        const id = (item as { id?: unknown }).id;
+        return typeof id === 'string' && id.trim() ? [id.trim()] : [];
+      }))).sort((left, right) => left.localeCompare(right));
+      if (models.length === 0) throw new Error('The provider returned no available models.');
+      return models;
+    } catch (error) {
+      if (controller.signal.aborted) throw new Error('The model list request timed out.');
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
   async *stream(request: ModelRequest): AsyncIterable<ModelEvent> {
     if (request.signal.aborted) throw cancellationError();
 

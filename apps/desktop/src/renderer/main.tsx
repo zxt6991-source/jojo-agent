@@ -10,6 +10,13 @@ import './styles.css';
 type ToolCard = { id: string; name: string; input: unknown; progress: string; result?: ToolResult };
 type DiffLine = { type: 'addition' | 'deletion' | 'context' | 'hunk' | 'meta'; oldLine?: number; newLine?: number; text: string };
 
+const defaultSettings: ProviderSettings = {
+  baseUrl: 'https://api.openai.com/v1',
+  model: 'gpt-5-mini',
+  models: ['gpt-5-mini'],
+  hasApiKey: false
+};
+
 function Markdown({ text }: { text: string }) {
   const html = useMemo(() => DOMPurify.sanitize(marked.parse(text, { async: false }) as string), [text]);
   return <div className="markdown" dangerouslySetInnerHTML={{ __html: html }} />;
@@ -141,8 +148,13 @@ function App() {
   const [running, setRunning] = useState(false);
   const [error, setError] = useState('');
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [settings, setSettings] = useState<ProviderSettings>({ baseUrl: 'https://api.openai.com/v1', model: 'gpt-5-mini', hasApiKey: false });
+  const [settings, setSettings] = useState<ProviderSettings>(defaultSettings);
+  const [settingsDraft, setSettingsDraft] = useState<ProviderSettings>(defaultSettings);
+  const [selectedModel, setSelectedModel] = useState(defaultSettings.model);
   const [apiKey, setApiKey] = useState('');
+  const [modelsFresh, setModelsFresh] = useState(true);
+  const [modelsLoading, setModelsLoading] = useState(false);
+  const [modelsError, setModelsError] = useState('');
   const [workspaceChanges, setWorkspaceChanges] = useState<WorkspaceChanges | null>(null);
   const [workspaceChangesError, setWorkspaceChangesError] = useState('');
   const [reviewOpen, setReviewOpen] = useState(false);
@@ -181,7 +193,11 @@ function App() {
 
   useEffect(() => {
     void refreshSessions();
-    void window.desktopAgent.getSettings().then(setSettings);
+    void window.desktopAgent.getSettings().then((saved) => {
+      setSettings(saved);
+      setSettingsDraft(saved);
+      setSelectedModel(saved.model);
+    });
     const offSessions = window.desktopAgent.onSessionsChanged(() => void refreshSessions());
     const offEvents = window.desktopAgent.onAgentEvent((event: AgentEvent) => {
       if (event.type === 'turn.started') { setRunning(true); setError(''); setStreamingText(''); setTools([]); }
@@ -249,6 +265,26 @@ function App() {
     return () => window.removeEventListener('keydown', handleApprovalShortcut, true);
   }, [approval]);
 
+  const fetchProviderModels = async (): Promise<{ models: string[]; model: string } | null> => {
+    setModelsLoading(true);
+    setModelsError('');
+    try {
+      const models = await window.desktopAgent.listModels({
+        baseUrl: settingsDraft.baseUrl,
+        ...(apiKey ? { apiKey } : {})
+      });
+      const model = models.includes(settingsDraft.model) ? settingsDraft.model : models[0]!;
+      setSettingsDraft((current) => ({ ...current, model, models }));
+      setModelsFresh(true);
+      return { models, model };
+    } catch (cause) {
+      setModelsError(cause instanceof Error ? cause.message : String(cause));
+      return null;
+    } finally {
+      setModelsLoading(false);
+    }
+  };
+
   const createSession = async () => {
     const directory = await window.desktopAgent.chooseDirectory();
     if (!directory) return;
@@ -263,7 +299,7 @@ function App() {
     setMessages((items) => [...items, { id: `pending-${Date.now()}`, role: 'user', createdAt: new Date().toISOString(), content: [{ type: 'text', text }] }]);
     try {
       turnBaselineRef.current = await loadWorkspaceChanges(activeId);
-      await window.desktopAgent.startTurn({ sessionId: activeId, text });
+      await window.desktopAgent.startTurn({ sessionId: activeId, text, model: selectedModel });
     }
     catch (cause) { setRunning(false); setError(cause instanceof Error ? cause.message : String(cause)); }
   };
@@ -284,7 +320,7 @@ function App() {
           <span className="session-title">{session.title}</span><span className="session-path">{session.workingDirectory}</span>
         </button>)}
       </div>
-      <button className="settings-button" onClick={() => setSettingsOpen(true)}>⚙ 设置</button>
+      <button className="settings-button" onClick={() => { setSettingsDraft(settings); setApiKey(''); setModelsFresh(true); setModelsError(''); setSettingsOpen(true); }}>⚙ 设置</button>
     </aside>
     <main className="main-panel">
       {active ? <>
@@ -321,7 +357,9 @@ function App() {
           <div className="composer-toolbar">
             <div className="composer-context"><span className="approval-status">⌁ Terminal 需批准</span></div>
             <div className="composer-actions">
-              <span className="model-name" title={settings.model}>{settings.model}</span>
+              <select className="model-select" aria-label="本轮使用的模型" title="选择本轮使用的模型" value={selectedModel} disabled={running} onChange={(event) => setSelectedModel(event.target.value)}>
+                {settings.models.map((model) => <option key={model} value={model}>{model}</option>)}
+              </select>
               {running
                 ? <button className="stop" aria-label="停止生成" title="停止生成" onClick={() => activeId && window.desktopAgent.cancelTurn(activeId)}>■</button>
                 : <button className="send" aria-label="发送消息" title="发送消息" disabled={!draft.trim()} onClick={() => void send()}>↑</button>}
@@ -342,15 +380,31 @@ function App() {
         <button className="approval-allow" onClick={() => { void window.desktopAgent.resolveApproval({ requestId: approval.requestId, allow: true }); setApproval(null); }}><span>允许一次</span><kbd>↵</kbd></button>
       </div>
     </div></div>}
-    {settingsOpen && <div className="modal-backdrop"><form className="modal settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title" onSubmit={async (event) => { event.preventDefault(); const saved = await window.desktopAgent.saveSettings({ baseUrl: settings.baseUrl, model: settings.model, ...(apiKey ? { apiKey } : {}) }); setSettings(saved); setApiKey(''); setSettingsOpen(false); }}>
+    {settingsOpen && <div className="modal-backdrop"><form className="modal settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title" onSubmit={async (event) => {
+      event.preventDefault();
+      const fetched = modelsFresh ? { models: settingsDraft.models, model: settingsDraft.model } : await fetchProviderModels();
+      if (!fetched) return;
+      const saved = await window.desktopAgent.saveSettings({ baseUrl: settingsDraft.baseUrl, model: fetched.model, models: fetched.models, ...(apiKey ? { apiKey } : {}) });
+      setSettings(saved);
+      setSettingsDraft(saved);
+      setSelectedModel((current) => saved.models.includes(current) ? current : saved.model);
+      setApiKey('');
+      setSettingsOpen(false);
+    }}>
       <div className="modal-tag">模型配置</div><h2 id="settings-title">OpenAI 兼容 Provider</h2>
       <div className="settings-fields">
-        <label>API Base URL<input value={settings.baseUrl} onChange={(event) => setSettings({ ...settings, baseUrl: event.target.value })} /></label>
-        <label>模型<input value={settings.model} onChange={(event) => setSettings({ ...settings, model: event.target.value })} /></label>
-        <label>API Key <span>{settings.hasApiKey ? '（已安全保存）' : ''}</span><input type="password" value={apiKey} placeholder={settings.hasApiKey ? '留空以保留当前密钥' : 'sk-…'} onChange={(event) => setApiKey(event.target.value)} /></label>
+        <label>API Base URL<input required value={settingsDraft.baseUrl} onChange={(event) => { setSettingsDraft({ ...settingsDraft, baseUrl: event.target.value }); setModelsFresh(false); setModelsError(''); }} /></label>
+        <label>API Key <span>{settings.hasApiKey ? '（已安全保存）' : ''}</span><input type="password" value={apiKey} placeholder={settings.hasApiKey ? '留空以保留当前密钥' : 'sk-…'} onChange={(event) => { setApiKey(event.target.value); setModelsFresh(false); setModelsError(''); }} /></label>
+        <div className="model-setting">
+          <div className="model-setting-head"><label htmlFor="default-model">默认模型</label><button type="button" disabled={modelsLoading} onClick={() => void fetchProviderModels()}>{modelsLoading ? '获取中…' : '刷新模型'}</button></div>
+          <select id="default-model" required value={settingsDraft.model} disabled={modelsLoading} onChange={(event) => setSettingsDraft({ ...settingsDraft, model: event.target.value })}>
+            {settingsDraft.models.map((model) => <option key={model} value={model}>{model}</option>)}
+          </select>
+          <div className={`models-status ${modelsError ? 'failed' : ''}`}>{modelsError || (modelsFresh ? `已获取 ${settingsDraft.models.length} 个模型` : 'Provider 配置已变化，保存时将自动重新获取')}</div>
+        </div>
       </div>
       <p className="security-note">密钥由操作系统安全存储加密，不会写入普通配置或会话。</p>
-      <div className="modal-actions"><button type="button" onClick={() => setSettingsOpen(false)}>取消</button><button className="primary" type="submit">保存</button></div>
+      <div className="modal-actions"><button type="button" onClick={() => setSettingsOpen(false)}>取消</button><button className="primary" type="submit" disabled={modelsLoading}>保存</button></div>
     </form></div>}
   </div>;
 }

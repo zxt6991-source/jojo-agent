@@ -16,7 +16,8 @@ export const RenameSessionInputSchema = z.object({
 
 export const StartTurnInputSchema = z.object({
   sessionId: z.string(),
-  text: z.string().trim().min(1).max(100_000)
+  text: z.string().trim().min(1).max(100_000),
+  model: z.string().trim().min(1)
 });
 
 export const SessionIdInputSchema = z.object({ sessionId: z.string() });
@@ -25,6 +26,12 @@ export const ApprovalInputSchema = z.object({ requestId: z.string(), allow: z.bo
 export const SaveSettingsInputSchema = z.object({
   baseUrl: z.string().url(),
   model: z.string().min(1),
+  models: z.array(z.string().trim().min(1)).min(1),
+  apiKey: z.string().optional()
+});
+
+export const ListModelsInputSchema = z.object({
+  baseUrl: z.string().url(),
   apiKey: z.string().optional()
 });
 
@@ -40,6 +47,7 @@ export type DesktopApi = {
   resolveApproval(input: z.input<typeof ApprovalInputSchema>): Promise<void>;
   chooseDirectory(): Promise<string | null>;
   getSettings(): Promise<ProviderSettings>;
+  listModels(input: z.input<typeof ListModelsInputSchema>): Promise<string[]>;
   saveSettings(input: z.input<typeof SaveSettingsInputSchema>): Promise<ProviderSettings>;
   onAgentEvent(listener: (event: AgentEvent) => void): () => void;
   onSessionsChanged(listener: () => void): () => void;
@@ -69,6 +77,7 @@ export const IPC = {
   resolveApproval: 'agent:approval',
   chooseDirectory: 'system:choose-directory',
   getSettings: 'settings:get',
+  listModels: 'models:list',
   saveSettings: 'settings:save',
   agentEvent: 'agent:event',
   sessionsChanged: 'sessions:changed'

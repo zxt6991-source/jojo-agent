@@ -53,14 +53,14 @@ pnpm dev
 
 1. 点击左下角“设置”；
 2. 填写 API Base URL，例如 `https://api.openai.com/v1`；
-3. 填写目标服务实际支持的模型名称；
-4. 填写 API Key 并保存；
+3. 填写 API Key，点击“刷新模型”从 Provider 的 `/models` 接口获取可用模型；
+4. 选择默认模型并保存；
 5. 点击“新建会话”或“选择项目目录”，选择一个本地目录；
-6. 输入任务并按 Enter 发送，Shift+Enter 可换行。
+6. 在输入框右下角选择本轮使用的模型，输入任务并按 Enter 发送，Shift+Enter 可换行。
 
 Base URL 应填写到服务的 API 根路径。应用会自动在末尾追加 `/chat/completions`，不要填写完整的 Chat Completions 接口地址。
 
-配置保存时不会立即请求模型。Base URL、模型名或协议不兼容等问题，通常会在发送第一条消息后显示。
+已获取的模型列表会缓存在普通配置中。修改 Base URL 或 API Key 后，保存时会自动重新查询模型；如果 Provider 不兼容 `/models` 接口，设置页会直接显示错误。
 
 ### 2.4 建议用这组任务验证环境
 
@@ -262,7 +262,7 @@ Worker 与界面进程分离，因此 Agent 运行异常不必直接获得 Rende
 
 ```text
 userData/
-├── config.json                 # Base URL 和模型名
+├── config.json                 # Base URL、默认模型和可用模型列表
 ├── config.json.bak             # 上一次普通配置的备份
 ├── secrets/
 │   └── provider-key.bin        # 操作系统安全存储加密后的 API Key

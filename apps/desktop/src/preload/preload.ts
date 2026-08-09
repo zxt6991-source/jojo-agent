@@ -13,6 +13,7 @@ const api: DesktopApi = {
   resolveApproval: (input) => ipcRenderer.invoke(IPC.resolveApproval, input),
   chooseDirectory: () => ipcRenderer.invoke(IPC.chooseDirectory),
   getSettings: () => ipcRenderer.invoke(IPC.getSettings),
+  listModels: (input) => ipcRenderer.invoke(IPC.listModels, input),
   saveSettings: (input) => ipcRenderer.invoke(IPC.saveSettings, input),
   onAgentEvent: (listener) => {
     const handler = (_event: Electron.IpcRendererEvent, value: AgentEvent) => listener(value);
