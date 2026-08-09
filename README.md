@@ -58,6 +58,8 @@ packages/tools-node/  文件、目录、终端与权限 Gate
 packages/storage/     JSONL Session 与普通配置
 ```
 
+各 Workspace 的职责、接口边界、核心流程、安全约束和演进方案见 [`docs/technical-implementation/`](./docs/technical-implementation/README.md)。
+
 会话和配置存储在 Electron `userData` 目录。API Key 独立保存在加密文件中，普通配置和 JSONL 会话均不包含明文密钥。
 
 ## 当前验证范围

@@ -1,0 +1,29 @@
+import type {
+  AgentEvent,
+  ApprovalRequest,
+  Message,
+  ModelProvider,
+  PermissionGate,
+  Tool
+} from '@desktop-agent/contracts';
+
+export type AgentRunOptions = {
+  sessionId: string;
+  workingDirectory: string;
+  model: string;
+  history: Message[];
+  userText: string;
+  provider: ModelProvider;
+  tools: Tool[];
+  permissionGate: PermissionGate;
+  signal: AbortSignal;
+  maxIterations?: number;
+  emit: (event: AgentEvent) => void;
+  approve: (request: ApprovalRequest, signal: AbortSignal) => Promise<boolean>;
+  commitMessage?: (message: Message) => Promise<void>;
+};
+
+export type AgentRunResult = {
+  messages: Message[];
+  stopReason: string;
+};
