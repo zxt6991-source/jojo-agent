@@ -3,9 +3,9 @@ import { createRoot } from 'react-dom/client';
 import DOMPurify from 'dompurify';
 import { marked } from 'marked';
 import type {
-  AgentEvent, ApprovalRequest, Message, ProviderSettings, SessionMeta, ToolResult, WorkspaceChanges
+  AgentEvent, ApprovalRequest, Message, ProviderConfig, ProviderSettings, SessionMeta, ToolResult, WorkspaceChanges
 } from '@desktop-agent/contracts';
-import { DEFAULT_SESSION_TITLE, projectNameFromDirectory } from '@desktop-agent/contracts';
+import { DEFAULT_PROVIDERS, DEFAULT_SESSION_TITLE, projectNameFromDirectory } from '@desktop-agent/contracts';
 import './styles.css';
 
 type ToolCard = { id: string; name: string; input: unknown; progress: string; result?: ToolResult };
@@ -13,11 +13,14 @@ type DiffLine = { type: 'addition' | 'deletion' | 'context' | 'hunk' | 'meta'; o
 type ProjectGroup = { path: string; name: string; sessions: SessionMeta[] };
 
 const defaultSettings: ProviderSettings = {
-  baseUrl: 'https://api.openai.com/v1',
-  model: 'gpt-5-mini',
-  models: ['gpt-5-mini'],
-  hasApiKey: false
+  activeProviderId: 'openai',
+  providers: DEFAULT_PROVIDERS.map((provider) => ({ ...provider })),
+  utilityModel: { providerId: 'openai', model: 'gpt-5-mini' }
 };
+
+function providerById(settings: ProviderSettings, id: string): ProviderConfig {
+  return settings.providers.find((provider) => provider.id === id) ?? settings.providers[0]!;
+}
 
 function groupSessions(sessions: SessionMeta[]): ProjectGroup[] {
   const projects = new Map<string, ProjectGroup>();
@@ -193,16 +196,21 @@ function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settings, setSettings] = useState<ProviderSettings>(defaultSettings);
   const [settingsDraft, setSettingsDraft] = useState<ProviderSettings>(defaultSettings);
-  const [selectedModel, setSelectedModel] = useState(defaultSettings.model);
+  const [selectedModel, setSelectedModel] = useState(providerById(defaultSettings, defaultSettings.activeProviderId).model);
   const [apiKey, setApiKey] = useState('');
   const [modelsFresh, setModelsFresh] = useState(true);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsError, setModelsError] = useState('');
+  const [contextWindowInput, setContextWindowInput] = useState(String(providerById(defaultSettings, defaultSettings.activeProviderId).contextWindowTokens));
+  const [maxOutputInput, setMaxOutputInput] = useState(String(providerById(defaultSettings, defaultSettings.activeProviderId).maxOutputTokens));
+  const [settingsError, setSettingsError] = useState('');
   const [collapsedProjects, setCollapsedProjects] = useState<string[]>([]);
   const [workspaceChanges, setWorkspaceChanges] = useState<WorkspaceChanges | null>(null);
   const [workspaceChangesError, setWorkspaceChangesError] = useState('');
   const [reviewOpen, setReviewOpen] = useState(false);
   const [reviewPath, setReviewPath] = useState('');
+  const [usage, setUsage] = useState({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+  const [contextUsage, setContextUsage] = useState<{ estimated: number; window: number; compacted: number } | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const turnBaselineRef = useRef<WorkspaceChanges | null>(null);
 
@@ -225,6 +233,8 @@ function App() {
 
   const selectSession = async (id: string) => {
     activeIdRef.current = id; turnBaselineRef.current = null; setActiveId(id); setError(''); setWorkspaceChangesError(''); setStreamingText(''); setTools([]); setReviewOpen(false); setWorkspaceChanges(null);
+    setUsage({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+    setContextUsage(null);
     const [nextMessages, nextChanges] = await Promise.all([
       window.desktopAgent.loadMessages(id),
       loadWorkspaceChanges(id)
@@ -240,16 +250,25 @@ function App() {
     void window.desktopAgent.getSettings().then((saved) => {
       setSettings(saved);
       setSettingsDraft(saved);
-      setSelectedModel(saved.model);
+      setSelectedModel(providerById(saved, saved.activeProviderId).model);
     });
     const offSessions = window.desktopAgent.onSessionsChanged(() => void refreshSessions());
     const offEvents = window.desktopAgent.onAgentEvent((event: AgentEvent) => {
-      if (event.type === 'turn.started') { setRunning(true); setError(''); setStreamingText(''); setTools([]); }
+      if (event.type === 'turn.started') {
+        setRunning(true); setError(''); setStreamingText(''); setTools([]);
+        setUsage({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+        setContextUsage(null);
+      }
       else if (event.type === 'text.delta') setStreamingText((text) => text + event.text);
       else if (event.type === 'tool.started') setTools((items) => [...items, { id: event.id, name: event.name, input: event.input, progress: '' }]);
       else if (event.type === 'tool.progress') setTools((items) => items.map((item) => item.id === event.id ? { ...item, progress: item.progress + event.text } : item));
       else if (event.type === 'tool.finished') setTools((items) => items.map((item) => item.id === event.id ? { ...item, result: event.result } : item));
       else if (event.type === 'approval.required') setApproval(event.request);
+      else if (event.type === 'usage') setUsage((current) => ({
+        input: current.input + (event.inputTokens ?? 0), output: current.output + (event.outputTokens ?? 0),
+        cacheRead: current.cacheRead + (event.cacheReadInputTokens ?? 0), cacheWrite: current.cacheWrite + (event.cacheWriteInputTokens ?? 0)
+      }));
+      else if (event.type === 'context.updated') setContextUsage({ estimated: event.estimatedTokens, window: event.contextWindowTokens, compacted: event.compactedMessages });
       else if (event.type === 'turn.failed') { setError(event.message); setRunning(false); setApproval(null); void reloadActive(); }
       else if (event.type === 'turn.completed' || event.type === 'turn.cancelled') { setRunning(false); setApproval(null); void reloadActive(); }
     });
@@ -313,12 +332,18 @@ function App() {
     setModelsLoading(true);
     setModelsError('');
     try {
+      const draftProvider = providerById(settingsDraft, settingsDraft.activeProviderId);
       const models = await window.desktopAgent.listModels({
-        baseUrl: settingsDraft.baseUrl,
+        protocol: draftProvider.protocol,
+        baseUrl: draftProvider.baseUrl,
         ...(apiKey ? { apiKey } : {})
       });
-      const model = models.includes(settingsDraft.model) ? settingsDraft.model : models[0]!;
-      setSettingsDraft((current) => ({ ...current, model, models }));
+      const model = models.includes(draftProvider.model) ? draftProvider.model : models[0]!;
+      setSettingsDraft((current) => ({
+        ...current,
+        providers: current.providers.map((provider) => provider.id === current.activeProviderId ? { ...provider, model, models } : provider),
+        utilityModel: { providerId: current.activeProviderId, model }
+      }));
       setModelsFresh(true);
       return { models, model };
     } catch (cause) {
@@ -367,6 +392,8 @@ function App() {
       setReviewOpen(false);
       setStreamingText('');
       setTools([]);
+      setUsage({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+      setContextUsage(null);
     }
     await window.desktopAgent.deleteSession(session.id);
     const remaining = sessions.filter((item) => item.id !== session.id);
@@ -379,16 +406,22 @@ function App() {
   const send = async () => {
     const text = draft.trim();
     if (!text || !activeId || running) return;
-    setDraft(''); setError(''); setRunning(true); setStreamingText(''); setTools([]);
+    setDraft(''); setError(''); setRunning(true); setStreamingText(''); setTools([]); setUsage({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }); setContextUsage(null);
     setMessages((items) => [...items, { id: `pending-${Date.now()}`, role: 'user', createdAt: new Date().toISOString(), content: [{ type: 'text', text }] }]);
     try {
       turnBaselineRef.current = await loadWorkspaceChanges(activeId);
-      await window.desktopAgent.startTurn({ sessionId: activeId, text, model: selectedModel });
+      await window.desktopAgent.startTurn({ sessionId: activeId, text, providerId: settings.activeProviderId, model: selectedModel });
     }
     catch (cause) { setRunning(false); setError(cause instanceof Error ? cause.message : String(cause)); }
   };
 
   const active = sessions.find((session) => session.id === activeId);
+  const selectedProvider = providerById(settings, settings.activeProviderId);
+  const draftProvider = providerById(settingsDraft, settingsDraft.activeProviderId);
+  const updateDraftProvider = (update: Partial<ProviderConfig>) => setSettingsDraft((current) => ({
+    ...current,
+    providers: current.providers.map((provider) => provider.id === current.activeProviderId ? { ...provider, ...update } : provider)
+  }));
   const projects = useMemo(() => groupSessions(sessions), [sessions]);
   const openReview = (path?: string) => {
     if (!workspaceChanges?.files.length) return;
@@ -424,7 +457,13 @@ function App() {
         })}
         {projects.length === 0 && <div className="projects-empty">还没有项目</div>}
       </div>
-      <button className="settings-button" onClick={() => { setSettingsDraft(settings); setApiKey(''); setModelsFresh(true); setModelsError(''); setSettingsOpen(true); }}>⚙ 设置</button>
+      <button className="settings-button" onClick={() => {
+        const provider = providerById(settings, settings.activeProviderId);
+        setSettingsDraft(settings); setApiKey(''); setModelsFresh(true); setModelsError(''); setSettingsError('');
+        setContextWindowInput(String(provider.contextWindowTokens));
+        setMaxOutputInput(String(provider.maxOutputTokens));
+        setSettingsOpen(true);
+      }}>⚙ 设置</button>
     </aside>
     <main className="main-panel">
       {active ? <>
@@ -435,7 +474,7 @@ function App() {
         <div className="chat-pane">
         <section className="conversation">
           {messages.length === 0 && !running && <div className="empty"><div className="empty-icon">⌁</div><h2>从本地项目开始</h2><p>可以让我阅读文件、列出目录，或在你批准后执行命令。</p></div>}
-          {messages.filter((message) => message.role !== 'tool').map((message) => <article key={message.id} className={`message ${message.role}`}>
+          {messages.filter((message) => message.role !== 'tool' && !message.metadata?.internal).map((message) => <article key={message.id} className={`message ${message.role}`}>
             <div className="avatar">{message.role === 'user' ? '你' : 'A'}</div><div className="bubble"><Markdown text={messageText(message)} /></div>
           </article>)}
           {(streamingText || running) && <article className="message assistant"><div className="avatar">A</div><div className="bubble">
@@ -455,10 +494,10 @@ function App() {
           <textarea value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="随心输入" rows={2}
             onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void send(); } }} />
           <div className="composer-toolbar">
-            <div className="composer-context"><span className="approval-status">⌁ 文件修改与 Terminal 需批准</span></div>
+            <div className="composer-context"><span className="approval-status">⌁ 文件修改与 Terminal 需批准</span>{contextUsage && <span className="context-status" title={contextUsage.compacted ? `已压缩 ${contextUsage.compacted} 条历史消息` : '上下文估算'}>{Math.round(contextUsage.estimated / 1000)}k / {Math.round(contextUsage.window / 1000)}k</span>}{(usage.input > 0 || usage.output > 0) && <span className="context-status" title={`缓存读取 ${usage.cacheRead} · 缓存写入 ${usage.cacheWrite}`}>↑{usage.input} ↓{usage.output}</span>}</div>
             <div className="composer-actions">
               <select className="model-select" aria-label="本轮使用的模型" title="选择本轮使用的模型" value={selectedModel} disabled={running} onChange={(event) => setSelectedModel(event.target.value)}>
-                {settings.models.map((model) => <option key={model} value={model}>{model}</option>)}
+                {selectedProvider.models.map((model) => <option key={model} value={model}>{model}</option>)}
               </select>
               {running
                 ? <button className="stop" aria-label="停止生成" title="停止生成" onClick={() => activeId && window.desktopAgent.cancelTurn(activeId)}>■</button>
@@ -482,26 +521,58 @@ function App() {
     </div></div>}
     {settingsOpen && <div className="modal-backdrop"><form className="modal settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title" onSubmit={async (event) => {
       event.preventDefault();
-      const fetched = modelsFresh ? { models: settingsDraft.models, model: settingsDraft.model } : await fetchProviderModels();
+      setSettingsError('');
+      const contextWindowTokens = Number(contextWindowInput);
+      const maxOutputTokens = Number(maxOutputInput);
+      if (!Number.isInteger(contextWindowTokens) || contextWindowTokens < 8_192 || contextWindowTokens > 2_000_000) {
+        setSettingsError('上下文窗口必须是 8,192 到 2,000,000 之间的整数。');
+        return;
+      }
+      if (!Number.isInteger(maxOutputTokens) || maxOutputTokens < 256 || maxOutputTokens > 128_000) {
+        setSettingsError('最大输出必须是 256 到 128,000 之间的整数。');
+        return;
+      }
+      if (maxOutputTokens >= contextWindowTokens) {
+        setSettingsError('最大输出必须小于上下文窗口。');
+        return;
+      }
+      const fetched = modelsFresh ? { models: draftProvider.models, model: draftProvider.model } : await fetchProviderModels();
       if (!fetched) return;
-      const saved = await window.desktopAgent.saveSettings({ baseUrl: settingsDraft.baseUrl, model: fetched.model, models: fetched.models, ...(apiKey ? { apiKey } : {}) });
+      const provider = { ...draftProvider, model: fetched.model, models: fetched.models, contextWindowTokens, maxOutputTokens };
+      const providerInput = {
+        id: provider.id, name: provider.name, protocol: provider.protocol, baseUrl: provider.baseUrl,
+        model: provider.model, models: provider.models, contextWindowTokens: provider.contextWindowTokens,
+        maxOutputTokens: provider.maxOutputTokens
+      };
+      const saved = await window.desktopAgent.saveSettings({
+        activeProviderId: settingsDraft.activeProviderId,
+        provider: providerInput,
+        utilityModel: { providerId: provider.id, model: provider.model },
+        ...(apiKey ? { apiKey } : {})
+      });
       setSettings(saved);
       setSettingsDraft(saved);
-      setSelectedModel((current) => saved.models.includes(current) ? current : saved.model);
+      const activeProvider = providerById(saved, saved.activeProviderId);
+      setSelectedModel((current) => activeProvider.models.includes(current) ? current : activeProvider.model);
       setApiKey('');
       setSettingsOpen(false);
     }}>
-      <div className="modal-tag">模型配置</div><h2 id="settings-title">OpenAI 兼容 Provider</h2>
+      <div className="modal-tag">模型配置</div><h2 id="settings-title">模型与上下文</h2>
       <div className="settings-fields">
-        <label>API Base URL<input required value={settingsDraft.baseUrl} onChange={(event) => { setSettingsDraft({ ...settingsDraft, baseUrl: event.target.value }); setModelsFresh(false); setModelsError(''); }} /></label>
-        <label>API Key <span>{settings.hasApiKey ? '（已安全保存）' : ''}</span><input type="password" value={apiKey} placeholder={settings.hasApiKey ? '留空以保留当前密钥' : 'sk-…'} onChange={(event) => { setApiKey(event.target.value); setModelsFresh(false); setModelsError(''); }} /></label>
+        <label>API Base URL<input required value={draftProvider.baseUrl} onChange={(event) => { updateDraftProvider({ baseUrl: event.target.value }); setModelsFresh(false); setModelsError(''); }} /></label>
+        <label>API Key <span>{draftProvider.hasApiKey ? '（已安全保存）' : ''}</span><input type="password" value={apiKey} placeholder={draftProvider.hasApiKey ? '留空以保留当前密钥' : '输入 API Key'} onChange={(event) => { setApiKey(event.target.value); setModelsFresh(false); setModelsError(''); }} /></label>
         <div className="model-setting">
           <div className="model-setting-head"><label htmlFor="default-model">默认模型</label><button type="button" disabled={modelsLoading} onClick={() => void fetchProviderModels()}>{modelsLoading ? '获取中…' : '刷新模型'}</button></div>
-          <select id="default-model" required value={settingsDraft.model} disabled={modelsLoading} onChange={(event) => setSettingsDraft({ ...settingsDraft, model: event.target.value })}>
-            {settingsDraft.models.map((model) => <option key={model} value={model}>{model}</option>)}
+          <select id="default-model" required value={draftProvider.model} disabled={modelsLoading} onChange={(event) => updateDraftProvider({ model: event.target.value })}>
+            {draftProvider.models.map((model) => <option key={model} value={model}>{model}</option>)}
           </select>
-          <div className={`models-status ${modelsError ? 'failed' : ''}`}>{modelsError || (modelsFresh ? `已获取 ${settingsDraft.models.length} 个模型` : 'Provider 配置已变化，保存时将自动重新获取')}</div>
+          <div className={`models-status ${modelsError ? 'failed' : ''}`}>{modelsError || (modelsFresh ? `已配置 ${draftProvider.models.length} 个模型` : 'Provider 配置已变化，保存时将自动重新获取')}</div>
         </div>
+        <div className="settings-grid">
+          <label>上下文窗口（tokens）<input type="number" required min="8192" max="2000000" step="1" value={contextWindowInput} onChange={(event) => { setContextWindowInput(event.target.value); setSettingsError(''); }} /></label>
+          <label>最大输出（tokens）<input type="number" required min="256" max="128000" step="1" value={maxOutputInput} onChange={(event) => { setMaxOutputInput(event.target.value); setSettingsError(''); }} /></label>
+        </div>
+        {settingsError && <div className="settings-error" role="alert">{settingsError}</div>}
       </div>
       <p className="security-note">密钥由操作系统安全存储加密，不会写入普通配置或会话。</p>
       <div className="modal-actions"><button type="button" onClick={() => setSettingsOpen(false)}>取消</button><button className="primary" type="submit" disabled={modelsLoading}>保存</button></div>

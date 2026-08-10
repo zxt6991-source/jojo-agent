@@ -4,10 +4,10 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   ApprovalInputSchema, CreateSessionInputSchema, IPC, ListModelsInputSchema, RenameSessionInputSchema, SaveSettingsInputSchema,
-  SessionIdInputSchema, StartTurnInputSchema, isPlaceholderSessionTitle, sessionTitleFromPrompt,
+  SessionIdInputSchema, StartTurnInputSchema,
   type WorkerCommand, type WorkerMessage
 } from '@desktop-agent/contracts';
-import { OpenAICompatibleProvider } from '@desktop-agent/providers';
+import { createProvider } from '@desktop-agent/providers';
 import { JsonConfigStore, JsonlSessionStore } from '@desktop-agent/storage';
 import { collectWorkspaceChanges } from './workspace-changes';
 
@@ -21,6 +21,7 @@ let quitting = false;
 let sessionStore: JsonlSessionStore;
 let configStore: JsonConfigStore;
 let secretPath: string;
+let legacySecretPath: string;
 
 function assertTrusted(event: IpcMainInvokeEvent): void {
   if (!mainWindow || event.sender.id !== mainWindow.webContents.id) throw new Error('Untrusted IPC sender.');
@@ -30,23 +31,34 @@ function assertTrusted(event: IpcMainInvokeEvent): void {
   }
 }
 
-async function readApiKey(): Promise<string> {
+async function readApiKeys(): Promise<Record<string, string>> {
   try {
     const encrypted = await readFile(secretPath);
-    return safeStorage.isEncryptionAvailable() ? safeStorage.decryptString(encrypted) : '';
-  } catch { return ''; }
+    if (!safeStorage.isEncryptionAvailable()) return {};
+    const parsed: unknown = JSON.parse(safeStorage.decryptString(encrypted));
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    return Object.fromEntries(Object.entries(parsed).filter((entry): entry is [string, string] => typeof entry[1] === 'string'));
+  } catch {
+    try {
+      const encrypted = await readFile(legacySecretPath);
+      const key = safeStorage.isEncryptionAvailable() ? safeStorage.decryptString(encrypted) : '';
+      return key ? { openai: key } : {};
+    } catch { return {}; }
+  }
 }
 
-async function saveApiKey(apiKey: string): Promise<void> {
+async function saveApiKey(providerId: string, apiKey: string): Promise<void> {
   if (!safeStorage.isEncryptionAvailable()) throw new Error('Operating system secure storage is unavailable.');
+  const keys = await readApiKeys();
+  keys[providerId] = apiKey;
   await mkdir(path.dirname(secretPath), { recursive: true });
-  await writeFile(secretPath, safeStorage.encryptString(apiKey), { mode: 0o600 });
+  await writeFile(secretPath, safeStorage.encryptString(JSON.stringify(keys)), { mode: 0o600 });
 }
 
 async function pushConfig(): Promise<void> {
-  const apiKey = await readApiKey();
-  const settings = await configStore.get(Boolean(apiKey));
-  worker?.postMessage({ type: 'config.update', settings, apiKey } satisfies WorkerCommand);
+  const apiKeys = await readApiKeys();
+  const settings = await configStore.get(apiKeys);
+  worker?.postMessage({ type: 'config.update', settings, apiKeys } satisfies WorkerCommand);
 }
 
 function sendToRenderer(channel: string, value?: unknown): void {
@@ -102,13 +114,6 @@ function registerIpc(): void {
     if (!worker) throw new Error('Agent runtime is not available.');
     const session = await sessionStore.get(payload.sessionId);
     if (!session) throw new Error('Session not found.');
-    if (isPlaceholderSessionTitle(session.title, session.workingDirectory)) {
-      const messages = await sessionStore.messages(payload.sessionId);
-      if (!messages.some((message) => message.role === 'user')) {
-        await sessionStore.rename(payload.sessionId, sessionTitleFromPrompt(payload.text));
-        sendToRenderer(IPC.sessionsChanged);
-      }
-    }
     worker.postMessage({ type: 'turn.start', payload } satisfies WorkerCommand);
   });
   ipcMain.handle(IPC.cancelTurn, async (event, raw) => {
@@ -123,19 +128,33 @@ function registerIpc(): void {
     assertTrusted(event); const result = await dialog.showOpenDialog(mainWindow!, { properties: ['openDirectory', 'createDirectory'] });
     return result.canceled ? null : result.filePaths[0] ?? null;
   });
-  ipcMain.handle(IPC.getSettings, async (event) => { assertTrusted(event); return configStore.get(Boolean(await readApiKey())); });
+  ipcMain.handle(IPC.getSettings, async (event) => { assertTrusted(event); return configStore.get(await readApiKeys()); });
   ipcMain.handle(IPC.listModels, async (event, raw) => {
     assertTrusted(event);
     const input = ListModelsInputSchema.parse(raw);
-    const apiKey = input.apiKey || await readApiKey();
+    const settings = await configStore.get(await readApiKeys());
+    const configured = settings.providers.find((provider) => provider.protocol === input.protocol);
+    const apiKey = input.apiKey || (configured ? (await readApiKeys())[configured.id] : undefined);
     if (!apiKey) throw new Error('请先填写模型 API Key。');
-    return new OpenAICompatibleProvider({ baseUrl: input.baseUrl, apiKey, timeoutMs: 15_000 }).listModels();
+    return createProvider({
+      id: configured?.id ?? 'discovery', name: configured?.name ?? 'Provider', protocol: input.protocol,
+      baseUrl: input.baseUrl, model: configured?.model ?? 'discovery', models: configured?.models ?? ['discovery'],
+      contextWindowTokens: configured?.contextWindowTokens ?? 128_000,
+      maxOutputTokens: configured?.maxOutputTokens ?? 8_192, hasApiKey: true
+    }, apiKey, 15_000).listModels();
   });
   ipcMain.handle(IPC.saveSettings, async (event, raw) => {
     assertTrusted(event); const input = SaveSettingsInputSchema.parse(raw);
-    if (input.apiKey) await saveApiKey(input.apiKey);
-    await configStore.save({ baseUrl: input.baseUrl, model: input.model, models: input.models });
-    await pushConfig(); return configStore.get(Boolean(await readApiKey()));
+    if (input.apiKey) await saveApiKey(input.provider.id, input.apiKey);
+    const apiKeys = await readApiKeys();
+    const current = await configStore.get(apiKeys);
+    const provider = { ...input.provider, hasApiKey: Boolean(apiKeys[input.provider.id]) };
+    const providers = current.providers.some((item) => item.id === provider.id)
+      ? current.providers.map((item) => item.id === provider.id ? provider : item)
+      : [...current.providers, provider];
+    const settings = { activeProviderId: input.activeProviderId, providers, utilityModel: input.utilityModel };
+    await configStore.save(settings);
+    await pushConfig(); return configStore.get(apiKeys);
   });
 }
 
@@ -146,6 +165,18 @@ function createWindow(): void {
       preload: path.join(currentDirectory, 'preload.js'), nodeIntegration: false,
       contextIsolation: true, sandbox: true, webSecurity: true
     }
+  });
+  mainWindow.webContents.on('console-message', (details) => {
+    const location = details.sourceId ? ` (${details.sourceId}:${details.lineNumber})` : '';
+    const output = `[renderer:${details.level}] ${details.message}${location}`;
+    if (details.level === 'error' || details.level === 'warning') console.error(output);
+    else console.log(output);
+  });
+  mainWindow.webContents.on('did-fail-load', (_event, code, description, url) => {
+    console.error(`[renderer:load] ${code} ${description} ${url}`);
+  });
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    console.error(`[renderer:gone] ${details.reason} (${details.exitCode})`);
   });
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   mainWindow.webContents.on('will-navigate', (event, url) => {
@@ -163,7 +194,8 @@ else {
     const dataDirectory = app.getPath('userData');
     sessionStore = new JsonlSessionStore(path.join(dataDirectory, 'sessions'));
     configStore = new JsonConfigStore(path.join(dataDirectory, 'config.json'));
-    secretPath = path.join(dataDirectory, 'secrets', 'provider-key.bin');
+    secretPath = path.join(dataDirectory, 'secrets', 'provider-keys.bin');
+    legacySecretPath = path.join(dataDirectory, 'secrets', 'provider-key.bin');
     registerIpc(); startWorker(); createWindow();
   });
   app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });

@@ -1,6 +1,6 @@
 # 各 Workspace 技术实现方案
 
-> 文档状态：2026-08-09  
+> 文档状态：2026-08-10
 > 适用版本：0.1.0（MVP）
 
 本文档集说明 pnpm monorepo 中每个应用或包的技术实现。文中的“当前实现”均以仓库代码为准；“演进方案”是后续扩展建议，不代表已经可用。
@@ -12,7 +12,9 @@
 | `apps/desktop` | `@desktop-agent/desktop` | Electron 运行时、桌面 UI、IPC 与进程编排 | [Desktop 应用](./desktop.md) |
 | `packages/contracts` | `@desktop-agent/contracts` | 跨包数据模型、运行时校验与 IPC 契约 | [Contracts](./contracts.md) |
 | `packages/agent-core` | `@desktop-agent/agent-core` | 与平台无关的 Agent 工具循环 | [Agent Core](./agent-core.md) |
+| 上下文管理 | 多包协作 | token 预算、大结果回收、历史压缩与截断续写 | [上下文管理](./context-management.md) |
 | `packages/providers` | `@desktop-agent/providers` | 模型服务协议适配与 SSE 解析 | [Providers](./providers.md) |
+| Phase 2 横切能力 | 多包协作 | Provider 配置、模型发现与上下文稳定性 | [Phase 2 方案](../phase-2-multi-provider-context.md) |
 | `packages/tools-node` | `@desktop-agent/tools-node` | 本地文件、目录、终端工具及权限 Gate | [Tools Node](./tools-node.md) |
 | `packages/storage` | `@desktop-agent/storage` | JSONL 会话与 JSON 配置持久化 | [Storage](./storage.md) |
 

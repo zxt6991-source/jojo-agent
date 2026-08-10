@@ -55,6 +55,7 @@ export function createChatCompletionBody(request: ModelRequest): Record<string, 
     model: request.model,
     stream: true,
     stream_options: { include_usage: true },
+    ...(request.maxOutputTokens !== undefined ? { max_completion_tokens: request.maxOutputTokens } : {}),
     messages: toChatMessages(request.messages),
     tools: request.tools.map((tool) => ({
       type: 'function',

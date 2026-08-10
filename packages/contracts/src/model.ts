@@ -6,13 +6,20 @@ export type ModelRequest = {
   messages: Message[];
   tools: ToolDefinition[];
   signal: AbortSignal;
+  maxOutputTokens?: number;
 };
 
 export type ModelEvent =
   | { type: 'text_delta'; text: string }
   | { type: 'tool_call_delta'; id: string; name?: string; argumentsDelta: string }
   | { type: 'tool_call_completed'; call: ToolCall }
-  | { type: 'usage'; inputTokens?: number; outputTokens?: number }
+  | {
+      type: 'usage';
+      inputTokens?: number;
+      outputTokens?: number;
+      cacheReadInputTokens?: number;
+      cacheWriteInputTokens?: number;
+    }
   | { type: 'response_completed'; stopReason: string }
   | { type: 'response_failed'; code: string; message: string };
 

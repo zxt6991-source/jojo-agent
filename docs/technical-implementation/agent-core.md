@@ -31,6 +31,7 @@ Agent Core 实现与 Electron、具体 Provider、工具和存储无关的单轮
 |---|---|
 | `types.ts` | 定义 `AgentRunOptions` 与 `AgentRunResult` 公共类型 |
 | `run-agent-turn.ts` | 创建 Turn State、编排模型迭代、提交消息和统一终态 |
+| `context-manager.ts` | 估算 token、回收大型 Tool Result、保护工具原子组并压缩旧历史 |
 | `model-step.ts` | 消费一次 Provider 流，聚合文本、Tool Call 与停止原因 |
 | `tool-execution.ts` | 处理重复调用、工具查找、权限判断、审批和执行结果 |
 | `messages.ts` | 集中构造 User、Assistant、Tool Message 并执行提交回调 |
@@ -38,6 +39,8 @@ Agent Core 实现与 Electron、具体 Provider、工具和存储无关的单轮
 | `scripted-provider.ts` | 提供测试用的确定性 Provider |
 
 `run-agent-turn.ts` 是唯一的流程编排层；模型事件分支和工具权限分支分别收敛在独立模块中。内部模块不从公共 `index.ts` 反向导入，避免循环依赖。
+
+上下文管理的算法、参数、实现位置与验证方法详见[《上下文管理技术实现方案》](./context-management.md)。
 
 ## 4. 核心状态机
 
@@ -85,7 +88,7 @@ stateDiagram-v2
 
 ## 8. 测试方案
 
-现有测试覆盖基本工具循环、重复 Tool Call ID、审批拒绝后继续、工具异常恢复和 Provider 空响应分类。应继续补充：
+现有测试覆盖基本工具循环、重复 Tool Call ID、审批拒绝后继续、工具异常恢复、Provider 空响应分类、上下文压缩和输出截断续写。应继续补充：
 
 1. 最大迭代和其他 Provider 分类失败；
 2. 运行前、流式中、审批中与工具执行中的取消；
@@ -96,6 +99,6 @@ stateDiagram-v2
 ## 9. 演进方案
 
 - 若支持并行工具，先在协议中表达依赖和并发安全属性，再只并发执行明确无依赖的调用。
-- 将重试、上下文裁剪和 token 预算作为可注入策略，保持核心不绑定厂商。
+- 将重试和精确 tokenizer 作为可注入策略，保持核心不绑定厂商。
 - 将当前进程内 `TurnState` 演进为可序列化的显式状态机，便于恢复中断任务和做属性测试。
 - 支持子 Agent 时把它建模为受限 Tool/Runner，不让平台编排逻辑侵入主循环。

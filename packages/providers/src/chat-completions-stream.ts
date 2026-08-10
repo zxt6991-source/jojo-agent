@@ -20,10 +20,13 @@ function usageEvent(payload: JsonObject): ModelEvent | undefined {
 
   const inputTokens = typeof usage.prompt_tokens === 'number' ? usage.prompt_tokens : undefined;
   const outputTokens = typeof usage.completion_tokens === 'number' ? usage.completion_tokens : undefined;
+  const promptDetails = asObject(usage.prompt_tokens_details);
+  const cacheReadInputTokens = typeof promptDetails?.cached_tokens === 'number' ? promptDetails.cached_tokens : undefined;
   return {
     type: 'usage',
     ...(inputTokens !== undefined ? { inputTokens } : {}),
-    ...(outputTokens !== undefined ? { outputTokens } : {})
+    ...(outputTokens !== undefined ? { outputTokens } : {}),
+    ...(cacheReadInputTokens !== undefined ? { cacheReadInputTokens } : {})
   };
 }
 

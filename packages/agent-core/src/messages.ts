@@ -34,6 +34,13 @@ export function createToolMessage(result: ToolResult): Message {
   };
 }
 
+export function createContinuationMessage(): Message {
+  return {
+    id: createId(), role: 'user', createdAt: now(), metadata: { internal: true },
+    content: [{ type: 'text', text: 'Continue exactly where the previous response stopped. Do not repeat completed content.' }]
+  };
+}
+
 export async function appendMessage(
   options: AgentRunOptions,
   messages: Message[],

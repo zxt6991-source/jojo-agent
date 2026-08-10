@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createChatCompletionBody } from '../src/chat-completions-request.js';
 import { parseChatCompletionStream } from '../src/chat-completions-stream.js';
-import { OpenAICompatibleProvider } from '../src/index.js';
+import { OpenAICompatibleProvider, PROVIDER_REGISTRY, createProvider } from '../src/index.js';
 
 function request(overrides: Partial<ModelRequest> = {}): ModelRequest {
   return {
@@ -219,5 +219,15 @@ describe('OpenAICompatibleProvider', () => {
     await expect(collect(provider.stream(request({ signal: controller.signal })))).rejects.toMatchObject({
       name: 'AbortError'
     });
+  });
+});
+
+describe('provider registry', () => {
+  it('registers and constructs the OpenAI-compatible adapter', () => {
+    expect(PROVIDER_REGISTRY.map((entry) => entry.protocol)).toEqual(['openai_chat_completions']);
+    expect(createProvider({
+      id: 'compatible', name: 'Compatible', protocol: 'openai_chat_completions', baseUrl: 'https://provider.example/v1',
+      model: 'model-a', models: ['model-a'], contextWindowTokens: 32_000, maxOutputTokens: 2_000, hasApiKey: true
+    }, 'secret')).toBeInstanceOf(OpenAICompatibleProvider);
   });
 });

@@ -18,6 +18,7 @@ export const RenameSessionInputSchema = z.object({
 export const StartTurnInputSchema = z.object({
   sessionId: z.string(),
   text: z.string().trim().min(1).max(100_000),
+  providerId: z.string().trim().min(1),
   model: z.string().trim().min(1)
 });
 
@@ -25,13 +26,23 @@ export const SessionIdInputSchema = z.object({ sessionId: z.string() });
 export const ApprovalInputSchema = z.object({ requestId: z.string(), allow: z.boolean() });
 
 export const SaveSettingsInputSchema = z.object({
-  baseUrl: z.string().url(),
-  model: z.string().min(1),
-  models: z.array(z.string().trim().min(1)).min(1),
+  activeProviderId: z.string().min(1),
+  provider: z.object({
+    id: z.string().min(1),
+    name: z.string().trim().min(1),
+    protocol: z.literal('openai_chat_completions'),
+    baseUrl: z.string().url(),
+    model: z.string().min(1),
+    models: z.array(z.string().trim().min(1)).min(1),
+    contextWindowTokens: z.number().int().min(8_192).max(2_000_000),
+    maxOutputTokens: z.number().int().min(256).max(128_000)
+  }),
+  utilityModel: z.object({ providerId: z.string().min(1), model: z.string().min(1) }),
   apiKey: z.string().optional()
 });
 
 export const ListModelsInputSchema = z.object({
+  protocol: z.literal('openai_chat_completions'),
   baseUrl: z.string().url(),
   apiKey: z.string().optional()
 });
@@ -58,7 +69,7 @@ export type WorkerCommand =
   | { type: 'turn.start'; payload: z.input<typeof StartTurnInputSchema> }
   | { type: 'turn.cancel'; sessionId: string }
   | { type: 'approval.resolve'; requestId: string; allow: boolean }
-  | { type: 'config.update'; settings: ProviderSettings; apiKey: string };
+  | { type: 'config.update'; settings: ProviderSettings; apiKeys: Record<string, string> };
 
 export type WorkerMessage =
   | { type: 'ready' }

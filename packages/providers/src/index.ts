@@ -1,2 +1,4 @@
 export { OpenAICompatibleProvider } from './openai-compatible-provider.js';
+export { PROVIDER_REGISTRY, createProvider } from './registry.js';
 export type { OpenAIProviderOptions } from './types.js';
+export type { DiscoverableModelProvider, ProviderRegistration } from './registry.js';

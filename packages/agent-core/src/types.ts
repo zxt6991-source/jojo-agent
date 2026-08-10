@@ -18,6 +18,9 @@ export type AgentRunOptions = {
   permissionGate: PermissionGate;
   signal: AbortSignal;
   maxIterations?: number;
+  contextWindowTokens?: number;
+  maxOutputTokens?: number;
+  summarize?: (source: string, signal: AbortSignal) => Promise<string>;
   emit: (event: AgentEvent) => void;
   approve: (request: ApprovalRequest, signal: AbortSignal) => Promise<boolean>;
   commitMessage?: (message: Message) => Promise<void>;

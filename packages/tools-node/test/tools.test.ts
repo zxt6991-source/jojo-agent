@@ -113,7 +113,7 @@ describe('node tools', () => {
     const environment = createTerminalEnvironment({
       PATH: '/usr/bin',
       OPENAI_API_KEY: 'secret',
-      ANTHROPIC_AUTH_TOKEN: 'secret',
+      PROVIDER_AUTH_TOKEN: 'secret',
       DATABASE_PASSWORD: 'secret',
       NODE_OPTIONS: '--require attacker.js',
       ELECTRON_RUN_AS_NODE: '1',

@@ -20,7 +20,7 @@ octo-agent、Codex 和 Claude Code，但第一阶段只解决一件事：让用�
 - MVP 之后到可公开发布版本的演进路线；
 - 安全、测试、数据兼容和范围控制原则。
 
-> 🚧 总览：核心对话 MVP 与 Phase 1 小型代码任务能力已完成，但“可公开发布”门槛仍未全部满足：UI/E2E、IPC 安全测试、干净机器安装验证、代码签名等仍缺失。Phase 2 已提前完成同一 OpenAI 兼容 Provider 下的模型发现与逐轮选择，但多协议 Provider 和上下文管理尚未开始。
+> 🚧 总览：核心对话 MVP、Phase 1 小型代码任务能力与 Phase 2 上下文管理已完成；Provider 当前收敛为 OpenAI Chat Completions 兼容协议。“可公开发布”门槛仍未全部满足：UI/E2E、IPC 安全测试、干净机器安装验证、代码签名等仍缺失。
 
 ### 1.1 2026-08-09 实现快照
 
@@ -28,11 +28,11 @@ octo-agent、Codex 和 Claude Code，但第一阶段只解决一件事：让用�
 |---|---|---|
 | 核心对话、流式输出、Tool Call | ✅ | OpenAI Chat Completions 兼容协议可用 |
 | 项目与会话 | ✅ | 按目录分组；同项目多会话；首条提问生成标题；可重命名和删除 |
-| 模型选择 | 🚧 | 已通过 `/models` 获取列表并支持逐轮选择；仍只有一种 Provider 协议，且不支持不兼容 `/models` 的手动回退 |
+| 模型选择 | 🚧 | OpenAI Chat Completions 兼容服务可配置、发现模型并逐轮选择；第二种独立协议暂未支持 |
 | 内置工具与审批 | ✅ | 读取、目录、grep、glob、写入、精确编辑、删除、终端共八个工具 |
 | 代码修改能力 | ✅ | 修改前 Diff 审批、读后冲突检测、原子替换与按会话回收站 |
 | 持久化 | 🚧 | JSONL 会话和配置迁移可用；错误状态不持久化，运行中删除会话存在取消/删除竞态 |
-| 自动化测试 | 🚧 | 当前 7 个测试文件、59 个 Vitest 用例通过；没有 Renderer UI、IPC 集成和 E2E 测试 |
+| 自动化测试 | 🚧 | 当前 8 个测试文件、64 个 Vitest 用例通过；没有 Renderer UI、IPC 集成和 E2E 测试 |
 | 发布工程 | 🚧 | Forge、ASAR、Fuses 和 Linux CI package 已配置；干净机器验证、签名、notarization、自动更新未完成 |
 
 ### 1.2 当前剩余工作优先级
@@ -43,20 +43,20 @@ octo-agent、Codex 和 Claude Code，但第一阶段只解决一件事：让用�
 - ⬜ 为 Main/Preload/Worker IPC 增加运行时事件校验和自动化测试；
 - ⬜ 增加至少两个离线 Electron E2E 冒烟测试；
 - ⬜ 在 macOS / Windows / Linux 的干净环境验证安装、首次启动、配置、对话和卸载；
-- ⬜ 增加 Renderer 首屏错误兜底，避免模块或初始化异常只显示空白/黑屏。
+- ✅ 增加 Renderer 首屏错误兜底，模块或初始化异常时展示错误详情与重新加载入口。
 
 #### P1：补齐 Coding Agent 的核心能力
 
 - ✅ `write_file`、`edit_file` 与 `delete_file`；
 - ✅ 写入前 Diff 审批、内容哈希/mtime 冲突检测、覆盖与删除回收站；
 - ✅ `grep`、`glob` 项目检索；
-- ⬜ Tool Result 大输出回收、上下文窗口估算和安全历史压缩；
+- ✅ Tool Result 大输出回收、上下文窗口估算和安全历史压缩；
 - ⬜ 在 UI 展示 token usage，并支持清除已保存的 API Key；
 - ⬜ Provider 不支持 `/models` 时提供可控的手动模型回退。
 
 #### P2：扩展协议与生态
 
-- ⬜ 第二种 Provider 协议及 Vendor/Model 注册表；
+- ⬜ 第二种 Provider 协议；Provider/Model 注册表已保留扩展边界；
 - ⬜ MCP、Skills、浏览器、多模态、子 Agent、工作流；
 - ⬜ 记忆、定时任务、后台任务与通知；
 - ⬜ 签名、notarization、自动更新、崩溃日志导出和正式兼容策略。
@@ -102,7 +102,7 @@ octo-agent、Codex 和 Claude Code，但第一阶段只解决一件事：让用�
 | Schema | Zod | ✅ 已采用（v4） |
 | Agent 进程 | Electron `utilityProcess` | ✅ 已采用（Agent Utility Process / Worker） |
 | 会话存储 | JSONL | ✅ 已采用 |
-| 单元测试 | Vitest | ✅ 已采用（当前 7 个测试文件、59 个用例） |
+| 单元测试 | Vitest | ✅ 已采用（当前 8 个测试文件、64 个用例） |
 | UI 测试 | Testing Library | ⬜ 未引入 |
 | 端到端测试 | Playwright（MVP 后期） | ⬜ 未引入 |
 
@@ -313,15 +313,15 @@ UI、日志和未来的 CLI/WebSocket 都使用同一套事件。
 - ✅ 创建、选择、重命名和删除会话；
 - ✅ 每个会话绑定一个本地工作目录；
 - ✅ 按工作目录分组项目，并允许一个项目创建多个会话；
-- ✅ 新会话使用第一条提问生成标题，仍允许用户手动重命名；
+- ✅ 新会话使用默认模型生成标题（失败时回退第一条提问），仍允许用户手动重命名；
 - ✅ 会话消息以 JSONL 保存；
 - ✅ 应用重启后可恢复会话；
 - ✅ 文件尾损坏时忽略不完整记录，不丢失此前完整历史。
 
 #### 模型
 
-- ✅ 支持一个 OpenAI Chat Completions 兼容 Provider；
-- ✅ 从 Provider `/models` 获取并缓存模型列表，兼容旧单模型配置迁移；
+- ✅ 支持 OpenAI Chat Completions 兼容协议；
+- ✅ 分 Provider 获取并缓存模型列表，兼容旧单模型/单 Provider 配置迁移；
 - ✅ Composer 支持为每一轮选择模型；
 - 🚧 Provider 不支持标准 `/models` 时没有手动模型回退；
 - ✅ 支持流式文本；
@@ -500,7 +500,7 @@ MVP 只实现三个工具：
 - ✅ 配置 Electron Fuses 和 ASAR；
 - 🚧 生成 macOS 或 Windows 安装包（Forge 已配置 maker；CI 只执行 Linux package，macOS/Windows 产物未验证）；
 - ⬜ 完成端到端冒烟测试（未引入 Playwright / E2E）。
-- ⬜ Renderer Error Boundary / 首屏失败提示（当前已修复 Vite workspace 缓存黑屏根因，但没有通用错误兜底）。
+- ✅ Renderer 首屏失败提示：捕获模块加载与未处理 Promise 异常，避免再次静默黑屏。
 
 验收：
 
@@ -573,27 +573,27 @@ MVP 只实现三个工具：
 - ✅ Agent 可读取文件、生成 diff、等待批准、写入并通过 `terminal` 执行测试；
 - ✅ 外部编辑器在读取后或审批期间修改文件时，Agent 拒绝盲目覆盖（自动化用例覆盖）。
 
-### Phase 2：多 Provider 与上下文管理 🚧 少量开始
+### Phase 2：Provider 与上下文管理 🚧 部分完成
 
 目标：提高模型选择自由和长会话稳定性。
 
 功能：
 
-- ⬜ 第二种 Provider 协议；
-- 🚧 模型配置与选择：已完成单个 OpenAI 兼容 Provider 的 `/models` 发现、缓存、默认模型和逐轮选择；Vendor/多 Provider 注册表未实现；
-- ⬜ Prompt Cache 统计归一化；
-- ⬜ 上下文窗口估算；
-- ⬜ Tool Result 大输出回收；
-- ⬜ 安全边界上的历史压缩；
-- ⬜ 输出截断恢复；
-- ⬜ 便宜模型用于标题和摘要。
+- ⬜ 第二种独立 Provider 协议（当前暂不支持）；
+- ✅ 模型配置与选择：Provider 注册表、分 Provider 模型发现/缓存/默认模型和逐轮选择；
+- ✅ Prompt Cache 统计归一化；
+- ✅ 上下文窗口估算；
+- ✅ Tool Result 大输出回收；
+- ✅ 安全边界上的历史压缩；
+- ✅ 输出截断恢复；
+- ✅ 默认模型复用于标题和摘要，不提供单独选择项。
 
-已实现但不等同于本阶段完成：当前会话标题直接取第一条提问，不调用便宜模型生成摘要。
+技术方案见 `docs/phase-2-multi-provider-context.md`。
 
 验收场景：
 
-- ⬜ 同一 Agent Core 可以切换两个不同协议的模型；
-- ⬜ 长会话接近窗口上限时自动压缩且 Tool Call 配对不被破坏。
+- 🚧 Agent Core 与协议实现保持解耦，但跨协议切换需等待第二种协议重新接入；
+- ✅ 长会话接近窗口上限时自动压缩且 Tool Call 配对不被破坏（自动化测试覆盖）。
 
 ### Phase 3：MCP 与 Skills ⬜ 未开始
 

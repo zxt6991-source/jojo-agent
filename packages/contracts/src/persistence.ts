@@ -38,10 +38,56 @@ export const SessionRecordSchema = z.discriminatedUnion('type', [
 ]);
 export type SessionRecord = z.infer<typeof SessionRecordSchema>;
 
-export const ProviderSettingsSchema = z.object({
-  baseUrl: z.string().url().default('https://api.openai.com/v1'),
-  model: z.string().min(1).default('gpt-5-mini'),
-  models: z.array(z.string().trim().min(1)).min(1).default(['gpt-5-mini']),
+export const ProviderProtocolSchema = z.literal('openai_chat_completions');
+export type ProviderProtocol = z.infer<typeof ProviderProtocolSchema>;
+
+export const ModelSelectionSchema = z.object({
+  providerId: z.string().min(1),
+  model: z.string().trim().min(1)
+});
+export type ModelSelection = z.infer<typeof ModelSelectionSchema>;
+
+export const ProviderConfigSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().trim().min(1),
+  protocol: ProviderProtocolSchema,
+  baseUrl: z.string().url(),
+  model: z.string().trim().min(1),
+  models: z.array(z.string().trim().min(1)).min(1),
+  contextWindowTokens: z.number().int().min(8_192).max(2_000_000),
+  maxOutputTokens: z.number().int().min(256).max(128_000),
   hasApiKey: z.boolean().default(false)
+});
+export type ProviderConfig = z.infer<typeof ProviderConfigSchema>;
+
+export const DEFAULT_PROVIDERS: ProviderConfig[] = [
+  {
+    id: 'openai', name: 'OpenAI / 兼容服务', protocol: 'openai_chat_completions',
+    baseUrl: 'https://api.openai.com/v1', model: 'gpt-5-mini', models: ['gpt-5-mini'],
+    contextWindowTokens: 128_000, maxOutputTokens: 8_192, hasApiKey: false
+  }
+];
+
+export const ProviderSettingsSchema = z.object({
+  activeProviderId: z.string().min(1).default('openai'),
+  providers: z.array(ProviderConfigSchema).min(1).default(() => DEFAULT_PROVIDERS.map((provider) => ({ ...provider }))),
+  utilityModel: ModelSelectionSchema.default({ providerId: 'openai', model: 'gpt-5-mini' })
+}).superRefine((settings, context) => {
+  const ids = new Set<string>();
+  for (const provider of settings.providers) {
+    if (ids.has(provider.id)) context.addIssue({ code: 'custom', message: `Duplicate provider id: ${provider.id}` });
+    ids.add(provider.id);
+    if (!provider.models.includes(provider.model)) {
+      context.addIssue({ code: 'custom', message: `Default model is missing from provider ${provider.id}.` });
+    }
+    if (provider.maxOutputTokens >= provider.contextWindowTokens) {
+      context.addIssue({ code: 'custom', message: `Max output must be smaller than the context window for ${provider.id}.` });
+    }
+  }
+  if (!ids.has(settings.activeProviderId)) context.addIssue({ code: 'custom', message: 'Active provider does not exist.' });
+  const utilityProvider = settings.providers.find((provider) => provider.id === settings.utilityModel.providerId);
+  if (!utilityProvider?.models.includes(settings.utilityModel.model)) {
+    context.addIssue({ code: 'custom', message: 'Utility model does not exist.' });
+  }
 });
 export type ProviderSettings = z.infer<typeof ProviderSettingsSchema>;

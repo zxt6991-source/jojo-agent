@@ -5,9 +5,9 @@
 
 ## 1. 定位与边界
 
-Providers 把内部统一的 `ModelRequest` 转换为具体模型服务请求，并把厂商响应还原为 `ModelEvent`。当前只实现 OpenAI Chat Completions 兼容协议，不负责 Agent 循环、重试决策、密钥存储或 UI。
+Providers 把内部统一的 `ModelRequest` 转换为具体模型服务请求，并把厂商响应还原为 `ModelEvent`。当前仅实现 OpenAI Chat Completions 兼容协议，不负责 Agent 循环、重试决策、密钥存储或 UI。Phase 2 的横切设计详见[Provider 与上下文管理方案](../phase-2-multi-provider-context.md)。
 
-公开入口 `src/index.ts` 只导出 `OpenAICompatibleProvider` 和 `OpenAIProviderOptions`，协议细节按职责拆分：
+公开入口 `src/index.ts` 导出 OpenAI-compatible adapter、Provider 注册表和统一工厂，协议细节按职责拆分：
 
 | 文件 | 职责 |
 |---|---|
@@ -15,6 +15,7 @@ Providers 把内部统一的 `ModelRequest` 转换为具体模型服务请求，
 | `chat-completions-request.ts` | 内部消息和工具定义到 Chat Completions 请求体的纯转换 |
 | `sse.ts` | 从字节流增量解码标准 SSE `data` 事件 |
 | `chat-completions-stream.ts` | 解析 Chat Completions JSON 增量并聚合 Tool Call |
+| `registry.ts` | Vendor/协议元数据和 Provider 构造入口 |
 | `types.ts` | Provider 配置和包内协议状态类型 |
 
 这样的边界让请求转换和流解析可以脱离网络独立测试，同时保持包的公共 API 简洁。
@@ -79,7 +80,8 @@ Provider 创建内部 `AbortController`，同时监听调用方 AbortSignal 和�
 - 多 Tool Call 按 index 聚合、分片函数名/参数及非法 JSON；
 - Base URL 归一化和认证请求头；
 - 401/403、429、5xx 和其他 HTTP 状态分类；
-- 内部超时和调用方预取消。
+- 内部超时和调用方预取消；
+- 注册表构造正确的 OpenAI-compatible adapter。
 
 后续仍应补充响应流中途失败、调用方在流式传输期间取消，以及真实本地 mock HTTP server 的集成测试。
 
@@ -87,4 +89,4 @@ Provider 创建内部 `AbortController`，同时监听调用方 AbortSignal 和�
 
 - 对兼容服务差异引入显式 capability/config，而不是散布条件判断。
 - 在上层注入重试策略，只对限流、暂时性 5xx 和连接失败做有界重试。
-- 新增 Responses 或其他厂商协议时实现新的 `ModelProvider`，不修改 Agent Core。
+- 新增 Responses 或其他厂商协议时实现新的 `ModelProvider` 并注册到 `registry.ts`，不修改 Agent Core。

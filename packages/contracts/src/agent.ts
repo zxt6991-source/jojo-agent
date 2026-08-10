@@ -31,7 +31,21 @@ export type AgentEvent =
   | { type: 'tool.progress'; id: string; text: string }
   | { type: 'tool.finished'; id: string; result: ToolResult }
   | { type: 'approval.required'; request: ApprovalRequest }
-  | { type: 'usage'; inputTokens?: number; outputTokens?: number }
+  | {
+      type: 'usage';
+      inputTokens?: number;
+      outputTokens?: number;
+      cacheReadInputTokens?: number;
+      cacheWriteInputTokens?: number;
+    }
+  | {
+      type: 'context.updated';
+      estimatedTokens: number;
+      contextWindowTokens: number;
+      compactedMessages: number;
+      reclaimedToolCharacters: number;
+    }
+  | { type: 'output.continuing'; attempt: number }
   | { type: 'turn.completed'; stopReason: string }
   | { type: 'turn.cancelled' }
   | { type: 'turn.failed'; code: string; message: string };

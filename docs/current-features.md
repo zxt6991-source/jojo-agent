@@ -1,6 +1,6 @@
 # Desktop Agent 当前功能与上手指南
 
-> 文档状态：2026-08-09
+> 文档状态：2026-08-10
 > 当前版本：0.1.0（MVP + Coding Agent Phase 1）
 > 说明：本文以当前仓库代码为准，只描述已经实现的能力。路线图中的规划不等于可用功能。
 
@@ -127,7 +127,7 @@ Worker 与界面进程分离，因此 Agent 运行异常不必直接获得 Rende
 - Electron 单窗口、单实例运行；
 - 按本地项目目录分组展示会话，并在一个项目中创建多个独立会话；
 - 在左侧项目模块中创建、选择、重命名和删除会话；
-- 新会话发送第一条提问时，自动使用提问内容生成会话标题；
+- 新会话发送第一条提问时，使用默认模型生成标题，失败时回退到提问内容；
 - 每个会话绑定所属项目的本地工作目录；
 - 流式展示模型文本；
 - 渲染 Markdown 标题、列表、引用和代码块；
@@ -136,7 +136,7 @@ Worker 与界面进程分离，因此 Agent 运行异常不必直接获得 Rende
 - Enter 发送，Shift+Enter 换行；
 - 运行期间可停止当前轮次；
 - 展示加载、空状态和错误信息；
-- 配置一个 OpenAI 兼容 Provider；
+- 配置 OpenAI Chat Completions 兼容 Provider，并逐轮选择其模型；
 - 审批卡片支持按钮以及 Enter 允许、Esc 拒绝快捷键。
 
 工具调用和结果会写入会话记录，但会话重新载入后，当前 UI 只重新展示用户和助手的文本消息，不会重建历史工具卡片。
@@ -263,20 +263,22 @@ Worker 与界面进程分离，因此 Agent 运行异常不必直接获得 Rende
 - 同一会话不能并行运行两个轮次；
 - 用户可取消当前轮次。
 
-对外事件包括 `turn.started`、`text.delta`、`tool.started`、`tool.progress`、`tool.finished`、`approval.required`、`usage`、`turn.completed`、`turn.cancelled` 和 `turn.failed`。
+对外事件还包括归一化 `usage`、`context.updated` 和 `output.continuing`，用于展示缓存用量、上下文压缩与截断续写状态。
 
-### 8.2 OpenAI 兼容 Provider
+### 8.2 Provider 与上下文
 
-当前只注册了一个 `OpenAICompatibleProvider`。它支持：
+当前仅注册 `OpenAICompatibleProvider`，支持：
 
 - SSE 流式文本；
 - 分片 Tool Call 参数聚合与 JSON 解析；
-- token usage 事件；
+- input/output/cache read/cache write token usage 事件；
 - AbortSignal 取消；
 - 90 秒默认模型请求超时；
 - 认证、限流、服务异常、网络、超时和空响应错误分类。
 
-应用使用的主要请求字段包括 `model`、`stream: true`、`stream_options.include_usage`、`messages` 和 `tools`。某个服务声称“OpenAI 兼容”并不保证完全可用；它还需要接受这些字段，并正确返回流式 Tool Calls。当前界面尚未展示 token usage 统计。
+应用按 Provider 配置创建 adapter。上下文接近预算时会回收大型 Tool Result，并在不拆散 Tool Call/Result 配对的前提下压缩旧历史；`length` 会触发有界自动续写。界面展示上下文估算和本轮 token/cache usage。
+
+当前不支持其他模型协议。DeepSeek、Kimi、GLM 等服务需要提供兼容的 Chat Completions、SSE、Function Tools 和 `/models` 接口。
 
 ## 9. 会话、配置和密钥保存在哪里
 

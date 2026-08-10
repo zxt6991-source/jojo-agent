@@ -5,15 +5,16 @@
 ## 已实现
 
 - Electron Main / sandboxed Preload / React Renderer / Utility Process 四层运行时；
-- OpenAI Chat Completions 兼容 Provider，支持流式文本、分片 Tool Call、超时、取消和错误分类；
+- OpenAI Chat Completions 兼容 Provider，支持自定义服务地址、模型发现、逐轮模型选择和统一流事件；
+- 上下文窗口估算、大 Tool Result 回收、安全历史压缩、缓存用量归一化与输出截断续写；
 - 纯 TypeScript Agent Core，支持多轮工具循环、拒绝回填、重复调用保护和最大迭代限制；
 - `read_file`、`list_files`、`grep`、`glob`、`write_file`、`edit_file`、`delete_file`、`terminal` 八个工具；
 - 修改前读取检查、SHA-256/mtime/大小冲突检测、精确文本编辑、原子替换与应用回收站；
 - 工作目录约束、真实路径与符号链接检查、输入/输出上限、Terminal 超时与进程组回收；
 - 文件修改展示逐行 Diff 并每次审批；Terminal 每次审批，工作目录外文件读取逐次审批；
-- 按项目目录分组的多会话侧边栏，首条提问自动生成标题，以及会话创建、重命名、删除、恢复和损坏尾记录容错；
-- 操作系统安全存储加密 API Key；
-- Markdown 消毒、工具卡片、审批弹窗、停止按钮、Provider 设置与输入框模型选择；
+- 按项目目录分组的多会话侧边栏，默认模型生成标题/摘要，以及会话创建、重命名、删除、恢复和损坏尾记录容错；
+- 操作系统安全存储按 Provider 加密 API Key；
+- Markdown 消毒、工具卡片、审批弹窗、停止按钮、模型服务设置与输入框模型选择；
 - Electron Forge、ASAR 和 Electron Fuses 生产打包配置。
 
 尚未实现 MCP、Skills、浏览器、子 Agent、记忆、自动化和专用 Git 写操作。
@@ -29,7 +30,7 @@ pnpm dev
 
 首次启动后：
 
-1. 打开“设置”，填写 OpenAI 兼容 API Base URL 和 API Key，再从 Provider 获取模型列表并选择默认模型；
+1. 打开“设置”，配置 OpenAI Chat Completions 兼容服务的 API Base URL 和 API Key，再获取模型列表并选择默认模型；
 2. 选择一个本地项目目录创建会话；
 3. 在输入框右下角选择本轮模型并输入任务。项目内检索默认允许；每次文件修改会先展示 Diff，Terminal 也始终弹出审批。
 

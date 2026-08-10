@@ -1,6 +1,7 @@
 import { describe, expect, expectTypeOf, it } from 'vitest';
 import {
   ContentBlockSchema,
+  DEFAULT_PROVIDERS,
   DEFAULT_SESSION_TITLE,
   IPC,
   ListModelsInputSchema,
@@ -36,29 +37,33 @@ describe('contracts', () => {
 
   it('applies provider defaults without adding them to save-settings input', () => {
     expect(ProviderSettingsSchema.parse({})).toEqual({
-      baseUrl: 'https://api.openai.com/v1',
-      model: 'gpt-5-mini',
-      models: ['gpt-5-mini'],
-      hasApiKey: false
+      activeProviderId: 'openai',
+      providers: DEFAULT_PROVIDERS,
+      utilityModel: { providerId: 'openai', model: 'gpt-5-mini' }
     });
-    expect(SaveSettingsInputSchema.parse({ baseUrl: 'https://example.com/v1', model: 'model', models: ['model', 'other'] })).toEqual({
-      baseUrl: 'https://example.com/v1',
-      model: 'model',
-      models: ['model', 'other']
-    });
+    expect(SaveSettingsInputSchema.parse({
+      activeProviderId: 'custom',
+      provider: {
+        id: 'custom', name: 'Custom', protocol: 'openai_chat_completions', baseUrl: 'https://example.com/v1',
+        model: 'model', models: ['model', 'other'], contextWindowTokens: 32_000, maxOutputTokens: 2_000
+      },
+      utilityModel: { providerId: 'custom', model: 'model' }
+    })).toMatchObject({ activeProviderId: 'custom', provider: { model: 'model' } });
     expect(() => SaveSettingsInputSchema.parse({})).toThrow();
   });
 
   it('enforces IPC input boundaries', () => {
-    expect(StartTurnInputSchema.parse({ sessionId: 'session-1', text: '  hello  ', model: '  model-b  ' })).toEqual({
+    expect(StartTurnInputSchema.parse({ sessionId: 'session-1', text: '  hello  ', providerId: ' openai ', model: '  model-b  ' })).toEqual({
       sessionId: 'session-1',
       text: 'hello',
+      providerId: 'openai',
       model: 'model-b'
     });
     expect(() => StartTurnInputSchema.parse({ sessionId: 'session-1', text: ' '.repeat(2), model: 'model' })).toThrow();
     expect(() => StartTurnInputSchema.parse({ sessionId: 'session-1', text: 'a'.repeat(100_001), model: 'model' })).toThrow();
     expect(() => StartTurnInputSchema.parse({ sessionId: 'session-1', text: 'hello', model: ' ' })).toThrow();
-    expect(ListModelsInputSchema.parse({ baseUrl: 'https://provider.example/v1' })).toEqual({
+    expect(ListModelsInputSchema.parse({ protocol: 'openai_chat_completions', baseUrl: 'https://provider.example/v1' })).toEqual({
+      protocol: 'openai_chat_completions',
       baseUrl: 'https://provider.example/v1'
     });
     expect(() => ListModelsInputSchema.parse({ baseUrl: 'not-a-url' })).toThrow();

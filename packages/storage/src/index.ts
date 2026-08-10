@@ -3,6 +3,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import {
   MessageSchema,
+  DEFAULT_PROVIDERS,
   ProviderSettingsSchema,
   SessionMetaSchema,
   SessionRecordSchema,
@@ -16,15 +17,32 @@ import {
 
 const StoredConfigV1Schema = z.object({
   schemaVersion: z.literal(1),
-  provider: ProviderSettingsSchema.omit({ hasApiKey: true, models: true })
+  provider: z.object({ baseUrl: z.string().url(), model: z.string().min(1) })
 });
 
 const StoredConfigV2Schema = z.object({
   schemaVersion: z.literal(2),
-  provider: ProviderSettingsSchema.omit({ hasApiKey: true })
+  provider: z.object({
+    baseUrl: z.string().url(), model: z.string().min(1),
+    models: z.array(z.string().min(1)).min(1)
+  })
 });
 
-const StoredConfigSchema = z.union([StoredConfigV1Schema, StoredConfigV2Schema]);
+const StoredProviderSchema = z.object({
+  id: z.string().min(1), name: z.string().min(1),
+  protocol: z.string().min(1),
+  baseUrl: z.string().url(), model: z.string().min(1), models: z.array(z.string().min(1)).min(1),
+  contextWindowTokens: z.number().int(), maxOutputTokens: z.number().int()
+});
+
+const StoredConfigV3Schema = z.object({
+  schemaVersion: z.literal(3),
+  activeProviderId: z.string().min(1),
+  providers: z.array(StoredProviderSchema).min(1),
+  utilityModel: z.object({ providerId: z.string().min(1), model: z.string().min(1) })
+});
+
+const StoredConfigSchema = z.union([StoredConfigV1Schema, StoredConfigV2Schema, StoredConfigV3Schema]);
 
 export class JsonlSessionStore {
   private readonly locks = new Set<string>();
@@ -122,20 +140,60 @@ export class JsonlSessionStore {
 
 export class JsonConfigStore {
   constructor(private readonly filePath: string) {}
-  async get(hasApiKey = false): Promise<ProviderSettings> {
+  async get(apiKeyState: boolean | Record<string, string> = false): Promise<ProviderSettings> {
+    const hasKey = (id: string) => typeof apiKeyState === 'boolean' ? (id === 'openai' && apiKeyState) : Boolean(apiKeyState[id]);
     try {
       const stored = StoredConfigSchema.parse(JSON.parse(await readFile(this.filePath, 'utf8')));
-      if (stored.schemaVersion === 1) return { ...stored.provider, models: [stored.provider.model], hasApiKey };
-      return { ...stored.provider, hasApiKey };
+      if (stored.schemaVersion === 1 || stored.schemaVersion === 2) {
+        const models = stored.schemaVersion === 1 ? [stored.provider.model] : stored.provider.models;
+        const providers = DEFAULT_PROVIDERS.map((provider) => provider.id === 'openai'
+          ? { ...provider, ...stored.provider, models, hasApiKey: hasKey('openai') }
+          : { ...provider, hasApiKey: hasKey(provider.id) });
+        return ProviderSettingsSchema.parse({
+          activeProviderId: 'openai', providers,
+          utilityModel: { providerId: 'openai', model: stored.provider.model }
+        });
+      }
+      const providers = stored.providers
+        .filter((provider) => provider.protocol === 'openai_chat_completions')
+        .map((provider) => ({ ...provider, protocol: 'openai_chat_completions' as const, hasApiKey: hasKey(provider.id) }));
+      if (providers.length === 0) {
+        return ProviderSettingsSchema.parse({
+          activeProviderId: 'openai',
+          providers: DEFAULT_PROVIDERS.map((provider) => ({ ...provider, hasApiKey: hasKey(provider.id) })),
+          utilityModel: { providerId: 'openai', model: 'gpt-5-mini' }
+        });
+      }
+      const activeProvider = providers.find((provider) => provider.id === stored.activeProviderId) ?? providers[0]!;
+      const utilityProvider = providers.find((provider) => provider.id === stored.utilityModel.providerId);
+      const utilityModel = utilityProvider?.models.includes(stored.utilityModel.model)
+        ? stored.utilityModel
+        : { providerId: activeProvider.id, model: activeProvider.model };
+      return ProviderSettingsSchema.parse({
+        activeProviderId: activeProvider.id,
+        providers,
+        utilityModel
+      });
     } catch {
-      return { baseUrl: 'https://api.openai.com/v1', model: 'gpt-5-mini', models: ['gpt-5-mini'], hasApiKey };
+      return ProviderSettingsSchema.parse({
+        activeProviderId: 'openai',
+        providers: DEFAULT_PROVIDERS.map((provider) => ({ ...provider, hasApiKey: hasKey(provider.id) })),
+        utilityModel: { providerId: 'openai', model: 'gpt-5-mini' }
+      });
     }
   }
-  async save(provider: Omit<ProviderSettings, 'hasApiKey'>): Promise<void> {
+  async save(settings: ProviderSettings): Promise<void> {
+    const validSettings = ProviderSettingsSchema.parse(settings);
     await mkdir(path.dirname(this.filePath), { recursive: true });
     try { await copyFile(this.filePath, `${this.filePath}.bak`); } catch { /* first save */ }
     const temporary = `${this.filePath}.tmp`;
-    await writeFile(temporary, JSON.stringify({ schemaVersion: 2, provider }, null, 2), { encoding: 'utf8', mode: 0o600 });
+    const stored = {
+      schemaVersion: 3,
+      activeProviderId: validSettings.activeProviderId,
+      providers: validSettings.providers.map(({ hasApiKey: _hasApiKey, ...provider }) => provider),
+      utilityModel: validSettings.utilityModel
+    };
+    await writeFile(temporary, JSON.stringify(stored, null, 2), { encoding: 'utf8', mode: 0o600 });
     await rename(temporary, this.filePath);
   }
 }

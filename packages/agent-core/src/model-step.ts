@@ -13,6 +13,7 @@ type ModelStepOptions = {
   toolDefinitions: ToolDefinition[];
   provider: ModelProvider;
   signal: AbortSignal;
+  maxOutputTokens?: number;
   emit: (event: AgentEvent) => void;
 };
 
@@ -32,7 +33,8 @@ export async function runModelStep(options: ModelStepOptions): Promise<ModelStep
     model: options.model,
     messages: options.messages,
     tools: options.toolDefinitions,
-    signal: options.signal
+    signal: options.signal,
+    ...(options.maxOutputTokens !== undefined ? { maxOutputTokens: options.maxOutputTokens } : {})
   });
 
   for await (const event of events) {
@@ -51,7 +53,9 @@ export async function runModelStep(options: ModelStepOptions): Promise<ModelStep
         options.emit({
           type: 'usage',
           ...(event.inputTokens !== undefined ? { inputTokens: event.inputTokens } : {}),
-          ...(event.outputTokens !== undefined ? { outputTokens: event.outputTokens } : {})
+          ...(event.outputTokens !== undefined ? { outputTokens: event.outputTokens } : {}),
+          ...(event.cacheReadInputTokens !== undefined ? { cacheReadInputTokens: event.cacheReadInputTokens } : {}),
+          ...(event.cacheWriteInputTokens !== undefined ? { cacheWriteInputTokens: event.cacheWriteInputTokens } : {})
         });
         break;
       case 'response_completed':
