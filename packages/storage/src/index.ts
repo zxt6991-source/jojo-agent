@@ -39,7 +39,8 @@ const StoredConfigV3Schema = z.object({
   schemaVersion: z.literal(3),
   activeProviderId: z.string().min(1),
   providers: z.array(StoredProviderSchema).min(1),
-  utilityModel: z.object({ providerId: z.string().min(1), model: z.string().min(1) })
+  utilityModel: z.object({ providerId: z.string().min(1), model: z.string().min(1) }),
+  extensions: z.unknown().optional()
 });
 
 const StoredConfigSchema = z.union([StoredConfigV1Schema, StoredConfigV2Schema, StoredConfigV3Schema]);
@@ -172,7 +173,8 @@ export class JsonConfigStore {
       return ProviderSettingsSchema.parse({
         activeProviderId: activeProvider.id,
         providers,
-        utilityModel
+        utilityModel,
+        ...(stored.extensions !== undefined ? { extensions: stored.extensions } : {})
       });
     } catch {
       return ProviderSettingsSchema.parse({
@@ -191,7 +193,8 @@ export class JsonConfigStore {
       schemaVersion: 3,
       activeProviderId: validSettings.activeProviderId,
       providers: validSettings.providers.map(({ hasApiKey: _hasApiKey, ...provider }) => provider),
-      utilityModel: validSettings.utilityModel
+      utilityModel: validSettings.utilityModel,
+      extensions: validSettings.extensions
     };
     await writeFile(temporary, JSON.stringify(stored, null, 2), { encoding: 'utf8', mode: 0o600 });
     await rename(temporary, this.filePath);

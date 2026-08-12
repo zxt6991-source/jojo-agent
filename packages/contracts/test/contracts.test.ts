@@ -7,6 +7,7 @@ import {
   ListModelsInputSchema,
   MessageSchema,
   ProviderSettingsSchema,
+  ExtensionSettingsSchema,
   SaveSettingsInputSchema,
   SessionRecordSchema,
   StartTurnInputSchema,
@@ -39,7 +40,8 @@ describe('contracts', () => {
     expect(ProviderSettingsSchema.parse({})).toEqual({
       activeProviderId: 'openai',
       providers: DEFAULT_PROVIDERS,
-      utilityModel: { providerId: 'openai', model: 'gpt-5-mini' }
+      utilityModel: { providerId: 'openai', model: 'gpt-5-mini' },
+      extensions: { mcpServers: [], skills: { directories: [], disabled: [] } }
     });
     expect(SaveSettingsInputSchema.parse({
       activeProviderId: 'custom',
@@ -50,6 +52,36 @@ describe('contracts', () => {
       utilityModel: { providerId: 'custom', model: 'model' }
     })).toMatchObject({ activeProviderId: 'custom', provider: { model: 'model' } });
     expect(() => SaveSettingsInputSchema.parse({})).toThrow();
+  });
+
+  it('validates MCP transports and rejects duplicate server ids', () => {
+    expect(ExtensionSettingsSchema.parse({
+      mcpServers: [
+        { id: 'local', name: 'Local', transport: 'stdio', command: 'node', args: ['server.js'] },
+        { id: 'remote', name: 'Remote', transport: 'streamable_http', url: 'https://example.com/mcp', auth: { type: 'oauth', scopes: ['read'], resourceOrigins: ['https://region.example.com/'] } }
+      ],
+      skills: { directories: ['/skills'], disabled: ['one'] }
+    })).toMatchObject({
+      mcpServers: [{ enabled: true }, { enabled: true, versionNegotiation: 'auto' }]
+    });
+    expect(ExtensionSettingsSchema.parse({
+      mcpServers: [{
+        id: 'legacy', name: 'Legacy', transport: 'streamable_http',
+        url: 'https://example.com/mcp', versionNegotiation: 'legacy'
+      }]
+    }).mcpServers[0]).toMatchObject({ versionNegotiation: 'legacy' });
+    expect(() => ExtensionSettingsSchema.parse({
+      mcpServers: [{ id: 'remote', name: 'Remote', transport: 'streamable_http', url: 'https://example.com/mcp', auth: { type: 'basic' } }]
+    })).toThrow();
+    expect(() => ExtensionSettingsSchema.parse({
+      mcpServers: [{ id: 'remote', name: 'Remote', transport: 'streamable_http', url: 'https://example.com/mcp', auth: { type: 'oauth', resourceOrigins: ['https://region.example.com/path'] } }]
+    })).toThrow(/HTTPS origin/u);
+    expect(() => ExtensionSettingsSchema.parse({
+      mcpServers: [
+        { id: 'same', name: 'A', transport: 'stdio', command: 'a' },
+        { id: 'same', name: 'B', transport: 'stdio', command: 'b' }
+      ]
+    })).toThrow(/Duplicate MCP server id/u);
   });
 
   it('enforces IPC input boundaries', () => {

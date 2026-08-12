@@ -33,7 +33,7 @@ export function redactSensitiveEnvironmentAssignments(text: string): string {
 export class TerminalTool implements Tool {
   readonly definition = {
     name: 'terminal',
-    description: 'Run one executable with an argument array. command must be only the executable name or path, for example command="pnpm", args=["test"]. Never put arguments in command. This tool always requires user approval.',
+    description: 'Run one non-interactive executable with an argument array. command must be only the executable name or path, for example command="pnpm", args=["test"]. Never put arguments in command. stdin is unavailable, shell syntax is only interpreted when a shell executable is explicitly requested, and inherited sensitive environment variables such as API keys are removed. This tool always requires user approval.',
     inputSchema: {
       type: 'object',
       properties: {

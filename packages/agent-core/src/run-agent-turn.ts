@@ -4,6 +4,7 @@ import {
   appendMessage,
   createAssistantMessage,
   createContinuationMessage,
+  createNoProgressFinalMessage,
   createToolMessage,
   createUserMessage
 } from './messages.js';
@@ -16,20 +17,37 @@ const DEFAULT_MAX_ITERATIONS = 12;
 const DEFAULT_CONTEXT_WINDOW_TOKENS = 128_000;
 const DEFAULT_MAX_OUTPUT_TOKENS = 8_192;
 const MAX_OUTPUT_CONTINUATIONS = 2;
+const NO_PROGRESS_RECOVERY_TOOL_STEPS = 2;
 
 type TurnState = {
   messages: Message[];
   toolsByName: Map<string, Tool>;
   toolDefinitions: ToolDefinition[];
   executedCallIds: Set<string>;
+  toolCallCounts: Map<string, number>;
+  observationFingerprints: Set<string>;
 };
 
+function currentTools(options: AgentRunOptions): Tool[] {
+  const tools = [...options.tools, ...(options.getTools?.() ?? [])];
+  return [...new Map(tools.map((tool) => [tool.definition.name, tool])).values()];
+}
+
+function refreshTools(state: TurnState, options: AgentRunOptions): void {
+  const tools = currentTools(options);
+  state.toolsByName = new Map(tools.map((tool) => [tool.definition.name, tool]));
+  state.toolDefinitions = tools.map((tool) => tool.definition);
+}
+
 function createTurnState(options: AgentRunOptions): TurnState {
+  const tools = currentTools(options);
   return {
     messages: [...options.history],
-    toolsByName: new Map(options.tools.map((tool) => [tool.definition.name, tool])),
-    toolDefinitions: options.tools.map((tool) => tool.definition),
-    executedCallIds: new Set<string>()
+    toolsByName: new Map(tools.map((tool) => [tool.definition.name, tool])),
+    toolDefinitions: tools.map((tool) => tool.definition),
+    executedCallIds: new Set<string>(),
+    toolCallCounts: new Map<string, number>(),
+    observationFingerprints: new Set<string>()
   };
 }
 
@@ -37,11 +55,14 @@ async function executeToolCalls(
   calls: ToolCall[],
   state: TurnState,
   options: AgentRunOptions
-): Promise<void> {
+): Promise<boolean> {
+  let noProgressDetected = false;
   for (const call of calls) {
     const result = await executeToolCall(call, state, options);
     await appendMessage(options, state.messages, createToolMessage(result));
+    noProgressDetected ||= result.code === 'no_progress';
   }
+  return noProgressDetected;
 }
 
 function handleTurnError(
@@ -71,9 +92,20 @@ export async function runAgentTurn(options: AgentRunOptions): Promise<AgentRunRe
   try {
     await appendMessage(options, state.messages, createUserMessage(options.userText));
     let outputContinuations = 0;
+    let recoveryToolStepsRemaining: number | null = null;
+    let finalResponseOnly = false;
 
-    for (let iteration = 0; iteration < maxIterations; iteration += 1) {
+    for (
+      let iteration = 0;
+      iteration < maxIterations || (finalResponseOnly && iteration === maxIterations);
+      iteration += 1
+    ) {
       throwIfAborted(options.signal);
+      refreshTools(state, options);
+      if (finalResponseOnly) {
+        state.toolsByName = new Map();
+        state.toolDefinitions = [];
+      }
 
       const contextWindowTokens = options.contextWindowTokens ?? DEFAULT_CONTEXT_WINDOW_TOKENS;
       const maxOutputTokens = options.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
@@ -117,7 +149,22 @@ export async function runAgentTurn(options: AgentRunOptions): Promise<AgentRunRe
         return { messages: state.messages, stopReason: step.stopReason };
       }
 
-      await executeToolCalls(step.calls, state, options);
+      const noProgressDetected = await executeToolCalls(step.calls, state, options);
+      if (finalResponseOnly) {
+        throw new AgentError(
+          'no_progress',
+          'The model requested another tool after tool use was paused for lack of progress.'
+        );
+      }
+      if (noProgressDetected && recoveryToolStepsRemaining === null) {
+        recoveryToolStepsRemaining = NO_PROGRESS_RECOVERY_TOOL_STEPS;
+      } else if (recoveryToolStepsRemaining !== null) {
+        recoveryToolStepsRemaining -= 1;
+        if (recoveryToolStepsRemaining <= 0) {
+          finalResponseOnly = true;
+          await appendMessage(options, state.messages, createNoProgressFinalMessage());
+        }
+      }
       outputContinuations = 0;
     }
 

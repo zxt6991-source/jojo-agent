@@ -4,6 +4,8 @@ import type { Message } from './messages';
 import type { ProviderSettings, SessionMeta } from './persistence';
 import { SESSION_TITLE_MAX_LENGTH } from './persistence';
 import type { WorkspaceChanges } from './workspace';
+import { ExtensionSettingsSchema } from './extensions';
+import type { ExtensionSettings, ExtensionStatus, SkillDetail } from './extensions';
 
 export const CreateSessionInputSchema = z.object({
   title: z.string().trim().min(1).max(SESSION_TITLE_MAX_LENGTH),
@@ -24,6 +26,9 @@ export const StartTurnInputSchema = z.object({
 
 export const SessionIdInputSchema = z.object({ sessionId: z.string() });
 export const ApprovalInputSchema = z.object({ requestId: z.string(), allow: z.boolean() });
+export const McpServerIdInputSchema = z.object({ serverId: z.string().trim().min(1).max(64) });
+export const SkillPathInputSchema = z.object({ path: z.string().trim().min(1).max(4_096) });
+export const GetExtensionStatusInputSchema = z.object({ workingDirectory: z.string().trim().min(1).max(4_096).optional() });
 
 export const SaveSettingsInputSchema = z.object({
   activeProviderId: z.string().min(1),
@@ -47,6 +52,8 @@ export const ListModelsInputSchema = z.object({
   apiKey: z.string().optional()
 });
 
+export const SaveExtensionSettingsInputSchema = ExtensionSettingsSchema;
+
 export type DesktopApi = {
   listSessions(): Promise<SessionMeta[]>;
   createSession(input: z.input<typeof CreateSessionInputSchema>): Promise<SessionMeta | null>;
@@ -61,20 +68,33 @@ export type DesktopApi = {
   getSettings(): Promise<ProviderSettings>;
   listModels(input: z.input<typeof ListModelsInputSchema>): Promise<string[]>;
   saveSettings(input: z.input<typeof SaveSettingsInputSchema>): Promise<ProviderSettings>;
+  getExtensionStatus(input?: z.input<typeof GetExtensionStatusInputSchema>): Promise<ExtensionStatus>;
+  getSkillDetail(input: z.input<typeof SkillPathInputSchema>): Promise<SkillDetail>;
+  saveExtensionSettings(input: z.input<typeof SaveExtensionSettingsInputSchema>): Promise<ExtensionSettings>;
+  connectMcpOAuth(input: z.input<typeof McpServerIdInputSchema>): Promise<void>;
+  disconnectMcpOAuth(input: z.input<typeof McpServerIdInputSchema>): Promise<void>;
   onAgentEvent(listener: (event: AgentEvent) => void): () => void;
   onSessionsChanged(listener: () => void): () => void;
+  onExtensionsChanged(listener: () => void): () => void;
 };
 
 export type WorkerCommand =
   | { type: 'turn.start'; payload: z.input<typeof StartTurnInputSchema> }
   | { type: 'turn.cancel'; sessionId: string }
   | { type: 'approval.resolve'; requestId: string; allow: boolean }
-  | { type: 'config.update'; settings: ProviderSettings; apiKeys: Record<string, string> };
+  | { type: 'config.update'; settings: ProviderSettings; apiKeys: Record<string, string>; mcpOAuthCredentials: Record<string, unknown> }
+  | { type: 'mcp.oauth.start'; requestId: string; serverId: string; redirectUrl: string; state: string }
+  | { type: 'mcp.oauth.callback'; requestId: string; serverId: string; callbackParams: string }
+  | { type: 'mcp.oauth.disconnect'; requestId: string; serverId: string };
 
 export type WorkerMessage =
   | { type: 'ready' }
   | { type: 'agent.event'; event: AgentEvent }
   | { type: 'sessions.changed' }
+  | { type: 'extensions.status'; status: ExtensionStatus }
+  | { type: 'mcp.oauth.authorization'; requestId: string; url: string }
+  | { type: 'mcp.oauth.credentials'; serverId: string; credentials: unknown }
+  | { type: 'mcp.oauth.result'; requestId: string; ok: boolean; error?: string }
   | { type: 'worker.error'; message: string };
 
 export const IPC = {
@@ -91,6 +111,12 @@ export const IPC = {
   getSettings: 'settings:get',
   listModels: 'models:list',
   saveSettings: 'settings:save',
+  getExtensionStatus: 'extensions:status',
+  getSkillDetail: 'extensions:skill-detail',
+  saveExtensionSettings: 'extensions:save',
+  connectMcpOAuth: 'extensions:mcp-oauth-connect',
+  disconnectMcpOAuth: 'extensions:mcp-oauth-disconnect',
   agentEvent: 'agent:event',
-  sessionsChanged: 'sessions:changed'
+  sessionsChanged: 'sessions:changed',
+  extensionsChanged: 'extensions:changed'
 } as const;

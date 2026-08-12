@@ -1,7 +1,7 @@
 # Desktop Agent 当前功能与上手指南
 
-> 文档状态：2026-08-10
-> 当前版本：0.1.0（MVP + Coding Agent Phase 1）
+> 文档状态：2026-08-11
+> 当前版本：0.1.0（MVP + Coding Agent Phase 1 + Phase 3 MCP/Skills）
 > 说明：本文以当前仓库代码为准，只描述已经实现的能力。路线图中的规划不等于可用功能。
 
 ## 1. 先用一分钟认识项目
@@ -16,7 +16,7 @@ Desktop Agent 是一个本地优先的 Electron 桌面 AI Agent。它把一次 A
 - 在用户逐次批准后运行测试、构建或其他本地命令；
 - 观察 Git 工作区中已有或本轮产生的文件变化。
 
-它现在可以完成范围明确的小型代码任务，但仍不是完整的自主编程 Agent：没有专用 Git 写操作、MCP、Skills、浏览器和子 Agent 等能力。
+它现在可以完成范围明确的小型代码任务，并可通过 MCP 与本地 Skills 扩展能力，但仍不是完整的自主编程 Agent：没有专用 Git 写操作、浏览器和子 Agent 等能力。
 
 专用写工具只允许修改工作目录内的 UTF-8 文本，执行前展示 Diff 并询问一次。获批的终端命令仍可能绕过这些文件工具限制并修改其他内容，因此用户仍需检查完整命令。
 
@@ -243,6 +243,7 @@ Worker 与界面进程分离，因此 Agent 运行异常不必直接获得 Rende
 | `grep` / `glob` | 自动允许 | 拒绝 |
 | `write_file` / `edit_file` / `delete_file` | 每次展示 Diff 并询问 | 拒绝 |
 | `terminal` | 每次询问 | `cwd` 不允许越出工作目录 |
+| MCP 外部工具 | 每次询问 | 由 MCP Server 自身决定；审批前需检查参数 |
 
 这些规则限制的是内置工具的直接行为，不是操作系统级沙箱。尤其是终端命令获批后，会以当前应用进程继承的用户权限运行；命令本身仍可能访问工作目录外资源。当前权限 Gate 只校验终端的 `cwd`，不会解析命令参数的语义。
 
@@ -280,6 +281,28 @@ Worker 与界面进程分离，因此 Agent 运行异常不必直接获得 Rende
 
 当前不支持其他模型协议。DeepSeek、Kimi、GLM 等服务需要提供兼容的 Chat Completions、SSE、Function Tools 和 `/models` 接口。
 
+### 8.3 MCP 与 Skills
+
+点击左下角“MCP 与 Skills”可编辑扩展配置并查看连接/发现状态。面板采用 MCP / 技能标签页和紧凑列表，支持按名称、描述、来源或路径搜索；每行直接展示来源、连接状态或工具数量，并用开关启停。原始 MCP JSON 和额外 Skill 目录收进右上角的高级配置入口，日常管理不需要直接面对配置文本。
+
+MCP 支持：
+
+- 以 `command` + `args` 启动本地 stdio server；
+- 连接 Streamable HTTP endpoint；
+- 自动发现工具并映射为 `mcp__<server>__<tool>`；
+- Remote MCP OAuth：支持浏览器授权、PKCE、动态客户端注册、refresh token 和安全凭据存储；
+- Streamable HTTP 可选择 `auto` 协商或 `legacy` 直接使用 2025 `initialize`，兼容不支持 `server/discover` 的服务；
+- 显示连接中、已连接、停用、失败状态及工具数量；
+- 每个外部工具调用都先请求一次批准；
+- 总工具数超过 24 时只先暴露搜索工具，按任务关键词激活最多 12 个匹配工具。
+
+Skills 会从 `userData/skills`、用户级 `~/.agents/skills` / `~/.codex/skills` / `~/.config/agents/skills`、设置目录以及项目 `.codex/skills` / `.agents/skills` 扫描 `SKILL.md`。文件必须包含 `name` 和 `description` frontmatter。模型初始只看到技能元数据；只有调用 `load_skill` 后才把完整正文放进当前上下文。设置面板可按 Skill ID 启停。
+
+模型可通过需审批的 `install_skill` 把 Skill 非交互安装到当前项目 `.agents/skills`；工具固定使用 `--yes --agent universal --copy`，并在安装后验证文件、动态刷新目录，使新 Skill 在当前 Turn 的下一步即可加载。Agent Core 会阻止同一轮第三次执行完全相同的工具调用，并识别不同查询返回相同只读内容的情况；触发后只再允许两个恢复工具步骤，随后暂停工具并要求模型根据已有证据直接回答，避免重复搜索耗尽迭代上限。
+
+MCP 的 `env` 和静态 HTTP `headers` 位于当前用户可读的普通配置；OAuth client registration、token 和 PKCE/discovery 状态使用操作系统安全存储加密。不要把长期高权限 token 手工写入 headers。
+启用 stdio server 会在应用连接时立即以当前用户权限启动其 `command`。逐次审批只覆盖后续 MCP 工具调用，不能限制 server 进程的启动代码，因此只能配置可信程序。
+
 ## 9. 会话、配置和密钥保存在哪里
 
 所有数据都放在 Electron 的 `app.getPath('userData')` 目录中，实际根路径随操作系统和应用名称变化。目录内部结构为：
@@ -292,6 +315,7 @@ userData/
 │   └── provider-key.bin        # 操作系统安全存储加密后的 API Key
 ├── sessions/
 │   └── <session-id>.jsonl      # 会话元数据、标题变更和消息
+├── skills/                     # 全局安装的本地 SKILL.md 目录
 └── trash/
     └── <session-id>/<entry>/   # 文件工具覆盖/删除前的副本与恢复元数据
 ```
@@ -309,7 +333,7 @@ userData/
 
 ## 10. 进程和包的职责
 
-项目使用 pnpm workspace，包含一个桌面应用和五个共享包：
+项目使用 pnpm workspace，包含一个桌面应用和六个共享包：
 
 | 模块 | 当前职责 | 新手何时需要看 |
 |---|---|---|
@@ -319,6 +343,7 @@ userData/
 | `packages/providers` | OpenAI Chat Completions 兼容协议 | 接入或排查模型服务时 |
 | `packages/tools-node` | 文件、目录、终端工具和权限 Gate | 新增工具或修改审批策略时 |
 | `packages/storage` | JSONL 会话和普通配置存储 | 修改持久化格式时 |
+| `packages/extensions` | MCP stdio/HTTP 客户端、延迟工具发现和 Skills | 修改外部扩展机制时 |
 
 四类运行时职责：
 
@@ -342,6 +367,7 @@ userData/
 | 修改 Chat Completions 请求或流解析 | `packages/providers/src/chat-completions-request.ts`、`packages/providers/src/chat-completions-stream.ts` |
 | 修改底层 SSE 解码 | `packages/providers/src/sse.ts` |
 | 新增工具或调整权限 | `packages/tools-node/src/index.ts` |
+| 修改 MCP 或 Skills | `packages/extensions/src/index.ts` |
 | 修改会话或配置格式 | `packages/storage/src/index.ts` |
 | 修改 Electron 打包和安全 Fuses | `apps/desktop/forge.config.ts` |
 
@@ -361,9 +387,10 @@ userData/
 | `pnpm build` | 通过 Electron Forge 为当前平台生成分发产物 |
 | `pnpm --filter @desktop-agent/desktop package` | 只生成未封装的应用目录 |
 
-当前共有 24 个单元测试，覆盖：
+当前共有 69 个单元测试，覆盖：
 
 - Agent 工具循环、重复 Tool Call 和审批拒绝后继续；
+- 动态工具刷新、MCP 大工具集延迟激活和 Skill 按需加载；
 - Provider 请求序列化、SSE 分片解析、Tool Call 聚合、错误分类、超时与取消；
 - 大文件截断、目录符号链接逃逸和工作目录外读取审批；
 - JSONL 损坏尾恢复和单会话并发锁；
@@ -404,7 +431,6 @@ pnpm test
 - 通用 unified patch 输入工具（当前提供完整写入与精确文本编辑）；
 - Git 提交、分支等专用写操作；
 - 多 Provider 注册、列表和会话级切换；
-- MCP 和 Skills；
 - 浏览器自动化；
 - 图片等多模态消息；
 - 子 Agent 和工作流；

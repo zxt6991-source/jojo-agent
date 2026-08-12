@@ -15,6 +15,8 @@ export type AgentRunOptions = {
   userText: string;
   provider: ModelProvider;
   tools: Tool[];
+  /** Returns tools that became available during this turn, such as lazily discovered MCP tools. */
+  getTools?: () => Tool[];
   permissionGate: PermissionGate;
   signal: AbortSignal;
   maxIterations?: number;

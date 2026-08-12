@@ -16,8 +16,10 @@
 - 操作系统安全存储按 Provider 加密 API Key；
 - Markdown 消毒、工具卡片、审批弹窗、停止按钮、模型服务设置与输入框模型选择；
 - Electron Forge、ASAR 和 Electron Fuses 生产打包配置。
+- MCP stdio / Streamable HTTP 客户端、工具发现、连接状态与逐次审批；超过 24 个 MCP 工具时按搜索结果延迟激活；
+- 本地 `SKILL.md` 发现、启停和 `load_skill` 按需注入，自动扫描项目内 `.codex/skills` 与 `.agents/skills`。
 
-尚未实现 MCP、Skills、浏览器、子 Agent、记忆、自动化和专用 Git 写操作。
+尚未实现浏览器、子 Agent、记忆、自动化和专用 Git 写操作。
 
 ## 开发
 
@@ -33,6 +35,8 @@ pnpm dev
 1. 打开“设置”，配置 OpenAI Chat Completions 兼容服务的 API Base URL 和 API Key，再获取模型列表并选择默认模型；
 2. 选择一个本地项目目录创建会话；
 3. 在输入框右下角选择本轮模型并输入任务。项目内检索默认允许；每次文件修改会先展示 Diff，Terminal 也始终弹出审批。
+
+配置扩展时点击左下角“MCP 与 Skills”：面板通过 MCP / 技能标签页、搜索、状态和开关管理已发现的扩展；右上角“配置 MCP”可编辑 Server JSON，“目录设置”可添加额外 Skill 目录。Skill 也会从应用 `userData/skills`、用户级 `.agents` / `.codex` Skills 目录以及项目 `.codex/skills` / `.agents/skills` 自动发现。Agent 可经审批使用 `install_skill` 非交互安装项目 Skill，并在当前 Turn 动态刷新。所有外部 MCP 工具调用都会逐次请求批准。
 
 常用质量命令：
 
@@ -58,6 +62,7 @@ packages/agent-core/  不依赖 Electron 的 Agent 循环
 packages/providers/   模型协议适配
 packages/tools-node/  文件、目录、终端与权限 Gate
 packages/storage/     JSONL Session 与普通配置
+packages/extensions/  MCP 客户端、延迟工具目录与 Skills 发现
 ```
 
 各 Workspace 的职责、接口边界、核心流程、安全约束和演进方案见 [`docs/technical-implementation/`](./docs/technical-implementation/README.md)。
@@ -66,7 +71,8 @@ packages/storage/     JSONL Session 与普通配置
 
 ## 当前验证范围
 
-- Agent Core：工具循环、重复 Tool Call、拒绝后继续；
+- Agent Core：工具循环、动态工具刷新、重复 Tool Call、拒绝后继续；
+- Extensions：Skill 元数据发现/按需加载、MCP 连接状态和大工具集延迟激活；
 - Tools：大文件截断、项目检索、修改 Diff、读后写冲突、精确编辑、回收站、权限位保留、符号链接逃逸和目录外审批；
 - Storage：JSONL 损坏尾恢复、单会话运行锁；
 - TypeScript、ESLint、Vitest；

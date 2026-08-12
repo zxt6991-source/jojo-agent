@@ -15,6 +15,11 @@ const api: DesktopApi = {
   getSettings: () => ipcRenderer.invoke(IPC.getSettings),
   listModels: (input) => ipcRenderer.invoke(IPC.listModels, input),
   saveSettings: (input) => ipcRenderer.invoke(IPC.saveSettings, input),
+  getExtensionStatus: (input) => ipcRenderer.invoke(IPC.getExtensionStatus, input),
+  getSkillDetail: (input) => ipcRenderer.invoke(IPC.getSkillDetail, input),
+  saveExtensionSettings: (input) => ipcRenderer.invoke(IPC.saveExtensionSettings, input),
+  connectMcpOAuth: (input) => ipcRenderer.invoke(IPC.connectMcpOAuth, input),
+  disconnectMcpOAuth: (input) => ipcRenderer.invoke(IPC.disconnectMcpOAuth, input),
   onAgentEvent: (listener) => {
     const handler = (_event: Electron.IpcRendererEvent, value: AgentEvent) => listener(value);
     ipcRenderer.on(IPC.agentEvent, handler);
@@ -24,6 +29,11 @@ const api: DesktopApi = {
     const handler = () => listener();
     ipcRenderer.on(IPC.sessionsChanged, handler);
     return () => ipcRenderer.removeListener(IPC.sessionsChanged, handler);
+  },
+  onExtensionsChanged: (listener) => {
+    const handler = () => listener();
+    ipcRenderer.on(IPC.extensionsChanged, handler);
+    return () => ipcRenderer.removeListener(IPC.extensionsChanged, handler);
   }
 };
 

@@ -41,6 +41,16 @@ export function createContinuationMessage(): Message {
   };
 }
 
+export function createNoProgressFinalMessage(): Message {
+  return {
+    id: createId(), role: 'user', createdAt: now(), metadata: { internal: true },
+    content: [{
+      type: 'text',
+      text: 'Tool use is now paused because repeated investigation did not produce enough progress. Do not request more tools. Give the user the best final answer supported by the existing results, clearly stating the remaining limitation and the next concrete action.'
+    }]
+  };
+}
+
 export async function appendMessage(
   options: AgentRunOptions,
   messages: Message[],

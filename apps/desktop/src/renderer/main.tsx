@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client';
 import DOMPurify from 'dompurify';
 import { marked } from 'marked';
 import type {
-  AgentEvent, ApprovalRequest, Message, ProviderConfig, ProviderSettings, SessionMeta, ToolResult, WorkspaceChanges
+  AgentEvent, ApprovalRequest, ExtensionSettings, ExtensionStatus, Message, ProviderConfig, ProviderSettings, SessionMeta, SkillDetail, SkillStatus, ToolResult, WorkspaceChanges
 } from '@desktop-agent/contracts';
 import { DEFAULT_PROVIDERS, DEFAULT_SESSION_TITLE, projectNameFromDirectory } from '@desktop-agent/contracts';
 import './styles.css';
@@ -15,7 +15,8 @@ type ProjectGroup = { path: string; name: string; sessions: SessionMeta[] };
 const defaultSettings: ProviderSettings = {
   activeProviderId: 'openai',
   providers: DEFAULT_PROVIDERS.map((provider) => ({ ...provider })),
-  utilityModel: { providerId: 'openai', model: 'gpt-5-mini' }
+  utilityModel: { providerId: 'openai', model: 'gpt-5-mini' },
+  extensions: { mcpServers: [], skills: { directories: [], disabled: [] } }
 };
 
 function providerById(settings: ProviderSettings, id: string): ProviderConfig {
@@ -41,10 +42,38 @@ function Markdown({ text }: { text: string }) {
   return <div className="markdown" dangerouslySetInnerHTML={{ __html: html }} />;
 }
 
+function skillMarkdownContent(content: string): string {
+  return content.replace(/^---\s*\r?\n[\s\S]*?\r?\n---\s*(?:\r?\n|$)/u, '').trim();
+}
+
+function skillDetailErrorMessage(cause: unknown): string {
+  const message = cause instanceof Error ? cause.message : String(cause);
+  if (message.includes("No handler registered for 'extensions:skill-detail'")) {
+    return '应用主进程仍是旧版本。请完整退出并重新启动 Desktop Agent，然后重新打开此 Skill。';
+  }
+  return message;
+}
+
 function FolderIcon() {
   return <svg className="project-folder" viewBox="0 0 20 20" aria-hidden="true">
     <path d="M2.5 5.75c0-1.1.9-2 2-2h3l1.45 1.7h6.55c1.1 0 2 .9 2 2v6.75c0 1.1-.9 2-2 2h-11c-1.1 0-2-.9-2-2V5.75Z" />
   </svg>;
+}
+
+function ExtensionIcon({ kind }: { kind: 'mcp' | 'skill' }) {
+  return <span className={`extension-item-icon ${kind}`} aria-hidden="true">
+    {kind === 'skill'
+      ? <svg viewBox="0 0 24 24"><path d="m12 3 6.5 3.75v7.5L12 18l-6.5-3.75v-7.5L12 3Zm0 7.5 6.5-3.75M12 10.5 5.5 6.75M12 10.5V18" /></svg>
+      : <svg viewBox="0 0 24 24"><circle cx="7" cy="7" r="2.25" /><circle cx="17" cy="7" r="2.25" /><circle cx="12" cy="17" r="2.25" /><path d="m8.8 8.25 2.1 6.6m4.3-6.6-2.1 6.6M9.25 7h5.5" /></svg>}
+  </span>;
+}
+
+function skillScope(filePath: string, workingDirectory?: string): string {
+  const normalized = filePath.replaceAll('\\', '/');
+  const workspace = workingDirectory?.replaceAll('\\', '/').replace(/\/$/u, '');
+  if (workspace && normalized.startsWith(`${workspace}/`)) return '项目';
+  if (/\/(?:\.agents|\.codex|\.config\/agents)\/skills\//u.test(normalized)) return '个人';
+  return '自定义';
 }
 
 function messageText(message: Message): string {
@@ -52,6 +81,7 @@ function messageText(message: Message): string {
 }
 
 function approvalTitle(request: ApprovalRequest): string {
+  if (request.call.name.startsWith('mcp__')) return '调用外部 MCP 工具';
   if (request.call.name === 'terminal') return '运行本地命令';
   if (request.call.name === 'read_file') return '读取工作区外的文件';
   if (request.preview) return `${request.preview.kind === 'create' ? '创建' : request.preview.kind === 'delete' ? '删除' : '修改'}文件`;
@@ -59,6 +89,7 @@ function approvalTitle(request: ApprovalRequest): string {
 }
 
 function approvalToolLabel(request: ApprovalRequest): string {
+  if (request.call.name.startsWith('mcp__')) return 'MCP';
   if (request.call.name === 'terminal') return '终端';
   if (request.call.name === 'read_file') return '文件';
   if (request.preview) return '文件修改';
@@ -184,6 +215,7 @@ function ReviewPanel({ changes, selectedPath, onSelect, onClose }: {
 
 function App() {
   const [sessions, setSessions] = useState<SessionMeta[]>([]);
+  const sessionDirectoriesRef = useRef(new Map<string, string>());
   const [activeId, setActiveId] = useState<string | null>(null);
   const activeIdRef = useRef<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -194,6 +226,7 @@ function App() {
   const [running, setRunning] = useState(false);
   const [error, setError] = useState('');
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsSection, setSettingsSection] = useState<'models' | 'mcp' | 'skills'>('models');
   const [settings, setSettings] = useState<ProviderSettings>(defaultSettings);
   const [settingsDraft, setSettingsDraft] = useState<ProviderSettings>(defaultSettings);
   const [selectedModel, setSelectedModel] = useState(providerById(defaultSettings, defaultSettings.activeProviderId).model);
@@ -204,6 +237,18 @@ function App() {
   const [contextWindowInput, setContextWindowInput] = useState(String(providerById(defaultSettings, defaultSettings.activeProviderId).contextWindowTokens));
   const [maxOutputInput, setMaxOutputInput] = useState(String(providerById(defaultSettings, defaultSettings.activeProviderId).maxOutputTokens));
   const [settingsError, setSettingsError] = useState('');
+  const [extensionDraft, setExtensionDraft] = useState<ExtensionSettings>(defaultSettings.extensions);
+  const [extensionStatus, setExtensionStatus] = useState<ExtensionStatus>({ mcpServers: [], skills: [] });
+  const [mcpServersJson, setMcpServersJson] = useState('[]');
+  const [skillDirectories, setSkillDirectories] = useState('');
+  const [extensionError, setExtensionError] = useState('');
+  const [extensionSearch, setExtensionSearch] = useState('');
+  const [extensionEditorOpen, setExtensionEditorOpen] = useState(false);
+  const [selectedSkill, setSelectedSkill] = useState<SkillStatus | null>(null);
+  const [skillDetail, setSkillDetail] = useState<SkillDetail | null>(null);
+  const [skillDetailLoading, setSkillDetailLoading] = useState(false);
+  const [skillDetailError, setSkillDetailError] = useState('');
+  const [oauthBusyServerId, setOauthBusyServerId] = useState('');
   const [collapsedProjects, setCollapsedProjects] = useState<string[]>([]);
   const [workspaceChanges, setWorkspaceChanges] = useState<WorkspaceChanges | null>(null);
   const [workspaceChangesError, setWorkspaceChangesError] = useState('');
@@ -213,11 +258,38 @@ function App() {
   const [contextUsage, setContextUsage] = useState<{ estimated: number; window: number; compacted: number } | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const turnBaselineRef = useRef<WorkspaceChanges | null>(null);
+  const mcpLineNumbersRef = useRef<HTMLDivElement>(null);
 
   const refreshSessions = async () => {
     const next = await window.desktopAgent.listSessions();
+    sessionDirectoriesRef.current = new Map(next.map((session) => [session.id, session.workingDirectory]));
     setSessions(next);
     if (!activeIdRef.current && next[0]) selectSession(next[0].id);
+  };
+
+  const refreshExtensionStatus = async (workingDirectory = activeIdRef.current ? sessionDirectoriesRef.current.get(activeIdRef.current) : undefined) => {
+    setExtensionStatus(await window.desktopAgent.getExtensionStatus(workingDirectory ? { workingDirectory } : undefined));
+  };
+
+  const saveExtensionDraft = async (): Promise<ExtensionSettings> => {
+    let mcpServers = extensionDraft.mcpServers;
+    if (settingsSection === 'mcp') {
+      const parsed = JSON.parse(mcpServersJson) as unknown;
+      if (!Array.isArray(parsed)) throw new Error('MCP Server 配置必须是 JSON 数组。');
+      mcpServers = parsed as ExtensionSettings['mcpServers'];
+    }
+    const next: ExtensionSettings = {
+      mcpServers,
+      skills: {
+        directories: skillDirectories.split(/\r?\n/u).map((directory) => directory.trim()).filter(Boolean),
+        disabled: extensionDraft.skills.disabled
+      }
+    };
+    const saved = await window.desktopAgent.saveExtensionSettings(next);
+    setExtensionDraft(saved);
+    setSettings((current) => ({ ...current, extensions: saved }));
+    setSettingsDraft((current) => ({ ...current, extensions: saved }));
+    return saved;
   };
 
   const loadWorkspaceChanges = async (id: string): Promise<WorkspaceChanges | null> => {
@@ -251,8 +323,11 @@ function App() {
       setSettings(saved);
       setSettingsDraft(saved);
       setSelectedModel(providerById(saved, saved.activeProviderId).model);
+      setExtensionDraft(saved.extensions);
     });
+    void refreshExtensionStatus();
     const offSessions = window.desktopAgent.onSessionsChanged(() => void refreshSessions());
+    const offExtensions = window.desktopAgent.onExtensionsChanged(() => void refreshExtensionStatus());
     const offEvents = window.desktopAgent.onAgentEvent((event: AgentEvent) => {
       if (event.type === 'turn.started') {
         setRunning(true); setError(''); setStreamingText(''); setTools([]);
@@ -272,7 +347,7 @@ function App() {
       else if (event.type === 'turn.failed') { setError(event.message); setRunning(false); setApproval(null); void reloadActive(); }
       else if (event.type === 'turn.completed' || event.type === 'turn.cancelled') { setRunning(false); setApproval(null); void reloadActive(); }
     });
-    return () => { offSessions(); offEvents(); };
+    return () => { offSessions(); offExtensions(); offEvents(); };
   }, []);
 
   useEffect(() => {
@@ -327,6 +402,17 @@ function App() {
     window.addEventListener('keydown', handleApprovalShortcut, true);
     return () => window.removeEventListener('keydown', handleApprovalShortcut, true);
   }, [approval]);
+
+  useEffect(() => {
+    if (!selectedSkill) return;
+    const handleSkillDetailShortcut = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      closeSkillDetail();
+    };
+    window.addEventListener('keydown', handleSkillDetailShortcut);
+    return () => window.removeEventListener('keydown', handleSkillDetailShortcut);
+  }, [selectedSkill]);
 
   const fetchProviderModels = async (): Promise<{ models: string[]; model: string } | null> => {
     setModelsLoading(true);
@@ -429,6 +515,35 @@ function App() {
     setReviewOpen(true);
   };
 
+  const openSettings = (section: 'models' | 'mcp' | 'skills' = 'models') => {
+    const provider = providerById(settings, settings.activeProviderId);
+    setSettingsDraft(settings); setApiKey(''); setModelsFresh(true); setModelsError(''); setSettingsError('');
+    setContextWindowInput(String(provider.contextWindowTokens));
+    setMaxOutputInput(String(provider.maxOutputTokens));
+    setExtensionDraft(settings.extensions);
+    setMcpServersJson(JSON.stringify(settings.extensions.mcpServers, null, 2));
+    setSkillDirectories(settings.extensions.skills.directories.join('\n'));
+    setExtensionError(''); setExtensionSearch(''); setExtensionEditorOpen(false);
+    void refreshExtensionStatus(active?.workingDirectory);
+    setSettingsSection(section);
+    setSettingsOpen(true);
+  };
+
+  const openSkillDetail = async (skill: SkillStatus) => {
+    setSelectedSkill(skill); setSkillDetail(null); setSkillDetailError(''); setSkillDetailLoading(true);
+    try {
+      setSkillDetail(await window.desktopAgent.getSkillDetail({ path: skill.path }));
+    } catch (cause) {
+      setSkillDetailError(skillDetailErrorMessage(cause));
+    } finally {
+      setSkillDetailLoading(false);
+    }
+  };
+
+  const closeSkillDetail = () => {
+    setSelectedSkill(null); setSkillDetail(null); setSkillDetailError(''); setSkillDetailLoading(false);
+  };
+
   return <div className="app-shell">
     <aside className="sidebar">
       <div className="brand"><span className="brand-mark">⌁</span><span>Desktop Agent</span></div>
@@ -457,13 +572,9 @@ function App() {
         })}
         {projects.length === 0 && <div className="projects-empty">还没有项目</div>}
       </div>
-      <button className="settings-button" onClick={() => {
-        const provider = providerById(settings, settings.activeProviderId);
-        setSettingsDraft(settings); setApiKey(''); setModelsFresh(true); setModelsError(''); setSettingsError('');
-        setContextWindowInput(String(provider.contextWindowTokens));
-        setMaxOutputInput(String(provider.maxOutputTokens));
-        setSettingsOpen(true);
-      }}>⚙ 设置</button>
+      <div className="sidebar-settings">
+      <button className="settings-button" onClick={() => openSettings()}>⚙ 设置</button>
+      </div>
     </aside>
     <main className="main-panel">
       {active ? <>
@@ -519,7 +630,19 @@ function App() {
         <button className="approval-allow" onClick={() => { void window.desktopAgent.resolveApproval({ requestId: approval.requestId, allow: true }); setApproval(null); }}><span>允许一次</span><kbd>↵</kbd></button>
       </div>
     </div></div>}
-    {settingsOpen && <div className="modal-backdrop"><form className="modal settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title" onSubmit={async (event) => {
+    {settingsOpen && <section className="settings-screen" aria-label="设置">
+      <aside className="settings-navigation">
+        <button className="settings-back" type="button" onClick={() => setSettingsOpen(false)}><span aria-hidden="true">←</span> 返回</button>
+        <nav aria-label="设置分类">
+          <button type="button" className={settingsSection === 'models' ? 'active' : ''} onClick={() => { setSettingsSection('models'); setExtensionEditorOpen(false); }}><span aria-hidden="true">◇</span> 模型</button>
+          <button type="button" className={settingsSection === 'skills' ? 'active' : ''} onClick={() => { setSettingsSection('skills'); setExtensionSearch(''); setExtensionEditorOpen(false); }}><span aria-hidden="true">⬡</span> 技能</button>
+          <button type="button" className={settingsSection === 'mcp' ? 'active' : ''} onClick={() => { setSettingsSection('mcp'); setExtensionSearch(''); setExtensionEditorOpen(false); }}><span aria-hidden="true">⌘</span> MCP 服务</button>
+        </nav>
+      </aside>
+      <main className="settings-main">
+        <header className="settings-topbar"><strong>{settingsSection === 'models' ? '模型' : settingsSection === 'skills' ? '技能' : 'MCP 服务'}</strong></header>
+        <div className="settings-page-body">
+    {settingsSection === 'models' && <form className="settings-content model-settings-page" aria-labelledby="settings-title" onSubmit={async (event) => {
       event.preventDefault();
       setSettingsError('');
       const contextWindowTokens = Number(contextWindowInput);
@@ -555,9 +678,10 @@ function App() {
       const activeProvider = providerById(saved, saved.activeProviderId);
       setSelectedModel((current) => activeProvider.models.includes(current) ? current : activeProvider.model);
       setApiKey('');
-      setSettingsOpen(false);
     }}>
-      <div className="modal-tag">模型配置</div><h2 id="settings-title">模型与上下文</h2>
+      <div className="settings-heading"><div><h1 id="settings-title">模型</h1><p>配置模型服务、默认模型与上下文容量。</p></div></div>
+      <section className="settings-section-card">
+      <div className="settings-section-title"><h2>模型服务</h2><p>连接兼容的模型 API，配置将应用于新的智能体回合。</p></div>
       <div className="settings-fields">
         <label>API Base URL<input required value={draftProvider.baseUrl} onChange={(event) => { updateDraftProvider({ baseUrl: event.target.value }); setModelsFresh(false); setModelsError(''); }} /></label>
         <label>API Key <span>{draftProvider.hasApiKey ? '（已安全保存）' : ''}</span><input type="password" value={apiKey} placeholder={draftProvider.hasApiKey ? '留空以保留当前密钥' : '输入 API Key'} onChange={(event) => { setApiKey(event.target.value); setModelsFresh(false); setModelsError(''); }} /></label>
@@ -575,8 +699,154 @@ function App() {
         {settingsError && <div className="settings-error" role="alert">{settingsError}</div>}
       </div>
       <p className="security-note">密钥由操作系统安全存储加密，不会写入普通配置或会话。</p>
-      <div className="modal-actions"><button type="button" onClick={() => setSettingsOpen(false)}>取消</button><button className="primary" type="submit" disabled={modelsLoading}>保存</button></div>
-    </form></div>}
+      <div className="settings-actions"><button className="primary" type="submit" disabled={modelsLoading}>保存模型设置</button></div>
+      </section>
+    </form>}
+    {settingsSection !== 'models' && <form className={`settings-content extensions-settings-page ${extensionEditorOpen && settingsSection === 'mcp' ? 'mcp-editor-visible' : ''}`} aria-labelledby="extensions-title" onSubmit={async (event) => {
+      event.preventDefault();
+      setExtensionError('');
+      try {
+        await saveExtensionDraft();
+      } catch (cause) {
+        setExtensionError(cause instanceof Error ? cause.message : String(cause));
+      }
+    }}>
+      <div className="extensions-workspace">
+      <section className="extensions-page">
+      <header className="extensions-titlebar">
+        <strong>MCP 服务</strong>
+        <button type="button" aria-label="返回会话" title="返回会话" onClick={() => setSettingsOpen(false)}>×</button>
+      </header>
+      <div className="extensions-page-body">
+        <div className="extensions-page-heading">
+          <div><h2 id="extensions-title">{settingsSection === 'mcp' ? 'MCP 服务' : '技能'}</h2><p>{settingsSection === 'mcp' ? '安装新的 MCP 服务，为智能体扩展更多工具。' : '管理本地 Skills 和额外目录。'}</p></div>
+          <button className="extension-add-button" type="button" onClick={() => setExtensionEditorOpen(true)}><span aria-hidden="true">＋</span>{settingsSection === 'mcp' ? '添加' : '目录设置'}</button>
+        </div>
+        <div className="extensions-toolbar">
+          <span className="extension-scope">{settingsSection === 'skills' ? `${extensionStatus.skills.length} 个已发现技能` : '用户级服务'}</span>
+          {(extensionDraft.mcpServers.length > 0 || settingsSection === 'skills') && <label className="extension-search"><span aria-hidden="true">⌕</span><input value={extensionSearch} onChange={(event) => setExtensionSearch(event.target.value)} placeholder={settingsSection === 'skills' ? '搜索技能' : '搜索 MCP'} aria-label={settingsSection === 'skills' ? '搜索技能' : '搜索 MCP'} /></label>}
+        </div>
+        {extensionEditorOpen && settingsSection === 'skills' && <section className="extension-editor skill-editor" aria-label="Skill 目录设置">
+          <div className="extension-editor-head"><div><strong>额外 Skill 目录</strong><span>每行一个绝对路径；项目和用户级目录会自动发现</span></div><button type="button" onClick={() => setExtensionEditorOpen(false)}>完成</button></div>
+          <textarea className="skill-directories" value={skillDirectories} onChange={(event) => setSkillDirectories(event.target.value)} placeholder="/absolute/path/to/skills" aria-label="Skill 目录" />
+        </section>}
+      <section className="extension-catalog" aria-live="polite">
+        {settingsSection === 'skills' && extensionStatus.skills.filter((skill) => {
+          const query = extensionSearch.trim().toLowerCase();
+          return !query || `${skill.name} ${skill.description} ${skill.path}`.toLowerCase().includes(query);
+        }).map((skill) => {
+          const enabled = !extensionDraft.skills.disabled.includes(skill.id) && !skill.error;
+          return <article className="extension-item skill-item" key={`${skill.id}-${skill.path}`} title={skill.path} onClick={() => void openSkillDetail(skill)}>
+            <ExtensionIcon kind="skill" />
+            <div className="extension-item-copy"><strong>{skill.name}</strong><span>{skill.error || skill.description}</span></div>
+            <span className={`extension-item-meta ${skill.error ? 'failed' : ''}`}>{skill.error ? '错误' : skillScope(skill.path, active?.workingDirectory)}</span>
+            <button type="button" role="switch" aria-checked={enabled} aria-label={`${enabled ? '停用' : '启用'} ${skill.name}`} className={`extension-switch ${enabled ? 'on' : ''}`} disabled={Boolean(skill.error)} onClick={(event) => { event.stopPropagation(); setExtensionDraft((current) => ({
+              ...current,
+              skills: {
+                ...current.skills,
+                disabled: enabled
+                  ? [...new Set([...current.skills.disabled, skill.id])]
+                  : current.skills.disabled.filter((id) => id !== skill.id)
+              }
+            })); }}><span /></button>
+          </article>;
+        })}
+        {settingsSection === 'mcp' && extensionDraft.mcpServers.filter((server) => {
+          const query = extensionSearch.trim().toLowerCase();
+          const target = server.transport === 'stdio' ? `${server.command} ${server.args.join(' ')}` : server.url;
+          return !query || `${server.name} ${server.id} ${target}`.toLowerCase().includes(query);
+        }).map((server) => {
+          const status = extensionStatus.mcpServers.find((item) => item.serverId === server.id);
+          const detail = server.transport === 'stdio' ? `${server.command} ${server.args.join(' ')}` : server.url;
+          const oauth = server.transport === 'streamable_http' && server.auth?.type === 'oauth';
+          const statusText = status?.state === 'connected' ? `${status.toolCount} 个工具` : status?.state === 'connecting' ? '连接中' : status?.state === 'authorizing' ? '等待登录' : status?.state === 'auth_required' ? '需要登录' : status?.state === 'error' ? (status.error || '连接失败') : server.enabled ? '等待连接' : '已停用';
+          return <article className="extension-item" key={server.id} title={detail}>
+            <ExtensionIcon kind="mcp" />
+            <div className="extension-item-copy"><strong>{server.name}</strong><span>{detail}</span></div>
+            <span className={`extension-item-meta ${status?.state === 'error' ? 'failed' : ''}`}>{server.transport === 'stdio' ? '本地' : '远程'} · {statusText}</span>
+            {oauth && server.enabled && <button type="button" className="extension-auth-button" disabled={oauthBusyServerId === server.id || status?.state === 'authorizing'} onClick={async () => {
+              setExtensionError(''); setOauthBusyServerId(server.id);
+              try {
+                await saveExtensionDraft();
+                if (status?.state === 'connected') await window.desktopAgent.disconnectMcpOAuth({ serverId: server.id });
+                else await window.desktopAgent.connectMcpOAuth({ serverId: server.id });
+                await refreshExtensionStatus();
+              } catch (cause) {
+                setExtensionError(cause instanceof Error ? cause.message : String(cause));
+              } finally { setOauthBusyServerId(''); }
+            }}>{oauthBusyServerId === server.id || status?.state === 'authorizing' ? '处理中…' : status?.state === 'connected' ? '断开账号' : '连接账号'}</button>}
+            <button type="button" role="switch" aria-checked={server.enabled} aria-label={`${server.enabled ? '停用' : '启用'} ${server.name}`} className={`extension-switch ${server.enabled ? 'on' : ''}`} onClick={() => {
+              const servers = extensionDraft.mcpServers.map((item) => item.id === server.id ? { ...item, enabled: !server.enabled } : item);
+              setExtensionDraft((current) => ({ ...current, mcpServers: servers }));
+              setMcpServersJson(JSON.stringify(servers, null, 2));
+            }}><span /></button>
+          </article>;
+        })}
+        {((settingsSection === 'skills' && extensionStatus.skills.filter((skill) => `${skill.name} ${skill.description} ${skill.path}`.toLowerCase().includes(extensionSearch.trim().toLowerCase())).length === 0)
+          || (settingsSection === 'mcp' && extensionDraft.mcpServers.filter((server) => `${server.name} ${server.id} ${server.transport === 'stdio' ? `${server.command} ${server.args.join(' ')}` : server.url}`.toLowerCase().includes(extensionSearch.trim().toLowerCase())).length === 0))
+          && <div className="extension-empty-state"><span className="mcp-empty-illustration" aria-hidden="true"><i /><b /><em /></span><strong>{extensionSearch ? '没有匹配结果' : settingsSection === 'skills' ? '尚未发现 Skill' : '暂无 MCP 服务'}</strong><span>{extensionSearch ? '尝试其他关键词' : settingsSection === 'skills' ? '可通过 install_skill 或目录设置添加' : '点击右上角“添加”，在数据输入栏中配置服务'}</span></div>}
+      </section>
+      {extensionError && <div className="settings-error extension-error" role="alert">{extensionError}</div>}
+      <footer className="extensions-footer"><p>{settingsSection === 'mcp' ? '所有 MCP 工具执行前均需批准，请只配置可信服务。' : 'Skill 完整内容仅在模型调用 load_skill 后进入上下文。'}</p><div><button className="primary" type="submit">保存更改</button></div></footer>
+      </div>
+      </section>
+      {extensionEditorOpen && settingsSection === 'mcp' && <aside className="mcp-data-panel" aria-label="MCP 数据输入栏">
+        <header className="mcp-data-tabs"><div><span aria-hidden="true">{'{ }'}</span><strong>mcp.json</strong></div><button type="button" aria-label="关闭数据输入栏" title="关闭" onClick={() => setExtensionEditorOpen(false)}>×</button></header>
+        <div className="mcp-data-path"><span>用户级</span><b>›</b><span>mcp.json</span></div>
+        <div className="mcp-code-editor">
+          <div className="mcp-line-numbers" ref={mcpLineNumbersRef} aria-hidden="true">{mcpServersJson.split('\n').map((_, index) => <span key={index}>{index + 1}</span>)}</div>
+          <textarea className="extension-json" spellCheck={false} value={mcpServersJson} onChange={(event) => {
+            const value = event.target.value;
+            setMcpServersJson(value);
+            try {
+              const parsed = JSON.parse(value) as unknown;
+              if (Array.isArray(parsed)) setExtensionDraft((current) => ({ ...current, mcpServers: parsed as ExtensionSettings['mcpServers'] }));
+            } catch { /* Keep the last valid list while JSON is being edited. */ }
+          }} onScroll={(event) => { if (mcpLineNumbersRef.current) mcpLineNumbersRef.current.scrollTop = event.currentTarget.scrollTop; }} aria-label="MCP Server JSON 配置" />
+        </div>
+        <details className="extension-example"><summary>查看配置格式</summary><pre>{`[
+  { "id": "local", "name": "Local MCP", "enabled": true,
+    "transport": "stdio", "command": "npx", "args": ["-y", "server-package"] },
+  { "id": "remote", "name": "Remote MCP", "enabled": true,
+    "transport": "streamable_http", "url": "https://example.com/mcp",
+    "versionNegotiation": "auto" }
+]`}</pre></details>
+      </aside>}
+      </div>
+    </form>}
+        </div>
+      </main>
+    </section>}
+    {selectedSkill && <div className="skill-detail-backdrop" onMouseDown={(event) => { if (event.currentTarget === event.target) closeSkillDetail(); }}>
+      <article className="skill-detail-modal" role="dialog" aria-modal="true" aria-labelledby="skill-detail-title">
+        <header className="skill-detail-header">
+          <ExtensionIcon kind="skill" />
+          <div className="skill-detail-controls">
+            <button type="button" role="switch" aria-checked={!extensionDraft.skills.disabled.includes(selectedSkill.id) && !selectedSkill.error} aria-label={`${extensionDraft.skills.disabled.includes(selectedSkill.id) ? '启用' : '停用'} ${selectedSkill.name}`} className={`extension-switch ${!extensionDraft.skills.disabled.includes(selectedSkill.id) && !selectedSkill.error ? 'on' : ''}`} disabled={Boolean(selectedSkill.error)} onClick={() => setExtensionDraft((current) => {
+              const enabled = !current.skills.disabled.includes(selectedSkill.id);
+              return { ...current, skills: { ...current.skills, disabled: enabled ? [...new Set([...current.skills.disabled, selectedSkill.id])] : current.skills.disabled.filter((id) => id !== selectedSkill.id) } };
+            })}><span /></button>
+            <button className="skill-detail-close" type="button" aria-label="关闭技能详情" title="关闭" onClick={closeSkillDetail}>×</button>
+          </div>
+        </header>
+        <div className="skill-detail-heading">
+          <h2 id="skill-detail-title">{selectedSkill.name} <span>Skill</span></h2>
+          <p>{selectedSkill.description}</p>
+        </div>
+        <section className="skill-detail-content">
+          {skillDetailLoading && <div className="skill-detail-state">正在载入 Skill 内容…</div>}
+          {skillDetailError && <div className="skill-detail-state failed"><span>{skillDetailError}</span><button type="button" onClick={() => void openSkillDetail(selectedSkill)}>重新加载内容</button></div>}
+          {skillDetail && <Markdown text={skillMarkdownContent(skillDetail.content)} />}
+        </section>
+        <footer className="skill-detail-footer">
+          <span title={selectedSkill.path}>{selectedSkill.path}</span>
+          <button className="primary" type="button" onClick={async () => {
+            try { await saveExtensionDraft(); closeSkillDetail(); }
+            catch (cause) { setSkillDetailError(cause instanceof Error ? cause.message : String(cause)); }
+          }}>保存更改</button>
+        </footer>
+      </article>
+    </div>}
   </div>;
 }
 

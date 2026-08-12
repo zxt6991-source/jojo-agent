@@ -1,0 +1,9 @@
+export { discoverSkills, createSkillTool, userSkillDirectories } from './skills.js';
+export { createInstallSkillTool } from './skill-installer.js';
+export type { InstallSkillToolOptions, SkillInstallCommandRunner } from './skill-installer.js';
+export type { DiscoveredSkill } from './skills.js';
+export { McpManager } from './mcp-manager.js';
+export type { McpClientConnection, McpConnectionFactory } from './mcp-manager.js';
+export { DesktopMcpOAuthProvider } from './mcp-oauth.js';
+export type { McpOAuthCredentials, McpOAuthProviderOptions } from './mcp-oauth.js';
+export { ExtensionPermissionGate } from './permission-gate.js';

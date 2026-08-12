@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { runAgentTurn, ScriptedProvider } from '../src/index.js';
 import type { AgentRunOptions } from '../src/index.js';
-import type { AgentEvent, ModelProvider, PermissionGate, Tool } from '@desktop-agent/contracts';
+import type { AgentEvent, ModelProvider, ModelRequest, PermissionGate, Tool } from '@desktop-agent/contracts';
 
 const allow: PermissionGate = { check: async () => ({ decision: 'allow' }) };
 const echoTool: Tool = {
@@ -76,6 +76,76 @@ describe('runAgentTurn', () => {
     expect(execute).toHaveBeenCalledTimes(1);
   });
 
+  it('stops executing an identical tool call after two attempts and lets the model recover', async () => {
+    const execute = vi.fn(echoTool.execute);
+    const provider = new ScriptedProvider([
+      [
+        { type: 'tool_call_completed', call: { id: 'repeat-1', name: 'echo', input: { query: 'same' } } },
+        { type: 'response_completed', stopReason: 'tool_calls' }
+      ],
+      [
+        { type: 'tool_call_completed', call: { id: 'repeat-2', name: 'echo', input: { query: 'same' } } },
+        { type: 'response_completed', stopReason: 'tool_calls' }
+      ],
+      [
+        { type: 'tool_call_completed', call: { id: 'repeat-3', name: 'echo', input: { query: 'same' } } },
+        { type: 'response_completed', stopReason: 'tool_calls' }
+      ],
+      [
+        { type: 'text_delta', text: 'I will use the existing result.' },
+        { type: 'response_completed', stopReason: 'stop' }
+      ]
+    ]);
+
+    const result = await runAgentTurn(createOptions(provider, {
+      tools: [{ ...echoTool, execute }]
+    }));
+    const noProgressResult = result.messages
+      .flatMap((message) => message.content)
+      .find((block) => block.type === 'tool_result' && block.result.code === 'no_progress');
+
+    expect(result.stopReason).toBe('stop');
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(noProgressResult?.type === 'tool_result' && noProgressResult.result.content).toContain('already run twice');
+  });
+
+  it('detects repeated read-only results across different searches and forces a final response', async () => {
+    let step = 0;
+    const seenTools: string[][] = [];
+    const execute = vi.fn(async () => ({ callId: '', ok: true, content: 'same evidence' }));
+    const searchTool: Tool = {
+      definition: { name: 'grep', description: 'search', inputSchema: { type: 'object' } },
+      execute
+    };
+    const provider: ModelProvider = {
+      async *stream(request: ModelRequest) {
+        seenTools.push(request.tools.map((tool) => tool.name));
+        if (step < 4) {
+          const current = step;
+          step += 1;
+          yield {
+            type: 'tool_call_completed',
+            call: { id: `search-${current}`, name: 'grep', input: { query: `variant-${current}` } }
+          };
+          yield { type: 'response_completed', stopReason: 'tool_calls' };
+          return;
+        }
+        yield { type: 'text_delta', text: 'The available evidence points to an authentication problem.' };
+        yield { type: 'response_completed', stopReason: 'stop' };
+      }
+    };
+
+    const result = await runAgentTurn(createOptions(provider, { tools: [searchTool] }));
+    const noProgressResults = result.messages
+      .flatMap((message) => message.content)
+      .filter((block) => block.type === 'tool_result' && block.result.code === 'no_progress');
+
+    expect(result.stopReason).toBe('stop');
+    expect(execute).toHaveBeenCalledTimes(4);
+    expect(noProgressResults.length).toBe(3);
+    expect(seenTools.at(-1)).toEqual([]);
+  });
+
   it('allows a small coding task to continue beyond eight model iterations', async () => {
     const execute = vi.fn(echoTool.execute);
     const toolRounds = Array.from({ length: 9 }, (_, index) => [
@@ -94,6 +164,48 @@ describe('runAgentTurn', () => {
       tools: [{ ...echoTool, execute }]
     }))).resolves.toMatchObject({ stopReason: 'stop' });
     expect(execute).toHaveBeenCalledTimes(9);
+  });
+
+  it('refreshes lazily discovered tools between model steps', async () => {
+    let activated = false;
+    let step = 0;
+    const seenTools: string[][] = [];
+    const searchTool: Tool = {
+      definition: { name: 'mcp_search_tools', description: 'search', inputSchema: { type: 'object' } },
+      execute: async () => {
+        activated = true;
+        return { callId: '', ok: true, content: 'activated' };
+      }
+    };
+    const remoteTool: Tool = {
+      definition: { name: 'mcp__demo__weather', description: 'weather', inputSchema: { type: 'object' } },
+      execute: async () => ({ callId: '', ok: true, content: 'sunny' })
+    };
+    const provider: ModelProvider = {
+      async *stream(request: ModelRequest) {
+        seenTools.push(request.tools.map((tool) => tool.name));
+        if (step === 0) {
+          step += 1;
+          yield { type: 'tool_call_completed', call: { id: 'search', name: 'mcp_search_tools', input: { query: 'weather' } } };
+          yield { type: 'response_completed', stopReason: 'tool_calls' };
+        } else if (step === 1) {
+          step += 1;
+          yield { type: 'tool_call_completed', call: { id: 'weather', name: 'mcp__demo__weather', input: {} } };
+          yield { type: 'response_completed', stopReason: 'tool_calls' };
+        } else {
+          yield { type: 'text_delta', text: 'done' };
+          yield { type: 'response_completed', stopReason: 'stop' };
+        }
+      }
+    };
+
+    await runAgentTurn(createOptions(provider, {
+      tools: [],
+      getTools: () => activated ? [searchTool, remoteTool] : [searchTool]
+    }));
+
+    expect(seenTools[0]).toEqual(['mcp_search_tools']);
+    expect(seenTools[1]).toEqual(['mcp_search_tools', 'mcp__demo__weather']);
   });
 
   it('turns a denied approval into a tool result and continues', async () => {

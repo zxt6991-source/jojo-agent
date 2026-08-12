@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { Tool, ToolCall, ToolResult } from '@desktop-agent/contracts';
 import { errorMessage, throwIfAborted } from './errors.js';
 import type { AgentRunOptions } from './types.js';
@@ -5,7 +6,63 @@ import type { AgentRunOptions } from './types.js';
 type ToolExecutionState = {
   toolsByName: Map<string, Tool>;
   executedCallIds: Set<string>;
+  toolCallCounts: Map<string, number>;
+  observationFingerprints: Set<string>;
 };
+
+const MAX_IDENTICAL_TOOL_CALLS = 2;
+const INFORMATION_ONLY_TOOLS = new Set([
+  'glob',
+  'grep',
+  'list_files',
+  'load_skill',
+  'mcp_search_tools',
+  'read_file'
+]);
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, child]) => `${JSON.stringify(key)}:${canonicalJson(child)}`)
+      .join(',')}}`;
+  }
+  const serialized = JSON.stringify(value);
+  return serialized === undefined ? String(value) : serialized;
+}
+
+function repeatedCallResult(call: ToolCall, state: ToolExecutionState): ToolResult | null {
+  const signature = `${call.name}:${canonicalJson(call.input)}`;
+  const count = (state.toolCallCounts.get(signature) ?? 0) + 1;
+  state.toolCallCounts.set(signature, count);
+  if (count <= MAX_IDENTICAL_TOOL_CALLS) return null;
+  return failureResult(
+    call,
+    'This exact tool call has already run twice in this turn. Reuse the existing results, change the approach, or explain the limitation instead of repeating it.',
+    'no_progress'
+  );
+}
+
+function repeatedObservationResult(
+  call: ToolCall,
+  result: ToolResult,
+  state: ToolExecutionState
+): ToolResult {
+  if (!result.ok || !INFORMATION_ONLY_TOOLS.has(call.name)) return result;
+  const digest = createHash('sha256').update(result.content).digest('hex');
+  const fingerprint = `${call.name}:${result.code ?? 'ok'}:${digest}`;
+  if (!state.observationFingerprints.has(fingerprint)) {
+    state.observationFingerprints.add(fingerprint);
+    return result;
+  }
+  return {
+    ...result,
+    ok: false,
+    code: 'no_progress',
+    content: `${result.content}\n\n[No progress: this read-only tool returned information already present in the current turn. Reuse the earlier result or change approach.]`
+  };
+}
 
 function failureResult(call: ToolCall, content: string, code: string): ToolResult {
   return { callId: call.id, ok: false, content, code };
@@ -68,7 +125,8 @@ export async function executeToolCall(
     result = failureResult(call, `Unknown tool: ${call.name}`, 'unknown_tool');
   } else {
     state.executedCallIds.add(call.id);
-    result = await executeKnownTool(call, tool, options);
+    result = repeatedCallResult(call, state)
+      ?? repeatedObservationResult(call, await executeKnownTool(call, tool, options), state);
   }
 
   options.emit({ type: 'tool.finished', id: call.id, result });

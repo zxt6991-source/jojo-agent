@@ -17,6 +17,7 @@
       "@desktop-agent/providers": ["packages/providers/src/index.ts"],
       "@desktop-agent/tools-node": ["packages/tools-node/src/index.ts"],
       "@desktop-agent/storage": ["packages/storage/src/index.ts"]
+      ,"@desktop-agent/extensions": ["packages/extensions/src/index.ts"]
     }
   }
 }

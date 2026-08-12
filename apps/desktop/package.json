@@ -11,6 +11,7 @@
   "dependencies": {
     "@desktop-agent/agent-core": "workspace:*",
     "@desktop-agent/contracts": "workspace:*",
+    "@desktop-agent/extensions": "workspace:*",
     "@desktop-agent/providers": "workspace:*",
     "@desktop-agent/storage": "workspace:*",
     "@desktop-agent/tools-node": "workspace:*",

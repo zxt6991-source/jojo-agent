@@ -58,7 +58,8 @@ describe('JsonConfigStore', () => {
           models: ['legacy-model'], hasApiKey: true
         })
       ]),
-      utilityModel: { providerId: 'openai', model: 'legacy-model' }
+      utilityModel: { providerId: 'openai', model: 'legacy-model' },
+      extensions: { mcpServers: [], skills: { directories: [], disabled: [] } }
     });
   });
 
@@ -100,6 +101,10 @@ describe('JsonConfigStore', () => {
       models: ['model-a', 'model-b'], hasApiKey: true
     };
     settings.utilityModel = { providerId: 'openai', model: 'model-a' };
+    settings.extensions = {
+      mcpServers: [{ id: 'files', name: 'Files', enabled: true, transport: 'stdio', command: 'node', args: ['server.js'] }],
+      skills: { directories: ['/skills'], disabled: ['disabled-skill'] }
+    };
     await store.save(settings);
 
     const stored = JSON.parse(await readFile(file, 'utf8'));
@@ -108,6 +113,7 @@ describe('JsonConfigStore', () => {
       providers: expect.arrayContaining([expect.objectContaining({ id: 'openai', model: 'model-b', models: ['model-a', 'model-b'] })]),
       utilityModel: { providerId: 'openai', model: 'model-a' }
     });
+    expect(stored.extensions).toEqual(settings.extensions);
     expect(JSON.stringify(stored)).not.toContain('hasApiKey');
     await expect(store.get()).resolves.toMatchObject({
       providers: expect.arrayContaining([expect.objectContaining({ id: 'openai', hasApiKey: false })])

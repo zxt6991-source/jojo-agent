@@ -1,6 +1,6 @@
 # TypeScript Desktop Agent：MVP 与后续开发规划
 
-> 文档状态：2026-08-09（已按当前源码、测试与 CI 配置重新核对，当前版本 0.1.0）
+> 文档状态：2026-08-11（已按当前源码、测试与 CI 配置重新核对，当前版本 0.1.0）
 > 状态标记：
 > - ✅ 已完成
 > - 🚧 部分完成 / 已开始但未全部完成
@@ -20,7 +20,7 @@ octo-agent、Codex 和 Claude Code，但第一阶段只解决一件事：让用�
 - MVP 之后到可公开发布版本的演进路线；
 - 安全、测试、数据兼容和范围控制原则。
 
-> 🚧 总览：核心对话 MVP、Phase 1 小型代码任务能力与 Phase 2 上下文管理已完成；Provider 当前收敛为 OpenAI Chat Completions 兼容协议。“可公开发布”门槛仍未全部满足：UI/E2E、IPC 安全测试、干净机器安装验证、代码签名等仍缺失。
+> 🚧 总览：核心对话 MVP、Phase 1 小型代码任务能力、Phase 2 上下文管理与 Phase 3 MCP/Skills 已完成；Provider 当前收敛为 OpenAI Chat Completions 兼容协议。“可公开发布”门槛仍未全部满足：UI/E2E、IPC 安全测试、干净机器安装验证、代码签名等仍缺失。
 
 ### 1.1 2026-08-09 实现快照
 
@@ -34,6 +34,7 @@ octo-agent、Codex 和 Claude Code，但第一阶段只解决一件事：让用�
 | 持久化 | 🚧 | JSONL 会话和配置迁移可用；错误状态不持久化，运行中删除会话存在取消/删除竞态 |
 | 自动化测试 | 🚧 | 当前 8 个测试文件、64 个 Vitest 用例通过；没有 Renderer UI、IPC 集成和 E2E 测试 |
 | 发布工程 | 🚧 | Forge、ASAR、Fuses 和 Linux CI package 已配置；干净机器验证、签名、notarization、自动更新未完成 |
+| MCP 与 Skills | ✅ | stdio / Streamable HTTP、工具状态、延迟发现、本地 `SKILL.md` 启停与按需加载已完成 |
 
 ### 1.2 当前剩余工作优先级
 
@@ -57,7 +58,8 @@ octo-agent、Codex 和 Claude Code，但第一阶段只解决一件事：让用�
 #### P2：扩展协议与生态
 
 - ⬜ 第二种 Provider 协议；Provider/Model 注册表已保留扩展边界；
-- ⬜ MCP、Skills、浏览器、多模态、子 Agent、工作流；
+- ✅ MCP 与 Skills；
+- ⬜ 浏览器、多模态、子 Agent、工作流；
 - ⬜ 记忆、定时任务、后台任务与通知；
 - ⬜ 签名、notarization、自动更新、崩溃日志导出和正式兼容策略。
 
@@ -142,7 +144,7 @@ desktop-agent/
   .npmrc
 ```
 
-> ✅ 当前仓库即此结构（`apps/desktop` + `contracts`、`agent-core`、`providers`、`tools-node`、`storage` 五个共享包）。
+> ✅ MVP 初始结构与此一致；Phase 3 新增 `extensions` 共享包承载 Node MCP client 与本地 Skills，未污染 Agent Core 或 Renderer 安全边界。
 
 包内仍然按功能目录组织，不继续把单个 Provider、Tool 或 Store 拆成独立 package。只有某个模块需要
 独立发布、出现不同运行环境，或者被两个以上上层应用以不同方式复用时，才继续拆分。
@@ -159,10 +161,12 @@ flowchart TD
     Worker --> Providers
     Worker --> ToolsNode
     Worker --> Storage
+    Worker --> Extensions
     AgentCore --> Contracts
     Providers --> Contracts
     ToolsNode --> Contracts
     Storage --> Contracts
+    Extensions --> Contracts
 ```
 
 必须遵守：
@@ -595,23 +599,23 @@ MVP 只实现三个工具：
 - 🚧 Agent Core 与协议实现保持解耦，但跨协议切换需等待第二种协议重新接入；
 - ✅ 长会话接近窗口上限时自动压缩且 Tool Call 配对不被破坏（自动化测试覆盖）。
 
-### Phase 3：MCP 与 Skills ⬜ 未开始
+### Phase 3：MCP 与 Skills ✅ 已完成
 
 目标：建立外部能力扩展机制，避免继续硬编码业务工具。
 
 功能：
 
-- ⬜ MCP stdio client；
-- ⬜ MCP Streamable HTTP client；
-- ⬜ MCP 工具发现、连接状态和错误面板；
-- ⬜ 大工具集延迟加载；
-- ⬜ 本地 `SKILL.md` 发现与启停；
-- ⬜ Skill 内容按需注入，而不是全部塞进上下文。
+- ✅ MCP stdio client；
+- ✅ MCP Streamable HTTP client；
+- ✅ MCP 工具发现、连接状态和错误面板；
+- ✅ 大工具集延迟加载（超过 24 个时通过目录搜索激活匹配工具）；
+- ✅ 本地 `SKILL.md` 发现与启停；
+- ✅ Skill 内容通过 `load_skill` 按需注入，而不是全部塞进上下文。
 
 验收场景：
 
-- ⬜ 用户配置一个 MCP Server 后无需改代码即可调用其工具；
-- ⬜ 安装一个 Skill 后，Agent 能使用现有工具完成新的组合任务。
+- ✅ 用户配置一个 MCP Server 后无需改代码即可调用其工具；
+- ✅ 安装一个 Skill 后，Agent 能加载其说明并使用现有工具完成新的组合任务。
 
 ### Phase 4：浏览器与富内容 ⬜ 未开始
 
@@ -806,7 +810,7 @@ type SessionRecord =
 | pnpm 与 Electron 打包冲突 | 使用 hoisted node linker，并在早期 M0 就执行一次 package | ✅ 已落实（`node-linker=hoisted`） |
 | 会话被异常退出破坏 | JSONL 追加、尾记录容错、单会话锁和原子元数据写入 | ✅ 已落实 |
 | IPC 扩展后失控 | 所有通道集中注册，contracts 定义 schema，禁止通用 send/invoke | ✅ 已落实 |
-| Package 数量继续失控 | MVP 固定为一个应用加五个共享包；单个 Provider、Tool、Store 只做包内模块 | ✅ 已落实 |
+| Package 数量继续失控 | MVP 固定为一个应用加五个初始共享包；Phase 3 仅新增一个同时承载 MCP/Skills 的扩展包 | ✅ 已落实 |
 | 安全工作被推迟 | 安全配置和权限 Gate 属于 MVP 验收项，不作为发布前补丁 | ✅ 已落实 |
 
 ## 15. 近期执行清单
@@ -826,8 +830,9 @@ type SessionRecord =
 11. ⬜ 修复运行中会话删除竞态，并增加回归测试；
 12. ⬜ 建立 Renderer UI、IPC 集成和 Electron E2E 测试。
 13. ✅ 完成 Phase 1：项目检索、可审阅文件修改、冲突检测与回收站。
+14. ✅ 完成 Phase 3：MCP stdio/Streamable HTTP、状态面板、延迟工具发现与按需 Skill。
 
 在第 4 步完成之前，不投入复杂 UI；在第 8 步完成之前，不增加文件写入；在 MVP 发布之前，
-不开始 MCP、浏览器或子 Agent。
+不开始浏览器或子 Agent；MCP/Skills 已在 MVP 之后按 Phase 3 边界实现。
 
-> ✅ 上述约束已遵守：MVP（0.1.0）已完成，未提前引入 MCP、浏览器或子 Agent。
+> ✅ 上述约束已遵守：MVP（0.1.0）完成后再引入 Phase 3 MCP/Skills，仍未引入浏览器或子 Agent。
