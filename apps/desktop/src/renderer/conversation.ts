@@ -1,4 +1,4 @@
-import type { AgentEvent, Message, ToolCall, ToolResult } from '@desktop-agent/contracts';
+import type { AgentEvent, ImageContentBlock, Message, ToolCall, ToolResult } from '@desktop-agent/contracts';
 
 export type ConversationViewMode = 'chat' | 'trajectory';
 export type ToolRowState = 'running' | 'ok' | 'error' | 'stopped';
@@ -16,7 +16,7 @@ export type LiveStep = {
   tools: LiveTool[];
 };
 
-export type UserNode = { kind: 'user'; id: string; text: string };
+export type UserNode = { kind: 'user'; id: string; text: string; images: ImageContentBlock[] };
 export type AssistantNode = { kind: 'assistant'; id: string; text: string; streaming: boolean };
 export type ToolNode = {
   kind: 'tool';
@@ -30,6 +30,7 @@ export type ToolNode = {
   output: string | null;
   progress: string;
   errorSummary: string | null;
+  images: Extract<NonNullable<ToolResult['contentBlocks']>[number], { type: 'image' }>[];
   state: ToolRowState;
 };
 export type CompactionNode = { kind: 'compaction'; id: string; summary: string; text: string };
@@ -76,6 +77,8 @@ const TOOL_TITLES: Record<string, string> = {
   list_files: '列出',
   grep: '搜索',
   glob: '匹配',
+  web_search: '网页搜索',
+  web_fetch: '抓取网页',
   terminal: '终端',
   write_file: '写入',
   edit_file: '编辑',
@@ -88,11 +91,40 @@ const TOOL_TITLES: Record<string, string> = {
   mcp_list_resources: 'MCP 资源',
   mcp_read_resource: 'MCP 读取',
   mcp_list_prompts: 'MCP 提示词',
-  mcp_get_prompt: 'MCP 提示词'
+  mcp_get_prompt: 'MCP 提示词',
+  browser_open: '打开网页',
+  browser_new_page: '新建网页',
+  browser_pages: '网页列表',
+  browser_select_page: '切换网页',
+  browser_close_page: '关闭网页',
+  browser_record_start: '开始网页录制',
+  browser_record_stop: '停止网页录制',
+  browser_recordings: '网页录制列表',
+  browser_replay: '回放网页流程',
+  browser_read: '读取页面',
+  browser_wait: '等待页面',
+  browser_scroll: '滚动页面',
+  browser_click: '点击网页',
+  browser_type: '输入网页',
+  browser_press: '网页按键',
+  browser_select: '网页选择',
+  browser_upload: '网页上传',
+  browser_back: '网页后退',
+  browser_reload: '刷新网页',
+  browser_screenshot: '网页截图',
+  browser_download: '网页下载',
+  browser_downloads: '下载列表',
+  browser_console: '网页控制台',
+  browser_network: '网页网络',
+  browser_errors: '网页错误'
 };
 
 export function messageText(message: Message): string {
   return message.content.filter((block) => block.type === 'text').map((block) => block.text).join('');
+}
+
+export function messageImages(message: Message): ImageContentBlock[] {
+  return message.content.filter((block): block is ImageContentBlock => block.type === 'image');
 }
 
 export function quoteCommandPart(value: string): string {
@@ -162,13 +194,15 @@ export function toolSummary(name: string, input: unknown, cwd?: string): string 
     const command = terminalCommandLine(input);
     if (command) return command;
   }
-  const preferred = name === 'grep' || name === 'mcp_tool_manifest'
+  const preferred = name === 'grep' || name === 'mcp_tool_manifest' || name === 'web_search'
     ? pickString(input, ['query', 'pattern'])
     : name === 'glob'
       ? pickString(input, ['pattern', 'path'])
-      : name === 'load_skill' || name === 'install_skill'
-        ? pickString(input, ['name', 'id', 'skill', 'path'])
-        : pickString(input, ['path', 'file_path', 'command', 'query', 'pattern', 'url']);
+      : name === 'web_fetch'
+        ? pickString(input, ['url'])
+        : name === 'load_skill' || name === 'install_skill'
+          ? pickString(input, ['name', 'id', 'skill', 'path'])
+          : pickString(input, ['path', 'file_path', 'command', 'query', 'pattern', 'url']);
   const raw = preferred ?? (name.startsWith('mcp__') ? mcpLabel(name) : firstStringValue(input)) ?? name;
   return relativizeToCwd(firstLine(raw), cwd);
 }
@@ -229,6 +263,7 @@ export function createToolNode(options: {
     output: toolOutput(options.result, progress),
     progress,
     errorSummary: toolErrorSummary(options.result),
+    images: options.result?.contentBlocks?.filter((block): block is Extract<typeof block, { type: 'image' }> => block.type === 'image') ?? [],
     state
   };
 }
@@ -281,7 +316,7 @@ function foldMessages(messages: Message[], workingDirectory: string | undefined)
           nodes.push({ kind: 'system', id: message.id, title: systemTitle(text), text });
         }
       } else {
-        nodes.push({ kind: 'user', id: message.id, text });
+        nodes.push({ kind: 'user', id: message.id, text, images: messageImages(message) });
       }
       continue;
     }

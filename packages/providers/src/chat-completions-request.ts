@@ -4,16 +4,23 @@ import type { ChatMessage } from './types.js';
 
 export const SYSTEM_PROMPT =
   'You are a local desktop coding assistant. Use tools when useful. Never claim a tool ran unless its result is present.';
+const IMAGE_OMITTED_TEXT = '[Image input omitted because the selected provider accepts text-only messages.]';
+const TEXT_ONLY_IMAGE_NOTICE =
+  'The selected provider does not support image inputs. Image attachments and tool screenshots were omitted. Never claim to have visually inspected them; use textual tool results and clearly state the visual limitation.';
 
-function toolResultContent(result: Extract<ContentBlock, { type: 'tool_result' }>['result']): string | unknown[] {
-  if (!result.contentBlocks?.some((block) => block.type === 'image')) return result.content;
-  return [
-    { type: 'text', text: result.content },
-    ...result.contentBlocks.flatMap((block) => block.type === 'image' ? [{
+function toolResultImageMessage(result: Extract<ContentBlock, { type: 'tool_result' }>['result']): ChatMessage | null {
+  const images = result.contentBlocks?.filter((block) => block.type === 'image') ?? [];
+  if (images.length === 0) return null;
+  return {
+    role: 'user',
+    content: [
+      { type: 'text', text: `Image output from tool call ${result.callId}. Use it together with the preceding textual tool result.` },
+      ...images.map((block) => ({
       type: 'image_url',
       image_url: { url: `data:${block.mimeType};base64,${block.data}` }
-    }] : [])
-  ];
+      }))
+    ]
+  };
 }
 
 function textContent(blocks: ContentBlock[]): string {
@@ -23,22 +30,60 @@ function textContent(blocks: ContentBlock[]): string {
     .join('');
 }
 
+function messageContent(message: Message): string | unknown[] | null {
+  const images = message.content.filter((block): block is Extract<ContentBlock, { type: 'image' }> => block.type === 'image');
+  const text = textContent(message.content);
+  if (message.role !== 'user' || images.length === 0) return text || null;
+  return [
+    ...(text ? [{ type: 'text', text }] : []),
+    ...images.map((block) => ({
+      type: 'image_url',
+      image_url: { url: `data:${block.mimeType};base64,${block.data}` }
+    }))
+  ];
+}
+
 export function toChatMessages(messages: Message[]): ChatMessage[] {
   const chatMessages: ChatMessage[] = [{ role: 'system', content: SYSTEM_PROMPT }];
+  let pendingToolImageMessages: ChatMessage[] = [];
+  let pendingToolCallIds = new Set<string>();
+
+  const flushToolImages = () => {
+    if (pendingToolImageMessages.length === 0) return;
+    chatMessages.push(...pendingToolImageMessages);
+    pendingToolImageMessages = [];
+  };
+
+  const completePendingToolCalls = () => {
+    for (const callId of pendingToolCallIds) {
+      chatMessages.push({
+        role: 'tool',
+        tool_call_id: callId,
+        content: 'Tool execution was interrupted before a result was recorded.'
+      });
+    }
+    pendingToolCallIds = new Set();
+  };
 
   for (const message of messages) {
     if (message.role === 'tool') {
       for (const block of message.content) {
-        if (block.type === 'tool_result') {
+        if (block.type === 'tool_result' && pendingToolCallIds.has(block.result.callId)) {
           chatMessages.push({
             role: 'tool',
             tool_call_id: block.result.callId,
-            content: toolResultContent(block.result)
+            content: block.result.content
           });
+          pendingToolCallIds.delete(block.result.callId);
+          const imageMessage = toolResultImageMessage(block.result);
+          if (imageMessage) pendingToolImageMessages.push(imageMessage);
         }
       }
       continue;
     }
+
+    completePendingToolCalls();
+    flushToolImages();
 
     const toolCalls = message.content
       .filter((block): block is Extract<ContentBlock, { type: 'tool_call' }> => block.type === 'tool_call')
@@ -53,10 +98,14 @@ export function toChatMessages(messages: Message[]): ChatMessage[] {
 
     chatMessages.push({
       role: message.role,
-      content: textContent(message.content) || null,
+      content: messageContent(message),
       ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {})
     });
+    pendingToolCallIds = new Set(toolCalls.map((call) => call.id));
   }
+
+  completePendingToolCalls();
+  flushToolImages();
 
   return chatMessages;
 }
@@ -82,5 +131,43 @@ export function createChatCompletionBody(request: ModelRequest): Record<string, 
         parameters: tool.inputSchema
       }
     }))
+  };
+}
+
+export function hasChatImageInputs(body: Record<string, unknown>): boolean {
+  const messages = Array.isArray(body.messages) ? body.messages : [];
+  return messages.some((message) => {
+    if (!message || typeof message !== 'object') return false;
+    const content = (message as { content?: unknown }).content;
+    return Array.isArray(content) && content.some((item) =>
+      item && typeof item === 'object' && (item as { type?: unknown }).type === 'image_url');
+  });
+}
+
+export function toTextOnlyChatCompletionBody(body: Record<string, unknown>): Record<string, unknown> {
+  const messages = Array.isArray(body.messages) ? body.messages : [];
+  let noticeAdded = false;
+  return {
+    ...body,
+    messages: messages.map((message) => {
+      if (!message || typeof message !== 'object') return message;
+      const item = message as Record<string, unknown>;
+      let content = item.content;
+      if (Array.isArray(content)) {
+        const parts = content.flatMap((part) => {
+          if (!part || typeof part !== 'object') return [];
+          const block = part as { type?: unknown; text?: unknown };
+          if (block.type === 'text' && typeof block.text === 'string' && block.text.trim()) return [block.text];
+          if (block.type === 'image_url') return [IMAGE_OMITTED_TEXT];
+          return [];
+        });
+        content = parts.join('\n\n') || IMAGE_OMITTED_TEXT;
+      }
+      if (!noticeAdded && item.role === 'system' && typeof content === 'string') {
+        content = `${content}\n\n${TEXT_ONLY_IMAGE_NOTICE}`;
+        noticeAdded = true;
+      }
+      return { ...item, content };
+    })
   };
 }

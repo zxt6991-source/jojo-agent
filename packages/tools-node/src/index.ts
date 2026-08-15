@@ -9,6 +9,8 @@ import { GrepTool } from './grep-tool.js';
 import { ListFilesTool } from './list-files-tool.js';
 import { ReadFileTool } from './read-file-tool.js';
 import { TerminalTool } from './terminal-tool.js';
+import { WebFetchTool } from './web-fetch-tool.js';
+import { WebSearchTool } from './web-search-tool.js';
 
 export { DefaultPermissionGate } from './default-permission-gate.js';
 export { ListFilesTool } from './list-files-tool.js';
@@ -22,6 +24,10 @@ export { DeleteFileTool, EditFileTool, WriteFileTool } from './file-tools.js';
 export { FileSnapshotRegistry } from './file-snapshots.js';
 export { GlobTool } from './glob-tool.js';
 export { GrepTool } from './grep-tool.js';
+export { WebFetchTool } from './web-fetch-tool.js';
+export { WebSearchTool, createDefaultSearchBackends } from './web-search-tool.js';
+export { htmlToMarkdown, parseBingHtml, parseDuckDuckGoHtml, stripHtml } from './web-html.js';
+export { UnsafeWebUrlError, assertSafeHttpUrl, isBlockedFetchAddress, parseHttpUrl } from './web-url.js';
 
 export type DefaultToolOptions = {
   snapshots?: FileSnapshotRegistry;
@@ -36,6 +42,8 @@ export function createDefaultTools(options: DefaultToolOptions = {}): Tool[] {
     new ListFilesTool(),
     new GrepTool(),
     new GlobTool(),
+    new WebSearchTool(),
+    new WebFetchTool(),
     new WriteFileTool(snapshots, trashDirectory),
     new EditFileTool(snapshots, trashDirectory),
     new DeleteFileTool(snapshots, trashDirectory),

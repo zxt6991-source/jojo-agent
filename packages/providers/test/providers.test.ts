@@ -82,30 +82,131 @@ describe('Chat Completions request conversion', () => {
     });
   });
 
-  it('serializes MCP images as multimodal tool content and appends server instructions', () => {
+  it('keeps tool content textual and follows it with a user vision message', () => {
     const body = createChatCompletionBody(request({
       instructions: ['MCP server “Vision” instructions:\nInspect images carefully.'],
-      messages: [message('tool', [{
-        type: 'tool_result',
-        result: {
-          callId: 'vision-1', ok: true, content: 'Captured frame',
-          contentBlocks: [
-            { type: 'text', text: 'Captured frame' },
-            { type: 'image', mimeType: 'image/png', data: 'aGVsbG8=' }
-          ]
-        }
-      }])]
+      messages: [
+        message('assistant', [{ type: 'tool_call', call: { id: 'vision-1', name: 'capture', input: {} } }]),
+        message('tool', [{
+          type: 'tool_result',
+          result: {
+            callId: 'vision-1', ok: true, content: 'Captured frame',
+            contentBlocks: [
+              { type: 'text', text: 'Captured frame' },
+              { type: 'image', mimeType: 'image/png', data: 'aGVsbG8=' }
+            ]
+          }
+        }])
+      ]
     }));
 
     expect(body.messages).toEqual([
       { role: 'system', content: expect.stringContaining('Inspect images carefully.') },
       {
+        role: 'assistant', content: null,
+        tool_calls: [{ id: 'vision-1', type: 'function', function: { name: 'capture', arguments: '{}' } }]
+      },
+      {
         role: 'tool', tool_call_id: 'vision-1',
+        content: 'Captured frame'
+      },
+      {
+        role: 'user',
         content: [
-          { type: 'text', text: 'Captured frame' },
+          { type: 'text', text: 'Image output from tool call vision-1. Use it together with the preceding textual tool result.' },
           { type: 'image_url', image_url: { url: 'data:image/png;base64,aGVsbG8=' } }
         ]
       }
+    ]);
+  });
+
+  it('serializes user image attachments for vision-capable models', () => {
+    const body = createChatCompletionBody(request({
+      messages: [message('user', [
+        { type: 'text', text: 'What is shown?' },
+        { type: 'image', mimeType: 'image/png', data: 'aGVsbG8=', name: 'screen.png' }
+      ])]
+    }));
+
+    expect(body.messages).toEqual([
+      { role: 'system', content: expect.any(String) },
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'What is shown?' },
+          { type: 'image_url', image_url: { url: 'data:image/png;base64,aGVsbG8=' } }
+        ]
+      }
+    ]);
+  });
+
+  it('emits every consecutive tool result before vision follow-up messages', () => {
+    const body = createChatCompletionBody(request({
+      messages: [
+        message('assistant', [
+          { type: 'tool_call', call: { id: 'one', name: 'first', input: {} } },
+          { type: 'tool_call', call: { id: 'two', name: 'second', input: {} } }
+        ]),
+        message('tool', [{ type: 'tool_result', result: {
+          callId: 'one', ok: true, content: 'first result',
+          contentBlocks: [{ type: 'image', mimeType: 'image/png', data: 'b25l' }]
+        } }]),
+        message('tool', [{ type: 'tool_result', result: {
+          callId: 'two', ok: true, content: 'second result',
+          contentBlocks: [{ type: 'image', mimeType: 'image/png', data: 'dHdv' }]
+        } }])
+      ]
+    }));
+
+    expect((body.messages as Array<Record<string, unknown>>).slice(2).map((item) => item.role)).toEqual([
+      'tool', 'tool', 'user', 'user'
+    ]);
+  });
+
+  it('repairs an interrupted historical tool call before the next user message', () => {
+    const body = createChatCompletionBody(request({
+      messages: [
+        message('assistant', [
+          { type: 'text', text: 'Opening the page.' },
+          { type: 'tool_call', call: { id: 'browser-1', name: 'browser_open', input: { url: 'https://example.com' } } }
+        ]),
+        message('user', [{ type: 'text', text: 'Try again.' }])
+      ]
+    }));
+
+    expect(body.messages).toEqual([
+      { role: 'system', content: expect.any(String) },
+      {
+        role: 'assistant', content: 'Opening the page.',
+        tool_calls: [{
+          id: 'browser-1', type: 'function',
+          function: { name: 'browser_open', arguments: '{"url":"https://example.com"}' }
+        }]
+      },
+      {
+        role: 'tool', tool_call_id: 'browser-1',
+        content: 'Tool execution was interrupted before a result was recorded.'
+      },
+      { role: 'user', content: 'Try again.' }
+    ]);
+  });
+
+  it('fills only the missing result when a multi-tool turn was partially recorded', () => {
+    const body = createChatCompletionBody(request({
+      messages: [
+        message('assistant', [
+          { type: 'tool_call', call: { id: 'one', name: 'first', input: {} } },
+          { type: 'tool_call', call: { id: 'two', name: 'second', input: {} } }
+        ]),
+        message('tool', [{ type: 'tool_result', result: { callId: 'one', ok: true, content: 'done' } }]),
+        message('user', [{ type: 'text', text: 'Continue.' }])
+      ]
+    }));
+
+    expect((body.messages as Array<Record<string, unknown>>).slice(2)).toEqual([
+      { role: 'tool', tool_call_id: 'one', content: 'done' },
+      { role: 'tool', tool_call_id: 'two', content: 'Tool execution was interrupted before a result was recorded.' },
+      { role: 'user', content: 'Continue.' }
     ]);
   });
 });
@@ -162,8 +263,33 @@ describe('OpenAICompatibleProvider', () => {
     await expect(provider.listModels()).resolves.toEqual(['model-a', 'model-z']);
     expect(fetchMock).toHaveBeenCalledWith('https://provider.example/v1/models', expect.objectContaining({
       method: 'GET',
-      headers: { authorization: 'Bearer secret' }
+      headers: { Authorization: 'Bearer secret' }
     }));
+  });
+
+  it('loads only account-available tool models from OpenRouter', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      object: 'list',
+      data: [
+        { id: 'tool-model', supported_parameters: ['tools', 'temperature'] },
+        { id: 'text-model', supported_parameters: ['temperature'] },
+        { id: 'unknown-model' }
+      ]
+    }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const provider = new OpenAICompatibleProvider({
+      apiKey: ' secret ',
+      baseUrl: 'https://openrouter.ai/api/v1'
+    });
+
+    await expect(provider.listModels()).resolves.toEqual(['tool-model']);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      'https://openrouter.ai/api/v1/models/user?supported_parameters=tools'
+    );
+    expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({
+      headers: { Authorization: 'Bearer secret' }
+    });
   });
 
   it('rejects invalid or empty model-list responses', async () => {
@@ -192,9 +318,62 @@ describe('OpenAICompatibleProvider', () => {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        authorization: 'Bearer secret'
+        Authorization: 'Bearer secret'
       }
     });
+  });
+
+  it('sends text-only messages to the DeepSeek Chat Completions API', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(
+      'data: {"choices":[{"finish_reason":"stop","delta":{}}]}\n\n',
+      { status: 200 }
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+    const provider = new OpenAICompatibleProvider({
+      apiKey: 'secret',
+      baseUrl: 'https://api.deepseek.com'
+    });
+
+    await collect(provider.stream(request({
+      messages: [message('user', [
+        { type: 'text', text: 'Describe this.' },
+        { type: 'image', mimeType: 'image/png', data: 'aGVsbG8=' }
+      ])]
+    })));
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const body = JSON.parse(String((fetchMock.mock.calls[0]?.[1] as RequestInit).body)) as {
+      messages: Array<{ role: string; content: unknown }>;
+    };
+    expect(body.messages.find((item) => item.role === 'system')?.content).toContain('does not support image inputs');
+    expect(body.messages.find((item) => item.role === 'user')?.content).toBe(
+      'Describe this.\n\n[Image input omitted because the selected provider accepts text-only messages.]'
+    );
+    expect(JSON.stringify(body)).not.toContain('image_url');
+  });
+
+  it('retries a rejected rich request as text-only for compatible providers with unknown capabilities', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        error: { message: 'unknown variant `image_url`, expected `text`' }
+      }), { status: 400 }))
+      .mockResolvedValueOnce(new Response(
+        'data: {"choices":[{"finish_reason":"stop","delta":{}}]}\n\n',
+        { status: 200 }
+      ));
+    vi.stubGlobal('fetch', fetchMock);
+    const provider = new OpenAICompatibleProvider({ apiKey: 'secret', baseUrl: 'https://provider.example/v1' });
+
+    await expect(collect(provider.stream(request({
+      messages: [message('user', [{ type: 'image', mimeType: 'image/png', data: 'aGVsbG8=' }])]
+    })))).resolves.toContainEqual({ type: 'response_completed', stopReason: 'stop' });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const firstBody = String((fetchMock.mock.calls[0]?.[1] as RequestInit).body);
+    const retryBody = String((fetchMock.mock.calls[1]?.[1] as RequestInit).body);
+    expect(firstBody).toContain('image_url');
+    expect(retryBody).not.toContain('image_url');
+    expect(retryBody).toContain('Image input omitted');
   });
 
   it.each([
@@ -211,6 +390,19 @@ describe('OpenAICompatibleProvider', () => {
       type: 'response_failed',
       code,
       message: `Provider returned HTTP ${status}: upstream detail`
+    }]);
+  });
+
+  it('turns OpenRouter tool-routing failures into an actionable model error', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      error: { message: 'No endpoints found that support tool use. Try disabling "read_file".' }
+    }), { status: 404 })));
+    const provider = new OpenAICompatibleProvider({ apiKey: 'secret' });
+
+    await expect(collect(provider.stream(request()))).resolves.toEqual([{
+      type: 'response_failed',
+      code: 'model_tools_unsupported',
+      message: 'The selected model has no endpoint that supports tool calling with the current provider routing settings. Refresh the model list and choose another tool-capable model.'
     }]);
   });
 

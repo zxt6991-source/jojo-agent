@@ -1,7 +1,7 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import type {
-  AgentEvent, ApprovalRequest, ExtensionSettings, ExtensionStatus, Message, ProviderConfig, ProviderSettings, SessionMeta, SkillDetail, SkillStatus, WorkspaceChanges
+  AgentEvent, ApprovalRequest, ExtensionSettings, ExtensionStatus, ImageContentBlock, Message, ProviderConfig, ProviderSettings, SessionMeta, SkillDetail, SkillStatus, WorkspaceChanges
 } from '@desktop-agent/contracts';
 import { DEFAULT_PROVIDERS, DEFAULT_SESSION_TITLE } from '@desktop-agent/contracts';
 import {
@@ -12,6 +12,7 @@ import {
   type ConversationViewMode,
   type LiveStep
 } from './conversation';
+import { browserDomainIssue, parseBrowserDomainList } from './browser-settings';
 import { ChatTranscript, ConversationViewTabs, Markdown, TrajectoryView } from './ConversationViews';
 import { Sidebar } from './Sidebar';
 import './styles.css';
@@ -23,7 +24,7 @@ const defaultSettings: ProviderSettings = {
   activeProviderId: 'openai',
   providers: DEFAULT_PROVIDERS.map((provider) => ({ ...provider })),
   utilityModel: { providerId: 'openai', model: 'gpt-5-mini' },
-  extensions: { mcpServers: [], skills: { directories: [], disabled: [] } }
+  extensions: { mcpServers: [], skills: { directories: [], disabled: [] }, browser: { enabled: true, allowedDomains: [] } }
 };
 
 function providerById(settings: ProviderSettings, id: string): ProviderConfig {
@@ -56,6 +57,7 @@ function skillScope(skill: SkillStatus): string {
 
 function approvalTitle(request: ApprovalRequest): string {
   if (request.call.name.startsWith('mcp__')) return '调用外部 MCP 工具';
+  if (request.call.name.startsWith('browser_')) return request.call.name === 'browser_open' ? '打开网页' : request.call.name === 'browser_download' ? '下载网页文件' : '操作网页';
   if (request.call.name === 'terminal') return '运行本地命令';
   if (request.call.name === 'read_file') return '读取工作区外的文件';
   if (request.preview) return `${request.preview.kind === 'create' ? '创建' : request.preview.kind === 'delete' ? '删除' : '修改'}文件`;
@@ -64,6 +66,7 @@ function approvalTitle(request: ApprovalRequest): string {
 
 function approvalToolLabel(request: ApprovalRequest): string {
   if (request.call.name.startsWith('mcp__')) return 'MCP';
+  if (request.call.name.startsWith('browser_')) return '浏览器';
   if (request.call.name === 'terminal') return '终端';
   if (request.call.name === 'read_file') return '文件';
   if (request.preview) return '文件修改';
@@ -71,10 +74,134 @@ function approvalToolLabel(request: ApprovalRequest): string {
 }
 
 function approvalQuestion(request: ApprovalRequest): string {
+  if (request.call.name.startsWith('browser_')) return '是否允许执行此浏览器操作？';
   if (request.call.name === 'terminal') return '是否允许运行此本地命令？';
   if (request.call.name === 'read_file') return '是否允许读取工作区外的文件？';
   if (request.preview) return `是否允许${approvalTitle(request)}？`;
   return `是否允许${approvalTitle(request)}？`;
+}
+
+function BrowserSettingsPage({
+  enabled,
+  domains,
+  error,
+  onEnabledChange,
+  onDomainsChange,
+  onSubmit
+}: {
+  enabled: boolean;
+  domains: string;
+  error: string;
+  onEnabledChange: (enabled: boolean) => void;
+  onDomainsChange: (domains: string) => void;
+  onSubmit: () => Promise<void>;
+}) {
+  const [draft, setDraft] = useState('');
+  const [draftError, setDraftError] = useState('');
+  const list = parseBrowserDomainList(domains);
+
+  const commitDomains = (next: string[]) => {
+    onDomainsChange(next.join('\n'));
+  };
+
+  const addDraft = (raw = draft): boolean => {
+    const pieces = parseBrowserDomainList(raw);
+    if (!pieces.length) {
+      setDraftError(raw.trim() ? browserDomainIssue(raw) ?? '域名格式无效。' : '');
+      return !raw.trim();
+    }
+    const next = [...list];
+    const existing = new Set(next);
+    let added = 0;
+    for (const domain of pieces) {
+      const issue = browserDomainIssue(domain);
+      if (issue) {
+        setDraftError(issue);
+        setDraft(domain);
+        return false;
+      }
+      if (existing.has(domain)) continue;
+      existing.add(domain);
+      next.push(domain);
+      added += 1;
+    }
+    commitDomains(next);
+    setDraft('');
+    setDraftError(added === 0 ? '该域名已在列表中。' : '');
+    return true;
+  };
+
+  return <form className={`settings-content model-settings-page browser-settings-page ${enabled ? '' : 'is-disabled'}`} aria-labelledby="browser-settings-title" onSubmit={(event) => {
+    event.preventDefault();
+    if (draft.trim() && !addDraft()) return;
+    void onSubmit();
+  }}>
+    <div className="settings-heading">
+      <div>
+        <h1 id="browser-settings-title">受控浏览器</h1>
+        <p>网页在独立沙箱窗口中运行，不与主界面共享登录态。普通搜索和公开页阅读使用网页搜索 / 抓取，不经过这里。</p>
+      </div>
+      <span className={`browser-status-pill ${enabled ? 'on' : ''}`}>{enabled ? '已启用' : '已关闭'}</span>
+    </div>
+    <section className="settings-section-card">
+      <div className="browser-toggle-row">
+        <div className="browser-toggle-copy">
+          <strong id="browser-enabled-label">启用浏览器工具</strong>
+          <span>关闭后智能体不能打开或操作沙箱网页。查公开资料仍可使用网页搜索和抓取。</span>
+        </div>
+        <button type="button" role="switch" aria-checked={enabled} aria-labelledby="browser-enabled-label" className={`extension-switch ${enabled ? 'on' : ''}`} onClick={() => onEnabledChange(!enabled)}><span /></button>
+      </div>
+      <div className="browser-policy-grid">
+        <article><span className="browser-policy-tag allow">自动允许</span><p>白名单导航、读取页面、等待、滚动、后退、刷新、页面诊断</p></article>
+        <article><span className="browser-policy-tag ask">每次批准</span><p>点击、输入、按键、选择、上传、下载、关闭页面、录制开始与回放</p></article>
+        <article><span className="browser-policy-tag info">不走浏览器</span><p>普通搜索和已知公开网址使用网页搜索 / 抓取</p></article>
+      </div>
+    </section>
+    <section className="settings-section-card browser-domain-card">
+      <div className="settings-section-title with-meta">
+        <div>
+          <h2>始终允许的域名</h2>
+          <p>列出的主机首次打开或新建页面时自动允许。未列出的站点会先请求一次批准；点击、输入和下载仍逐次批准。</p>
+        </div>
+        <span className="browser-domain-count">{list.length}</span>
+      </div>
+      <div className="browser-domain-body">
+        <div className={`browser-domain-editor ${enabled ? '' : 'is-disabled'}`}>
+          {list.map((domain) => <span className={`browser-domain-chip ${browserDomainIssue(domain) ? 'invalid' : ''}`} key={domain}>
+            {domain}
+            <button type="button" aria-label={`移除 ${domain}`} disabled={!enabled} onClick={() => commitDomains(list.filter((item) => item !== domain))}>×</button>
+          </span>)}
+          <input
+            value={draft}
+            disabled={!enabled}
+            placeholder={list.length ? '添加域名' : 'example.com 或 *.example.com'}
+            aria-label="添加始终允许的域名"
+            onChange={(event) => { setDraft(event.target.value); setDraftError(''); }}
+            onKeyDown={(event) => {
+              if (event.nativeEvent.isComposing) return;
+              if (event.key === 'Enter' || event.key === ',') {
+                event.preventDefault();
+                addDraft();
+              } else if (event.key === 'Backspace' && !draft && list.length) {
+                commitDomains(list.slice(0, -1));
+              }
+            }}
+            onPaste={(event) => {
+              const text = event.clipboardData.getData('text');
+              if (!/[\s,;]/u.test(text)) return;
+              event.preventDefault();
+              addDraft(`${draft} ${text}`);
+            }}
+            onBlur={() => { if (draft.trim()) addDraft(); }}
+          />
+        </div>
+        <p className="browser-domain-hint">只需主机名，不要带 https://。*.example.com 只匹配子域，不匹配 example.com 本身。</p>
+        {(draftError || error) && <div className="settings-error" role="alert">{draftError || error}</div>}
+        {!enabled && <p className="browser-domain-hint">启用浏览器工具后可编辑白名单。</p>}
+      </div>
+      <div className="settings-actions"><button className="primary" type="submit">保存浏览器设置</button></div>
+    </section>
+  </form>;
 }
 
 function approvalSummary(request: ApprovalRequest): string {
@@ -190,6 +317,7 @@ function App() {
   const activeIdRef = useRef<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [draft, setDraft] = useState('');
+  const [attachments, setAttachments] = useState<ImageContentBlock[]>([]);
   const [liveSteps, setLiveSteps] = useState<LiveStep[]>([]);
   const [conversationView, setConversationView] = useState<ConversationViewMode>('chat');
   const [inspectedId, setInspectedId] = useState<string | null>(null);
@@ -199,7 +327,7 @@ function App() {
   const [runningSessionId, setRunningSessionId] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [settingsSection, setSettingsSection] = useState<'models' | 'mcp' | 'skills'>('models');
+  const [settingsSection, setSettingsSection] = useState<'models' | 'browser' | 'mcp' | 'skills'>('models');
   const [settings, setSettings] = useState<ProviderSettings>(defaultSettings);
   const [settingsDraft, setSettingsDraft] = useState<ProviderSettings>(defaultSettings);
   const [selectedModel, setSelectedModel] = useState(providerById(defaultSettings, defaultSettings.activeProviderId).model);
@@ -214,6 +342,7 @@ function App() {
   const [extensionStatus, setExtensionStatus] = useState<ExtensionStatus>({ mcpServers: [], skills: [] });
   const [mcpServersJson, setMcpServersJson] = useState('[]');
   const [skillDirectories, setSkillDirectories] = useState('');
+  const [browserDomains, setBrowserDomains] = useState('');
   const [extensionError, setExtensionError] = useState('');
   const [extensionSearch, setExtensionSearch] = useState('');
   const [extensionEditorOpen, setExtensionEditorOpen] = useState(false);
@@ -267,6 +396,10 @@ function App() {
       skills: {
         directories: skillDirectories.split(/\r?\n/u).map((directory) => directory.trim()).filter(Boolean),
         disabled: extensionDraft.skills.disabled
+      },
+      browser: {
+        enabled: extensionDraft.browser.enabled,
+        allowedDomains: parseBrowserDomainList(browserDomains)
       }
     };
     const saved = await window.desktopAgent.saveExtensionSettings(next);
@@ -288,7 +421,7 @@ function App() {
   };
 
   const selectSession = async (id: string) => {
-    activeIdRef.current = id; turnBaselineRef.current = null; setActiveId(id); setError(''); setWorkspaceChangesError(''); setLiveSteps([]); setTurnStartedAt(null); setInspectedId(null); setReviewOpen(false); setWorkspaceChanges(null);
+    activeIdRef.current = id; turnBaselineRef.current = null; setActiveId(id); setError(''); setWorkspaceChangesError(''); setLiveSteps([]); setTurnStartedAt(null); setInspectedId(null); setReviewOpen(false); setWorkspaceChanges(null); setAttachments([]);
     const directory = sessionDirectoriesRef.current.get(id);
     if (directory) setCollapsedProjects((items) => items.filter((path) => path !== directory));
     setUsage({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
@@ -476,14 +609,15 @@ function App() {
 
   const send = async () => {
     const text = draft.trim();
-    if (!text || !activeId || running) return;
-    setDraft(''); setError(''); setRunning(true); setRunningSessionId(activeId); setLiveSteps(emptyLiveSteps()); setTurnStartedAt(Date.now()); setUsage({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }); setContextUsage(null); atBottomRef.current = true; setAtBottom(true);
-    setMessages((items) => [...items, { id: `pending-${Date.now()}`, role: 'user', createdAt: new Date().toISOString(), content: [{ type: 'text', text }] }]);
+    const images = attachments;
+    if ((!text && images.length === 0) || !activeId || running) return;
+    setDraft(''); setAttachments([]); setError(''); setRunning(true); setRunningSessionId(activeId); setLiveSteps(emptyLiveSteps()); setTurnStartedAt(Date.now()); setUsage({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }); setContextUsage(null); atBottomRef.current = true; setAtBottom(true);
+    setMessages((items) => [...items, { id: `pending-${Date.now()}`, role: 'user', createdAt: new Date().toISOString(), content: [...(text ? [{ type: 'text' as const, text }] : []), ...images] }]);
     try {
       turnBaselineRef.current = await loadWorkspaceChanges(activeId);
-      await window.desktopAgent.startTurn({ sessionId: activeId, text, providerId: settings.activeProviderId, model: selectedModel });
+      await window.desktopAgent.startTurn({ sessionId: activeId, text, images, providerId: settings.activeProviderId, model: selectedModel });
     }
-    catch (cause) { setRunning(false); setRunningSessionId(null); setTurnStartedAt(null); setLiveSteps([]); setError(cause instanceof Error ? cause.message : String(cause)); }
+    catch (cause) { setDraft(text); setAttachments(images); setRunning(false); setRunningSessionId(null); setTurnStartedAt(null); setLiveSteps([]); setError(cause instanceof Error ? cause.message : String(cause)); }
   };
 
   const active = sessions.find((session) => session.id === activeId);
@@ -528,7 +662,7 @@ function App() {
     setReviewOpen(true);
   };
 
-  const openSettings = (section: 'models' | 'mcp' | 'skills' = 'models') => {
+  const openSettings = (section: 'models' | 'browser' | 'mcp' | 'skills' = 'models') => {
     const provider = providerById(settings, settings.activeProviderId);
     setSettingsDraft(settings); setApiKey(''); setModelsFresh(true); setModelsError(''); setSettingsError('');
     setContextWindowInput(String(provider.contextWindowTokens));
@@ -536,6 +670,7 @@ function App() {
     setExtensionDraft(settings.extensions);
     setMcpServersJson(JSON.stringify(settings.extensions.mcpServers, null, 2));
     setSkillDirectories(settings.extensions.skills.directories.join('\n'));
+    setBrowserDomains(settings.extensions.browser.allowedDomains.join('\n'));
     setExtensionError(''); setExtensionSearch(''); setExtensionEditorOpen(false);
     void refreshExtensionStatus(active?.workingDirectory);
     setSettingsSection(section);
@@ -604,17 +739,24 @@ function App() {
           {!atBottom && <button type="button" className="to-bottom" aria-label="回到底部" title="回到底部" onClick={() => { const el = conversationRef.current; if (!el) return; el.scrollTop = el.scrollHeight; atBottomRef.current = true; setAtBottom(true); }}>↓</button>}
         </div>
         <footer className="composer-wrap"><div className="composer">
+          {attachments.length > 0 && <div className="composer-attachments" aria-label="待发送图片">{attachments.map((image, index) => <figure key={`${image.name ?? 'image'}-${index}`}><img src={`data:${image.mimeType};base64,${image.data}`} alt={image.name ?? '待发送图片'} /><button type="button" aria-label={`移除 ${image.name ?? '图片'}`} onClick={() => setAttachments((items) => items.filter((_, itemIndex) => itemIndex !== index))}>×</button><figcaption>{image.name ?? '图片'}</figcaption></figure>)}</div>}
           <textarea value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="随心输入" rows={2}
             onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void send(); } }} />
           <div className="composer-toolbar">
             <div className="composer-context"><span className="approval-status">⌁ 文件修改与 Terminal 需批准</span>{contextUsage && <span className="context-status" title={contextUsage.compacted ? `已压缩 ${contextUsage.compacted} 条历史消息` : '上下文估算'}>{Math.round(contextUsage.estimated / 1000)}k / {Math.round(contextUsage.window / 1000)}k</span>}{(usage.input > 0 || usage.output > 0) && <span className="context-status" title={`缓存读取 ${usage.cacheRead} · 缓存写入 ${usage.cacheWrite}`}>↑{usage.input} ↓{usage.output}</span>}</div>
             <div className="composer-actions">
+              <button className="attach" type="button" aria-label="添加图片" title="添加图片（最多 4 张，每张 10 MB）" disabled={sessionBusy || attachments.length >= 4} onClick={async () => {
+                try {
+                  const selected = await window.desktopAgent.chooseImages();
+                  setAttachments((items) => [...items, ...selected].slice(0, 4));
+                } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+              }}>＋</button>
               <select className="model-select" aria-label="本轮使用的模型" title="选择本轮使用的模型" value={selectedModel} disabled={sessionBusy} onChange={(event) => setSelectedModel(event.target.value)}>
                 {selectedProvider.models.map((model) => <option key={model} value={model}>{model}</option>)}
               </select>
               {sessionBusy
                 ? <button className="stop" aria-label="停止生成" title="停止生成" onClick={() => activeId && window.desktopAgent.cancelTurn(activeId)}>■</button>
-                : <button className="send" aria-label="发送消息" title="发送消息" disabled={!draft.trim()} onClick={() => void send()}>↑</button>}
+                : <button className="send" aria-label="发送消息" title="发送消息" disabled={!draft.trim() && attachments.length === 0} onClick={() => void send()}>↑</button>}
             </div>
           </div>
         </div><div className="hint">Enter 发送 · Shift+Enter 换行</div></footer>
@@ -637,12 +779,13 @@ function App() {
         <button className="settings-back" type="button" onClick={() => setSettingsOpen(false)}><span aria-hidden="true">←</span> 返回</button>
         <nav aria-label="设置分类">
           <button type="button" className={settingsSection === 'models' ? 'active' : ''} onClick={() => { setSettingsSection('models'); setExtensionEditorOpen(false); }}><span aria-hidden="true">◇</span> 模型</button>
+          <button type="button" className={settingsSection === 'browser' ? 'active' : ''} onClick={() => { setSettingsSection('browser'); setExtensionEditorOpen(false); }}><span aria-hidden="true">◎</span> 浏览器</button>
           <button type="button" className={settingsSection === 'skills' ? 'active' : ''} onClick={() => { setSettingsSection('skills'); setExtensionSearch(''); setExtensionEditorOpen(false); }}><span aria-hidden="true">⬡</span> 技能</button>
           <button type="button" className={settingsSection === 'mcp' ? 'active' : ''} onClick={() => { setSettingsSection('mcp'); setExtensionSearch(''); setExtensionEditorOpen(false); }}><span aria-hidden="true">⌘</span> MCP 服务</button>
         </nav>
       </aside>
       <main className="settings-main">
-        <header className="settings-topbar"><strong>{settingsSection === 'models' ? '模型' : settingsSection === 'skills' ? '技能' : 'MCP 服务'}</strong></header>
+        <header className="settings-topbar"><strong>{settingsSection === 'models' ? '模型' : settingsSection === 'browser' ? '浏览器' : settingsSection === 'skills' ? '技能' : 'MCP 服务'}</strong></header>
         <div className="settings-page-body">
     {settingsSection === 'models' && <form className="settings-content model-settings-page" aria-labelledby="settings-title" onSubmit={async (event) => {
       event.preventDefault();
@@ -704,7 +847,19 @@ function App() {
       <div className="settings-actions"><button className="primary" type="submit" disabled={modelsLoading}>保存模型设置</button></div>
       </section>
     </form>}
-    {settingsSection !== 'models' && <form className={`settings-content extensions-settings-page ${extensionEditorOpen && settingsSection === 'mcp' ? 'mcp-editor-visible' : ''}`} aria-labelledby="extensions-title" onSubmit={async (event) => {
+    {settingsSection === 'browser' && <BrowserSettingsPage
+      enabled={extensionDraft.browser.enabled}
+      domains={browserDomains}
+      error={extensionError}
+      onEnabledChange={(enabled) => setExtensionDraft((current) => ({ ...current, browser: { ...current.browser, enabled } }))}
+      onDomainsChange={setBrowserDomains}
+      onSubmit={async () => {
+        setExtensionError('');
+        try { await saveExtensionDraft(); }
+        catch (cause) { setExtensionError(cause instanceof Error ? cause.message : String(cause)); }
+      }}
+    />}
+    {(settingsSection === 'mcp' || settingsSection === 'skills') && <form className={`settings-content extensions-settings-page ${extensionEditorOpen && settingsSection === 'mcp' ? 'mcp-editor-visible' : ''}`} aria-labelledby="extensions-title" onSubmit={async (event) => {
       event.preventDefault();
       setExtensionError('');
       try {

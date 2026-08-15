@@ -4,9 +4,10 @@ import type {
   PermissionGate,
   ToolCall
 } from '@desktop-agent/contracts';
-import { GlobInput, GrepInput, ListFilesInput, ReadFileInput, TerminalInput } from './inputs.js';
+import { GlobInput, GrepInput, ListFilesInput, ReadFileInput, TerminalInput, WebFetchInput, WebSearchInput } from './inputs.js';
 import { FileSnapshotRegistry } from './file-snapshots.js';
 import { mutationErrorCode, prepareFileMutation } from './file-mutation.js';
+import { parseHttpUrl, UnsafeWebUrlError } from './web-url.js';
 import { resolveWorkspacePath } from './workspace-paths.js';
 
 export class DefaultPermissionGate implements PermissionGate {
@@ -26,6 +27,10 @@ export class DefaultPermissionGate implements PermissionGate {
       case 'glob':
       case 'grep':
         return this.checkSearch(call, context.workingDirectory);
+      case 'web_search':
+        return this.checkWebSearch(call);
+      case 'web_fetch':
+        return this.checkWebFetch(call);
       case 'write_file':
       case 'edit_file':
       case 'delete_file':
@@ -45,6 +50,27 @@ export class DefaultPermissionGate implements PermissionGate {
         : { decision: 'deny', reason: 'Searching outside the working directory is not allowed.' };
     } catch (error) {
       return this.denyError(error);
+    }
+  }
+
+  private checkWebSearch(call: ToolCall): PermissionDecision {
+    const parsed = WebSearchInput.safeParse(call.input);
+    if (!parsed.success) return { decision: 'deny', reason: parsed.error.message, code: 'invalid_input' };
+    return { decision: 'allow' };
+  }
+
+  private checkWebFetch(call: ToolCall): PermissionDecision {
+    const parsed = WebFetchInput.safeParse(call.input);
+    if (!parsed.success) return { decision: 'deny', reason: parsed.error.message, code: 'invalid_input' };
+    try {
+      parseHttpUrl(parsed.data.url);
+      return { decision: 'allow' };
+    } catch (error) {
+      return {
+        decision: 'deny',
+        reason: error instanceof Error ? error.message : String(error),
+        code: error instanceof UnsafeWebUrlError ? error.code : 'unsafe_url'
+      };
     }
   }
 

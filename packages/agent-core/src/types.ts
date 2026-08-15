@@ -13,6 +13,7 @@ export type AgentRunOptions = {
   model: string;
   history: Message[];
   userText: string;
+  userImages?: Extract<Message['content'][number], { type: 'image' }>[];
   provider: ModelProvider;
   tools: Tool[];
   /** Trusted runtime instructions, for example connected MCP server instructions. */

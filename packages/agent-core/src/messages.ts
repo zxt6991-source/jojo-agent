@@ -1,15 +1,18 @@
-import type { Message, ToolCall, ToolResult } from '@desktop-agent/contracts';
+import type { ImageContentBlock, Message, ToolCall, ToolResult } from '@desktop-agent/contracts';
 import type { AgentRunOptions } from './types.js';
 
 const createId = () => crypto.randomUUID();
 const now = () => new Date().toISOString();
 
-export function createUserMessage(text: string): Message {
+export function createUserMessage(text: string, images: ImageContentBlock[] = []): Message {
   return {
     id: createId(),
     role: 'user',
     createdAt: now(),
-    content: [{ type: 'text', text }]
+    content: [
+      ...(text.trim() ? [{ type: 'text' as const, text }] : []),
+      ...images
+    ]
   };
 }
 

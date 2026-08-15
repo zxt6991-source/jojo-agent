@@ -7,6 +7,12 @@
 
 Providers 把内部统一的 `ModelRequest` 转换为具体模型服务请求，并把厂商响应还原为 `ModelEvent`。当前仅实现 OpenAI Chat Completions 兼容协议，不负责 Agent 循环、重试决策、密钥存储或 UI。Phase 2 的横切设计详见[Provider 与上下文管理方案](../phase-2-multi-provider-context.md)。
 
+模型发现默认请求 `{baseUrl}/models`。当 Base URL 属于 OpenRouter 时，改为请求账户级 `/models/user?supported_parameters=tools`，并再次检查每项的 `supported_parameters`，避免把不能运行 Agent 工具的纯聊天模型放进设置列表。若正式请求仍返回“没有支持 tool use 的端点”，Provider 会输出 `model_tools_unsupported`，提示用户刷新并改选模型。
+
+Chat Completions 要求带 `tool_calls` 的 Assistant Message 后面立即出现覆盖每个 `tool_call_id` 的 Tool Message。正常取消会为当前及尚未执行的调用持久化 `cancelled` Tool Result；Provider 序列化时还会检查历史，对应用强退或旧版本遗留的缺失结果补入“执行被中断”的合成 Tool Message，并忽略无法匹配到前置调用的孤立 Tool Result。图片 Tool Result 必须先完成整组文本 Tool Message，再追加独立的 User `image_url` 消息。
+
+DeepSeek Chat Completions 的 User Message `content` 只接受字符串。检测到 `api.deepseek.com` 时，Provider 会在请求前把用户图片和工具截图替换为文本占位，并向 System Message 注入“未进行视觉检查”的约束。其他兼容服务如果以 `unknown variant image_url, expected text` 拒绝富内容，请求会自动进行一次相同的纯文本降级重试。降级只保证 Agent 能继续使用 `browser_read` 等文本结果，不代表模型获得视觉能力。
+
 公开入口 `src/index.ts` 导出 OpenAI-compatible adapter、Provider 注册表和统一工厂，协议细节按职责拆分：
 
 | 文件 | 职责 |

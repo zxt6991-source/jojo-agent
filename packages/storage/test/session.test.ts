@@ -59,7 +59,7 @@ describe('JsonConfigStore', () => {
         })
       ]),
       utilityModel: { providerId: 'openai', model: 'legacy-model' },
-      extensions: { mcpServers: [], skills: { directories: [], disabled: [] } }
+      extensions: { mcpServers: [], skills: { directories: [], disabled: [] }, browser: { enabled: true, allowedDomains: [] } }
     });
   });
 
@@ -103,7 +103,8 @@ describe('JsonConfigStore', () => {
     settings.utilityModel = { providerId: 'openai', model: 'model-a' };
     settings.extensions = {
       mcpServers: [{ id: 'files', name: 'Files', enabled: true, transport: 'stdio', command: 'node', args: ['server.js'] }],
-      skills: { directories: ['/skills'], disabled: ['disabled-skill'] }
+      skills: { directories: ['/skills'], disabled: ['disabled-skill'] },
+      browser: { enabled: true, allowedDomains: ['example.com'] }
     };
     await store.save(settings);
 

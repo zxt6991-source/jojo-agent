@@ -1,7 +1,7 @@
 # Desktop Agent 当前功能与上手指南
 
-> 文档状态：2026-08-11
-> 当前版本：0.1.0（MVP + Coding Agent Phase 1 + Phase 3 MCP/Skills）
+> 文档状态：2026-08-15
+> 当前版本：0.1.0（MVP + Coding Agent Phase 1 + Phase 3 MCP/Skills + Phase 4 Browser/Rich Content）
 > 说明：本文以当前仓库代码为准，只描述已经实现的能力。路线图中的规划不等于可用功能。
 
 ## 1. 先用一分钟认识项目
@@ -15,8 +15,10 @@ Desktop Agent 是一个本地优先的 Electron 桌面 AI Agent。它把一次 A
 - 在审阅逐行 Diff 后创建、精确编辑或删除项目内文本文件；
 - 在用户逐次批准后运行测试、构建或其他本地命令；
 - 观察 Git 工作区中已有或本轮产生的文件变化。
+- 用 `web_search` / `web_fetch` 检索和阅读公开网页，而不打开浏览器；
+- 在受控浏览器中操作需要登录或交互的网页，并把图片交给视觉模型分析。
 
-它现在可以完成范围明确的小型代码任务，并可通过 MCP 与本地 Skills 扩展能力，但仍不是完整的自主编程 Agent：没有专用 Git 写操作、浏览器和子 Agent 等能力。
+它现在可以完成范围明确的小型代码任务，并可通过 MCP、本地 Skills 和受控浏览器扩展能力，但仍不是完整的自主编程 Agent：没有专用 Git 写操作和子 Agent 等能力。
 
 专用写工具只允许修改工作目录内的 UTF-8 文本，执行前展示 Diff 并询问一次。获批的终端命令仍可能绕过这些文件工具限制并修改其他内容，因此用户仍需检查完整命令。
 
@@ -54,14 +56,14 @@ pnpm dev
 
 1. 点击左下角“设置”；
 2. 填写 API Base URL，例如 `https://api.openai.com/v1`；
-3. 填写 API Key，点击“刷新模型”从 Provider 的 `/models` 接口获取可用模型；
+3. 填写 API Key，点击“刷新模型”获取可用模型；OpenRouter 会按当前账户路由设置查询 `/models/user?supported_parameters=tools`，只保留支持 Tool Calls 的模型；
 4. 选择默认模型并保存；
 5. 点击“新建会话”或“选择项目目录”，选择一个本地目录；
 6. 在输入框右下角选择本轮使用的模型，输入任务并按 Enter 发送，Shift+Enter 可换行。
 
 Base URL 应填写到服务的 API 根路径。应用会自动在末尾追加 `/chat/completions`，不要填写完整的 Chat Completions 接口地址。
 
-已获取的模型列表会缓存在普通配置中。修改 Base URL 或 API Key 后，保存时会自动重新查询模型；如果 Provider 不兼容 `/models` 接口，设置页会直接显示错误。
+已获取的模型列表会缓存在普通配置中。修改 Base URL 或 API Key 后，保存时会自动重新查询模型；如果 Provider 不兼容模型发现接口，设置页会直接显示错误。其他 OpenAI-compatible Provider 仍使用标准 `/models` 接口。
 
 ### 2.4 建议用这组任务验证环境
 
@@ -87,7 +89,7 @@ Base URL 应填写到服务的 API 根路径。应用会自动在末尾追加 `/
 | 工作目录（Workspace） | Agent 默认可以查看的目录，也是相对路径、终端 `cwd` 和 Git 修改审阅的边界。 |
 | 一轮（Turn） | 从用户发送一条消息开始，到模型完成、失败或被取消为止。同一会话一次只能运行一轮。 |
 | Provider | 把内部消息和工具定义转换成 OpenAI Chat Completions 请求的模型适配器。 |
-| 工具调用（Tool Call） | 模型不是直接操作电脑，而是请求应用执行 `read_file`、`list_files` 或 `terminal`。 |
+| 工具调用（Tool Call） | 模型不是直接操作电脑，而是请求应用执行 `read_file`、`web_search`、`web_fetch` 或 `terminal` 等工具。 |
 | 审批（Approval） | 对高风险或越界操作进行的一次性授权。目前终端命令和工作目录外文件读取需要审批。 |
 
 选择目录不是简单的界面操作，而是在划定本会话的权限范围。若要处理另一个项目，建议创建新会话并选择对应目录。
@@ -163,7 +165,7 @@ Worker 与界面进程分离，因此 Agent 运行异常不必直接获得 Rende
 
 当前最多收集 100 个变更文件，每个文件的 Patch 最多保留约 250,000 字节，超过限制时会显示截断提示。
 
-## 6. 八个内置工具
+## 6. 十个内置工具
 
 ### 6.1 `read_file`：读取文本文件
 
@@ -205,7 +207,38 @@ Worker 与界面进程分离，因此 Agent 运行异常不必直接获得 Rende
 - `grep` 按固定文本查找并返回 `路径:行号:内容`，支持 glob 和大小写选项；
 - 两者只搜索工作目录内，忽略 `.git`、`node_modules`、构建和缓存目录，并限制结果数量。
 
-### 6.4 `write_file`、`edit_file` 与 `delete_file`：修改文本文件
+### 6.4 `web_search` 与 `web_fetch`：公开网页检索
+
+公开信息检索走这两个 Node 工具，不经过受控浏览器。校验通过后自动允许。
+
+`web_search` 输入示例：
+
+```json
+{ "query": "zod schema refine", "maxResults": 5 }
+```
+
+行为和限制：
+
+- 返回每条结果的标题、URL 和摘要；摘要是不可信外部数据，不能当成系统指令；
+- 若进程环境提供 `BRAVE_SEARCH_API_KEY`、`TAVILY_API_KEY` 或 `SERPER_API_KEY`，优先使用对应搜索 API；否则依次尝试 DuckDuckGo HTML、DuckDuckGo Lite 和 Bing HTML；
+- 查询 1～500 字符，结果 1～20 条，默认 5 条；
+- 当前没有设置页配置搜索密钥，密钥只从环境变量读取。
+
+`web_fetch` 输入示例：
+
+```json
+{ "url": "https://example.com/docs", "clean": true }
+```
+
+行为和限制：
+
+- 只允许无凭据的 HTTP(S) GET；每次跳转（最多 10 次）都会重新解析并检查目标；
+- 拒绝链路本地、组播、全零/广播以及云厂商 metadata 主机；允许回环和私有局域网，便于抓取本地开发文档；
+- 默认把 HTML 转成可读 Markdown，去掉脚本、样式和导航等页面框架；`clean: false` 返回原文；
+- 默认最多保留 512,000 字节，30 秒超时；二进制响应只回报类型，不回填正文；
+- JavaScript 渲染、登录墙或需要点击的页面应改用浏览器工具。
+
+### 6.5 `write_file`、`edit_file` 与 `delete_file`：修改文本文件
 
 - `write_file` 创建新文件，或完整替换已经完整读取的现有文件；
 - `edit_file` 只替换已读取文件中的精确文本；匹配不唯一时必须显式选择全部替换；
@@ -214,7 +247,7 @@ Worker 与界面进程分离，因此 Agent 运行异常不必直接获得 Rende
 - 审批前和执行时都会检查 SHA-256、mtime 与大小，外部编辑后拒绝盲目覆盖；
 - 覆盖和删除前把原文件保存到 Electron `userData/trash/<session-id>/`；写入使用同目录临时文件原子替换，并保留原权限位。
 
-### 6.5 `terminal`：执行本地程序
+### 6.6 `terminal`：执行本地程序
 
 输入示例：
 
@@ -248,6 +281,8 @@ Worker 与界面进程分离，因此 Agent 运行异常不必直接获得 Rende
 | `read_file` | 自动允许 | 每次询问 |
 | `list_files` | 自动允许 | 拒绝 |
 | `grep` / `glob` | 自动允许 | 拒绝 |
+| `web_search` | 输入校验通过后自动允许 | 不依赖工作目录 |
+| `web_fetch` | URL 校验通过后自动允许；执行时再做 DNS/SSRF 检查 | 不依赖工作目录 |
 | `write_file` / `edit_file` / `delete_file` | 每次展示 Diff 并询问 | 拒绝 |
 | `terminal` | 每次询问 | `cwd` 不允许越出工作目录 |
 | MCP 外部工具 | 每次询问 | 由 MCP Server 自身决定；审批前需检查参数 |
@@ -314,6 +349,33 @@ Skills 会从 `userData/skills`、用户级 `~/.agents/skills` / `~/.codex/skill
 MCP 的 `env` 和静态 HTTP `headers` 位于当前用户可读的普通配置；OAuth client registration、token 和 PKCE/discovery 状态使用操作系统安全存储加密。不要把长期高权限 token 手工写入 headers。
 启用 stdio server 会在应用连接时立即以当前用户权限启动其 `command`。逐次审批只覆盖后续 MCP 工具调用，不能限制 server 进程的启动代码，因此只能配置可信程序。
 
+### 8.4 浏览器与图片消息
+
+普通搜索和阅读已知公开 URL 使用第 6 节的 `web_search` / `web_fetch`，不要打开沙箱浏览器。浏览器只用于登录墙、需要 JavaScript 渲染或交互的页面，以及抓取失败后的补救。
+
+“设置 → 浏览器”可启停受控浏览器，并配置域名白名单；`*.example.com` 只匹配子域名，不匹配根域。浏览器工具包括：
+
+- `browser_open`：在独立窗口打开 HTTP(S) 页面；白名单外域名先审批；
+- `browser_new_page`、`browser_pages`、`browser_select_page`、`browser_close_page`：新建、列出、切换和关闭会话内页面；新建页面沿用域名审批，关闭页面逐次审批；
+- `browser_record_start`、`browser_record_stop`、`browser_recordings`、`browser_replay`：录制、停止、列出和回放当前进程内的浏览器工作流；开始录制及回放需审批；
+- `browser_read`：通过 CDP 读取可见页面结构，并为节点返回 CSS selector 和稳定的会话内元素 `ref`；
+- `browser_wait`、`browser_scroll`：按 `ref` 或 selector 等待元素进入指定状态，或按偏移/目标元素滚动页面；
+- `browser_click`、`browser_type`：按 `ref`（推荐）或 selector 点击控件、填写/提交表单，每次执行前审批；
+- `browser_press`、`browser_select`：向当前焦点或指定元素发送受限按键，或选择原生下拉选项，每次执行前审批；
+- `browser_upload`：向原生文件输入框上传当前工作区内的文件，真实路径解析后逐次审批，最多 10 个文件、单个 50 MB、合计 100 MB；
+- `browser_back`、`browser_reload`：后退或刷新并等待主页面完成导航；
+- `browser_screenshot`：截取视口或有尺寸上限的质量受控 JPEG，并作为视觉 Tool Result 回填模型；
+- `browser_download`、`browser_downloads`：经审批发起下载并查看进度、状态和保存路径；
+- `browser_console`、`browser_network`、`browser_errors`：读取当前页已捕获的 Console、网络请求元数据和页面错误；只读自动允许，可过滤失败请求或错误级别，并可在读取后清空缓冲区。
+
+每个会话使用同一个独立内存 partition，并可维护多个受控页面；页面共享该会话的 Cookie 和域名授权，但不与其他会话或主界面共享。`browser_read` 生成的元素引用在会话内全局唯一，并绑定当前页面和来源站点，同时保存标签、可访问名称、角色、id、`data-testid`、字段名、输入类型、placeholder 和链接等指纹。页面局部刷新或 DOM 重排后，动作会对同标签候选评分并重新定位；低置信度、同分歧义、跨页面、跨来源或已过期引用一律拒绝，要求重新读取，避免误点相似控件。每页最多保留 4000 个最近引用。下载写入 `userData/browser-downloads/<session-id>/`。远程页面所在窗口不安装 Preload，关闭 Node integration 和 webview，开启 context isolation、sandbox 与 web security；只允许 HTTP(S) 顶层导航，未批准的跨域跳转会在 Main 进程阻止。页面弹窗仅在目标属于已批准域名时创建，否则拒绝并在点击结果中回报。等待、滚动、页面列表、切换、后退、刷新和页面诊断自动允许，但关闭页面、按键、下拉选择和工作区文件上传与点击、输入一样逐次审批。上传路径由 Main 根据 Session 重新读取工作目录并解析真实路径，目录外文件、目录和超限文件都会被拒绝。网页文字被明确视为不可信数据，不能提升为系统指令，也不能绕过本地工具审批。诊断日志同样视为不可信页面数据；网络记录不包含请求头或正文。
+
+工作流录制只保存成功的 open/wait/scroll/click/type/press/select/back/reload，单个录制最多 100 步；不会录制上传、下载、截图、页面诊断、多页面管理或录制控制动作。录制数据和输入文字仅位于 Main 内存，录制列表只显示目标与字符数，应用退出后丢失。回放逐步返回结果并在首个不可恢复错误处停止；最多重试 3 次，且仅限元素明确未找到、稳定引用暂时无法定位或等待超时。执行上下文销毁、候选歧义等可能代表动作已发生或目标不确定的错误不会自动重试。
+
+输入框的“＋”可选择 PNG、JPEG、WebP 或 GIF，最多 4 张、单张最大 10 MB。图片随用户消息写入 JSONL，在对话中显示，并转换为 OpenAI Chat Completions 的 `image_url` 数据 URL；所选模型仍需自身支持视觉输入。
+
+DeepSeek Chat Completions 当前只接受字符串 Message Content。使用 `api.deepseek.com` 时，应用会把图片和浏览器截图替换为明确的文本占位，让模型继续使用 `browser_read` 的页面结构，但会要求模型声明没有实际查看截图。其他兼容 Provider 若明确拒绝 `image_url`，应用也会自动进行一次纯文本重试。若任务需要描述颜色、布局或图片内容，必须改用真正支持视觉输入的 Provider 和模型。
+
 ## 9. 会话、配置和密钥保存在哪里
 
 所有数据都放在 Electron 的 `app.getPath('userData')` 目录中，实际根路径随操作系统和应用名称变化。目录内部结构为：
@@ -326,6 +388,8 @@ userData/
 │   └── provider-key.bin        # 操作系统安全存储加密后的 API Key
 ├── sessions/
 │   └── <session-id>.jsonl      # 会话元数据、标题变更和消息
+├── browser-downloads/
+│   └── <session-id>/           # 受控浏览器下载
 ├── skills/                     # 全局安装的本地 SKILL.md 目录
 └── trash/
     └── <session-id>/<entry>/   # 文件工具覆盖/删除前的副本与恢复元数据
@@ -352,7 +416,7 @@ userData/
 | `packages/contracts` | 消息、事件、IPC、配置类型及 Zod Schema | 新增跨进程字段或能力时先看 |
 | `packages/agent-core` | 不依赖 Electron 的 Agent 工具循环 | 修改模型与工具如何反复协作时 |
 | `packages/providers` | OpenAI Chat Completions 兼容协议 | 接入或排查模型服务时 |
-| `packages/tools-node` | 文件、目录、终端工具和权限 Gate | 新增工具或修改审批策略时 |
+| `packages/tools-node` | 文件、目录、公开网页检索、终端工具和权限 Gate | 新增工具或修改审批策略时 |
 | `packages/storage` | JSONL 会话和普通配置存储 | 修改持久化格式时 |
 | `packages/extensions` | MCP stdio/HTTP 客户端、延迟工具发现和 Skills | 修改外部扩展机制时 |
 
@@ -375,6 +439,7 @@ userData/
 | 修改 Renderer 可调用的 API | `apps/desktop/src/preload/preload.ts` |
 | 新增或修改 IPC | `packages/contracts/src/desktop.ts`（由 `src/index.ts` 聚合导出）→ `apps/desktop/src/preload/preload.ts` → `apps/desktop/src/main/main.ts` |
 | 修改窗口、安全存储或 Worker 管理 | `apps/desktop/src/main/main.ts` |
+| 修改受控浏览器 CDP 与安全规则 | `apps/desktop/src/main/browser-runtime.ts`、`apps/desktop/src/main/browser-security.ts`、`apps/desktop/src/main/browser-diagnostics.ts`、`apps/desktop/src/worker/browser-tools.ts` |
 | 修改 Git 文件变化采集 | `apps/desktop/src/main/workspace-changes.ts` |
 | 修改一轮 Agent 的执行逻辑 | `packages/agent-core/src/index.ts` |
 | 修改 Provider HTTP/超时/错误处理 | `packages/providers/src/openai-compatible-provider.ts` |
@@ -401,7 +466,7 @@ userData/
 | `pnpm build` | 通过 Electron Forge 为当前平台生成分发产物 |
 | `pnpm --filter @desktop-agent/desktop package` | 只生成未封装的应用目录 |
 
-当前共有 69 个单元测试，覆盖：
+当前共有 139 个单元测试，覆盖：
 
 - Agent 工具循环、重复 Tool Call 和审批拒绝后继续；
 - 动态工具刷新、MCP 大工具集延迟激活和 Skill 按需加载；
@@ -409,6 +474,8 @@ userData/
 - 大文件截断、目录符号链接逃逸和工作目录外读取审批；
 - JSONL 损坏尾恢复和单会话并发锁；
 - Git 已跟踪/未跟踪文件 Diff、非 Git 目录和会话子目录范围。
+- 浏览器 URL/域名权限、下载文件名净化、页面结构输出、Console/网络/页面错误诊断过滤、图片契约与视觉请求序列化；
+- 公开网页搜索/抓取的 URL 安全检查、HTML 清洗、权限 Gate 与本地 HTTP 回退。
 
 提交代码前建议依次运行：
 
@@ -437,6 +504,7 @@ pnpm test
 - Renderer 不直接访问 Node.js、文件系统或子进程；
 - 生产构建使用 ASAR；
 - Electron Fuses 关闭 RunAsNode、`NODE_OPTIONS` 和调试参数等能力。
+- 受控浏览器使用独立内存 partition，且没有 Preload、Node.js、webview、新窗口或主 Renderer IPC。
 
 这些措施降低了 Renderer 被利用后的风险，但不替代终端命令审批。批准命令前仍应阅读完整命令和参数。
 
@@ -445,8 +513,6 @@ pnpm test
 - 通用 unified patch 输入工具（当前提供完整写入与精确文本编辑）；
 - Git 提交、分支等专用写操作；
 - 多 Provider 注册、列表和会话级切换；
-- 浏览器自动化；
-- 图片等多模态消息；
 - 子 Agent 和工作流；
 - 长期记忆和向量数据库；
 - 定时任务与后台自动化；
@@ -455,7 +521,7 @@ pnpm test
 - 代码签名与 macOS notarization；
 - 默认 CI 中的真实模型集成测试。
 
-判断某项能力是否存在时，以本节、八个内置工具和实际源码为准，不要只依据路线图或界面外观。
+判断某项能力是否存在时，以本节、十个内置工具和实际源码为准，不要只依据路线图或界面外观。
 
 ## 15. 常见问题
 
@@ -465,7 +531,13 @@ pnpm test
 
 ### 为什么设置保存成功，但发送后报错？
 
-设置页只保存配置，不主动验证服务。请依次检查 Base URL 是否只填到 API 根路径、模型名是否存在、API Key 是否有效，以及服务是否支持流式 Chat Completions 与 Tool Calls。
+设置页只保存配置，不主动执行完整对话验证。请依次检查 Base URL 是否只填到 API 根路径、模型名是否存在、API Key 是否有效，以及服务是否支持流式 Chat Completions 与 Tool Calls。OpenRouter 返回 `No endpoints found that support tool use` 时，说明当前模型在账户路由偏好下没有工具端点；点击“刷新模型”并改选列表中的模型。涉及图片或浏览器截图时，模型还必须支持视觉输入。
+
+如果应用在工具执行或审批期间被关闭，旧记录可能只包含 Assistant Tool Call 而没有 Tool Result。重新打开后可以直接继续原会话：发送给 Provider 前会自动补入中断结果，正常点击“停止”也会为所有尚未完成的调用保存 `cancelled` 结果，避免后续请求出现 `insufficient tool messages following tool_calls message`。
+
+### 为什么模型打开了浏览器，而不是直接搜索？
+
+查资料、读公开文档应使用 `web_search` 和 `web_fetch`。浏览器只用于需要登录、点击或 JavaScript 渲染的页面。可在任务里写明“先搜索，不要打开浏览器”。
 
 ### 为什么 `&&` 或管道没有效果？
 

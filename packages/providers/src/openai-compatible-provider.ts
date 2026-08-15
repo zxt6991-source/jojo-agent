@@ -1,6 +1,10 @@
 import type { ModelEvent, ModelProvider, ModelRequest } from '@desktop-agent/contracts';
 
-import { createChatCompletionBody } from './chat-completions-request.js';
+import {
+  createChatCompletionBody,
+  hasChatImageInputs,
+  toTextOnlyChatCompletionBody
+} from './chat-completions-request.js';
 import { parseChatCompletionStream } from './chat-completions-stream.js';
 import type { OpenAIProviderOptions } from './types.js';
 
@@ -8,11 +12,25 @@ const DEFAULT_BASE_URL = 'https://api.openai.com/v1';
 const DEFAULT_TIMEOUT_MS = 90_000;
 const MAX_ERROR_DETAIL_LENGTH = 1_000;
 
-function httpErrorCode(status: number): string {
+function httpErrorCode(status: number, detail = ''): string {
+  if (status === 404 && /(?:support(?:s|ed)?|supporting) tool (?:use|calls?|calling)/i.test(detail)) {
+    return 'model_tools_unsupported';
+  }
   if (status === 401 || status === 403) return 'authentication';
   if (status === 429) return 'rate_limit';
   if (status >= 500) return 'provider_unavailable';
   return 'provider_request';
+}
+
+function providerErrorMessage(status: number, detail: string): string {
+  if (httpErrorCode(status, detail) === 'model_tools_unsupported') {
+    return 'The selected model has no endpoint that supports tool calling with the current provider routing settings. Refresh the model list and choose another tool-capable model.';
+  }
+  return `Provider returned HTTP ${status}${detail ? `: ${detail}` : ''}`;
+}
+
+function rejectsImageMessageContent(status: number, detail: string): boolean {
+  return status === 400 && /unknown variant [`'"]?image_url[`'"]?, expected [`'"]?text/i.test(detail);
 }
 
 function cancellationError(): DOMException {
@@ -40,9 +58,15 @@ export class OpenAICompatibleProvider implements ModelProvider {
     );
 
     try {
-      const response = await fetch(`${this.baseUrl}/models`, {
+      const modelsUrl = new URL(`${this.baseUrl}/models`);
+      const isOpenRouter = modelsUrl.hostname === 'openrouter.ai' || modelsUrl.hostname.endsWith('.openrouter.ai');
+      if (isOpenRouter) {
+        modelsUrl.pathname = `${modelsUrl.pathname.replace(/\/$/, '')}/user`;
+        modelsUrl.searchParams.set('supported_parameters', 'tools');
+      }
+      const response = await fetch(modelsUrl.toString(), {
         method: 'GET',
-        headers: { authorization: `Bearer ${this.options.apiKey}` },
+        headers: { Authorization: `Bearer ${this.options.apiKey.trim()}` },
         signal: controller.signal
       });
       if (!response.ok) {
@@ -56,7 +80,11 @@ export class OpenAICompatibleProvider implements ModelProvider {
       }
       const models = Array.from(new Set((payload as { data: unknown[] }).data.flatMap((item) => {
         if (!item || typeof item !== 'object') return [];
-        const id = (item as { id?: unknown }).id;
+        const model = item as { id?: unknown; supported_parameters?: unknown };
+        if (isOpenRouter && (!Array.isArray(model.supported_parameters) || !model.supported_parameters.includes('tools'))) {
+          return [];
+        }
+        const id = model.id;
         return typeof id === 'string' && id.trim() ? [id.trim()] : [];
       }))).sort((left, right) => left.localeCompare(right));
       if (models.length === 0) throw new Error('The provider returned no available models.');
@@ -81,24 +109,38 @@ export class OpenAICompatibleProvider implements ModelProvider {
     request.signal.addEventListener('abort', cancelRequest, { once: true });
 
     try {
-      const response = await fetch(`${this.baseUrl}/chat/completions`, {
+      const richBody = createChatCompletionBody(request);
+      const providerUrl = new URL(this.baseUrl);
+      const isDeepSeek = providerUrl.hostname === 'api.deepseek.com' || providerUrl.hostname.endsWith('.api.deepseek.com');
+      let requestBody = isDeepSeek && hasChatImageInputs(richBody)
+        ? toTextOnlyChatCompletionBody(richBody)
+        : richBody;
+      const post = (body: Record<string, unknown>) => fetch(`${this.baseUrl}/chat/completions`, {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
-          authorization: `Bearer ${this.options.apiKey}`
+          Authorization: `Bearer ${this.options.apiKey.trim()}`
         },
-        body: JSON.stringify(createChatCompletionBody(request)),
+        body: JSON.stringify(body),
         signal: controller.signal
       });
+      let response = await post(requestBody);
 
       if (!response.ok) {
-        const detail = (await response.text()).slice(0, MAX_ERROR_DETAIL_LENGTH);
-        yield {
-          type: 'response_failed',
-          code: httpErrorCode(response.status),
-          message: `Provider returned HTTP ${response.status}${detail ? `: ${detail}` : ''}`
-        };
-        return;
+        let detail = (await response.text()).slice(0, MAX_ERROR_DETAIL_LENGTH);
+        if (requestBody === richBody && hasChatImageInputs(richBody) && rejectsImageMessageContent(response.status, detail)) {
+          requestBody = toTextOnlyChatCompletionBody(richBody);
+          response = await post(requestBody);
+          if (!response.ok) detail = (await response.text()).slice(0, MAX_ERROR_DETAIL_LENGTH);
+        }
+        if (!response.ok) {
+          yield {
+            type: 'response_failed',
+            code: httpErrorCode(response.status, detail),
+            message: providerErrorMessage(response.status, detail)
+          };
+          return;
+        }
       }
 
       if (!response.body) {

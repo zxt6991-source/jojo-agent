@@ -12,6 +12,7 @@ const api: DesktopApi = {
   cancelTurn: (sessionId) => ipcRenderer.invoke(IPC.cancelTurn, sessionId),
   resolveApproval: (input) => ipcRenderer.invoke(IPC.resolveApproval, input),
   chooseDirectory: () => ipcRenderer.invoke(IPC.chooseDirectory),
+  chooseImages: () => ipcRenderer.invoke(IPC.chooseImages),
   getSettings: () => ipcRenderer.invoke(IPC.getSettings),
   listModels: (input) => ipcRenderer.invoke(IPC.listModels, input),
   saveSettings: (input) => ipcRenderer.invoke(IPC.saveSettings, input),

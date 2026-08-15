@@ -10,6 +10,7 @@ Tools Node 提供 Node.js 环境中的本地能力及默认权限策略，公开
 - `ReadFileTool`：读取 UTF-8 文件；
 - `ListFilesTool`：递归列出目录；
 - `GrepTool` / `GlobTool`：有界项目检索；
+- `WebSearchTool` / `WebFetchTool`：公开网页搜索与 HTTP(S) 抓取；
 - `WriteFileTool` / `EditFileTool` / `DeleteFileTool`：可审阅的项目内文本修改；
 - `TerminalTool`：启动单个本地程序；
 - `DefaultPermissionGate`：决定允许、拒绝或请求用户审批；
@@ -23,12 +24,14 @@ Tools Node 提供 Node.js 环境中的本地能力及默认权限策略，公开
 
 | 模块 | 职责 |
 |---|---|
-| `inputs.ts` | 八个工具共用的 Zod 输入 schema 与默认值 |
+| `inputs.ts` | 十个工具共用的 Zod 输入 schema 与默认值 |
 | `workspace-paths.ts` | 工作目录规范化、真实路径解析和包含关系判断 |
 | `tool-result.ts` | 统一构造工具执行结果 |
 | `read-file-tool.ts` / `file-snapshots.ts` | 文件读取、字节截断与读后快照 |
 | `list-files-tool.ts` | 有界目录遍历、排序、忽略规则与符号链接防护 |
 | `grep-tool.ts` / `glob-tool.ts` / `search-files.ts` | 固定文本、glob 检索与安全遍历 |
+| `web-url.ts` / `web-html.ts` | HTTP(S) URL 校验、SSRF 地址拦截与 HTML 清洗 |
+| `web-search-tool.ts` / `web-fetch-tool.ts` | 公开搜索回退链与有界 GET 抓取 |
 | `file-tools.ts` / `file-mutation.ts` | 修改准备、审批后二次校验与原子替换 |
 | `unified-diff.ts` / `file-trash.ts` | Diff 预览与覆盖/删除备份 |
 | `terminal-tool.ts` | 子进程启动、输出收集、取消、超时与进程回收 |
@@ -64,13 +67,23 @@ Tools Node 提供 Node.js 环境中的本地能力及默认权限策略，公开
 
 两者只遍历工作目录内的普通文件，忽略常见依赖、构建和缓存目录，并跳过越界符号链接。`glob` 支持 `*`、`**` 和 `?`；`grep` 做固定文本逐行搜索，支持大小写控制和可选 glob，跳过大于 1 MB 或含 NUL 的文件。结果上限为 1～1,000 条。
 
-### 4.4 文件修改工具
+### 4.4 `web_search` 与 `web_fetch`
+
+这两个工具负责普通公开信息检索，不经过 Electron 浏览器。Worker 提示模型：已知公开 URL 和搜索查询应使用它们；登录墙、需要 JavaScript 渲染或交互的页面才使用 `browser_*`。
+
+`web_search` 按环境变量组装后端：存在 `BRAVE_SEARCH_API_KEY`、`TAVILY_API_KEY` 或 `SERPER_API_KEY` 时优先走对应 API，否则依次请求 DuckDuckGo HTML、DuckDuckGo Lite 和 Bing HTML。任一后端返回至少一条结果即停止；全部失败才报 `network`。查询经 Zod 校验后自动允许。
+
+`web_fetch` 只做 HTTP(S) GET。Gate 用 `parseHttpUrl` 拒绝非 HTTP(S)、内嵌凭据和非法 URL，不在 Gate 里做 DNS。执行器对每个跳转目标调用 `assertSafeHttpUrl`：解析全部 A/AAAA 记录，拦截链路本地、组播、全零/广播、AWS `fd00:ec2::254` 以及 Google metadata 主机。回环和 RFC1918 私网允许，便于抓取本机开发服务。默认跟随最多 10 次重定向、30 秒超时、512,000 字节上限；HTML 默认转为 Markdown。二进制 Content-Type 只回报类型，不回填正文。
+
+网页正文和搜索摘要一律视为不可信外部数据。
+
+### 4.5 文件修改工具
 
 `write_file` 可创建文件或替换完整读取的文件，`edit_file` 对已读取文件执行唯一的精确文本替换，`delete_file` 删除已读取文件。统一限制为工作目录内、不超过 2 MB 的 UTF-8 文本。
 
 Gate 在请求审批前准备 unified diff；执行器获批后再次准备同一修改并复核快照，因此审批等待期间发生外部编辑会返回 `file_conflict`。覆盖或删除前按会话保存原文件和元数据到应用回收站；写入采用目标同目录的独占临时文件和原子 rename，并保留现有权限位。关键约束在执行器内再次检查，不能通过绕过 Gate 直接写入。
 
-### 4.5 `terminal`
+### 4.6 `terminal`
 
 使用 `spawn(command, args)` 执行单个程序，设置 `shell: false`，参数不会经过 shell 拼接。`command` 含空白字符会以 `invalid_input` 在审批前拒绝，避免模型把整条命令误当成可执行文件名。输入限制如下：
 
@@ -101,6 +114,8 @@ Terminal 审批只代表用户同意运行该命令，不是操作系统沙箱�
 | `read_file` | 自动允许 | 逐次询问；执行时复核审批状态 |
 | `list_files` | 自动允许 | 拒绝 |
 | `grep` / `glob` | 自动允许 | 拒绝 |
+| `web_search` | 输入校验通过后自动允许 | 不依赖工作目录 |
+| `web_fetch` | URL 语法校验通过后自动允许；执行时再解析 DNS 并拦截危险地址 | 不依赖工作目录 |
 | `write_file` / `edit_file` / `delete_file` | 逐次展示 Diff 并询问；执行时复核审批与快照 | 拒绝 |
 | `terminal` | 输入及 `cwd` 校验通过后逐次询问 | 越界 `cwd` 直接拒绝 |
 
@@ -124,7 +139,8 @@ Terminal 达到输出上限后不再收集或上报更多内容，但会继续�
 6. 写入前读取、精确编辑歧义、审批 Diff 与审批后外部修改冲突；
 7. 覆盖/删除备份、原子写入后的内容和权限位；
 8. glob/grep 过滤、忽略目录与结果截断；
-9. 默认工具顺序及实例隔离。
+9. 默认工具顺序及实例隔离；
+10. 公开网页 URL 安全、HTML 清洗、搜索回退、本地抓取与危险重定向拦截。
 
 后续可继续补充平台专项测试，包括 Terminal 进程树回收、Windows 终止行为，以及多字节 UTF-8 恰好落在截断边界时的展示策略。
 
@@ -132,6 +148,7 @@ Terminal 达到输出上限后不再收集或上报更多内容，但会继续�
 
 - 新工具必须在执行器内部保留关键安全校验，不能只依赖 Gate。
 - 新增路径能力时复用 `workspace-paths.ts`，避免重新实现字符串前缀判断。
+- 新增 HTTP 抓取能力时复用 `web-url.ts`，对每个跳转目标重新解析并拦截危险地址。
 - 写工具必须继续采用临时文件与原子替换，并在执行前生成可审阅变更和复核读后快照。
 - 新增终端能力时维持 `shell: false`；若确需 shell，应作为独立高风险工具和审批类型设计。
 - 能力继续增长时，可在 contracts 中引入只读、写入、进程和网络标签，供审批 UI 统一展示风险级别。

@@ -208,7 +208,7 @@ describe('node tools', () => {
     const second = createDefaultTools();
 
     expect(first.map((tool) => tool.definition.name)).toEqual([
-      'read_file', 'list_files', 'grep', 'glob', 'write_file', 'edit_file', 'delete_file', 'terminal'
+      'read_file', 'list_files', 'grep', 'glob', 'web_search', 'web_fetch', 'write_file', 'edit_file', 'delete_file', 'terminal'
     ]);
     expect(first[0]).not.toBe(second[0]);
   });

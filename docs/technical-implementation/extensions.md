@@ -836,7 +836,7 @@ MCP Tool ───────┘
 
 完整 Turn 流程：
 
-1. Worker 创建八个默认工具；
+1. Worker 创建十个默认工具；
 2. Worker 扫描项目、应用和用户级 Skills；
 3. Worker 把 `install_skill`、当前 `load_skill` 和 `McpManager.getTools()` 合并为动态工具提供器；
 4. Agent Core 合并并去重工具；
@@ -853,7 +853,7 @@ MCP Tool ───────┘
 无进展检测有两层：
 
 1. 工具名与规范化参数完全相同的调用最多实际执行两次，第三次不再执行；
-2. `read_file`、`list_files`、`grep`、`glob`、`load_skill`、MCP manifest/describe 以及资源/提示词清单的成功结果会计算 SHA-256 指纹。即使参数不同，只要同类只读工具返回当前 Turn 已经出现过的相同内容，也会标记为 `no_progress`。
+2. `read_file`、`list_files`、`grep`、`glob`、`web_search`、`web_fetch`、`load_skill`、MCP manifest/describe 以及资源/提示词清单的成功结果会计算 SHA-256 指纹。即使参数不同，只要同类只读工具返回当前 Turn 已经出现过的相同内容，也会标记为 `no_progress`。
 
 首次出现 `no_progress` 后，模型仍有两个工具步骤改变方法。若仍继续调用工具，Agent Core 会追加内部收束提示、在下一步把 ToolDefinition 置空并要求模型根据已有证据直接回答。这样既给模型一次恢复机会，也防止它通过不断改写 grep、文件路径或验证命令绕过精确参数检测。只有模型在工具已暂停后仍自行生成 Tool Call，Turn 才以 `no_progress` 失败；正常情况会得到一条带明确限制和后续动作的最终答复。
 

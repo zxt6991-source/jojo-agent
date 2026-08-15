@@ -73,7 +73,9 @@ export const ProviderSettingsSchema = z.object({
   activeProviderId: z.string().min(1).default('openai'),
   providers: z.array(ProviderConfigSchema).min(1).default(() => DEFAULT_PROVIDERS.map((provider) => ({ ...provider }))),
   utilityModel: ModelSelectionSchema.default({ providerId: 'openai', model: 'gpt-5-mini' }),
-  extensions: ExtensionSettingsSchema.default({ mcpServers: [], skills: { directories: [], disabled: [] } })
+  extensions: ExtensionSettingsSchema.default({
+    mcpServers: [], skills: { directories: [], disabled: [] }, browser: { enabled: true, allowedDomains: [] }
+  })
 }).superRefine((settings, context) => {
   const ids = new Set<string>();
   for (const provider of settings.providers) {

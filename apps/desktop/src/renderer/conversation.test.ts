@@ -150,6 +150,10 @@ describe('tool presentation', () => {
     expect(toolTitle('read_file')).toBe('读取');
     expect(toolTitle('mcp__github__create_issue')).toBe('MCP');
     expect(toolSummary('grep', { query: 'AgentEvent', path: 'src' })).toBe('AgentEvent');
+    expect(toolSummary('web_search', { query: 'zod schema', maxResults: 5 })).toBe('zod schema');
+    expect(toolSummary('web_fetch', { url: 'https://example.com/docs', clean: true })).toBe('https://example.com/docs');
+    expect(toolTitle('web_search')).toBe('网页搜索');
+    expect(toolTitle('web_fetch')).toBe('抓取网页');
     expect(toolSummary('read_file', { path: '/repo/apps/desktop/src/renderer/main.tsx' }, '/repo')).toBe('apps/desktop/src/renderer/main.tsx');
     expect(terminalCommandLine({ command: 'pnpm', args: ['test', '--', 'agent'] })).toBe('pnpm test -- agent');
     expect(relativizeToCwd('/repo/src/a.ts', '/repo')).toBe('src/a.ts');

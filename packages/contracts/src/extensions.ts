@@ -44,7 +44,13 @@ export const ExtensionSettingsSchema = z.object({
   skills: z.object({
     directories: z.array(z.string().trim().min(1)).max(50).default([]),
     disabled: z.array(z.string().trim().min(1)).max(500).default([])
-  }).default({ directories: [], disabled: [] })
+  }).default({ directories: [], disabled: [] }),
+  browser: z.object({
+    enabled: z.boolean().default(true),
+    allowedDomains: z.array(z.string().trim().min(1).max(253).regex(/^(?:\*\.)?[a-z0-9.-]+$/iu))
+      .max(200)
+      .default([])
+  }).default({ enabled: true, allowedDomains: [] })
 }).superRefine((settings, context) => {
   const ids = new Set<string>();
   for (const server of settings.mcpServers) {
@@ -56,7 +62,8 @@ export type ExtensionSettings = z.infer<typeof ExtensionSettingsSchema>;
 
 export const DEFAULT_EXTENSION_SETTINGS: ExtensionSettings = {
   mcpServers: [],
-  skills: { directories: [], disabled: [] }
+  skills: { directories: [], disabled: [] },
+  browser: { enabled: true, allowedDomains: [] }
 };
 
 export type McpConnectionState = 'disabled' | 'connecting' | 'auth_required' | 'authorizing' | 'connected' | 'error';

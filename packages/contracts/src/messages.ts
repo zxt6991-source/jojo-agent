@@ -28,8 +28,18 @@ export const ToolResultSchema = z.object({
 });
 export type ToolResult = z.infer<typeof ToolResultSchema>;
 
+export const ImageContentBlockSchema = z.object({
+  type: z.literal('image'),
+  data: z.string().min(1).max(14_000_000).regex(/^[A-Za-z0-9+/]+={0,2}$/u),
+  mimeType: z.string().regex(/^image\/(?:png|jpeg|webp|gif)$/u),
+  name: z.string().trim().min(1).max(255).optional(),
+  altText: z.string().max(2_000).optional()
+});
+export type ImageContentBlock = z.infer<typeof ImageContentBlockSchema>;
+
 export const ContentBlockSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('text'), text: z.string() }),
+  ImageContentBlockSchema,
   z.object({ type: z.literal('tool_call'), call: ToolCallSchema }),
   z.object({ type: z.literal('tool_result'), result: ToolResultSchema })
 ]);

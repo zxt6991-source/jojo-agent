@@ -237,6 +237,37 @@ describe('runAgentTurn', () => {
     expect(resultBlock?.type === 'tool_result' && resultBlock.result.code).toBe('user_denied');
   });
 
+  it('records interrupted results for every unfinished call when a tool is cancelled', async () => {
+    const controller = new AbortController();
+    const cancellingTool: Tool = {
+      ...echoTool,
+      execute: async () => {
+        controller.abort();
+        throw new DOMException('cancelled', 'AbortError');
+      }
+    };
+    const provider = new ScriptedProvider([[
+      { type: 'tool_call_completed', call: { id: 'first', name: 'echo', input: {} } },
+      { type: 'tool_call_completed', call: { id: 'second', name: 'echo', input: {} } },
+      { type: 'response_completed', stopReason: 'tool_calls' }
+    ]]);
+
+    const result = await runAgentTurn(createOptions(provider, {
+      tools: [cancellingTool],
+      signal: controller.signal
+    }));
+    const interrupted = result.messages
+      .flatMap((item) => item.content)
+      .filter((block) => block.type === 'tool_result')
+      .map((block) => block.type === 'tool_result' ? block.result : null);
+
+    expect(result.stopReason).toBe('cancelled');
+    expect(interrupted).toMatchObject([
+      { callId: 'first', ok: false, code: 'cancelled' },
+      { callId: 'second', ok: false, code: 'cancelled' }
+    ]);
+  });
+
   it('turns a tool exception into a failed result and continues', async () => {
     const failingTool: Tool = {
       ...echoTool,

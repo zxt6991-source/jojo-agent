@@ -1,10 +1,10 @@
-import { app, BrowserWindow, dialog, ipcMain, safeStorage, shell, utilityProcess, type IpcMainInvokeEvent, type UtilityProcess } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, nativeImage, safeStorage, shell, utilityProcess, type IpcMainInvokeEvent, type UtilityProcess } from 'electron';
 import { createServer, type Server } from 'node:http';
 import { access, cp, mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  ApprovalInputSchema, CreateSessionInputSchema, CreateSkillInputSchema, GetExtensionStatusInputSchema, ImportSkillInputSchema, IPC, ListModelsInputSchema, McpServerIdInputSchema, RenameSessionInputSchema, SaveExtensionSettingsInputSchema, SaveSettingsInputSchema,
+  ApprovalInputSchema, CreateSessionInputSchema, CreateSkillInputSchema, GetExtensionStatusInputSchema, ImportSkillInputSchema, IPC, ListModelsInputSchema, MAX_IMAGE_ATTACHMENTS, MAX_IMAGE_BYTES, McpServerIdInputSchema, RenameSessionInputSchema, SaveExtensionSettingsInputSchema, SaveSettingsInputSchema,
   SessionIdInputSchema, SkillPathInputSchema, StartTurnInputSchema, UpdateSkillInputSchema,
   type ExtensionStatus, type ProviderSettings, type WorkerCommand, type WorkerMessage
 } from '@desktop-agent/contracts';
@@ -12,6 +12,7 @@ import { createProvider } from '@desktop-agent/providers';
 import { createSkillSource, discoverSkills, parseSkillSource, skillId, userSkillDirectories, type SkillDirectory } from '@desktop-agent/extensions';
 import { JsonConfigStore, JsonlSessionStore } from '@desktop-agent/storage';
 import { collectWorkspaceChanges } from './workspace-changes';
+import { BrowserRuntime } from './browser-runtime';
 
 declare const MAIN_WINDOW_VITE_DEV_SERVER_URL: string | undefined;
 declare const MAIN_WINDOW_VITE_NAME: string;
@@ -22,6 +23,7 @@ let worker: UtilityProcess | null = null;
 let quitting = false;
 let sessionStore: JsonlSessionStore;
 let configStore: JsonConfigStore;
+let browserRuntime: BrowserRuntime | null = null;
 let secretPath: string;
 let legacySecretPath: string;
 let mcpOAuthSecretPath: string;
@@ -52,7 +54,10 @@ async function readApiKeys(): Promise<Record<string, string>> {
     if (!safeStorage.isEncryptionAvailable()) return {};
     const parsed: unknown = JSON.parse(safeStorage.decryptString(encrypted));
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
-    return Object.fromEntries(Object.entries(parsed).filter((entry): entry is [string, string] => typeof entry[1] === 'string'));
+    return Object.fromEntries(Object.entries(parsed).flatMap(([id, value]) => {
+      if (typeof value !== 'string' || !value.trim()) return [];
+      return [[id, value.trim()]];
+    }));
   } catch {
     try {
       const encrypted = await readFile(legacySecretPath);
@@ -64,8 +69,10 @@ async function readApiKeys(): Promise<Record<string, string>> {
 
 async function saveApiKey(providerId: string, apiKey: string): Promise<void> {
   if (!safeStorage.isEncryptionAvailable()) throw new Error('Operating system secure storage is unavailable.');
+  const normalizedApiKey = apiKey.trim();
+  if (!normalizedApiKey) throw new Error('API Key 不能为空。');
   const keys = await readApiKeys();
-  keys[providerId] = apiKey;
+  keys[providerId] = normalizedApiKey;
   await mkdir(path.dirname(secretPath), { recursive: true });
   await writeFile(secretPath, safeStorage.encryptString(JSON.stringify(keys)), { mode: 0o600 });
 }
@@ -240,6 +247,27 @@ function startWorker(): void {
         else finishMcpOAuth(message.requestId, new Error(message.error ?? 'MCP OAuth authorization failed.'));
       }).catch((error) => finishMcpOAuth(message.requestId, error instanceof Error ? error : new Error(String(error))));
     }
+    else if (message.type === 'browser.request') {
+      void (async () => {
+        if (!worker) return;
+        if (!browserRuntime) throw new Error('Browser runtime is not available.');
+        const settings = await configStore.get(await readApiKeys());
+        if (!settings.extensions.browser.enabled) throw new Error('Browser tools are disabled in Settings.');
+        const session = await sessionStore.get(message.sessionId);
+        if (!session) throw new Error('Browser session does not exist.');
+        const result = await browserRuntime.execute(
+          message.sessionId,
+          message.action,
+          message.approved,
+          settings.extensions.browser.allowedDomains,
+          session.workingDirectory
+        );
+        worker?.postMessage({ type: 'browser.result', requestId: message.requestId, result } satisfies WorkerCommand);
+      })().catch((error) => worker?.postMessage({
+        type: 'browser.result', requestId: message.requestId,
+        error: error instanceof Error ? error.message : String(error)
+      } satisfies WorkerCommand));
+    }
     else if (message.type === 'worker.error') sendToRenderer(IPC.agentEvent, { type: 'turn.failed', code: 'worker_error', message: message.message });
   });
   worker.on('exit', (code) => {
@@ -277,6 +305,9 @@ function registerIpc(): void {
   });
   ipcMain.handle(IPC.startTurn, async (event, raw) => {
     assertTrusted(event); const payload = StartTurnInputSchema.parse(raw);
+    for (const image of payload.images) {
+      if (Buffer.byteLength(image.data, 'base64') > MAX_IMAGE_BYTES) throw new Error(`图片必须小于 10 MB：${image.name ?? 'image'}`);
+    }
     if (!worker) throw new Error('Agent runtime is not available.');
     const session = await sessionStore.get(payload.sessionId);
     if (!session) throw new Error('Session not found.');
@@ -293,6 +324,25 @@ function registerIpc(): void {
   ipcMain.handle(IPC.chooseDirectory, async (event) => {
     assertTrusted(event); const result = await dialog.showOpenDialog(mainWindow!, { properties: ['openDirectory', 'createDirectory'] });
     return result.canceled ? null : result.filePaths[0] ?? null;
+  });
+  ipcMain.handle(IPC.chooseImages, async (event) => {
+    assertTrusted(event);
+    const result = await dialog.showOpenDialog(mainWindow!, {
+      title: '选择图片',
+      properties: ['openFile', 'multiSelections'],
+      filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif'] }]
+    });
+    if (result.canceled) return [];
+    const mimeTypes: Record<string, `image/${string}`> = {
+      '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif'
+    };
+    return Promise.all(result.filePaths.slice(0, MAX_IMAGE_ATTACHMENTS).map(async (filePath) => {
+      const info = await stat(filePath);
+      if (!info.isFile() || info.size > MAX_IMAGE_BYTES) throw new Error(`图片必须小于 10 MB：${path.basename(filePath)}`);
+      const mimeType = mimeTypes[path.extname(filePath).toLowerCase()];
+      if (!mimeType || nativeImage.createFromPath(filePath).isEmpty()) throw new Error(`不支持或无法读取图片：${path.basename(filePath)}`);
+      return { type: 'image' as const, data: (await readFile(filePath)).toString('base64'), mimeType, name: path.basename(filePath) };
+    }));
   });
   ipcMain.handle(IPC.getSettings, async (event) => { assertTrusted(event); return configStore.get(await readApiKeys()); });
   ipcMain.handle(IPC.listModels, async (event, raw) => {
@@ -496,6 +546,7 @@ else {
     const dataDirectory = app.getPath('userData');
     sessionStore = new JsonlSessionStore(path.join(dataDirectory, 'sessions'));
     configStore = new JsonConfigStore(path.join(dataDirectory, 'config.json'));
+    browserRuntime = new BrowserRuntime(dataDirectory);
     secretPath = path.join(dataDirectory, 'secrets', 'provider-keys.bin');
     legacySecretPath = path.join(dataDirectory, 'secrets', 'provider-key.bin');
     mcpOAuthSecretPath = path.join(dataDirectory, 'secrets', 'mcp-oauth.bin');
@@ -506,6 +557,7 @@ else {
   app.on('before-quit', () => {
     quitting = true;
     for (const requestId of oauthRequests.keys()) finishMcpOAuth(requestId, new Error('Application is closing.'));
+    browserRuntime?.close();
     worker?.kill();
   });
 }

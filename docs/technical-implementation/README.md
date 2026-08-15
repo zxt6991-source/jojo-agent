@@ -1,6 +1,6 @@
 # 各 Workspace 技术实现方案
 
-> 文档状态：2026-08-11
+> 文档状态：2026-08-15
 > 适用版本：0.1.0（MVP）
 
 本文档集说明 pnpm monorepo 中每个应用或包的技术实现。文中的“当前实现”均以仓库代码为准；“演进方案”是后续扩展建议，不代表已经可用。
@@ -15,9 +15,10 @@
 | 上下文管理 | 多包协作 | token 预算、大结果回收、历史压缩与截断续写 | [上下文管理](./context-management.md) |
 | `packages/providers` | `@desktop-agent/providers` | 模型服务协议适配与 SSE 解析 | [Providers](./providers.md) |
 | Phase 2 横切能力 | 多包协作 | Provider 配置、模型发现与上下文稳定性 | [Phase 2 方案](../phase-2-multi-provider-context.md) |
-| `packages/tools-node` | `@desktop-agent/tools-node` | 本地文件、目录、终端工具及权限 Gate | [Tools Node](./tools-node.md) |
+| `packages/tools-node` | `@desktop-agent/tools-node` | 本地文件、目录、公开网页检索、终端工具及权限 Gate | [Tools Node](./tools-node.md) |
 | `packages/storage` | `@desktop-agent/storage` | JSONL 会话与 JSON 配置持久化 | [Storage](./storage.md) |
 | `packages/extensions` | `@desktop-agent/extensions` | MCP 客户端、动态工具目录与本地 Skills | [MCP 与 Skills](./extensions.md) |
+| Phase 4 横切能力 | Desktop + Contracts + Provider | CDP 受控浏览器、下载、图片消息与视觉请求 | [浏览器与富内容](./browser-rich-content.md) |
 
 根目录只承担 workspace、TypeScript、ESLint、Vitest 与构建脚本编排，不发布独立运行时包。
 

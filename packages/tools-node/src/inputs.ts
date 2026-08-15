@@ -50,3 +50,15 @@ export const GrepInput = z.object({
   caseSensitive: z.boolean().default(false),
   maxResults: z.number().int().min(1).max(1_000).default(200)
 });
+
+export const WebSearchInput = z.object({
+  query: z.string().trim().min(1).max(500),
+  maxResults: z.number().int().min(1).max(20).default(5)
+});
+
+export const WebFetchInput = z.object({
+  url: z.string().url(),
+  clean: z.boolean().default(true),
+  referer: z.string().trim().min(1).max(2_000).optional(),
+  userAgent: z.string().trim().min(1).max(400).optional()
+});

@@ -1,4 +1,4 @@
-import type { Message, Tool, ToolCall, ToolDefinition } from '@desktop-agent/contracts';
+import type { Message, Tool, ToolCall, ToolDefinition, ToolResult } from '@desktop-agent/contracts';
 import { AgentError, errorMessage, isAbortError, throwIfAborted } from './errors.js';
 import {
   appendMessage,
@@ -59,8 +59,25 @@ async function executeToolCalls(
   options: AgentRunOptions
 ): Promise<boolean> {
   let noProgressDetected = false;
-  for (const call of calls) {
-    const result = await executeToolCall(call, state, options);
+  for (let index = 0; index < calls.length; index += 1) {
+    const call = calls[index]!;
+    let result: ToolResult;
+    try {
+      result = await executeToolCall(call, state, options);
+    } catch (error) {
+      if (!options.signal.aborted && !isAbortError(error)) throw error;
+      for (const interruptedCall of calls.slice(index)) {
+        const interrupted: ToolResult = {
+          callId: interruptedCall.id,
+          ok: false,
+          code: 'cancelled',
+          content: 'Tool execution was interrupted before a result was recorded.'
+        };
+        await appendMessage(options, state.messages, createToolMessage(interrupted));
+        options.emit({ type: 'tool.finished', id: interruptedCall.id, result: interrupted });
+      }
+      throw error;
+    }
     await appendMessage(options, state.messages, createToolMessage(result));
     noProgressDetected ||= result.code === 'no_progress';
   }
@@ -92,7 +109,7 @@ export async function runAgentTurn(options: AgentRunOptions): Promise<AgentRunRe
   options.emit({ type: 'turn.started', sessionId: options.sessionId, turnId: crypto.randomUUID() });
 
   try {
-    await appendMessage(options, state.messages, createUserMessage(options.userText));
+    await appendMessage(options, state.messages, createUserMessage(options.userText, options.userImages));
     let outputContinuations = 0;
     let recoveryToolStepsRemaining: number | null = null;
     let finalResponseOnly = false;

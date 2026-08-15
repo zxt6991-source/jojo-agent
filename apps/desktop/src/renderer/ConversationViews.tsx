@@ -61,7 +61,7 @@ function ToolIcon() {
 }
 
 function ToolRow({ node, onInspect }: { node: ToolNode; onInspect?: (id: string) => void }) {
-  const expandable = Boolean(node.body || node.output);
+  const expandable = Boolean(node.body || node.output || node.images.length);
   return <DisclosureRow
     icon={<ToolIcon />}
     title={node.title}
@@ -74,6 +74,7 @@ function ToolRow({ node, onInspect }: { node: ToolNode; onInspect?: (id: string)
       {node.body && <div className="tool-io-section"><span>IN</span><pre>{node.body}</pre></div>}
       {node.body && node.output && <span className="tool-io-divider" aria-hidden="true" />}
       {node.output && <div className="tool-io-section"><span>OUT</span><pre className={node.state === 'error' ? 'error' : ''}>{node.output}</pre></div>}
+      {node.images.length > 0 && <div className="rich-images tool-images">{node.images.map((image, index) => <img key={`${node.id}-${index}`} src={`data:${image.mimeType};base64,${image.data}`} alt={image.altText ?? '工具返回的图片'} />)}</div>}
     </div>
     {onInspect && <button type="button" className="tool-inspect" onClick={(event) => { event.stopPropagation(); onInspect(node.id); }}>在轨迹中查看</button>}
   </DisclosureRow>;
@@ -88,7 +89,7 @@ function ChatNodeView({
 }) {
   if (node.kind === 'user') {
     return <article className="message user" data-node-id={node.id}>
-      <div className="bubble"><Markdown text={node.text} /></div>
+      <div className="bubble">{node.images.length > 0 && <div className="rich-images">{node.images.map((image, index) => <figure key={`${node.id}-${index}`}><img src={`data:${image.mimeType};base64,${image.data}`} alt={image.altText ?? image.name ?? '用户图片'} />{image.name && <figcaption>{image.name}</figcaption>}</figure>)}</div>}{node.text && <Markdown text={node.text} />}</div>
     </article>;
   }
   if (node.kind === 'assistant') {

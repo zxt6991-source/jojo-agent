@@ -1,6 +1,6 @@
 # TypeScript Desktop Agent：MVP 与后续开发规划
 
-> 文档状态：2026-08-11（已按当前源码、测试与 CI 配置重新核对，当前版本 0.1.0）
+> 文档状态：2026-08-15（已按当前源码、测试与 CI 配置重新核对，当前版本 0.1.0）
 > 状态标记：
 > - ✅ 已完成
 > - 🚧 部分完成 / 已开始但未全部完成
@@ -20,21 +20,22 @@ octo-agent、Codex 和 Claude Code，但第一阶段只解决一件事：让用�
 - MVP 之后到可公开发布版本的演进路线；
 - 安全、测试、数据兼容和范围控制原则。
 
-> 🚧 总览：核心对话 MVP、Phase 1 小型代码任务能力、Phase 2 上下文管理与 Phase 3 MCP/Skills 已完成；Provider 当前收敛为 OpenAI Chat Completions 兼容协议。“可公开发布”门槛仍未全部满足：UI/E2E、IPC 安全测试、干净机器安装验证、代码签名等仍缺失。
+> 🚧 总览：核心对话 MVP、Phase 1 小型代码任务能力、Phase 2 上下文管理、Phase 3 MCP/Skills 与 Phase 4 浏览器/富内容已完成；Provider 当前收敛为 OpenAI Chat Completions 兼容协议。“可公开发布”门槛仍未全部满足：UI/E2E、IPC 安全测试、干净机器安装验证、代码签名等仍缺失。
 
-### 1.1 2026-08-09 实现快照
+### 1.1 2026-08-15 实现快照
 
 | 范围 | 当前状态 | 说明 |
 |---|---|---|
 | 核心对话、流式输出、Tool Call | ✅ | OpenAI Chat Completions 兼容协议可用 |
 | 项目与会话 | ✅ | 按目录分组；同项目多会话；首条提问生成标题；可重命名和删除 |
 | 模型选择 | 🚧 | OpenAI Chat Completions 兼容服务可配置、发现模型并逐轮选择；第二种独立协议暂未支持 |
-| 内置工具与审批 | ✅ | 读取、目录、grep、glob、写入、精确编辑、删除、终端共八个工具 |
+| 内置工具与审批 | ✅ | 读取、目录、grep、glob、网页搜索/抓取、写入、精确编辑、删除、终端共十个工具 |
 | 代码修改能力 | ✅ | 修改前 Diff 审批、读后冲突检测、原子替换与按会话回收站 |
 | 持久化 | 🚧 | JSONL 会话和配置迁移可用；错误状态不持久化，运行中删除会话存在取消/删除竞态 |
-| 自动化测试 | 🚧 | 当前 8 个测试文件、64 个 Vitest 用例通过；没有 Renderer UI、IPC 集成和 E2E 测试 |
+| 自动化测试 | 🚧 | 当前 15 个测试文件、139 个 Vitest 用例通过；没有 Renderer UI、IPC 集成和 E2E 测试 |
 | 发布工程 | 🚧 | Forge、ASAR、Fuses 和 Linux CI package 已配置；干净机器验证、签名、notarization、自动更新未完成 |
 | MCP 与 Skills | ✅ | stdio / Streamable HTTP、工具状态、延迟发现、本地 `SKILL.md` 启停与按需加载已完成 |
+| 浏览器与富内容 | ✅ | 独立沙箱窗口、CDP 页面操作、下载、图片消息、视觉请求和域名审批已完成 |
 
 ### 1.2 当前剩余工作优先级
 
@@ -51,6 +52,7 @@ octo-agent、Codex 和 Claude Code，但第一阶段只解决一件事：让用�
 - ✅ `write_file`、`edit_file` 与 `delete_file`；
 - ✅ 写入前 Diff 审批、内容哈希/mtime 冲突检测、覆盖与删除回收站；
 - ✅ `grep`、`glob` 项目检索；
+- ✅ `web_search`、`web_fetch` 公开网页检索（不经过浏览器）；
 - ✅ Tool Result 大输出回收、上下文窗口估算和安全历史压缩；
 - ⬜ 在 UI 展示 token usage，并支持清除已保存的 API Key；
 - ⬜ Provider 不支持 `/models` 时提供可控的手动模型回退。
@@ -59,7 +61,8 @@ octo-agent、Codex 和 Claude Code，但第一阶段只解决一件事：让用�
 
 - ⬜ 第二种 Provider 协议；Provider/Model 注册表已保留扩展边界；
 - ✅ MCP 与 Skills；
-- ⬜ 浏览器、多模态、子 Agent、工作流；
+- ✅ 浏览器与多模态；
+- ⬜ 子 Agent 与工作流；
 - ⬜ 记忆、定时任务、后台任务与通知；
 - ⬜ 签名、notarization、自动更新、崩溃日志导出和正式兼容策略。
 
@@ -260,7 +263,7 @@ export interface Tool {
 
 `ToolDefinition` 使用 JSON Schema 描述模型可见参数；执行前再通过 Zod Schema 验证输入。
 
-> ✅ 已实现：八个默认工具均按此接口实现，参数执行前经 Zod 校验。
+> ✅ 已实现：十个默认工具均按此接口实现，参数执行前经 Zod 校验。
 
 ### 6.3 Permission Gate
 
@@ -382,10 +385,10 @@ MVP 只实现三个工具：
 以下功能在 MVP 基线中推迟；其中代码修改已在后续 Phase 1 完成：
 
 - ✅ 文件写入和代码编辑（Phase 1）；
-- ⬜ MCP；
-- ⬜ Skills；
+- ✅ MCP；
+- ✅ Skills；
 - ⬜ 子 Agent；
-- ⬜ 浏览器自动化；
+- ✅ 浏览器自动化；
 - ⬜ 长期记忆和向量数据库；
 - ⬜ 定时任务和后台自动化；
 - ⬜ 工作流 DSL；
@@ -617,23 +620,26 @@ MVP 只实现三个工具：
 - ✅ 用户配置一个 MCP Server 后无需改代码即可调用其工具；
 - ✅ 安装一个 Skill 后，Agent 能加载其说明并使用现有工具完成新的组合任务。
 
-### Phase 4：浏览器与富内容 ⬜ 未开始
+### Phase 4：浏览器与富内容 ✅ 已完成
 
 目标：支持网页操作和多模态任务。
 
 功能：
 
-- ⬜ 浏览器 CDP 连接；
-- ⬜ 打开、点击、输入、截图和页面结构读取；
-- ⬜ 下载管理；
-- ⬜ 图片消息和视觉模型；
-- ⬜ Browser Tool 权限和域名限制；
-- ⬜ 防止远程页面接触 Electron 特权 API。
+- ✅ 通过 Electron `webContents.debugger` 建立 CDP 1.3 连接；
+- ✅ `browser_open`、`browser_click`、`browser_type`、`browser_screenshot`、内存内动作录制/回放，以及带 CSS selector、稳定元素 ref 和安全自动重定位的页面结构读取；
+- ✅ 按会话隔离的下载目录、状态记录与 `browser_downloads`；
+- ✅ `browser_console`、`browser_network`、`browser_errors` 读取受控页面的 Console、网络元数据和页面错误；
+- ✅ 公开信息检索由 `web_search` / `web_fetch` 承担，浏览器不负责普通搜索和已知公开 URL；
+- ✅ 最多 4 张、单张 10 MB 的图片消息，JSONL 持久化、对话预览和视觉模型 `image_url` 请求；
+- ✅ Browser Tool 启停、域名白名单、未列出域名审批，以及点击、输入、下载逐次审批；
+- ✅ 远程页面使用独立内存 partition，无 Preload、Node.js、webview 和新窗口能力，不与主 Renderer 共享 IPC 或 Session。
 
 验收场景：
 
-- ⬜ Agent 在受控浏览器中打开网站、读取内容并完成表单操作；
-- ⬜ 网页内容无法通过 Renderer 或 IPC 获得本机执行能力。
+- ✅ Agent 可在受控浏览器中打开网站、读取带 selector/ref 的结构，并经审批完成支持 DOM 重排自动重定位的点击和表单输入；
+- ✅ Agent 可读取页面 Console、网络请求元数据和未捕获异常/加载失败，而不获得请求头或响应体；
+- ✅ 网页内容无法通过 Renderer 或 IPC 获得本机执行能力，非 HTTP(S) 与未批准的跨域顶层导航会被拒绝。
 
 ### Phase 5：子 Agent 与工作流 ⬜ 未开始
 
@@ -831,8 +837,9 @@ type SessionRecord =
 12. ⬜ 建立 Renderer UI、IPC 集成和 Electron E2E 测试。
 13. ✅ 完成 Phase 1：项目检索、可审阅文件修改、冲突检测与回收站。
 14. ✅ 完成 Phase 3：MCP stdio/Streamable HTTP、状态面板、延迟工具发现与按需 Skill。
+15. ✅ 完成 Phase 4：CDP 受控浏览器、网页操作、下载管理、图片消息与视觉请求。
 
 在第 4 步完成之前，不投入复杂 UI；在第 8 步完成之前，不增加文件写入；在 MVP 发布之前，
 不开始浏览器或子 Agent；MCP/Skills 已在 MVP 之后按 Phase 3 边界实现。
 
-> ✅ 上述约束已遵守：MVP（0.1.0）完成后再引入 Phase 3 MCP/Skills，仍未引入浏览器或子 Agent。
+> ✅ 上述约束已遵守：MVP（0.1.0）完成后再引入 Phase 3 MCP/Skills 与 Phase 4 浏览器/富内容；子 Agent 仍未引入。

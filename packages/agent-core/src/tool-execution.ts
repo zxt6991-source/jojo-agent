@@ -20,7 +20,9 @@ const INFORMATION_ONLY_TOOLS = new Set([
   'mcp_tool_describe',
   'mcp_list_resources',
   'mcp_list_prompts',
-  'read_file'
+  'read_file',
+  'web_fetch',
+  'web_search'
 ]);
 
 function canonicalJson(value: unknown): string {

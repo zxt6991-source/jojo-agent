@@ -1,6 +1,7 @@
 import { describe, expect, expectTypeOf, it } from 'vitest';
 import {
   ContentBlockSchema,
+  BrowserActionSchema,
   DEFAULT_PROVIDERS,
   DEFAULT_SESSION_TITLE,
   IPC,
@@ -41,7 +42,7 @@ describe('contracts', () => {
       activeProviderId: 'openai',
       providers: DEFAULT_PROVIDERS,
       utilityModel: { providerId: 'openai', model: 'gpt-5-mini' },
-      extensions: { mcpServers: [], skills: { directories: [], disabled: [] } }
+      extensions: { mcpServers: [], skills: { directories: [], disabled: [] }, browser: { enabled: true, allowedDomains: [] } }
     });
     expect(SaveSettingsInputSchema.parse({
       activeProviderId: 'custom',
@@ -89,11 +90,62 @@ describe('contracts', () => {
       sessionId: 'session-1',
       text: 'hello',
       providerId: 'openai',
-      model: 'model-b'
+      model: 'model-b',
+      images: []
     });
     expect(() => StartTurnInputSchema.parse({ sessionId: 'session-1', text: ' '.repeat(2), model: 'model' })).toThrow();
     expect(() => StartTurnInputSchema.parse({ sessionId: 'session-1', text: 'a'.repeat(100_001), model: 'model' })).toThrow();
     expect(() => StartTurnInputSchema.parse({ sessionId: 'session-1', text: 'hello', model: ' ' })).toThrow();
+    expect(StartTurnInputSchema.parse({
+      sessionId: 'session-1', text: '', providerId: 'openai', model: 'vision',
+      images: [{ type: 'image', data: 'aGVsbG8=', mimeType: 'image/png', name: 'image.png' }]
+    }).images).toHaveLength(1);
+    expect(() => BrowserActionSchema.parse({ action: 'open', url: 'not-a-url' })).toThrow();
+    expect(BrowserActionSchema.parse({ action: 'new_page', url: 'https://example.com/' }))
+      .toEqual({ action: 'new_page', url: 'https://example.com/' });
+    expect(BrowserActionSchema.parse({ action: 'pages' })).toEqual({ action: 'pages' });
+    expect(BrowserActionSchema.parse({ action: 'select_page', pageId: 2 })).toEqual({ action: 'select_page', pageId: 2 });
+    expect(() => BrowserActionSchema.parse({ action: 'close_page', pageId: 0 })).toThrow();
+    expect(BrowserActionSchema.parse({ action: 'record_start', name: ' Checkout ' }))
+      .toEqual({ action: 'record_start', name: 'Checkout' });
+    expect(BrowserActionSchema.parse({ action: 'record_stop' })).toEqual({ action: 'record_stop' });
+    expect(BrowserActionSchema.parse({ action: 'recordings' })).toEqual({ action: 'recordings' });
+    expect(BrowserActionSchema.parse({ action: 'replay', recordingId: 'r2' })).toEqual({
+      action: 'replay', recordingId: 'r2', maxRetries: 2, retryDelayMs: 250
+    });
+    expect(() => BrowserActionSchema.parse({ action: 'replay', recordingId: 'recording-2' })).toThrow();
+    expect(() => BrowserActionSchema.parse({ action: 'replay', recordingId: 'r2', maxRetries: 4 })).toThrow();
+    expect(BrowserActionSchema.parse({ action: 'screenshot' })).toEqual({ action: 'screenshot', fullPage: false });
+    expect(BrowserActionSchema.parse({ action: 'wait', selector: '#ready' })).toEqual({
+      action: 'wait', selector: '#ready', state: 'visible', timeoutMs: 5_000
+    });
+    expect(BrowserActionSchema.parse({ action: 'click', ref: 'e12' })).toEqual({ action: 'click', ref: 'e12' });
+    expect(BrowserActionSchema.parse({ action: 'type', ref: 'e3', text: 'hello' }))
+      .toEqual({ action: 'type', ref: 'e3', text: 'hello', submit: false });
+    expect(() => BrowserActionSchema.parse({ action: 'click' })).toThrow(/selector or ref/u);
+    expect(() => BrowserActionSchema.parse({ action: 'click', selector: '#save', ref: 'e1' })).toThrow(/either selector or ref/u);
+    expect(() => BrowserActionSchema.parse({ action: 'click', ref: 'button-1' })).toThrow();
+    expect(BrowserActionSchema.parse({ action: 'scroll' })).toEqual({ action: 'scroll', deltaX: 0, deltaY: 600 });
+    expect(BrowserActionSchema.parse({ action: 'press', key: 'Enter' })).toEqual({ action: 'press', key: 'Enter' });
+    expect(() => BrowserActionSchema.parse({ action: 'press', key: 'Control' })).toThrow();
+    expect(() => BrowserActionSchema.parse({ action: 'select', selector: '#country', values: [] })).toThrow();
+    expect(BrowserActionSchema.parse({ action: 'upload', selector: '#file', paths: ['report.pdf'] }))
+      .toEqual({ action: 'upload', selector: '#file', paths: ['report.pdf'] });
+    expect(() => BrowserActionSchema.parse({ action: 'upload', selector: '#file', paths: [] })).toThrow();
+    expect(BrowserActionSchema.parse({ action: 'console' })).toEqual({ action: 'console', limit: 80, clear: false });
+    expect(BrowserActionSchema.parse({ action: 'console', level: 'error', limit: 20, clear: true }))
+      .toEqual({ action: 'console', level: 'error', limit: 20, clear: true });
+    expect(() => BrowserActionSchema.parse({ action: 'console', level: 'fatal' })).toThrow();
+    expect(BrowserActionSchema.parse({ action: 'network' })).toEqual({
+      action: 'network', failedOnly: false, limit: 80, clear: false
+    });
+    expect(BrowserActionSchema.parse({ action: 'network', failedOnly: true, urlContains: '/api', resourceType: 'xhr' }))
+      .toMatchObject({ action: 'network', failedOnly: true, urlContains: '/api', resourceType: 'xhr' });
+    expect(() => BrowserActionSchema.parse({ action: 'network', resourceType: 'fetch' })).toThrow();
+    expect(BrowserActionSchema.parse({ action: 'errors' })).toEqual({ action: 'errors', limit: 50, clear: false });
+    expect(BrowserActionSchema.parse({ action: 'errors', kind: 'exception', limit: 10 }))
+      .toEqual({ action: 'errors', kind: 'exception', limit: 10, clear: false });
+    expect(() => BrowserActionSchema.parse({ action: 'errors', kind: 'crash' })).toThrow();
     expect(ListModelsInputSchema.parse({ protocol: 'openai_chat_completions', baseUrl: 'https://provider.example/v1' })).toEqual({
       protocol: 'openai_chat_completions',
       baseUrl: 'https://provider.example/v1'

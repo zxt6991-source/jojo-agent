@@ -30,6 +30,7 @@ function textTokens(text: string): number {
 
 function blockTokens(block: ContentBlock): number {
   if (block.type === 'text') return textTokens(block.text) + 3;
+  if (block.type === 'image') return 1_024;
   if (block.type === 'tool_call') return textTokens(block.call.name) + textTokens(JSON.stringify(block.call.input)) + 12;
   const imageTokens = block.result.contentBlocks?.reduce(
     (sum, item) => sum + (item.type === 'image' ? 1_024 : textTokens(item.text)), 0
@@ -93,6 +94,7 @@ function sourceForSummary(messages: Message[]): string {
   const parts = messages.map((message) => {
     const content = message.content.map((block) => {
       if (block.type === 'text') return block.text;
+      if (block.type === 'image') return `[image ${block.name ?? block.mimeType}]`;
       if (block.type === 'tool_call') return `[tool call ${block.call.name} ${JSON.stringify(block.call.input)}]`;
       return `[tool result ${block.result.callId} ${block.result.ok ? 'ok' : 'failed'}: ${block.result.content}]`;
     }).join('\n');
