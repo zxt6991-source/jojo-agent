@@ -1,16 +1,23 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import DOMPurify from 'dompurify';
-import { marked } from 'marked';
 import type {
-  AgentEvent, ApprovalRequest, ExtensionSettings, ExtensionStatus, Message, ProviderConfig, ProviderSettings, SessionMeta, SkillDetail, SkillStatus, ToolResult, WorkspaceChanges
+  AgentEvent, ApprovalRequest, ExtensionSettings, ExtensionStatus, Message, ProviderConfig, ProviderSettings, SessionMeta, SkillDetail, SkillStatus, WorkspaceChanges
 } from '@desktop-agent/contracts';
-import { DEFAULT_PROVIDERS, DEFAULT_SESSION_TITLE, projectNameFromDirectory } from '@desktop-agent/contracts';
+import { DEFAULT_PROVIDERS, DEFAULT_SESSION_TITLE } from '@desktop-agent/contracts';
+import {
+  applyLiveEvent,
+  buildConversationSnapshot,
+  emptyLiveSteps,
+  quoteCommandPart,
+  type ConversationViewMode,
+  type LiveStep
+} from './conversation';
+import { ChatTranscript, ConversationViewTabs, Markdown, TrajectoryView } from './ConversationViews';
+import { Sidebar } from './Sidebar';
 import './styles.css';
 
-type ToolCard = { id: string; name: string; input: unknown; progress: string; result?: ToolResult };
 type DiffLine = { type: 'addition' | 'deletion' | 'context' | 'hunk' | 'meta'; oldLine?: number; newLine?: number; text: string };
-type ProjectGroup = { path: string; name: string; sessions: SessionMeta[] };
+const FOLLOW_THRESHOLD = 24;
 
 const defaultSettings: ProviderSettings = {
   activeProviderId: 'openai',
@@ -23,25 +30,6 @@ function providerById(settings: ProviderSettings, id: string): ProviderConfig {
   return settings.providers.find((provider) => provider.id === id) ?? settings.providers[0]!;
 }
 
-function groupSessions(sessions: SessionMeta[]): ProjectGroup[] {
-  const projects = new Map<string, ProjectGroup>();
-  for (const session of sessions) {
-    const existing = projects.get(session.workingDirectory);
-    if (existing) existing.sessions.push(session);
-    else projects.set(session.workingDirectory, {
-      path: session.workingDirectory,
-      name: projectNameFromDirectory(session.workingDirectory),
-      sessions: [session]
-    });
-  }
-  return [...projects.values()];
-}
-
-function Markdown({ text }: { text: string }) {
-  const html = useMemo(() => DOMPurify.sanitize(marked.parse(text, { async: false }) as string), [text]);
-  return <div className="markdown" dangerouslySetInnerHTML={{ __html: html }} />;
-}
-
 function skillMarkdownContent(content: string): string {
   return content.replace(/^---\s*\r?\n[\s\S]*?\r?\n---\s*(?:\r?\n|$)/u, '').trim();
 }
@@ -52,12 +40,6 @@ function skillDetailErrorMessage(cause: unknown): string {
     return '应用主进程仍是旧版本。请完整退出并重新启动 Desktop Agent，然后重新打开此 Skill。';
   }
   return message;
-}
-
-function FolderIcon() {
-  return <svg className="project-folder" viewBox="0 0 20 20" aria-hidden="true">
-    <path d="M2.5 5.75c0-1.1.9-2 2-2h3l1.45 1.7h6.55c1.1 0 2 .9 2 2v6.75c0 1.1-.9 2-2 2h-11c-1.1 0-2-.9-2-2V5.75Z" />
-  </svg>;
 }
 
 function ExtensionIcon({ kind }: { kind: 'mcp' | 'skill' }) {
@@ -74,10 +56,6 @@ function skillScope(filePath: string, workingDirectory?: string): string {
   if (workspace && normalized.startsWith(`${workspace}/`)) return '项目';
   if (/\/(?:\.agents|\.codex|\.config\/agents)\/skills\//u.test(normalized)) return '个人';
   return '自定义';
-}
-
-function messageText(message: Message): string {
-  return message.content.filter((block) => block.type === 'text').map((block) => block.text).join('');
 }
 
 function approvalTitle(request: ApprovalRequest): string {
@@ -101,10 +79,6 @@ function approvalQuestion(request: ApprovalRequest): string {
   if (request.call.name === 'read_file') return '是否允许读取工作区外的文件？';
   if (request.preview) return `是否允许${approvalTitle(request)}？`;
   return `是否允许${approvalTitle(request)}？`;
-}
-
-function quoteCommandPart(value: string): string {
-  return /[\s"'\\]/.test(value) ? JSON.stringify(value) : value;
 }
 
 function approvalSummary(request: ApprovalRequest): string {
@@ -220,10 +194,13 @@ function App() {
   const activeIdRef = useRef<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [draft, setDraft] = useState('');
-  const [streamingText, setStreamingText] = useState('');
-  const [tools, setTools] = useState<ToolCard[]>([]);
+  const [liveSteps, setLiveSteps] = useState<LiveStep[]>([]);
+  const [conversationView, setConversationView] = useState<ConversationViewMode>('chat');
+  const [inspectedId, setInspectedId] = useState<string | null>(null);
+  const [turnStartedAt, setTurnStartedAt] = useState<number | null>(null);
   const [approval, setApproval] = useState<ApprovalRequest | null>(null);
   const [running, setRunning] = useState(false);
+  const [runningSessionId, setRunningSessionId] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSection, setSettingsSection] = useState<'models' | 'mcp' | 'skills'>('models');
@@ -256,7 +233,9 @@ function App() {
   const [reviewPath, setReviewPath] = useState('');
   const [usage, setUsage] = useState({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
   const [contextUsage, setContextUsage] = useState<{ estimated: number; window: number; compacted: number } | null>(null);
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const conversationRef = useRef<HTMLDivElement>(null);
+  const atBottomRef = useRef(true);
+  const [atBottom, setAtBottom] = useState(true);
   const turnBaselineRef = useRef<WorkspaceChanges | null>(null);
   const mcpLineNumbersRef = useRef<HTMLDivElement>(null);
 
@@ -304,7 +283,9 @@ function App() {
   };
 
   const selectSession = async (id: string) => {
-    activeIdRef.current = id; turnBaselineRef.current = null; setActiveId(id); setError(''); setWorkspaceChangesError(''); setStreamingText(''); setTools([]); setReviewOpen(false); setWorkspaceChanges(null);
+    activeIdRef.current = id; turnBaselineRef.current = null; setActiveId(id); setError(''); setWorkspaceChangesError(''); setLiveSteps([]); setTurnStartedAt(null); setInspectedId(null); setReviewOpen(false); setWorkspaceChanges(null);
+    const directory = sessionDirectoriesRef.current.get(id);
+    if (directory) setCollapsedProjects((items) => items.filter((path) => path !== directory));
     setUsage({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
     setContextUsage(null);
     const [nextMessages, nextChanges] = await Promise.all([
@@ -330,22 +311,21 @@ function App() {
     const offExtensions = window.desktopAgent.onExtensionsChanged(() => void refreshExtensionStatus());
     const offEvents = window.desktopAgent.onAgentEvent((event: AgentEvent) => {
       if (event.type === 'turn.started') {
-        setRunning(true); setError(''); setStreamingText(''); setTools([]);
+        setRunning(true); setRunningSessionId(event.sessionId); setError(''); setLiveSteps(emptyLiveSteps()); setTurnStartedAt(Date.now());
         setUsage({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
         setContextUsage(null);
       }
-      else if (event.type === 'text.delta') setStreamingText((text) => text + event.text);
-      else if (event.type === 'tool.started') setTools((items) => [...items, { id: event.id, name: event.name, input: event.input, progress: '' }]);
-      else if (event.type === 'tool.progress') setTools((items) => items.map((item) => item.id === event.id ? { ...item, progress: item.progress + event.text } : item));
-      else if (event.type === 'tool.finished') setTools((items) => items.map((item) => item.id === event.id ? { ...item, result: event.result } : item));
+      else if (event.type === 'text.delta' || event.type === 'tool.started' || event.type === 'tool.progress' || event.type === 'tool.finished') {
+        setLiveSteps((steps) => applyLiveEvent(steps, event));
+      }
       else if (event.type === 'approval.required') setApproval(event.request);
       else if (event.type === 'usage') setUsage((current) => ({
         input: current.input + (event.inputTokens ?? 0), output: current.output + (event.outputTokens ?? 0),
         cacheRead: current.cacheRead + (event.cacheReadInputTokens ?? 0), cacheWrite: current.cacheWrite + (event.cacheWriteInputTokens ?? 0)
       }));
       else if (event.type === 'context.updated') setContextUsage({ estimated: event.estimatedTokens, window: event.contextWindowTokens, compacted: event.compactedMessages });
-      else if (event.type === 'turn.failed') { setError(event.message); setRunning(false); setApproval(null); void reloadActive(); }
-      else if (event.type === 'turn.completed' || event.type === 'turn.cancelled') { setRunning(false); setApproval(null); void reloadActive(); }
+      else if (event.type === 'turn.failed') { setError(event.message); setRunning(false); setRunningSessionId(null); setTurnStartedAt(null); setApproval(null); void reloadActive(); }
+      else if (event.type === 'turn.completed' || event.type === 'turn.cancelled') { setRunning(false); setRunningSessionId(null); setTurnStartedAt(null); setApproval(null); void reloadActive(); }
     });
     return () => { offSessions(); offExtensions(); offEvents(); };
   }, []);
@@ -385,10 +365,8 @@ function App() {
         if (!visibleChanges?.files.length) setReviewOpen(false);
       }
     }
-    setStreamingText(''); setTools([]);
+    setLiveSteps([]);
   };
-
-  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, streamingText, tools, workspaceChanges]);
 
   useEffect(() => {
     if (!approval) return;
@@ -472,12 +450,14 @@ function App() {
       activeIdRef.current = null;
       setActiveId(null);
       setRunning(false);
+      setRunningSessionId(null);
       setApproval(null);
       setMessages([]);
       setWorkspaceChanges(null);
       setReviewOpen(false);
-      setStreamingText('');
-      setTools([]);
+      setLiveSteps([]);
+      setTurnStartedAt(null);
+      setInspectedId(null);
       setUsage({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
       setContextUsage(null);
     }
@@ -492,13 +472,13 @@ function App() {
   const send = async () => {
     const text = draft.trim();
     if (!text || !activeId || running) return;
-    setDraft(''); setError(''); setRunning(true); setStreamingText(''); setTools([]); setUsage({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }); setContextUsage(null);
+    setDraft(''); setError(''); setRunning(true); setRunningSessionId(activeId); setLiveSteps(emptyLiveSteps()); setTurnStartedAt(Date.now()); setUsage({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }); setContextUsage(null); atBottomRef.current = true; setAtBottom(true);
     setMessages((items) => [...items, { id: `pending-${Date.now()}`, role: 'user', createdAt: new Date().toISOString(), content: [{ type: 'text', text }] }]);
     try {
       turnBaselineRef.current = await loadWorkspaceChanges(activeId);
       await window.desktopAgent.startTurn({ sessionId: activeId, text, providerId: settings.activeProviderId, model: selectedModel });
     }
-    catch (cause) { setRunning(false); setError(cause instanceof Error ? cause.message : String(cause)); }
+    catch (cause) { setRunning(false); setRunningSessionId(null); setTurnStartedAt(null); setLiveSteps([]); setError(cause instanceof Error ? cause.message : String(cause)); }
   };
 
   const active = sessions.find((session) => session.id === activeId);
@@ -508,7 +488,35 @@ function App() {
     ...current,
     providers: current.providers.map((provider) => provider.id === current.activeProviderId ? { ...provider, ...update } : provider)
   }));
-  const projects = useMemo(() => groupSessions(sessions), [sessions]);
+  const sessionBusy = runningSessionId === activeId;
+  const snapshot = useMemo(() => buildConversationSnapshot({
+    messages,
+    liveSteps: sessionBusy ? liveSteps : [],
+    running: sessionBusy,
+    ...(active?.workingDirectory ? { workingDirectory: active.workingDirectory } : {})
+  }), [messages, liveSteps, sessionBusy, active?.workingDirectory]);
+
+  useLayoutEffect(() => {
+    const el = conversationRef.current;
+    if (!el || !atBottomRef.current) return;
+    el.scrollTop = el.scrollHeight;
+  }, [snapshot, workspaceChanges, conversationView, error]);
+
+  const onConversationScroll = () => {
+    const el = conversationRef.current;
+    if (!el) return;
+    const pinned = el.scrollHeight - el.scrollTop - el.clientHeight <= FOLLOW_THRESHOLD;
+    atBottomRef.current = pinned;
+    setAtBottom(pinned);
+  };
+
+  const inspectRecord = (id: string) => {
+    atBottomRef.current = false;
+    setAtBottom(false);
+    setInspectedId(id);
+    setConversationView('trajectory');
+  };
+
   const openReview = (path?: string) => {
     if (!workspaceChanges?.files.length) return;
     setReviewPath(path ?? workspaceChanges.files[0]!.path);
@@ -545,72 +553,49 @@ function App() {
   };
 
   return <div className="app-shell">
-    <aside className="sidebar">
-      <div className="brand"><span className="brand-mark">⌁</span><span>Desktop Agent</span></div>
-      <button className="new-session" onClick={() => void createSession()}><span aria-hidden="true">＋</span> 新对话</button>
-      <div className="projects-heading"><span>项目</span><button aria-label="打开新项目目录" title="打开新项目目录" onClick={() => void createProject()}>＋</button></div>
-      <div className="project-list">
-        {projects.map((project) => {
-          const collapsed = collapsedProjects.includes(project.path);
-          return <section className="project-group" key={project.path}>
-            <div className="project-row">
-              <button className="project-toggle" title={project.path} onClick={() => setCollapsedProjects((items) => collapsed ? items.filter((path) => path !== project.path) : [...items, project.path])}>
-                <FolderIcon /><span>{project.name}</span><span className="project-chevron" aria-hidden="true">{collapsed ? '›' : '⌄'}</span>
-              </button>
-              <button className="project-new-chat" aria-label={`在 ${project.name} 中新建会话`} title="在此项目中新建会话" onClick={() => void createSessionForDirectory(project.path)}>＋</button>
-            </div>
-            {!collapsed && <div className="project-sessions">
-              {project.sessions.map((session) => <div key={session.id} className={`session-row ${session.id === activeId ? 'active' : ''}`}>
-                <button className="session" title={session.title} onClick={() => void selectSession(session.id)}><span className="session-title">{session.title}</span></button>
-                <div className="session-actions">
-                  <button aria-label={`重命名 ${session.title}`} title="重命名会话" onClick={() => void renameSession(session)}>✎</button>
-                  <button className="delete-session" aria-label={`删除 ${session.title}`} title="删除会话" onClick={() => void deleteSession(session)}>×</button>
-                </div>
-              </div>)}
-            </div>}
-          </section>;
-        })}
-        {projects.length === 0 && <div className="projects-empty">还没有项目</div>}
-      </div>
-      <div className="sidebar-settings">
-      <button className="settings-button" onClick={() => openSettings()}>⚙ 设置</button>
-      </div>
-    </aside>
+    <Sidebar
+      sessions={sessions}
+      activeId={activeId}
+      runningSessionId={runningSessionId}
+      approvalSessionId={approval?.sessionId ?? null}
+      collapsedProjects={collapsedProjects}
+      onToggleProject={(path) => setCollapsedProjects((items) => items.includes(path) ? items.filter((item) => item !== path) : [...items, path])}
+      onSelectSession={(id) => void selectSession(id)}
+      onCreateSession={() => void createSession()}
+      onCreateProject={() => void createProject()}
+      onCreateSessionForDirectory={(path) => void createSessionForDirectory(path)}
+      onRenameSession={(session) => void renameSession(session)}
+      onDeleteSession={(session) => void deleteSession(session)}
+      onOpenSettings={() => openSettings()}
+    />
     <main className="main-panel">
       {active ? <>
         <header className="topbar">
           <div><h1>{active.title}</h1><div className="working-directory">{active.workingDirectory}</div></div>
+          <ConversationViewTabs mode={conversationView} onChange={setConversationView} />
         </header>
         <div className={`workspace-content ${reviewOpen ? 'reviewing' : ''}`}>
         <div className="chat-pane">
-        <section className="conversation">
-          {messages.length === 0 && !running && <div className="empty"><div className="empty-icon">⌁</div><h2>从本地项目开始</h2><p>可以让我阅读文件、列出目录，或在你批准后执行命令。</p></div>}
-          {messages.filter((message) => message.role !== 'tool' && !message.metadata?.internal).map((message) => <article key={message.id} className={`message ${message.role}`}>
-            <div className="avatar">{message.role === 'user' ? '你' : 'A'}</div><div className="bubble"><Markdown text={messageText(message)} /></div>
-          </article>)}
-          {(streamingText || running) && <article className="message assistant"><div className="avatar">A</div><div className="bubble">
-            {streamingText ? <Markdown text={streamingText} /> : tools.length === 0 && <span className="thinking">正在思考…</span>}
-            {tools.map((tool) => <div className="tool-card" key={tool.id}>
-              <div className="tool-head"><span>⌘ {tool.name}</span><span className={tool.result ? (tool.result.ok ? 'ok' : 'failed') : 'pending'}>{tool.result ? (tool.result.ok ? '完成' : '失败') : '进行中'}</span></div>
-              <pre>{JSON.stringify(tool.input, null, 2)}</pre>{tool.progress && <pre className="tool-output">{tool.progress.slice(-5000)}</pre>}
-              {tool.result && <div className="tool-result">{tool.result.content.slice(-2000)}</div>}
-            </div>)}
-          </div></article>}
+        <div className="conversation" ref={conversationRef} onScroll={onConversationScroll} role="region" aria-label="对话记录">
+          {snapshot.nodes.length === 0 && !sessionBusy && conversationView === 'chat' && <div className="empty"><div className="empty-icon">⌁</div><h2>从本地项目开始</h2><p>可以让我阅读文件、列出目录，或在你批准后执行命令。</p></div>}
+          {conversationView === 'chat'
+            ? <ChatTranscript snapshot={snapshot} running={sessionBusy} turnStartedAt={turnStartedAt} onInspect={inspectRecord} />
+            : <TrajectoryView snapshot={snapshot} selectedId={inspectedId} onSelect={setInspectedId} />}
           {error && <div className="error-banner">{error}</div>}
           {workspaceChangesError && <div className="changes-error">无法读取文件修改：{workspaceChangesError}</div>}
-          {!running && messages.length > 0 && workspaceChanges && workspaceChanges.files.length > 0 && <WorkspaceChangesCard changes={workspaceChanges} onReview={openReview} />}
-          <div ref={bottomRef} />
-        </section>
+          {!sessionBusy && messages.length > 0 && workspaceChanges && workspaceChanges.files.length > 0 && <WorkspaceChangesCard changes={workspaceChanges} onReview={openReview} />}
+          {!atBottom && <button type="button" className="to-bottom" aria-label="回到底部" title="回到底部" onClick={() => { const el = conversationRef.current; if (!el) return; el.scrollTop = el.scrollHeight; atBottomRef.current = true; setAtBottom(true); }}>↓</button>}
+        </div>
         <footer className="composer-wrap"><div className="composer">
           <textarea value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="随心输入" rows={2}
             onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void send(); } }} />
           <div className="composer-toolbar">
             <div className="composer-context"><span className="approval-status">⌁ 文件修改与 Terminal 需批准</span>{contextUsage && <span className="context-status" title={contextUsage.compacted ? `已压缩 ${contextUsage.compacted} 条历史消息` : '上下文估算'}>{Math.round(contextUsage.estimated / 1000)}k / {Math.round(contextUsage.window / 1000)}k</span>}{(usage.input > 0 || usage.output > 0) && <span className="context-status" title={`缓存读取 ${usage.cacheRead} · 缓存写入 ${usage.cacheWrite}`}>↑{usage.input} ↓{usage.output}</span>}</div>
             <div className="composer-actions">
-              <select className="model-select" aria-label="本轮使用的模型" title="选择本轮使用的模型" value={selectedModel} disabled={running} onChange={(event) => setSelectedModel(event.target.value)}>
+              <select className="model-select" aria-label="本轮使用的模型" title="选择本轮使用的模型" value={selectedModel} disabled={sessionBusy} onChange={(event) => setSelectedModel(event.target.value)}>
                 {selectedProvider.models.map((model) => <option key={model} value={model}>{model}</option>)}
               </select>
-              {running
+              {sessionBusy
                 ? <button className="stop" aria-label="停止生成" title="停止生成" onClick={() => activeId && window.desktopAgent.cancelTurn(activeId)}>■</button>
                 : <button className="send" aria-label="发送消息" title="发送消息" disabled={!draft.trim()} onClick={() => void send()}>↑</button>}
             </div>

@@ -13,7 +13,7 @@ Desktop 是产品装配层，负责 Electron 生命周期、进程隔离、IPC�
 |---|---|---|---|
 | Main | `src/main/main.ts` | 窗口、IPC、密钥、会话管理、Worker 生命周期、Git 变更采集 | 拥有 Electron/Node 权限 |
 | Preload | `src/preload/preload.ts` | 把白名单 `DesktopApi` 暴露给页面 | Context Bridge；不暴露任意 IPC |
-| Renderer | `src/renderer/main.tsx` | 会话、流式对话、工具进度、审批、Diff 与设置 UI | sandbox，无 Node Integration |
+| Renderer | `src/renderer/main.tsx`、`Sidebar.tsx`、`ConversationViews.tsx` | 会话列表、流式对话、工具进度、审批、Diff 与设置 UI | sandbox，无 Node Integration |
 | Utility Process | `src/worker/worker.ts` | Agent 执行、模型请求、工具调用、消息持久化 | 与 Renderer 隔离，通过结构化消息通信 |
 
 主窗口启用 `contextIsolation`、`sandbox`、`webSecurity`，禁止新窗口，并阻止跨源导航。Main 的每个 invoke handler 都调用 `assertTrusted` 校验发送者 WebContents 和来源。
@@ -41,9 +41,9 @@ Worker 为每轮创建 `AbortController`，并向 `runAgentTurn` 注入：
 
 ### 3.3 Renderer 状态
 
-当前界面使用 React 本地 State 管理会话、消息、流式文本、工具、审批、设置和 Diff。收到完成、取消或失败事件后，从持久化层重新加载消息，避免仅依赖临时 UI 状态。
+当前界面使用 React 本地 State 管理会话、消息、对话快照、轨迹选中项、审批、设置和 Diff。左侧栏由 `sidebarSnapshot.ts` 派生分组、搜索和溢出展开状态，`Sidebar.tsx` 负责搜索框、按项目/单列表切换和会话行。Renderer 把持久化消息与当前轮次的流式步骤折叠成对话节点流，因此历史工具行、压缩标记和内部续写行会随会话一起恢复。收到完成、取消或失败事件后，从持久化层重新加载消息，避免仅依赖临时 UI 状态。
 
-工作区变更在发送前保存 baseline，结束后用 path 与 patch 比较，只突出本轮产生变化的文件。窗口重新聚焦或恢复可见时重新采集 Git 状态。
+工作区变更在发送前保存 baseline，结束后用 path 与 patch 比较，只突出本轮产生变化的文件。窗口重新聚焦或恢复可见时重新采集 Git 状态。对话滚动在贴近底部时跟随新输出；用户向上查看历史时暂停跟随。
 
 ### 3.4 Git 变更审阅
 
@@ -69,7 +69,7 @@ Electron Forge + Vite 分别构建 Main、Preload、Worker 和 Renderer。生产
 
 ## 6. 测试方案
 
-当前已有 `workspace-changes.test.ts` 覆盖修改、未跟踪文件和子目录边界。后续优先补充：
+当前已有 `workspace-changes.test.ts` 覆盖修改、未跟踪文件和子目录边界，`conversation.test.ts` 覆盖对话节点折叠、历史工具恢复和轨迹轮次，以及 `sidebarSnapshot.test.ts` 覆盖项目分组、5 条上限、搜索和相对时间。后续优先补充：
 
 1. IPC Schema 与不可信来源拒绝测试；
 2. Worker 退出、重启和运行中取消的集成测试；

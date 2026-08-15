@@ -47,7 +47,7 @@ flowchart LR
 3. Worker 从 Storage 读取会话，将 Provider、Tools、Permission Gate 和持久化回调注入 Agent Core。
 4. Agent Core 流式消费 Provider 事件；遇到 Tool Call 时先经过 Permission Gate，再执行本地工具或等待批准。
 5. 用户消息、助手消息和工具结果逐条追加到 JSONL；Agent 事件经 Main 转发给 Renderer。
-6. Renderer 展示增量文本、工具卡片、审批对话框，并在一轮结束后读取 Git 工作区变更。
+6. Renderer 把消息折叠为对话 / 轨迹视图，展示增量文本、工具行、审批对话框，并在一轮结束后读取 Git 工作区变更。
 
 ## 全局实现约束
 

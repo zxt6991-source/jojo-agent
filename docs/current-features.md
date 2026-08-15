@@ -125,21 +125,28 @@ Worker 与界面进程分离，因此 Agent 运行异常不必直接获得 Rende
 ### 5.1 会话与聊天界面
 
 - Electron 单窗口、单实例运行；
-- 按本地项目目录分组展示会话，并在一个项目中创建多个独立会话；
+- 按本地项目目录分组展示会话，也可切换为按最近活动排列的单列表；
+- 项目按最近会话排序；同一项目内默认只展开最近 5 个会话，当前会话若在更早记录中会自动露出；
+- 标题栏内搜索会话标题或项目名，最多返回 20 条；占位「新会话」不进入搜索；
+- 会话行显示相对时间，悬停后换成重命名和删除；运行中为蓝点，等待审批为黄点；
 - 在左侧项目模块中创建、选择、重命名和删除会话；
 - 新会话发送第一条提问时，使用默认模型生成标题，失败时回退到提问内容；
 - 每个会话绑定所属项目的本地工作目录；
 - 流式展示模型文本；
 - 渲染 Markdown 标题、列表、引用和代码块；
 - 使用 DOMPurify 清理模型生成的 HTML；
-- 展示当前轮次的工具参数、进度、结果和状态；
+- 将持久化消息折叠为对话节点流：用户气泡、助手正文、工具行、压缩标记和内部系统行；
+- 工具行默认折叠，标题旁显示路径或命令摘要，展开后查看 IN/OUT；
+- 历史工具调用会随会话重新载入一起恢复，不再只存在于当前轮次的临时状态里；
+- 标题栏可在「对话」和「轨迹」之间切换；轨迹按轮次列出用户、助手和工具记录，选中后查看输入与输出；
+- 向上滚动会暂停自动跟随，避免检查旧记录时被新输出打断；
 - Enter 发送，Shift+Enter 换行；
 - 运行期间可停止当前轮次；
 - 展示加载、空状态和错误信息；
 - 配置 OpenAI Chat Completions 兼容 Provider，并逐轮选择其模型；
 - 审批卡片支持按钮以及 Enter 允许、Esc 拒绝快捷键。
 
-工具调用和结果会写入会话记录，但会话重新载入后，当前 UI 只重新展示用户和助手的文本消息，不会重建历史工具卡片。
+工具调用和结果会写入会话记录。重新打开会话时，对话视图会按原始顺序恢复工具行；轨迹视图按轮次展示同一份记录。
 
 ### 5.2 Git 工作区修改审阅
 
@@ -347,7 +354,7 @@ userData/
 
 四类运行时职责：
 
-- Renderer：显示会话、消息、工具状态、审批、设置和 Diff；
+- Renderer：显示会话、对话节点流、轨迹、审批、设置和 Diff；
 - Preload：通过 `contextBridge` 只暴露白名单业务 API；
 - Main：管理窗口、IPC、目录选择、安全存储、Git Diff 和 Worker 生命周期；
 - Worker：运行 Provider、Agent Core、工具、权限判断和会话写入。
@@ -357,6 +364,9 @@ userData/
 | 目标 | 主要入口 |
 |---|---|
 | 修改 React 界面和交互 | `apps/desktop/src/renderer/main.tsx` |
+| 修改对话节点折叠或工具摘要 | `apps/desktop/src/renderer/conversation.ts` |
+| 修改对话 / 轨迹展示组件 | `apps/desktop/src/renderer/ConversationViews.tsx` |
+| 修改左侧栏分组、搜索或会话行 | `apps/desktop/src/renderer/sidebarSnapshot.ts`、`apps/desktop/src/renderer/Sidebar.tsx` |
 | 修改全局样式 | `apps/desktop/src/renderer/styles.css` |
 | 修改 Renderer 可调用的 API | `apps/desktop/src/preload/preload.ts` |
 | 新增或修改 IPC | `packages/contracts/src/desktop.ts`（由 `src/index.ts` 聚合导出）→ `apps/desktop/src/preload/preload.ts` → `apps/desktop/src/main/main.ts` |
