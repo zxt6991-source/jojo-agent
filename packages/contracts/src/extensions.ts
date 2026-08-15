@@ -65,6 +65,8 @@ export type McpServerStatus = {
   name: string;
   state: McpConnectionState;
   toolCount: number;
+  resourceCount?: number;
+  promptCount?: number;
   authType?: 'oauth';
   error?: string;
 };

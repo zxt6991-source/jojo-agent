@@ -767,11 +767,14 @@ function App() {
           const status = extensionStatus.mcpServers.find((item) => item.serverId === server.id);
           const detail = server.transport === 'stdio' ? `${server.command} ${server.args.join(' ')}` : server.url;
           const oauth = server.transport === 'streamable_http' && server.auth?.type === 'oauth';
-          const statusText = status?.state === 'connected' ? `${status.toolCount} 个工具` : status?.state === 'connecting' ? '连接中' : status?.state === 'authorizing' ? '等待登录' : status?.state === 'auth_required' ? '需要登录' : status?.state === 'error' ? (status.error || '连接失败') : server.enabled ? '等待连接' : '已停用';
+          const statusText = status?.state === 'connected'
+            ? [`${status.toolCount} 个工具`, ...(status.resourceCount ? [`${status.resourceCount} 个资源`] : []), ...(status.promptCount ? [`${status.promptCount} 个提示词`] : [])].join(' · ')
+            : status?.state === 'connecting' ? '连接中' : status?.state === 'authorizing' ? '等待登录' : status?.state === 'auth_required' ? '需要登录' : status?.state === 'error' ? (status.error || '连接失败') : server.enabled ? '等待连接' : '已停用';
           return <article className="extension-item" key={server.id} title={detail}>
             <ExtensionIcon kind="mcp" />
             <div className="extension-item-copy"><strong>{server.name}</strong><span>{detail}</span></div>
             <span className={`extension-item-meta ${status?.state === 'error' ? 'failed' : ''}`}>{server.transport === 'stdio' ? '本地' : '远程'} · {statusText}</span>
+            <div className="extension-item-actions">
             {oauth && server.enabled && <button type="button" className="extension-auth-button" disabled={oauthBusyServerId === server.id || status?.state === 'authorizing'} onClick={async () => {
               setExtensionError(''); setOauthBusyServerId(server.id);
               try {
@@ -783,11 +786,22 @@ function App() {
                 setExtensionError(cause instanceof Error ? cause.message : String(cause));
               } finally { setOauthBusyServerId(''); }
             }}>{oauthBusyServerId === server.id || status?.state === 'authorizing' ? '处理中…' : status?.state === 'connected' ? '断开账号' : '连接账号'}</button>}
+            {server.enabled && status?.state !== 'auth_required' && <button type="button" className="extension-auth-button" disabled={oauthBusyServerId === server.id || status?.state === 'connecting' || status?.state === 'authorizing'} onClick={async () => {
+              setExtensionError(''); setOauthBusyServerId(server.id);
+              try {
+                await saveExtensionDraft();
+                await window.desktopAgent.reconnectMcp({ serverId: server.id });
+                await refreshExtensionStatus();
+              } catch (cause) {
+                setExtensionError(cause instanceof Error ? cause.message : String(cause));
+              } finally { setOauthBusyServerId(''); }
+            }}>{status?.state === 'connecting' ? '重连中…' : '重新连接'}</button>}
             <button type="button" role="switch" aria-checked={server.enabled} aria-label={`${server.enabled ? '停用' : '启用'} ${server.name}`} className={`extension-switch ${server.enabled ? 'on' : ''}`} onClick={() => {
               const servers = extensionDraft.mcpServers.map((item) => item.id === server.id ? { ...item, enabled: !server.enabled } : item);
               setExtensionDraft((current) => ({ ...current, mcpServers: servers }));
               setMcpServersJson(JSON.stringify(servers, null, 2));
             }}><span /></button>
+            </div>
           </article>;
         })}
         {((settingsSection === 'skills' && extensionStatus.skills.filter((skill) => `${skill.name} ${skill.description} ${skill.path}`.toLowerCase().includes(extensionSearch.trim().toLowerCase())).length === 0)

@@ -11,7 +11,8 @@ import {
   DesktopMcpOAuthProvider,
   McpManager,
   userSkillDirectories,
-  type McpClientConnection
+  type McpClientConnection,
+  type McpConnectionEvents
 } from '../src/index.js';
 
 describe('Skills', () => {
@@ -224,14 +225,15 @@ describe('McpManager', () => {
       expect.objectContaining({
         url: 'https://mcpcn.coros.com/mcp', versionNegotiation: 'legacy'
       }),
-      expect.any(DesktopMcpOAuthProvider)
+      expect.any(DesktopMcpOAuthProvider),
+      expect.objectContaining({ events: expect.any(Object) })
     );
     expect(manager.getStatuses()).toEqual([{
       serverId: 'coros', name: 'COROS', state: 'connected', toolCount: 0, authType: 'oauth'
     }]);
   });
 
-  it('connects, reports status, and lazily activates a large tool catalog', async () => {
+  it('switches from direct schemas to manifest/describe/call based on context token capacity', async () => {
     const callTool = vi.fn(async (name: string, _input: Record<string, unknown>, _signal: AbortSignal) => ({
       content: [{ type: 'text' as const, text: `called ${name}` }]
     }));
@@ -251,20 +253,106 @@ describe('McpManager', () => {
     }]);
 
     expect(manager.getStatuses()).toEqual([{ serverId: 'demo', name: 'Demo', state: 'connected', toolCount: 25 }]);
-    expect(manager.getTools().map((tool) => tool.definition.name)).toEqual(['mcp_search_tools']);
-    const search = manager.getTools()[0]!;
-    await search.execute({ query: 'weather' }, {
+    expect(manager.getTools().map((tool) => tool.definition.name)).toContain('mcp__demo__remote_17');
+    const catalogTools = manager.getTools({ contextWindowTokens: 8_192, maxOutputTokens: 7_000 });
+    expect(catalogTools.map((tool) => tool.definition.name)).toEqual([
+      'mcp_tool_manifest', 'mcp_tool_describe', 'mcp_tool_call'
+    ]);
+    const manifest = catalogTools[0]!;
+    const manifestResult = await manifest.execute({ query: 'weather' }, {
       sessionId: 's1', workingDirectory: process.cwd(), signal: new AbortController().signal,
       approved: false, onProgress: () => undefined
     });
-    const activated = manager.getTools().find((tool) => tool.definition.name.includes('remote_17'));
-    expect(activated).toBeDefined();
-    await expect(activated!.execute({}, {
+    expect(manifestResult.content).toContain('mcp__demo__remote_17');
+    const describeResult = await catalogTools[1]!.execute({ name: 'mcp__demo__remote_17' }, {
+      sessionId: 's1', workingDirectory: process.cwd(), signal: new AbortController().signal,
+      approved: false, onProgress: () => undefined
+    });
+    expect(describeResult.content).toContain('Look up weather forecasts');
+    await expect(catalogTools[2]!.execute({ name: 'mcp__demo__remote_17', arguments: { city: 'Paris' } }, {
       sessionId: 's1', workingDirectory: process.cwd(), signal: new AbortController().signal,
       approved: true, onProgress: () => undefined
     })).resolves.toMatchObject({ ok: true, content: 'called remote_17' });
-    expect(callTool).toHaveBeenCalledWith('remote_17', {}, expect.any(AbortSignal));
+    expect(callTool).toHaveBeenCalledWith('remote_17', { city: 'Paris' }, expect.any(AbortSignal));
     await manager.close();
+  });
+
+  it('keeps MCP image blocks intact and exposes server instructions', async () => {
+    const connection: McpClientConnection = {
+      instructions: 'Prefer the camera tool for visual inspection.',
+      listTools: async () => ({ tools: [{ name: 'camera', inputSchema: { type: 'object' } }] }),
+      callTool: async () => ({ content: [
+        { type: 'text', text: 'Captured frame' },
+        { type: 'image', mimeType: 'image/png', data: 'aGVsbG8=' }
+      ] }),
+      close: async () => undefined
+    };
+    const manager = new McpManager(() => undefined, async () => connection);
+    await manager.configure([{ id: 'vision', name: 'Vision', enabled: true, transport: 'stdio', command: 'vision', args: [] }]);
+    const result = await manager.getTools()[0]!.execute({}, {
+      sessionId: 's1', workingDirectory: process.cwd(), signal: new AbortController().signal,
+      approved: true, onProgress: () => undefined
+    });
+    expect(result).toMatchObject({
+      ok: true,
+      contentBlocks: [
+        { type: 'text', text: 'Captured frame' },
+        { type: 'image', mimeType: 'image/png', data: 'aGVsbG8=' }
+      ]
+    });
+    expect(manager.getInstructions()).toEqual([
+      'MCP server “Vision” instructions:\nPrefer the camera tool for visual inspection.'
+    ]);
+  });
+
+  it('refreshes tools, resources, and prompts on list_changed notifications', async () => {
+    let events: McpConnectionEvents | undefined;
+    const connection: McpClientConnection = {
+      listTools: async () => ({ tools: [{ name: 'first', inputSchema: { type: 'object' } }] }),
+      callTool: async () => ({ content: [] }),
+      listResources: async () => ({ resources: [] }),
+      listResourceTemplates: async () => ({ resourceTemplates: [] }),
+      readResource: async (uri) => ({ contents: [{ uri, text: 'resource body', mimeType: 'text/plain' }] }),
+      listPrompts: async () => ({ prompts: [] }),
+      getPrompt: async () => ({ messages: [{ role: 'user', content: { type: 'text', text: 'rendered prompt' } }] }),
+      close: async () => undefined
+    };
+    const manager = new McpManager(() => undefined, async (_config, _auth, options) => {
+      events = options?.events;
+      return connection;
+    });
+    await manager.configure([{ id: 'dynamic', name: 'Dynamic', enabled: true, transport: 'stdio', command: 'dynamic', args: [] }]);
+    events?.onToolsChanged?.(null, [{ name: 'second', inputSchema: { type: 'object' } }]);
+    events?.onResourcesChanged?.(null, [{ uri: 'memo://one', name: 'Memo' }]);
+    events?.onPromptsChanged?.(null, [{ name: 'summarize', description: 'Summarize a memo' }]);
+    await Promise.resolve();
+    expect(manager.getTools().map((tool) => tool.definition.name)).toEqual([
+      'mcp__dynamic__second', 'mcp_list_resources', 'mcp_read_resource', 'mcp_list_prompts', 'mcp_get_prompt'
+    ]);
+    expect(manager.getStatuses()[0]).toMatchObject({ toolCount: 1, resourceCount: 1, promptCount: 1 });
+  });
+
+  it('resumes HTTP sessions on explicit reconnect and bounds transient connect retries', async () => {
+    let attempts = 0;
+    const seenSessions: unknown[] = [];
+    const manager = new McpManager(() => undefined, async (_config, _auth, options) => {
+      attempts += 1;
+      seenSessions.push(options?.session);
+      if (attempts < 3) throw Object.assign(new Error('temporary outage'), { code: 'ECONNRESET' });
+      return {
+        listTools: async () => ({ tools: [] }),
+        callTool: async () => ({ content: [] }),
+        getSessionState: () => ({ sessionId: 'session-1', protocolVersion: '2025-11-25' }),
+        close: async () => undefined
+      };
+    });
+    await manager.configure([{
+      id: 'remote', name: 'Remote', enabled: true, transport: 'streamable_http',
+      url: 'https://example.com/mcp', versionNegotiation: 'auto'
+    }]);
+    expect(attempts).toBe(3);
+    await manager.reconnect('remote');
+    expect(seenSessions.at(-1)).toMatchObject({ sessionId: 'session-1', protocolVersion: '2025-11-25' });
   });
 });
 

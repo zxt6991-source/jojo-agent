@@ -90,6 +90,7 @@ export type DesktopApi = {
   saveExtensionSettings(input: z.input<typeof SaveExtensionSettingsInputSchema>): Promise<ExtensionSettings>;
   connectMcpOAuth(input: z.input<typeof McpServerIdInputSchema>): Promise<void>;
   disconnectMcpOAuth(input: z.input<typeof McpServerIdInputSchema>): Promise<void>;
+  reconnectMcp(input: z.input<typeof McpServerIdInputSchema>): Promise<void>;
   onAgentEvent(listener: (event: AgentEvent) => void): () => void;
   onSessionsChanged(listener: () => void): () => void;
   onExtensionsChanged(listener: () => void): () => void;
@@ -102,7 +103,8 @@ export type WorkerCommand =
   | { type: 'config.update'; settings: ProviderSettings; apiKeys: Record<string, string>; mcpOAuthCredentials: Record<string, unknown> }
   | { type: 'mcp.oauth.start'; requestId: string; serverId: string; redirectUrl: string; state: string }
   | { type: 'mcp.oauth.callback'; requestId: string; serverId: string; callbackParams: string }
-  | { type: 'mcp.oauth.disconnect'; requestId: string; serverId: string };
+  | { type: 'mcp.oauth.disconnect'; requestId: string; serverId: string }
+  | { type: 'mcp.reconnect'; requestId: string; serverId: string };
 
 export type WorkerMessage =
   | { type: 'ready' }
@@ -138,6 +140,7 @@ export const IPC = {
   saveExtensionSettings: 'extensions:save',
   connectMcpOAuth: 'extensions:mcp-oauth-connect',
   disconnectMcpOAuth: 'extensions:mcp-oauth-disconnect',
+  reconnectMcp: 'extensions:mcp-reconnect',
   agentEvent: 'agent:event',
   sessionsChanged: 'sessions:changed',
   extensionsChanged: 'extensions:changed'

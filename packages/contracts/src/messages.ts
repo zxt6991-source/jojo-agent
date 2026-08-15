@@ -7,10 +7,22 @@ export const ToolCallSchema = z.object({
 });
 export type ToolCall = z.infer<typeof ToolCallSchema>;
 
+export const ToolResultContentBlockSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('text'), text: z.string() }),
+  z.object({
+    type: z.literal('image'),
+    data: z.string(),
+    mimeType: z.string().regex(/^image\//u),
+    altText: z.string().optional()
+  })
+]);
+export type ToolResultContentBlock = z.infer<typeof ToolResultContentBlockSchema>;
+
 export const ToolResultSchema = z.object({
   callId: z.string().min(1),
   ok: z.boolean(),
   content: z.string(),
+  contentBlocks: z.array(ToolResultContentBlockSchema).optional(),
   truncated: z.boolean().optional(),
   code: z.string().optional()
 });

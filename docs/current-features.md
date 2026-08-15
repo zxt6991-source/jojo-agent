@@ -297,11 +297,15 @@ MCP 支持：
 - 以 `command` + `args` 启动本地 stdio server；
 - 连接 Streamable HTTP endpoint；
 - 自动发现工具并映射为 `mcp__<server>__<tool>`；
+- 支持 Resources、Resource Templates、Prompts，并把 Server instructions 注入模型 system message；
+- 原样保留 MCP 图片 ContentBlock，以多模态工具结果发送给模型；
+- 响应 tools/resources/prompts `list_changed`，无需重启即可更新目录；
 - Remote MCP OAuth：支持浏览器授权、PKCE、动态客户端注册、refresh token 和安全凭据存储；
 - Streamable HTTP 可选择 `auto` 协商或 `legacy` 直接使用 2025 `initialize`，兼容不支持 `server/discover` 的服务；
+- Streamable HTTP 保存当前 session ID 与协议版本用于显式重连，并使用有限指数退避；
 - 显示连接中、已连接、停用、失败状态及工具数量；
 - 每个外部工具调用都先请求一次批准；
-- 总工具数超过 24 时只先暴露搜索工具，按任务关键词激活最多 12 个匹配工具。
+- 工具定义超过按上下文窗口计算的 token 预算时，改为 `mcp_tool_manifest`、`mcp_tool_describe`、`mcp_tool_call`，不再使用固定 24/12 数量阈值。
 
 Skills 会从 `userData/skills`、用户级 `~/.agents/skills` / `~/.codex/skills` / `~/.config/agents/skills`、设置目录以及项目 `.codex/skills` / `.agents/skills` 扫描 `SKILL.md`。文件使用成熟 YAML 解析器读取必填的 `name` 和 `description` frontmatter；同 ID 时按“项目 > 用户 > 自定义 > 默认”覆盖。发现结果明确记录 Skill 根目录及 `scripts`、`templates`、`references` 文件，`load_skill` 也会把这些绝对目录告诉模型。设置面板支持创建、编辑、导入、导出、用本地目录更新和将整个 Skill 根目录移入废纸篓，并可按 Skill ID 启停。
 

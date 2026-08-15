@@ -18,7 +18,7 @@ MCP 与 Skills 解决的是同一个问题的两个层面：在不继续硬编�
 扩展配置和 Skill 全文 ≠ 每次模型请求都要携带的上下文
 ```
 
-MCP 大工具集先只暴露搜索入口，Skill 初始只暴露名称和描述；只有模型真正需要时，具体工具定义或 Skill 全文才进入后续模型请求。
+MCP 工具 Schema 超过当前模型上下文预算时只暴露紧凑 manifest、describe 和通用 call，Skill 初始只暴露名称和描述；只有模型真正需要时，完整 Tool Schema 或 Skill 全文才进入上下文。
 
 > **项目实现位置**
 >
@@ -37,19 +37,21 @@ Phase 3 当前实现覆盖：
 2. MCP Streamable HTTP client（含 OAuth 2.1 / PKCE）；
 3. MCP `tools/list` 发现和 `tools/call` 调用；
 4. 连接中、需要登录、授权中、已连接、停用和错误状态；
-5. 大型 MCP 工具目录延迟激活；
+5. 基于上下文 token 预算的 MCP manifest + describe/call；
 6. 本地 `SKILL.md` 发现、启停和错误展示；
 7. Skill 全文按需注入；
 8. 通过 `install_skill` 非交互安装项目 Skill，并在当前 Turn 动态刷新；
 9. MCP 工具逐次审批；
 10. 重复工具调用的无进展保护；
-11. 旧配置兼容和扩展配置持久化。
+11. 旧配置兼容和扩展配置持久化；
+12. Resources、Resource Templates、Prompts 和 Server instructions；
+13. 图片 ContentBlock 多模态回填；
+14. `list_changed` 在线刷新、显式重连、HTTP session 恢复和有限退避。
 
 ### 2.2 当前明确不做
 
 当前没有实现：
 
-- MCP Resources 和 Prompts 暴露给模型；
 - 旧 HTTP+SSE transport 回退；
 - MCP Sampling、Elicitation 和 Roots 交互；
 - MCP Server 市场、安装器或自动更新；
@@ -439,24 +441,29 @@ Exposed name: mcp__github__search_repositories
 - 小上下文模型更早触发历史压缩；
 - 与任务无关的 Schema 浪费请求预算。
 
-当前阈值：
+当前阈值按所选模型的上下文容量计算：
 
 ```text
-已连接 MCP 工具总数 <= 24  → 全部直接暴露
-已连接 MCP 工具总数 > 24   → 先只暴露 mcp_search_tools
+availableInput = contextWindowTokens - maxOutputTokens
+catalogBudget = max(512, floor(availableInput × 8%))
+
+全部 MCP ToolDefinition 估算值 <= catalogBudget → 直接暴露原始工具
+全部 MCP ToolDefinition 估算值 >  catalogBudget → 暴露 manifest + describe/call
 ```
 
-这个总数跨所有已连接 Server 计算，不按单 Server 分别计算。
+估算包含公开名称、描述和完整 input schema，跨所有已连接 Server 计算。相同数量的简单工具可以在大上下文模型中直接使用，而少量超大 Schema 也会在小上下文模型中进入目录模式。
 
 > **项目实现位置**
 >
-> - 阈值：`MAX_EAGER_TOOLS = 24`
+> - 预算比例：`TOOL_CATALOG_CONTEXT_RATIO`
 > - 选择逻辑：`McpManager.getTools`
-> - 工具定义 token 估算：[`estimateContextTokens`](../../packages/agent-core/src/context-manager.ts)
+> - 工具定义 token 估算：`estimatedDefinitionTokens`
 
-## 12. `mcp_search_tools` 如何激活工具
+## 12. manifest + describe/call 如何工作
 
-搜索工具输入：
+目录模式固定暴露 `mcp_tool_manifest`、`mcp_tool_describe` 和 `mcp_tool_call`。前两者只读取内存目录；通用 call 按公开名称和 arguments 调用远程工具。
+
+manifest 搜索输入示例：
 
 ```json
 { "query": "weather forecast" }
@@ -469,28 +476,26 @@ Exposed name: mcp__github__search_repositories
 3. 每命中一个词加 1 分；
 4. 至少命中一个词的候选保留；
 5. 分数降序、名称升序；
-6. 最多激活 12 个；
-7. 空 query 返回排序后的前 12 个。
+6. 空 query 返回完整紧凑 manifest。
 
-返回结果会告诉模型已激活的公开工具名和描述。激活集合在当前 MCP 配置生命周期内累积，直到 Server 重新配置或 Worker 退出。
+describe/call 通过名称实时查找当前目录，因此不会累积激活集合；`list_changed` 后旧名称立即失效、新名称立即可用。
 
 这不是 embedding 语义搜索。例如用户搜索 `forecast` 能命中描述中的同词，但 `天气` 不一定能命中只写了 `weather` 的英文描述。
 
 > **项目实现位置**
 >
-> - 输入校验：`SearchInput`
-> - 目录搜索：`McpManager.createSearchTool`
-> - 结果上限：`MAX_SEARCH_RESULTS = 12`
-> - 自动允许目录搜索：[`ExtensionPermissionGate`](../../packages/extensions/src/permission-gate.ts)
+> - 输入校验：`ManifestInput` / `ToolNameInput` / `ToolCallInput`
+> - 目录访问：`createManifestTool` / `createDescribeTool` / `createCallTool`
+> - 自动允许 manifest/describe：[`ExtensionPermissionGate`](../../packages/extensions/src/permission-gate.ts)
 
-## 13. Agent Core 如何看到刚激活的工具
+## 13. Agent Core 如何按模型容量刷新工具
 
-原 Agent Core 只在 Turn 开始时读取一次静态 `tools`。延迟 MCP 需要模型执行搜索后，在下一次模型迭代中看到新工具，因此增加了：
+动态 MCP 目录和 Skill 安装需要每轮模型迭代重新读取工具，因此运行参数提供：
 
 ```ts
 type AgentRunOptions = {
   tools: Tool[];
-  getTools?: () => Tool[];
+  getTools?: (context: { contextWindowTokens: number; maxOutputTokens: number }) => Tool[];
 };
 ```
 
@@ -502,23 +507,21 @@ type AgentRunOptions = {
 4. 重建发给模型的 `toolDefinitions`；
 5. 再执行 Context Manager 和模型请求。
 
-完整时序：
+目录模式的完整时序：
 
 ```mermaid
 sequenceDiagram
     participant Model as 模型
     participant Core as Agent Core
     participant Catalog as McpManager
-    Core->>Catalog: getTools()
-    Catalog-->>Core: [mcp_search_tools]
+    Core->>Catalog: getTools(context budget)
+    Catalog-->>Core: [manifest, describe, call]
     Core->>Model: 第一次请求
-    Model-->>Core: call mcp_search_tools
-    Core->>Catalog: search("weather")
-    Catalog-->>Core: 激活 mcp__demo__weather
-    Core->>Catalog: 下一迭代 getTools()
-    Catalog-->>Core: [mcp_search_tools, mcp__demo__weather]
-    Core->>Model: 第二次请求（含新 ToolDefinition）
-    Model-->>Core: call mcp__demo__weather
+    Model-->>Core: call manifest("weather")
+    Core-->>Model: mcp__demo__weather
+    Model-->>Core: call describe(name)
+    Core-->>Model: 完整 input schema
+    Model-->>Core: call(name, arguments)
 ```
 
 Agent Core 仍不知道“动态工具来自 MCP”；未来浏览器、插件或其他延迟工具目录也可以复用 `getTools`。
@@ -538,7 +541,7 @@ Agent Core 仍不知道“动态工具来自 MCP”；未来浏览器、插件�
 2. 把公开名称映射回远程原始名称；
 3. 调用 `client.callTool({ name, arguments })`；
 4. 把本轮 `AbortSignal` 传给 SDK；
-5. 把 MCP content 和 structured content 转成字符串；
+5. 把 MCP content 和 structured content 转成 ToolResult 文本与内容块；
 6. 返回现有 `ToolResult`；
 7. Agent Core 追加 Tool Message 并进入下一次模型迭代。
 
@@ -550,16 +553,16 @@ Agent Core 仍不知道“动态工具来自 MCP”；未来浏览器、插件�
 | `resource_link` | `[resource name: uri]` |
 | text resource | resource 文本 |
 | binary resource | URI 占位说明 |
-| image | MIME 和 base64 字符数说明 |
+| image | 保留真实 `{ type: image, mimeType, data }` 内容块，并附简短文本说明 |
 | audio | MIME 和 base64 字符数说明 |
 | structured content | 格式化 JSON |
 
-当前桌面消息契约只有文本 Tool Result，因此图片和音频不会作为多模态块继续传给模型。归一化文本最多保留 1,000,000 字符。MCP 返回 `isError: true` 时映射为 `ok: false` 和 `mcp_tool_error`。
+图片内容块会转换成 Chat Completions 的 `image_url` data URL，与 Tool Message 一起发给支持视觉输入的模型；音频仍使用文本说明。归一化文本最多保留 1,000,000 字符。MCP 返回 `isError: true` 时映射为 `ok: false` 和 `mcp_tool_error`。
 
 > **项目实现位置**
 >
 > - Tool 执行适配：`createToolEntry`
-> - Content 归一化：`resultText`
+> - Content 归一化：`mcpContentResult`
 > - 通用执行和异常处理：[`executeToolCall`](../../packages/agent-core/src/tool-execution.ts)
 > - 消息提交：[`createToolMessage`](../../packages/agent-core/src/messages.ts)
 
@@ -569,7 +572,9 @@ Agent Core 仍不知道“动态工具来自 MCP”；未来浏览器、插件�
 
 | 工具 | 决策 |
 |---|---|
-| `mcp_search_tools` | 自动允许，只搜索内存目录 |
+| `mcp_tool_manifest` / `mcp_tool_describe` | 自动允许，只读取内存目录 |
+| `mcp_list_resources` / `mcp_list_prompts` | 自动允许，只读取内存目录 |
+| `mcp_tool_call` / `mcp_read_resource` / `mcp_get_prompt` | 每次请求用户批准 |
 | `load_skill` | 自动允许，只读取当前动态目录中已经发现的 Skill 内容 |
 | `install_skill` | 每次请求批准，写入当前工作区 `.agents/skills` |
 | `mcp__*` | 每次请求用户批准 |
@@ -848,7 +853,7 @@ MCP Tool ───────┘
 无进展检测有两层：
 
 1. 工具名与规范化参数完全相同的调用最多实际执行两次，第三次不再执行；
-2. `read_file`、`list_files`、`grep`、`glob`、`load_skill` 和 `mcp_search_tools` 的成功结果会计算 SHA-256 指纹。即使参数不同，只要同类只读工具返回当前 Turn 已经出现过的相同内容，也会标记为 `no_progress`。
+2. `read_file`、`list_files`、`grep`、`glob`、`load_skill`、MCP manifest/describe 以及资源/提示词清单的成功结果会计算 SHA-256 指纹。即使参数不同，只要同类只读工具返回当前 Turn 已经出现过的相同内容，也会标记为 `no_progress`。
 
 首次出现 `no_progress` 后，模型仍有两个工具步骤改变方法。若仍继续调用工具，Agent Core 会追加内部收束提示、在下一步把 ToolDefinition 置空并要求模型根据已有证据直接回答。这样既给模型一次恢复机会，也防止它通过不断改写 grep、文件路径或验证命令绕过精确参数检测。只有模型在工具已暂停后仍自行生成 Tool Call，Turn 才以 `no_progress` 失败；正常情况会得到一条带明确限制和后续动作的最终答复。
 
@@ -878,7 +883,7 @@ MCP Tool ───────┘
 | OAuth callback 路径或 state 不匹配 | 拒绝 callback，状态进入 error | 否 |
 | OAuth 授权超过 5 分钟 | 关闭 callback listener 并返回超时错误 | 否 |
 | canonical resource 未在 allowlist 或 metadata 不匹配 | 拒绝跨 origin resource，状态进入 error | 否 |
-| MCP 连接超时 | 对应 Server 状态为 error | 否 |
+| MCP 连接超时或暂时网络故障 | 有限退避重试耗尽后对应 Server 状态为 error | 否 |
 | MCP version negotiation 探测返回 5xx | `auto` 模式报错；需确认服务能力后显式改为 `legacy` | 否 |
 | MCP `tools/list` 失败 | 关闭对应连接，状态为 error | 否 |
 | 某一 Server 失败 | 其他 Server 继续连接 | 否 |
@@ -888,7 +893,7 @@ MCP Tool ───────┘
 | 用户取消 Turn | AbortSignal 传给 MCP SDK | 当前 Turn 取消 |
 | Worker 退出 | Main 报错并重启 Worker | 当前 Turn 失败 |
 
-重新保存相同 MCP 配置时，如果当前状态包含 `error`，Worker 会再次尝试连接。当前没有独立“重连”按钮、指数退避或后台周期重试。
+重新保存相同 MCP 配置时，如果当前状态包含 `error`，Worker 会再次尝试连接；设置页也提供独立“重新连接”按钮。HTTP 重连会复用已知 session ID 和协议版本，连接与 SSE 恢复均使用有限退避；当前没有后台健康检查。
 
 > **项目实现位置**
 >
@@ -935,7 +940,7 @@ Provider API Key 与 MCP OAuth 凭据都使用 Electron `safeStorage`；手写�
 3. 所有设置输入经过 Zod；
 4. MCP 公开工具名不能与内置工具冲突；
 5. 每个 `mcp__*` 调用都经过审批；
-6. `mcp_search_tools` 只能改变内存激活集合，不能执行外部业务操作；
+6. MCP manifest、describe 和 list 工具只能读取内存目录，通用 call/read/get 必须经过审批；
 7. Skill 全文不能在未调用 `load_skill` 时进入模型上下文；
 8. disabled、invalid 和重复 Skill 不暴露给模型；
 9. 单个 MCP Server 失败不能阻止其他 Server 或普通对话；
@@ -1052,14 +1057,11 @@ Production package 可以验证官方 MCP SDK 已正确进入 Worker bundle，�
 
 ## 26. 当前限制
 
-- 只消费 MCP Tools，不消费 Resources 和 Prompts；
 - 没有旧 SSE transport 回退；
-- 没有 Server 自动重试、健康检查和运行日志面板；
-- Server instructions 虽可由 SDK读取，但当前没有注入模型 system prompt；
-- MCP 图片和音频只转换为文本占位，不支持多模态回填；
+- 没有后台健康检查和运行日志面板；
+- MCP 图片支持多模态回填，音频仍转换为文本占位；
 - MCP Tool Result 截取到 1,000,000 字符时没有独立的外部结果引用；
-- 工具搜索是关键词包含匹配，不是语义搜索；
-- 激活工具会持续到 MCP 重配，而不是按 Turn 自动清空；
+- manifest 检索是关键词包含匹配，不是语义搜索；
 - Skill catalog 超过 16,000 字符时会裁剪描述文本；
 - 项目 Skill 状态会在 Turn 开始和 `install_skill` 完成后刷新，但文件系统的外部变更没有实时 watcher；
 - MCP env/headers 未用 safeStorage 加密；
@@ -1073,18 +1075,15 @@ Production package 可以验证官方 MCP SDK 已正确进入 Worker bundle，�
 ## 27. 后续演进建议
 
 1. 支持 OAuth token revocation 和固定 redirect URI / client metadata URL；
-2. 支持 Resources、Prompts 和 Server instructions；
-3. 为连接增加手动重连、退避和健康检查；
-4. 展示 stdio stderr 和结构化连接日志；
-5. 用语义索引替代简单关键词工具搜索；
-6. 让工具激活范围可按 Turn、Session 或全局配置；
-7. 为图片、音频和 Embedded Resource 增加多模态 Content Block；
-8. 定义 Skill 版本 Schema；
-9. 为 Skill 安装增加来源校验、版本锁定和联网自动更新机制；
-10. 为项目切换主动刷新 Skill 状态，而不等待 Turn；
-11. 增加官方 MCP test server 的 stdio/HTTP/OAuth 集成测试；
-12. 为 Server 工具列表变化通知增加在线刷新；
-13. 为大型 MCP 结果增加落盘引用和按需回读。
+2. 为连接增加后台健康检查；
+3. 展示 stdio stderr 和结构化连接日志；
+4. 用语义索引替代简单关键词 manifest 检索；
+5. 为音频增加多模态 Content Block；
+6. 定义 Skill 版本 Schema；
+7. 为 Skill 安装增加来源校验、版本锁定和联网自动更新机制；
+8. 为项目切换主动刷新 Skill 状态，而不等待 Turn；
+9. 增加官方 MCP test server 的 stdio/HTTP/OAuth 集成测试；
+10. 为大型 MCP 结果增加落盘引用和按需回读。
 
 ## 28. 代码导航
 

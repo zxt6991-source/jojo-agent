@@ -29,7 +29,9 @@ type TurnState = {
 };
 
 function currentTools(options: AgentRunOptions): Tool[] {
-  const tools = [...options.tools, ...(options.getTools?.() ?? [])];
+  const contextWindowTokens = options.contextWindowTokens ?? DEFAULT_CONTEXT_WINDOW_TOKENS;
+  const maxOutputTokens = options.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
+  const tools = [...options.tools, ...(options.getTools?.({ contextWindowTokens, maxOutputTokens }) ?? [])];
   return [...new Map(tools.map((tool) => [tool.definition.name, tool])).values()];
 }
 
@@ -126,6 +128,7 @@ export async function runAgentTurn(options: AgentRunOptions): Promise<AgentRunRe
         model: options.model,
         messages: context.messages,
         toolDefinitions: state.toolDefinitions,
+        ...(options.instructions?.length ? { instructions: options.instructions } : {}),
         provider: options.provider,
         signal: options.signal,
         emit: options.emit,

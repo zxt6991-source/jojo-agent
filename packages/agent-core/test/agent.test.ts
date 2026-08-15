@@ -171,7 +171,7 @@ describe('runAgentTurn', () => {
     let step = 0;
     const seenTools: string[][] = [];
     const searchTool: Tool = {
-      definition: { name: 'mcp_search_tools', description: 'search', inputSchema: { type: 'object' } },
+      definition: { name: 'mcp_tool_manifest', description: 'search', inputSchema: { type: 'object' } },
       execute: async () => {
         activated = true;
         return { callId: '', ok: true, content: 'activated' };
@@ -186,7 +186,7 @@ describe('runAgentTurn', () => {
         seenTools.push(request.tools.map((tool) => tool.name));
         if (step === 0) {
           step += 1;
-          yield { type: 'tool_call_completed', call: { id: 'search', name: 'mcp_search_tools', input: { query: 'weather' } } };
+          yield { type: 'tool_call_completed', call: { id: 'search', name: 'mcp_tool_manifest', input: { query: 'weather' } } };
           yield { type: 'response_completed', stopReason: 'tool_calls' };
         } else if (step === 1) {
           step += 1;
@@ -204,8 +204,8 @@ describe('runAgentTurn', () => {
       getTools: () => activated ? [searchTool, remoteTool] : [searchTool]
     }));
 
-    expect(seenTools[0]).toEqual(['mcp_search_tools']);
-    expect(seenTools[1]).toEqual(['mcp_search_tools', 'mcp__demo__weather']);
+    expect(seenTools[0]).toEqual(['mcp_tool_manifest']);
+    expect(seenTools[1]).toEqual(['mcp_tool_manifest', 'mcp__demo__weather']);
   });
 
   it('turns a denied approval into a tool result and continues', async () => {

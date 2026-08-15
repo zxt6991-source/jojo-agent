@@ -16,7 +16,7 @@
 - 操作系统安全存储按 Provider 加密 API Key；
 - Markdown 消毒、可折叠工具行、对话/轨迹视图、审批弹窗、停止按钮、模型服务设置与输入框模型选择；
 - Electron Forge、ASAR 和 Electron Fuses 生产打包配置。
-- MCP stdio / Streamable HTTP 客户端、工具发现、连接状态与逐次审批；超过 24 个 MCP 工具时按搜索结果延迟激活；
+- MCP stdio / Streamable HTTP 客户端、工具/资源/提示词发现、`list_changed` 在线刷新、会话恢复、显式重连与逐次审批；工具 Schema 超过上下文 token 预算时自动切换为 manifest + describe/call；
 - 本地 `SKILL.md` 发现、启停和 `load_skill` 按需注入，自动扫描项目内 `.codex/skills` 与 `.agents/skills`。
 
 尚未实现浏览器、子 Agent、记忆、自动化和专用 Git 写操作。

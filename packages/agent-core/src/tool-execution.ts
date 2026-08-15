@@ -16,7 +16,10 @@ const INFORMATION_ONLY_TOOLS = new Set([
   'grep',
   'list_files',
   'load_skill',
-  'mcp_search_tools',
+  'mcp_tool_manifest',
+  'mcp_tool_describe',
+  'mcp_list_resources',
+  'mcp_list_prompts',
   'read_file'
 ]);
 

@@ -11,6 +11,7 @@ type ModelStepOptions = {
   model: string;
   messages: Message[];
   toolDefinitions: ToolDefinition[];
+  instructions?: string[];
   provider: ModelProvider;
   signal: AbortSignal;
   maxOutputTokens?: number;
@@ -33,6 +34,7 @@ export async function runModelStep(options: ModelStepOptions): Promise<ModelStep
     model: options.model,
     messages: options.messages,
     tools: options.toolDefinitions,
+    ...(options.instructions?.length ? { instructions: options.instructions } : {}),
     signal: options.signal,
     ...(options.maxOutputTokens !== undefined ? { maxOutputTokens: options.maxOutputTokens } : {})
   });

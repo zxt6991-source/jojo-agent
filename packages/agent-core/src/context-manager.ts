@@ -31,7 +31,10 @@ function textTokens(text: string): number {
 function blockTokens(block: ContentBlock): number {
   if (block.type === 'text') return textTokens(block.text) + 3;
   if (block.type === 'tool_call') return textTokens(block.call.name) + textTokens(JSON.stringify(block.call.input)) + 12;
-  return textTokens(block.result.content) + 12;
+  const imageTokens = block.result.contentBlocks?.reduce(
+    (sum, item) => sum + (item.type === 'image' ? 1_024 : textTokens(item.text)), 0
+  ) ?? 0;
+  return Math.max(textTokens(block.result.content), imageTokens) + 12;
 }
 
 export function estimateContextTokens(messages: Message[], tools: ToolDefinition[] = []): number {

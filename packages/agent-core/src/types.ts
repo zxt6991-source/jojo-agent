@@ -15,8 +15,10 @@ export type AgentRunOptions = {
   userText: string;
   provider: ModelProvider;
   tools: Tool[];
+  /** Trusted runtime instructions, for example connected MCP server instructions. */
+  instructions?: string[];
   /** Returns tools that became available during this turn, such as lazily discovered MCP tools. */
-  getTools?: () => Tool[];
+  getTools?: (context: { contextWindowTokens: number; maxOutputTokens: number }) => Tool[];
   permissionGate: PermissionGate;
   signal: AbortSignal;
   maxIterations?: number;

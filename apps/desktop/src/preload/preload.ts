@@ -25,6 +25,7 @@ const api: DesktopApi = {
   saveExtensionSettings: (input) => ipcRenderer.invoke(IPC.saveExtensionSettings, input),
   connectMcpOAuth: (input) => ipcRenderer.invoke(IPC.connectMcpOAuth, input),
   disconnectMcpOAuth: (input) => ipcRenderer.invoke(IPC.disconnectMcpOAuth, input),
+  reconnectMcp: (input) => ipcRenderer.invoke(IPC.reconnectMcp, input),
   onAgentEvent: (listener) => {
     const handler = (_event: Electron.IpcRendererEvent, value: AgentEvent) => listener(value);
     ipcRenderer.on(IPC.agentEvent, handler);

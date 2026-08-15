@@ -449,6 +449,15 @@ function registerIpc(): void {
     worker.postMessage({ type: 'mcp.oauth.disconnect', requestId, serverId } satisfies WorkerCommand);
     await completion;
   });
+  ipcMain.handle(IPC.reconnectMcp, async (event, raw) => {
+    assertTrusted(event);
+    const { serverId } = McpServerIdInputSchema.parse(raw);
+    if (!worker) throw new Error('Agent runtime is not available.');
+    const requestId = crypto.randomUUID();
+    const completion = waitForWorker(requestId);
+    worker.postMessage({ type: 'mcp.reconnect', requestId, serverId } satisfies WorkerCommand);
+    await completion;
+  });
 }
 
 function createWindow(): void {

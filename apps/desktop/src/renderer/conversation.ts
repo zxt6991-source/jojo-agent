@@ -82,7 +82,13 @@ const TOOL_TITLES: Record<string, string> = {
   delete_file: '删除',
   load_skill: '技能',
   install_skill: '安装',
-  mcp_search_tools: 'MCP 检索'
+  mcp_tool_manifest: 'MCP 清单',
+  mcp_tool_describe: 'MCP 描述',
+  mcp_tool_call: 'MCP 调用',
+  mcp_list_resources: 'MCP 资源',
+  mcp_read_resource: 'MCP 读取',
+  mcp_list_prompts: 'MCP 提示词',
+  mcp_get_prompt: 'MCP 提示词'
 };
 
 export function messageText(message: Message): string {
@@ -156,7 +162,7 @@ export function toolSummary(name: string, input: unknown, cwd?: string): string 
     const command = terminalCommandLine(input);
     if (command) return command;
   }
-  const preferred = name === 'grep' || name === 'mcp_search_tools'
+  const preferred = name === 'grep' || name === 'mcp_tool_manifest'
     ? pickString(input, ['query', 'pattern'])
     : name === 'glob'
       ? pickString(input, ['pattern', 'path'])

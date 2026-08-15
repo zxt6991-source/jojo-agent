@@ -203,12 +203,13 @@ async function startTurn(sessionId: string, text: string, providerId: string, mo
       history, userText: text,
       provider: createProvider(providerConfig, apiKey),
       tools: toolRuntime.tools,
-      getTools: () => {
+      instructions: mcpManager.getInstructions(),
+      getTools: (context) => {
         const skillTool = createSkillTool(skills);
         return [
           installSkillTool,
           ...(skillTool ? [skillTool] : []),
-          ...mcpManager.getTools()
+          ...mcpManager.getTools(context)
         ];
       },
       permissionGate: new ExtensionPermissionGate(toolRuntime.permissionGate), signal: controller.signal,
@@ -267,6 +268,10 @@ parentPort.on('message', (event) => {
       .catch((error) => postOAuthError(command.requestId, error));
   } else if (command.type === 'mcp.oauth.disconnect') {
     void extensionReady.then(() => mcpManager.disconnectOAuth(command.serverId))
+      .then(() => post({ type: 'mcp.oauth.result', requestId: command.requestId, ok: true }))
+      .catch((error) => postOAuthError(command.requestId, error));
+  } else if (command.type === 'mcp.reconnect') {
+    void extensionReady.then(() => mcpManager.reconnect(command.serverId))
       .then(() => post({ type: 'mcp.oauth.result', requestId: command.requestId, ok: true }))
       .catch((error) => postOAuthError(command.requestId, error));
   }

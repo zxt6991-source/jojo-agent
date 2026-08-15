@@ -5,6 +5,8 @@ export type ModelRequest = {
   model: string;
   messages: Message[];
   tools: ToolDefinition[];
+  /** Trusted extension instructions appended to the provider system message. */
+  instructions?: string[];
   signal: AbortSignal;
   maxOutputTokens?: number;
 };

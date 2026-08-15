@@ -81,6 +81,33 @@ describe('Chat Completions request conversion', () => {
       }]
     });
   });
+
+  it('serializes MCP images as multimodal tool content and appends server instructions', () => {
+    const body = createChatCompletionBody(request({
+      instructions: ['MCP server “Vision” instructions:\nInspect images carefully.'],
+      messages: [message('tool', [{
+        type: 'tool_result',
+        result: {
+          callId: 'vision-1', ok: true, content: 'Captured frame',
+          contentBlocks: [
+            { type: 'text', text: 'Captured frame' },
+            { type: 'image', mimeType: 'image/png', data: 'aGVsbG8=' }
+          ]
+        }
+      }])]
+    }));
+
+    expect(body.messages).toEqual([
+      { role: 'system', content: expect.stringContaining('Inspect images carefully.') },
+      {
+        role: 'tool', tool_call_id: 'vision-1',
+        content: [
+          { type: 'text', text: 'Captured frame' },
+          { type: 'image_url', image_url: { url: 'data:image/png;base64,aGVsbG8=' } }
+        ]
+      }
+    ]);
+  });
 });
 
 describe('Chat Completions stream parsing', () => {
