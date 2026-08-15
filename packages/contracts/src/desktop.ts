@@ -5,7 +5,7 @@ import type { ProviderSettings, SessionMeta } from './persistence';
 import { SESSION_TITLE_MAX_LENGTH } from './persistence';
 import type { WorkspaceChanges } from './workspace';
 import { ExtensionSettingsSchema } from './extensions';
-import type { ExtensionSettings, ExtensionStatus, SkillDetail } from './extensions';
+import type { ExtensionSettings, ExtensionStatus, SkillDetail, SkillOperationResult } from './extensions';
 
 export const CreateSessionInputSchema = z.object({
   title: z.string().trim().min(1).max(SESSION_TITLE_MAX_LENGTH),
@@ -28,6 +28,18 @@ export const SessionIdInputSchema = z.object({ sessionId: z.string() });
 export const ApprovalInputSchema = z.object({ requestId: z.string(), allow: z.boolean() });
 export const McpServerIdInputSchema = z.object({ serverId: z.string().trim().min(1).max(64) });
 export const SkillPathInputSchema = z.object({ path: z.string().trim().min(1).max(4_096) });
+export const CreateSkillInputSchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  description: z.string().trim().min(1).max(4_000),
+  instructions: z.string().max(120_000).default('')
+});
+export const UpdateSkillInputSchema = z.object({
+  path: z.string().trim().min(1).max(4_096),
+  content: z.string().min(1).max(120_000)
+});
+export const ImportSkillInputSchema = z.object({
+  replacePath: z.string().trim().min(1).max(4_096).optional()
+});
 export const GetExtensionStatusInputSchema = z.object({ workingDirectory: z.string().trim().min(1).max(4_096).optional() });
 
 export const SaveSettingsInputSchema = z.object({
@@ -70,6 +82,11 @@ export type DesktopApi = {
   saveSettings(input: z.input<typeof SaveSettingsInputSchema>): Promise<ProviderSettings>;
   getExtensionStatus(input?: z.input<typeof GetExtensionStatusInputSchema>): Promise<ExtensionStatus>;
   getSkillDetail(input: z.input<typeof SkillPathInputSchema>): Promise<SkillDetail>;
+  createSkill(input: z.input<typeof CreateSkillInputSchema>): Promise<SkillOperationResult>;
+  updateSkill(input: z.input<typeof UpdateSkillInputSchema>): Promise<SkillOperationResult>;
+  importSkill(input?: z.input<typeof ImportSkillInputSchema>): Promise<SkillOperationResult>;
+  exportSkill(input: z.input<typeof SkillPathInputSchema>): Promise<SkillOperationResult>;
+  trashSkill(input: z.input<typeof SkillPathInputSchema>): Promise<SkillOperationResult>;
   saveExtensionSettings(input: z.input<typeof SaveExtensionSettingsInputSchema>): Promise<ExtensionSettings>;
   connectMcpOAuth(input: z.input<typeof McpServerIdInputSchema>): Promise<void>;
   disconnectMcpOAuth(input: z.input<typeof McpServerIdInputSchema>): Promise<void>;
@@ -113,6 +130,11 @@ export const IPC = {
   saveSettings: 'settings:save',
   getExtensionStatus: 'extensions:status',
   getSkillDetail: 'extensions:skill-detail',
+  createSkill: 'extensions:skill-create',
+  updateSkill: 'extensions:skill-update',
+  importSkill: 'extensions:skill-import',
+  exportSkill: 'extensions:skill-export',
+  trashSkill: 'extensions:skill-trash',
   saveExtensionSettings: 'extensions:save',
   connectMcpOAuth: 'extensions:mcp-oauth-connect',
   disconnectMcpOAuth: 'extensions:mcp-oauth-disconnect',

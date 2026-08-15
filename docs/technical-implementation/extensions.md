@@ -53,8 +53,7 @@ Phase 3 当前实现覆盖：
 - 旧 HTTP+SSE transport 回退；
 - MCP Sampling、Elicitation 和 Roots 交互；
 - MCP Server 市场、安装器或自动更新；
-- Skill 市场浏览、签名、可信来源校验和自动更新；
-- 完整 YAML 解析器；
+- Skill 市场浏览、签名、可信来源校验和联网自动更新；
 - Skill 依赖声明、版本解析和脚本生命周期；
 - 基于 embedding 的语义工具搜索。
 
@@ -652,26 +651,19 @@ description: Review code for correctness and regressions.
 3. Report concrete findings.
 ```
 
-当前只读取 frontmatter 的两个字段：
+当前用 `yaml` 包解析完整 YAML frontmatter，并读取两个字段：
 
 - `name`：必填，用于展示并生成稳定 ID；
 - `description`：必填，用于模型判断是否需要加载。
 
-解析器支持：
-
-- `name: value`；
-- 单引号或双引号包裹的单行值；
-- `description: |` 多行文本；
-- `description: >` 折叠多行文本。
-
-解析器不是完整 YAML 实现，不支持 anchor、复杂对象、数组、转义语义或任意 YAML 标量。其他 frontmatter 字段会被忽略。
+其他 frontmatter 字段允许存在且会保留在文件中，但当前不参与发现与模型 catalog。成熟解析器负责引号、转义、块标量、数组、对象和 anchor 语义；解析错误会显示为 invalid。
 
 Skill ID 从 `name` 转小写并把非 `[a-z0-9_-]` 字符替换为 `-`。例如 `Code Review` 变成 `code-review`。如果结果为空，回退为 `SKILL.md` 所在目录名。
 
 > **项目实现位置**
 >
-> - frontmatter 读取：`frontmatterValue`
-> - Skill 解析：`parseSkillFile`
+> - frontmatter 读取：`parseSkillSource`
+> - Skill 与资源解析：`parseSkillFile` / `discoverResources`
 > - 文件：[`packages/extensions/src/skills.ts`](../../packages/extensions/src/skills.ts)
 
 ## 18. Skill 从哪些位置发现
@@ -689,7 +681,7 @@ Skill ID 从 `name` 转小写并把非 `[a-z0-9_-]` 字符替换为 `-`。例如
 6. `<workspace>/.codex/skills`；
 7. `<workspace>/.agents/skills`。
 
-Turn 内以项目目录优先，再扫描应用目录、用户级目录和显式配置目录；因此项目 Skill 可以优先占用相同 ID。
+覆盖优先级固定为“项目 > 用户 > 自定义 > 默认”，不依赖调用方传入目录的先后顺序。用户 Skill 因而会覆盖同 ID 的默认 Skill；被覆盖版本仍在状态页可见，但不会暴露给模型。
 
 扫描规则：
 
@@ -739,6 +731,12 @@ npx --yes skills add Tencent/WeChatReading \
 > - 安装审批：[`packages/extensions/src/permission-gate.ts`](../../packages/extensions/src/permission-gate.ts)
 > - 动态重扫与工具组合：[`apps/desktop/src/worker/worker.ts`](../../apps/desktop/src/worker/worker.ts)
 
+### 18.2 桌面端 Skill 管理
+
+技能页可以创建标准 Skill 根目录、编辑 `SKILL.md`、导入或导出整个目录、从另一个目录更新现有 Skill，以及把整个根目录移入操作系统废纸篓。创建时会初始化 `scripts`、`templates`、`references`；导入、导出、更新和删除均以根目录为原子边界，因此这些资源不会与说明文件脱离。导入同名用户 Skill 时先确认更新，旧目录进入废纸篓后再替换。
+
+Renderer 不直接访问文件系统。所有管理操作经过受信 IPC，在 Main 中重新校验当前已发现的 Skill 路径和导入文件的 YAML；完成后通知 Worker 与 Renderer 刷新目录。
+
 ## 19. Skill 校验、启停和冲突处理
 
 当前限制：
@@ -754,7 +752,7 @@ npx --yes skills add Tencent/WeChatReading \
 处理规则：
 
 1. 缺少 frontmatter、`name` 或 `description`：状态为 invalid，不暴露给模型；
-2. 同一轮发现两个相同 Skill ID：第一个保留，后一个标记重复并停用；
+2. 同一轮发现两个相同 Skill ID：按来源优先级保留项目/用户版本，其他版本标记 `overriddenBy` 并停用；
 3. ID 出现在 `skills.disabled`：正常展示，但不进入模型工具目录；
 4. 所有 Skill 都停用或无效：不创建 `load_skill` 工具；
 5. UI switch 修改 disabled ID，保存后下一次配置应用和 Turn 使用新状态。
@@ -794,7 +792,13 @@ Tool Result 才包含：
 
 ```text
 [Skill: code-reviewer]
-Source: /path/to/SKILL.md
+Root: /path/to/code-reviewer
+SKILL.md: /path/to/code-reviewer/SKILL.md
+
+Resource directories (resolve relative paths from Root):
+- scripts: /path/to/code-reviewer/scripts
+- templates: /path/to/code-reviewer/templates
+- references: /path/to/code-reviewer/references
 
 ---
 name: code-reviewer
@@ -1056,7 +1060,6 @@ Production package 可以验证官方 MCP SDK 已正确进入 Worker bundle，�
 - MCP Tool Result 截取到 1,000,000 字符时没有独立的外部结果引用；
 - 工具搜索是关键词包含匹配，不是语义搜索；
 - 激活工具会持续到 MCP 重配，而不是按 Turn 自动清空；
-- Skill frontmatter 只实现最小 YAML 子集；
 - Skill catalog 超过 16,000 字符时会裁剪描述文本；
 - 项目 Skill 状态会在 Turn 开始和 `install_skill` 完成后刷新，但文件系统的外部变更没有实时 watcher；
 - MCP env/headers 未用 safeStorage 加密；
@@ -1064,7 +1067,7 @@ Production package 可以验证官方 MCP SDK 已正确进入 Worker bundle，�
 - OAuth callback 使用随机 loopback 端口，尚无固定 redirect URI 或 client metadata URL；redirect URI 变化时会丢弃旧 client/token 并重新注册授权；
 - “断开账号”只清除本地凭据，没有 token revocation；
 - 跨 origin canonical resource 需要用户在 `resourceOrigins` 中显式配置可信 origin，没有自动信任区域跳转；
-- 安装器没有验证 Skill 来源、签名、版本或依赖，也没有更新/卸载能力；
+- 安装器没有验证 Skill 来源、签名、版本或依赖；桌面端更新是用户选择本地目录后的整目录替换，不是联网自动更新；
 - 没有真实第三方 MCP Server 的默认 CI 集成测试。
 
 ## 27. 后续演进建议
@@ -1076,8 +1079,8 @@ Production package 可以验证官方 MCP SDK 已正确进入 Worker bundle，�
 5. 用语义索引替代简单关键词工具搜索；
 6. 让工具激活范围可按 Turn、Session 或全局配置；
 7. 为图片、音频和 Embedded Resource 增加多模态 Content Block；
-8. 使用成熟 YAML parser 并定义 Skill 版本 Schema；
-9. 为 Skill 安装增加来源校验、版本锁定、更新和卸载机制；
+8. 定义 Skill 版本 Schema；
+9. 为 Skill 安装增加来源校验、版本锁定和联网自动更新机制；
 10. 为项目切换主动刷新 Skill 状态，而不等待 Turn；
 11. 增加官方 MCP test server 的 stdio/HTTP/OAuth 集成测试；
 12. 为 Server 工具列表变化通知增加在线刷新；

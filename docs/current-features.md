@@ -303,7 +303,7 @@ MCP 支持：
 - 每个外部工具调用都先请求一次批准；
 - 总工具数超过 24 时只先暴露搜索工具，按任务关键词激活最多 12 个匹配工具。
 
-Skills 会从 `userData/skills`、用户级 `~/.agents/skills` / `~/.codex/skills` / `~/.config/agents/skills`、设置目录以及项目 `.codex/skills` / `.agents/skills` 扫描 `SKILL.md`。文件必须包含 `name` 和 `description` frontmatter。模型初始只看到技能元数据；只有调用 `load_skill` 后才把完整正文放进当前上下文。设置面板可按 Skill ID 启停。
+Skills 会从 `userData/skills`、用户级 `~/.agents/skills` / `~/.codex/skills` / `~/.config/agents/skills`、设置目录以及项目 `.codex/skills` / `.agents/skills` 扫描 `SKILL.md`。文件使用成熟 YAML 解析器读取必填的 `name` 和 `description` frontmatter；同 ID 时按“项目 > 用户 > 自定义 > 默认”覆盖。发现结果明确记录 Skill 根目录及 `scripts`、`templates`、`references` 文件，`load_skill` 也会把这些绝对目录告诉模型。设置面板支持创建、编辑、导入、导出、用本地目录更新和将整个 Skill 根目录移入废纸篓，并可按 Skill ID 启停。
 
 模型可通过需审批的 `install_skill` 把 Skill 非交互安装到当前项目 `.agents/skills`；工具固定使用 `--yes --agent universal --copy`，并在安装后验证文件、动态刷新目录，使新 Skill 在当前 Turn 的下一步即可加载。Agent Core 会阻止同一轮第三次执行完全相同的工具调用，并识别不同查询返回相同只读内容的情况；触发后只再允许两个恢复工具步骤，随后暂停工具并要求模型根据已有证据直接回答，避免重复搜索耗尽迭代上限。
 

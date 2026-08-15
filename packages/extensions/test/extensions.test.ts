@@ -42,6 +42,70 @@ describe('Skills', () => {
     expect(createSkillTool(skills)).toBeNull();
   });
 
+  it('parses full YAML frontmatter and exposes the Skill root with resource directories', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'desktop-agent-skills-yaml-'));
+    const folder = path.join(root, 'rich-skill');
+    await mkdir(path.join(folder, 'scripts'), { recursive: true });
+    await mkdir(path.join(folder, 'templates'), { recursive: true });
+    await mkdir(path.join(folder, 'references'), { recursive: true });
+    await writeFile(path.join(folder, 'scripts', 'run.mjs'), 'export {};');
+    await writeFile(path.join(folder, 'templates', 'report.md'), '# Report');
+    await writeFile(path.join(folder, 'references', 'guide.md'), '# Guide');
+    await writeFile(path.join(folder, 'SKILL.md'), `---\nname: "review:expert"\ndescription: >-\n  Review complex YAML and\n  bundled resources.\nmetadata:\n  tags: [review, yaml]\n---\nBody`);
+
+    const skills = await discoverSkills([{ path: root, origin: 'user' }]);
+    expect(skills[0]).toMatchObject({
+      name: 'review:expert',
+      description: 'Review complex YAML and bundled resources.',
+      rootPath: folder,
+      origin: 'user',
+      resources: {
+        scripts: ['run.mjs'],
+        templates: ['report.md'],
+        references: ['guide.md']
+      }
+    });
+    const result = await createSkillTool(skills)!.execute({ skillId: 'review-expert' }, {
+      sessionId: 's1', workingDirectory: root, signal: new AbortController().signal,
+      approved: false, onProgress: () => undefined
+    });
+    expect(result.content).toContain(`Root: ${folder}`);
+    expect(result.content).toContain(`scripts: ${path.join(folder, 'scripts')}`);
+    expect(result.content).toContain('run.mjs');
+  });
+
+  it('lets a user Skill override a same-id default Skill regardless of directory order', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'desktop-agent-skills-override-'));
+    const defaults = path.join(root, 'defaults', 'shared');
+    const users = path.join(root, 'users', 'shared');
+    await mkdir(defaults, { recursive: true });
+    await mkdir(users, { recursive: true });
+    await writeFile(path.join(defaults, 'SKILL.md'), `---\nname: shared\ndescription: Default instructions.\n---\nDefault body`);
+    await writeFile(path.join(users, 'SKILL.md'), `---\nname: shared\ndescription: User instructions.\n---\nUser body`);
+
+    const skills = await discoverSkills([
+      { path: path.join(root, 'defaults'), origin: 'default' },
+      { path: path.join(root, 'users'), origin: 'user' }
+    ]);
+    expect(skills).toHaveLength(2);
+    expect(skills[0]).toMatchObject({ origin: 'user', enabled: true, description: 'User instructions.' });
+    expect(skills[1]).toMatchObject({ origin: 'default', enabled: false, overriddenBy: path.join(users, 'SKILL.md') });
+    const result = await createSkillTool(skills)!.execute({ skillId: 'shared' }, {
+      sessionId: 's1', workingDirectory: root, signal: new AbortController().signal,
+      approved: false, onProgress: () => undefined
+    });
+    expect(result.content).toContain('User body');
+    expect(result.content).not.toContain('Default body');
+  });
+
+  it('reports strict YAML errors without exposing the Skill to the model', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'desktop-agent-skills-invalid-yaml-'));
+    await writeFile(path.join(root, 'SKILL.md'), `---\nname: first\nname: duplicate\ndescription: Invalid duplicate key.\n---\nBody`);
+    const skills = await discoverSkills([root]);
+    expect(skills[0]).toMatchObject({ enabled: false, error: expect.stringContaining('Map keys must be unique') });
+    expect(createSkillTool(skills)).toBeNull();
+  });
+
   it('returns the standard user-level skill directories', () => {
     expect(userSkillDirectories('/home/example')).toEqual([
       path.join('/home/example', '.agents', 'skills'),

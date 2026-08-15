@@ -11,6 +11,7 @@ import {
   ExtensionPermissionGate,
   type McpOAuthCredentials,
   McpManager,
+  type SkillDirectory,
   userSkillDirectories
 } from '@desktop-agent/extensions';
 import { createProvider } from '@desktop-agent/providers';
@@ -55,11 +56,11 @@ const mcpManager = new McpManager((mcpServers) => {
   onCredentials: (serverId, credentials) => post({ type: 'mcp.oauth.credentials', serverId, credentials })
 });
 
-function globalSkillDirectories(settings: ProviderSettings): string[] {
+function globalSkillDirectories(settings: ProviderSettings): SkillDirectory[] {
   return [
-    path.join(dataDirectory, 'skills'),
-    ...userSkillDirectories(),
-    ...settings.extensions.skills.directories
+    { path: path.join(dataDirectory, 'skills'), origin: 'user' },
+    ...userSkillDirectories().map((directory) => ({ path: directory, origin: 'user' as const })),
+    ...settings.extensions.skills.directories.map((directory) => ({ path: directory, origin: 'custom' as const }))
   ];
 }
 
@@ -174,9 +175,9 @@ async function startTurn(sessionId: string, text: string, providerId: string, mo
     controllers.set(sessionId, controller);
     await maybeGenerateTitle(sessionId, session.workingDirectory, session.title, history, text, controller.signal);
     const toolRuntime = createDefaultToolRuntime({ trashDirectory: path.join(dataDirectory, 'trash') });
-    const skillDirectories = [
-      path.join(session.workingDirectory, '.codex', 'skills'),
-      path.join(session.workingDirectory, '.agents', 'skills'),
+    const skillDirectories: SkillDirectory[] = [
+      { path: path.join(session.workingDirectory, '.codex', 'skills'), origin: 'project' },
+      { path: path.join(session.workingDirectory, '.agents', 'skills'), origin: 'project' },
       ...globalSkillDirectories(runtime.settings)
     ];
     let skills: Awaited<ReturnType<typeof discoverSkills>> = [];

@@ -50,12 +50,8 @@ function ExtensionIcon({ kind }: { kind: 'mcp' | 'skill' }) {
   </span>;
 }
 
-function skillScope(filePath: string, workingDirectory?: string): string {
-  const normalized = filePath.replaceAll('\\', '/');
-  const workspace = workingDirectory?.replaceAll('\\', '/').replace(/\/$/u, '');
-  if (workspace && normalized.startsWith(`${workspace}/`)) return '项目';
-  if (/\/(?:\.agents|\.codex|\.config\/agents)\/skills\//u.test(normalized)) return '个人';
-  return '自定义';
+function skillScope(skill: SkillStatus): string {
+  return skill.origin === 'project' ? '项目' : skill.origin === 'user' ? '个人' : skill.origin === 'default' ? '默认' : '自定义';
 }
 
 function approvalTitle(request: ApprovalRequest): string {
@@ -225,6 +221,13 @@ function App() {
   const [skillDetail, setSkillDetail] = useState<SkillDetail | null>(null);
   const [skillDetailLoading, setSkillDetailLoading] = useState(false);
   const [skillDetailError, setSkillDetailError] = useState('');
+  const [skillEditing, setSkillEditing] = useState(false);
+  const [skillEditorContent, setSkillEditorContent] = useState('');
+  const [skillCreateOpen, setSkillCreateOpen] = useState(false);
+  const [skillCreateName, setSkillCreateName] = useState('');
+  const [skillCreateDescription, setSkillCreateDescription] = useState('');
+  const [skillCreateInstructions, setSkillCreateInstructions] = useState('');
+  const [skillOperationBusy, setSkillOperationBusy] = useState(false);
   const [oauthBusyServerId, setOauthBusyServerId] = useState('');
   const [collapsedProjects, setCollapsedProjects] = useState<string[]>([]);
   const [workspaceChanges, setWorkspaceChanges] = useState<WorkspaceChanges | null>(null);
@@ -246,8 +249,10 @@ function App() {
     if (!activeIdRef.current && next[0]) selectSession(next[0].id);
   };
 
-  const refreshExtensionStatus = async (workingDirectory = activeIdRef.current ? sessionDirectoriesRef.current.get(activeIdRef.current) : undefined) => {
-    setExtensionStatus(await window.desktopAgent.getExtensionStatus(workingDirectory ? { workingDirectory } : undefined));
+  const refreshExtensionStatus = async (workingDirectory = activeIdRef.current ? sessionDirectoriesRef.current.get(activeIdRef.current) : undefined): Promise<ExtensionStatus> => {
+    const next = await window.desktopAgent.getExtensionStatus(workingDirectory ? { workingDirectory } : undefined);
+    setExtensionStatus(next);
+    return next;
   };
 
   const saveExtensionDraft = async (): Promise<ExtensionSettings> => {
@@ -538,9 +543,10 @@ function App() {
   };
 
   const openSkillDetail = async (skill: SkillStatus) => {
-    setSelectedSkill(skill); setSkillDetail(null); setSkillDetailError(''); setSkillDetailLoading(true);
+    setSelectedSkill(skill); setSkillDetail(null); setSkillDetailError(''); setSkillDetailLoading(true); setSkillEditing(false); setSkillEditorContent('');
     try {
-      setSkillDetail(await window.desktopAgent.getSkillDetail({ path: skill.path }));
+      const detail = await window.desktopAgent.getSkillDetail({ path: skill.path });
+      setSkillDetail(detail); setSkillEditorContent(detail.content);
     } catch (cause) {
       setSkillDetailError(skillDetailErrorMessage(cause));
     } finally {
@@ -549,7 +555,18 @@ function App() {
   };
 
   const closeSkillDetail = () => {
-    setSelectedSkill(null); setSkillDetail(null); setSkillDetailError(''); setSkillDetailLoading(false);
+    setSelectedSkill(null); setSkillDetail(null); setSkillDetailError(''); setSkillDetailLoading(false); setSkillEditing(false); setSkillEditorContent('');
+  };
+
+  const importSkill = async (replacePath?: string) => {
+    setExtensionError(''); setSkillDetailError(''); setSkillOperationBusy(true);
+    try {
+      const result = await window.desktopAgent.importSkill(replacePath ? { replacePath } : undefined);
+      if (!result.canceled) { closeSkillDetail(); await refreshExtensionStatus(active?.workingDirectory); }
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      if (replacePath) setSkillDetailError(message); else setExtensionError(message);
+    } finally { setSkillOperationBusy(false); }
   };
 
   return <div className="app-shell">
@@ -705,7 +722,13 @@ function App() {
       <div className="extensions-page-body">
         <div className="extensions-page-heading">
           <div><h2 id="extensions-title">{settingsSection === 'mcp' ? 'MCP 服务' : '技能'}</h2><p>{settingsSection === 'mcp' ? '安装新的 MCP 服务，为智能体扩展更多工具。' : '管理本地 Skills 和额外目录。'}</p></div>
-          <button className="extension-add-button" type="button" onClick={() => setExtensionEditorOpen(true)}><span aria-hidden="true">＋</span>{settingsSection === 'mcp' ? '添加' : '目录设置'}</button>
+          {settingsSection === 'mcp'
+            ? <button className="extension-add-button" type="button" onClick={() => setExtensionEditorOpen(true)}><span aria-hidden="true">＋</span>添加</button>
+            : <div className="extension-heading-actions">
+              <button className="extension-add-button" type="button" disabled={skillOperationBusy} onClick={() => void importSkill()}><span aria-hidden="true">⇧</span>导入</button>
+              <button className="extension-add-button primary" type="button" onClick={() => { setSkillCreateOpen(true); setExtensionError(''); }}><span aria-hidden="true">＋</span>创建</button>
+              <button className="extension-add-button" type="button" onClick={() => setExtensionEditorOpen(true)}>目录设置</button>
+            </div>}
         </div>
         <div className="extensions-toolbar">
           <span className="extension-scope">{settingsSection === 'skills' ? `${extensionStatus.skills.length} 个已发现技能` : '用户级服务'}</span>
@@ -720,12 +743,12 @@ function App() {
           const query = extensionSearch.trim().toLowerCase();
           return !query || `${skill.name} ${skill.description} ${skill.path}`.toLowerCase().includes(query);
         }).map((skill) => {
-          const enabled = !extensionDraft.skills.disabled.includes(skill.id) && !skill.error;
+          const enabled = !extensionDraft.skills.disabled.includes(skill.id) && !skill.error && !skill.overriddenBy;
           return <article className="extension-item skill-item" key={`${skill.id}-${skill.path}`} title={skill.path} onClick={() => void openSkillDetail(skill)}>
             <ExtensionIcon kind="skill" />
             <div className="extension-item-copy"><strong>{skill.name}</strong><span>{skill.error || skill.description}</span></div>
-            <span className={`extension-item-meta ${skill.error ? 'failed' : ''}`}>{skill.error ? '错误' : skillScope(skill.path, active?.workingDirectory)}</span>
-            <button type="button" role="switch" aria-checked={enabled} aria-label={`${enabled ? '停用' : '启用'} ${skill.name}`} className={`extension-switch ${enabled ? 'on' : ''}`} disabled={Boolean(skill.error)} onClick={(event) => { event.stopPropagation(); setExtensionDraft((current) => ({
+            <span className={`extension-item-meta ${skill.error ? 'failed' : ''}`}>{skill.error ? '错误' : skill.overriddenBy ? '已被覆盖' : skillScope(skill)}</span>
+            <button type="button" role="switch" aria-checked={enabled} aria-label={`${enabled ? '停用' : '启用'} ${skill.name}`} className={`extension-switch ${enabled ? 'on' : ''}`} disabled={Boolean(skill.error || skill.overriddenBy)} onClick={(event) => { event.stopPropagation(); setExtensionDraft((current) => ({
               ...current,
               skills: {
                 ...current.skills,
@@ -802,12 +825,38 @@ function App() {
         </div>
       </main>
     </section>}
+    {skillCreateOpen && <div className="skill-detail-backdrop" onMouseDown={(event) => { if (event.currentTarget === event.target) setSkillCreateOpen(false); }}>
+      <form className="skill-create-modal" role="dialog" aria-modal="true" aria-labelledby="skill-create-title" onSubmit={async (event) => {
+        event.preventDefault(); setExtensionError(''); setSkillOperationBusy(true);
+        try {
+          await window.desktopAgent.createSkill({ name: skillCreateName, description: skillCreateDescription, instructions: skillCreateInstructions });
+          setSkillCreateOpen(false); setSkillCreateName(''); setSkillCreateDescription(''); setSkillCreateInstructions('');
+          await refreshExtensionStatus(active?.workingDirectory);
+        } catch (cause) { setExtensionError(cause instanceof Error ? cause.message : String(cause)); }
+        finally { setSkillOperationBusy(false); }
+      }}>
+        <header><div><h2 id="skill-create-title">创建 Skill</h2><p>将创建标准根目录，并初始化 scripts、templates、references。</p></div><button type="button" aria-label="关闭" onClick={() => setSkillCreateOpen(false)}>×</button></header>
+        <label>名称<input autoFocus value={skillCreateName} onChange={(event) => setSkillCreateName(event.target.value)} placeholder="例如 code-reviewer" required /></label>
+        <label>描述<textarea value={skillCreateDescription} onChange={(event) => setSkillCreateDescription(event.target.value)} placeholder="说明何时应使用这个 Skill" required /></label>
+        <label>初始说明<textarea className="skill-create-instructions" value={skillCreateInstructions} onChange={(event) => setSkillCreateInstructions(event.target.value)} placeholder="# Workflow\n\n写下执行步骤（可稍后编辑）" /></label>
+        {extensionError && <div className="settings-error" role="alert">{extensionError}</div>}
+        <footer><button type="button" onClick={() => setSkillCreateOpen(false)}>取消</button><button className="primary" type="submit" disabled={skillOperationBusy}>{skillOperationBusy ? '创建中…' : '创建 Skill'}</button></footer>
+      </form>
+    </div>}
     {selectedSkill && <div className="skill-detail-backdrop" onMouseDown={(event) => { if (event.currentTarget === event.target) closeSkillDetail(); }}>
       <article className="skill-detail-modal" role="dialog" aria-modal="true" aria-labelledby="skill-detail-title">
         <header className="skill-detail-header">
           <ExtensionIcon kind="skill" />
           <div className="skill-detail-controls">
-            <button type="button" role="switch" aria-checked={!extensionDraft.skills.disabled.includes(selectedSkill.id) && !selectedSkill.error} aria-label={`${extensionDraft.skills.disabled.includes(selectedSkill.id) ? '启用' : '停用'} ${selectedSkill.name}`} className={`extension-switch ${!extensionDraft.skills.disabled.includes(selectedSkill.id) && !selectedSkill.error ? 'on' : ''}`} disabled={Boolean(selectedSkill.error)} onClick={() => setExtensionDraft((current) => {
+            {skillDetail && !skillEditing && <button className="skill-action-button" type="button" onClick={() => setSkillEditing(true)}>编辑</button>}
+            <button className="skill-action-button" type="button" disabled={skillOperationBusy} onClick={() => void importSkill(selectedSkill.path)}>更新</button>
+            <button className="skill-action-button" type="button" disabled={skillOperationBusy} onClick={async () => {
+              setSkillDetailError(''); setSkillOperationBusy(true);
+              try { await window.desktopAgent.exportSkill({ path: selectedSkill.path }); }
+              catch (cause) { setSkillDetailError(cause instanceof Error ? cause.message : String(cause)); }
+              finally { setSkillOperationBusy(false); }
+            }}>导出</button>
+            <button type="button" role="switch" aria-checked={!extensionDraft.skills.disabled.includes(selectedSkill.id) && !selectedSkill.error && !selectedSkill.overriddenBy} aria-label={`${extensionDraft.skills.disabled.includes(selectedSkill.id) ? '启用' : '停用'} ${selectedSkill.name}`} className={`extension-switch ${!extensionDraft.skills.disabled.includes(selectedSkill.id) && !selectedSkill.error && !selectedSkill.overriddenBy ? 'on' : ''}`} disabled={Boolean(selectedSkill.error || selectedSkill.overriddenBy)} onClick={() => setExtensionDraft((current) => {
               const enabled = !current.skills.disabled.includes(selectedSkill.id);
               return { ...current, skills: { ...current.skills, disabled: enabled ? [...new Set([...current.skills.disabled, selectedSkill.id])] : current.skills.disabled.filter((id) => id !== selectedSkill.id) } };
             })}><span /></button>
@@ -817,18 +866,38 @@ function App() {
         <div className="skill-detail-heading">
           <h2 id="skill-detail-title">{selectedSkill.name} <span>Skill</span></h2>
           <p>{selectedSkill.description}</p>
+          <div className="skill-resource-summary">
+            {(['scripts', 'templates', 'references'] as const).map((name) => <span key={name}><b>{name}</b>{selectedSkill.resources[name].length} 个文件</span>)}
+            {selectedSkill.overriddenBy && <span className="overridden">此版本已被 {selectedSkill.overriddenBy} 覆盖</span>}
+          </div>
         </div>
         <section className="skill-detail-content">
           {skillDetailLoading && <div className="skill-detail-state">正在载入 Skill 内容…</div>}
           {skillDetailError && <div className="skill-detail-state failed"><span>{skillDetailError}</span><button type="button" onClick={() => void openSkillDetail(selectedSkill)}>重新加载内容</button></div>}
-          {skillDetail && <Markdown text={skillMarkdownContent(skillDetail.content)} />}
+          {skillDetail && !skillDetailError && (skillEditing
+            ? <textarea className="skill-source-editor" spellCheck={false} value={skillEditorContent} onChange={(event) => setSkillEditorContent(event.target.value)} aria-label="SKILL.md 内容" />
+            : <Markdown text={skillMarkdownContent(skillDetail.content)} />)}
         </section>
         <footer className="skill-detail-footer">
-          <span title={selectedSkill.path}>{selectedSkill.path}</span>
-          <button className="primary" type="button" onClick={async () => {
-            try { await saveExtensionDraft(); closeSkillDetail(); }
-            catch (cause) { setSkillDetailError(cause instanceof Error ? cause.message : String(cause)); }
-          }}>保存更改</button>
+          <div className="skill-detail-path"><span title={selectedSkill.rootPath}>{selectedSkill.rootPath}</span><small>Skill 根目录</small></div>
+          <div className="skill-detail-footer-actions">
+            <button className="danger" type="button" disabled={skillOperationBusy || selectedSkill.origin === 'default'} title={selectedSkill.origin === 'default' ? '默认 Skill 不能删除，可用同名用户 Skill 覆盖' : undefined} onClick={async () => {
+              if (!window.confirm(`将“${selectedSkill.name}”整个根目录移入废纸篓？`)) return;
+              setSkillDetailError(''); setSkillOperationBusy(true);
+              try { await window.desktopAgent.trashSkill({ path: selectedSkill.path }); closeSkillDetail(); await refreshExtensionStatus(active?.workingDirectory); }
+              catch (cause) { setSkillDetailError(cause instanceof Error ? cause.message : String(cause)); }
+              finally { setSkillOperationBusy(false); }
+            }}>移到废纸篓</button>
+            {skillEditing && <button type="button" onClick={() => { setSkillEditing(false); setSkillEditorContent(skillDetail?.content ?? ''); }}>取消编辑</button>}
+            <button className="primary" type="button" disabled={skillOperationBusy} onClick={async () => {
+              setSkillDetailError(''); setSkillOperationBusy(true);
+              try {
+                if (skillEditing) await window.desktopAgent.updateSkill({ path: selectedSkill.path, content: skillEditorContent });
+                await saveExtensionDraft(); closeSkillDetail(); await refreshExtensionStatus(active?.workingDirectory);
+              } catch (cause) { setSkillDetailError(cause instanceof Error ? cause.message : String(cause)); }
+              finally { setSkillOperationBusy(false); }
+            }}>{skillOperationBusy ? '处理中…' : skillEditing ? '保存 Skill' : '保存启停设置'}</button>
+          </div>
         </footer>
       </article>
     </div>}

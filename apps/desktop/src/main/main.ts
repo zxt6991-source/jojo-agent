@@ -1,15 +1,15 @@
 import { app, BrowserWindow, dialog, ipcMain, safeStorage, shell, utilityProcess, type IpcMainInvokeEvent, type UtilityProcess } from 'electron';
 import { createServer, type Server } from 'node:http';
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { access, cp, mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  ApprovalInputSchema, CreateSessionInputSchema, GetExtensionStatusInputSchema, IPC, ListModelsInputSchema, McpServerIdInputSchema, RenameSessionInputSchema, SaveExtensionSettingsInputSchema, SaveSettingsInputSchema,
-  SessionIdInputSchema, SkillPathInputSchema, StartTurnInputSchema,
-  type ExtensionStatus, type WorkerCommand, type WorkerMessage
+  ApprovalInputSchema, CreateSessionInputSchema, CreateSkillInputSchema, GetExtensionStatusInputSchema, ImportSkillInputSchema, IPC, ListModelsInputSchema, McpServerIdInputSchema, RenameSessionInputSchema, SaveExtensionSettingsInputSchema, SaveSettingsInputSchema,
+  SessionIdInputSchema, SkillPathInputSchema, StartTurnInputSchema, UpdateSkillInputSchema,
+  type ExtensionStatus, type ProviderSettings, type WorkerCommand, type WorkerMessage
 } from '@desktop-agent/contracts';
 import { createProvider } from '@desktop-agent/providers';
-import { discoverSkills, userSkillDirectories } from '@desktop-agent/extensions';
+import { createSkillSource, discoverSkills, parseSkillSource, skillId, userSkillDirectories, type SkillDirectory } from '@desktop-agent/extensions';
 import { JsonConfigStore, JsonlSessionStore } from '@desktop-agent/storage';
 import { collectWorkspaceChanges } from './workspace-changes';
 
@@ -161,6 +161,45 @@ function sendToRenderer(channel: string, value?: unknown): void {
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, value);
 }
 
+function skillDirectories(settings: ProviderSettings, workingDirectory?: string): SkillDirectory[] {
+  return [
+    ...(workingDirectory ? [
+      { path: path.join(workingDirectory, '.codex', 'skills'), origin: 'project' as const },
+      { path: path.join(workingDirectory, '.agents', 'skills'), origin: 'project' as const }
+    ] : []),
+    { path: path.join(app.getPath('userData'), 'skills'), origin: 'user' },
+    ...userSkillDirectories().map((directory) => ({ path: directory, origin: 'user' as const })),
+    ...settings.extensions.skills.directories.map((directory) => ({ path: directory, origin: 'custom' as const }))
+  ];
+}
+
+async function refreshManagedSkills(): Promise<void> {
+  await pushConfig();
+  sendToRenderer(IPC.extensionsChanged);
+}
+
+function visibleSkill(filePath: string): ExtensionStatus['skills'][number] {
+  const resolved = path.resolve(filePath);
+  const skill = visibleSkillPaths.get(resolved);
+  if (!skill) throw new Error('Skill 不存在或已不再可用。');
+  return skill;
+}
+
+async function pathExists(filePath: string): Promise<boolean> {
+  try { await access(filePath); return true; }
+  catch { return false; }
+}
+
+async function replaceSkillDirectory(sourceRoot: string, destinationRoot: string): Promise<void> {
+  if (path.resolve(sourceRoot) === path.resolve(destinationRoot)) throw new Error('导入源与目标 Skill 目录相同。');
+  const parent = path.dirname(destinationRoot);
+  const temporary = path.join(parent, `.skill-import-${crypto.randomUUID()}`);
+  await mkdir(parent, { recursive: true });
+  await cp(sourceRoot, temporary, { recursive: true, errorOnExist: true });
+  if (await pathExists(destinationRoot)) await shell.trashItem(destinationRoot);
+  await rename(temporary, destinationRoot);
+}
+
 function startWorker(): void {
   worker = utilityProcess.fork(path.join(currentDirectory, 'worker.js'), [], {
     serviceName: 'Desktop Agent Runtime',
@@ -288,27 +327,104 @@ function registerIpc(): void {
     const input = GetExtensionStatusInputSchema.parse(raw ?? {});
     const apiKeys = await readApiKeys();
     const settings = await configStore.get(apiKeys);
-    const directories = [
-      path.join(app.getPath('userData'), 'skills'),
-      ...userSkillDirectories(),
-      ...settings.extensions.skills.directories,
-      ...(input.workingDirectory ? [
-        path.join(input.workingDirectory, '.codex', 'skills'),
-        path.join(input.workingDirectory, '.agents', 'skills')
-      ] : [])
-    ];
-    const skills = (await discoverSkills(directories, settings.extensions.skills.disabled))
+    const skills = (await discoverSkills(skillDirectories(settings, input.workingDirectory), settings.extensions.skills.disabled))
       .map(({ content: _content, ...status }) => status);
-    visibleSkillPaths = new Map(skills.map((skill) => [skill.path, skill]));
+    visibleSkillPaths = new Map(skills.map((skill) => [path.resolve(skill.path), skill]));
     return { ...extensionStatus, skills };
   });
   ipcMain.handle(IPC.getSkillDetail, async (event, raw) => {
     assertTrusted(event);
     const input = SkillPathInputSchema.parse(raw);
-    const skill = visibleSkillPaths.get(input.path);
-    if (!skill) throw new Error('Skill 不存在或已不再可用。');
+    const skill = visibleSkill(input.path);
     const content = (await readFile(skill.path, 'utf8')).slice(0, 120_000);
     return { ...skill, content };
+  });
+  ipcMain.handle(IPC.createSkill, async (event, raw) => {
+    assertTrusted(event);
+    const input = CreateSkillInputSchema.parse(raw);
+    const root = path.join(app.getPath('userData'), 'skills', skillId(input.name));
+    if (await pathExists(root)) throw new Error('同名用户 Skill 已存在，请打开后编辑或更新。');
+    await mkdir(root, { recursive: true });
+    await Promise.all(['scripts', 'templates', 'references'].map((name) => mkdir(path.join(root, name))));
+    await writeFile(path.join(root, 'SKILL.md'), createSkillSource(input.name, input.description, input.instructions), { encoding: 'utf8', flag: 'wx' });
+    await refreshManagedSkills();
+    return { canceled: false, path: path.join(root, 'SKILL.md') };
+  });
+  ipcMain.handle(IPC.updateSkill, async (event, raw) => {
+    assertTrusted(event);
+    const input = UpdateSkillInputSchema.parse(raw);
+    const skill = visibleSkill(input.path);
+    parseSkillSource(skill.path, input.content);
+    let destinationFile = skill.path;
+    if (skill.origin === 'default') {
+      const destinationRoot = path.join(app.getPath('userData'), 'skills', skill.id);
+      if (!(await pathExists(destinationRoot))) await cp(skill.rootPath, destinationRoot, { recursive: true, errorOnExist: true });
+      destinationFile = path.join(destinationRoot, 'SKILL.md');
+    }
+    await writeFile(destinationFile, input.content, 'utf8');
+    await refreshManagedSkills();
+    return { canceled: false, path: destinationFile };
+  });
+  ipcMain.handle(IPC.importSkill, async (event, raw) => {
+    assertTrusted(event);
+    const input = ImportSkillInputSchema.parse(raw ?? {});
+    const selected = await dialog.showOpenDialog(mainWindow!, {
+      title: input.replacePath ? '选择用于更新 Skill 的目录或 SKILL.md' : '导入 Skill',
+      properties: ['openFile', 'openDirectory'],
+      filters: [{ name: 'Agent Skill', extensions: ['md'] }]
+    });
+    if (selected.canceled || !selected.filePaths[0]) return { canceled: true };
+    const selectedPath = selected.filePaths[0];
+    const selectedInfo = await stat(selectedPath);
+    const sourceRoot = selectedInfo.isDirectory() ? selectedPath : path.dirname(selectedPath);
+    const sourceFile = path.join(sourceRoot, 'SKILL.md');
+    const sourceInfo = await stat(sourceFile);
+    if (!sourceInfo.isFile() || sourceInfo.size > 480_000) throw new Error('导入的 SKILL.md 过大。');
+    const metadata = parseSkillSource(sourceFile, await readFile(sourceFile, 'utf8'));
+    let destinationRoot = path.join(app.getPath('userData'), 'skills', metadata.id);
+    if (input.replacePath) {
+      const current = visibleSkill(input.replacePath);
+      if (current.id !== metadata.id) throw new Error(`更新包的 Skill ID 为 ${metadata.id}，与当前 ${current.id} 不一致。`);
+      if (current.origin !== 'default') destinationRoot = current.rootPath;
+    } else if (await pathExists(destinationRoot)) {
+      const confirmation = await dialog.showMessageBox(mainWindow!, {
+        type: 'warning',
+        buttons: ['更新现有 Skill', '取消'],
+        defaultId: 0,
+        cancelId: 1,
+        message: `用户 Skill“${metadata.name}”已存在`,
+        detail: '继续会将旧目录移入废纸篓，再导入新版本（包括 scripts、templates 和 references）。'
+      });
+      if (confirmation.response !== 0) return { canceled: true };
+    }
+    await replaceSkillDirectory(sourceRoot, destinationRoot);
+    await refreshManagedSkills();
+    return { canceled: false, path: path.join(destinationRoot, 'SKILL.md') };
+  });
+  ipcMain.handle(IPC.exportSkill, async (event, raw) => {
+    assertTrusted(event);
+    const input = SkillPathInputSchema.parse(raw);
+    const skill = visibleSkill(input.path);
+    const selected = await dialog.showSaveDialog(mainWindow!, {
+      title: '导出 Skill 目录',
+      defaultPath: path.join(app.getPath('downloads'), path.basename(skill.rootPath)),
+      buttonLabel: '导出'
+    });
+    if (selected.canceled || !selected.filePath) return { canceled: true };
+    if (await pathExists(selected.filePath)) throw new Error('导出目标已存在，请选择一个新目录。');
+    await cp(skill.rootPath, selected.filePath, { recursive: true, errorOnExist: true });
+    return { canceled: false, path: selected.filePath };
+  });
+  ipcMain.handle(IPC.trashSkill, async (event, raw) => {
+    assertTrusted(event);
+    const input = SkillPathInputSchema.parse(raw);
+    const skill = visibleSkill(input.path);
+    if (skill.origin === 'default') throw new Error('默认 Skill 不能删除；可创建同名用户 Skill 进行覆盖。');
+    const expectedFile = path.join(skill.rootPath, 'SKILL.md');
+    if (path.resolve(expectedFile) !== path.resolve(skill.path)) throw new Error('拒绝删除无效的 Skill 根目录。');
+    await shell.trashItem(skill.rootPath);
+    await refreshManagedSkills();
+    return { canceled: false, path: skill.rootPath };
   });
   ipcMain.handle(IPC.saveExtensionSettings, async (event, raw) => {
     assertTrusted(event);

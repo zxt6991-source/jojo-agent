@@ -74,11 +74,24 @@ export type SkillStatus = {
   name: string;
   description: string;
   path: string;
+  rootPath: string;
+  origin: 'project' | 'user' | 'custom' | 'default';
+  resources: {
+    scripts: string[];
+    templates: string[];
+    references: string[];
+  };
   enabled: boolean;
   error?: string;
+  overriddenBy?: string;
 };
 
 export type SkillDetail = SkillStatus & { content: string };
+
+export type SkillOperationResult = {
+  canceled: boolean;
+  path?: string;
+};
 
 export type ExtensionStatus = {
   mcpServers: McpServerStatus[];
