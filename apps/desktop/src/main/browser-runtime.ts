@@ -53,9 +53,9 @@ import {
   ChromeCdpClient,
   closeChromeTarget,
   listChromeTargets,
-  openChromeTarget,
-  probeChromeCdp
+  openChromeTarget
 } from './browser-backends/chrome-cdp-client';
+import { ensureChromeDebugging } from './browser-backends/chrome-launcher';
 
 export type BrowserSecretPrompt = (input: { name: string; description?: string }) => Promise<string | undefined>;
 
@@ -664,16 +664,12 @@ export class BrowserRuntime {
   }
 
   private async ensureChromePage(sessionId: string, state: BrowserState, settings: BrowserSettings): Promise<void> {
-    await probeChromeCdp(settings.chromeDebugPort);
-    if (settings.chromeNewTab) {
-      const target = await openChromeTarget(settings.chromeDebugPort);
-      await this.attachChromeTarget(sessionId, state, target, true);
-      return;
-    }
-    const pages = (await listChromeTargets(settings.chromeDebugPort)).filter((target) => target.type === 'page' && target.webSocketDebuggerUrl);
-    const target = pages[0];
-    if (!target) throw new Error('Chrome has no open tabs. Enable chromeNewTab or open a tab in Chrome.');
-    await this.attachChromeTarget(sessionId, state, target, false);
+    await ensureChromeDebugging({
+      port: settings.chromeDebugPort,
+      userDataDir: path.join(this.dataDirectory, 'chrome-profile')
+    });
+    const target = await openChromeTarget(settings.chromeDebugPort);
+    await this.attachChromeTarget(sessionId, state, target, true);
   }
 
   private async attachChromeTarget(

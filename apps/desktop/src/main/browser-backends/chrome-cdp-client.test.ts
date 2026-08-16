@@ -6,7 +6,6 @@ import {
   ChromeCdpClient,
   chromeCdpOrigin,
   chromeCdpUnavailableMessage,
-  chromeDebugLaunchHint,
   listChromeTargets,
   probeChromeCdp,
   rethrowChromeCdpError
@@ -79,9 +78,7 @@ describe('chrome cdp probe helpers', () => {
     await server.close();
     await expect(probeChromeCdp(port)).rejects.toThrow(chromeCdpUnavailableMessage(port));
     expect(() => rethrowChromeCdpError(Object.assign(new Error('fetch failed'), { code: 'ECONNREFUSED' }), 9222))
-      .toThrow(/未在 127.0.0.1:9222 发现 Chrome/u);
-    expect(chromeDebugLaunchHint(9222)).toContain('--remote-debugging-port=9222');
-    expect(chromeDebugLaunchHint(9222)).toContain('--user-data-dir=');
+      .toThrow(chromeCdpUnavailableMessage(9222));
   });
 });
 

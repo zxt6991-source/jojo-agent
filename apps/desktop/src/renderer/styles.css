@@ -381,27 +381,13 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .browser-domain-editor input { min-width: 180px; flex: 1; height: 28px; margin: 0; padding: 0 4px; border: 0; outline: 0; background: transparent; color: #242529; font-size: 13px; }
 .browser-domain-editor input:disabled { cursor: default; }
 .browser-domain-hint { margin: 10px 0 12px; color: #8b8f96; font-size: 11px; line-height: 1.5; }
-.browser-mode-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 16px 24px; background: #ffffff; }
+.browser-mode-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 16px 24px 22px; background: #ffffff; }
 .browser-mode-option { display: flex; flex-direction: row; align-items: flex-start; gap: 10px; margin: 0; padding: 14px 16px; border: 1px solid #d8d9dd; border-radius: 12px; background: #fff; text-align: left; cursor: pointer; }
 .browser-mode-option.selected { border-color: #7182cf; background: #f6f8ff; }
 .browser-mode-option input[type="radio"] { flex: 0 0 auto; box-sizing: border-box; width: 15px; height: 15px; margin: 3px 0 0; padding: 0; border: 0; accent-color: #5269d8; }
 .browser-mode-copy { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 4px; }
 .browser-mode-copy strong { color: #292b30; font-size: 13px; font-weight: 650; }
 .browser-mode-copy span { color: #858990; font-size: 11px; line-height: 1.45; }
-.browser-chrome-panel { display: flex; flex-direction: column; gap: 14px; padding: 16px 24px 22px; border-top: 1px solid #e7e7e9; background: #ffffff; }
-.browser-chrome-panel.is-inactive .browser-newtab-toggle { opacity: .55; }
-.browser-chrome-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 12px; }
-.browser-chrome-port { display: flex; flex-direction: row; align-items: center; gap: 10px; margin: 0; color: #5c6067; font-size: 12px; font-weight: 620; white-space: nowrap; }
-.browser-chrome-port input { box-sizing: border-box; width: 96px; height: 36px; margin: 0; padding: 0 10px; border: 1px solid #d8d9dd; border-radius: 9px; background: #fff; color: #242529; font-size: 13px; font-weight: 500; }
-.browser-chrome-port input:focus { outline: 0; border-color: #7182cf; }
-.browser-chrome-controls button { margin-left: auto; min-height: 36px; padding: 0 14px; border: 1px solid #d7d8dc; border-radius: 9px; background: #fff; color: #3f4248; font-size: 12px; font-weight: 600; }
-.browser-chrome-controls button:hover:not(:disabled) { border-color: #c7c9ce; background: #f4f4f5; }
-.browser-newtab-toggle { display: flex; flex-direction: row; align-items: flex-start; gap: 8px; margin: 0; max-width: 42em; color: #5c6067; font-size: 12px; line-height: 1.45; }
-.browser-newtab-toggle input[type="checkbox"] { flex: 0 0 auto; box-sizing: border-box; width: 14px; height: 14px; margin: 2px 0 0; padding: 0; accent-color: #5269d8; }
-.browser-probe-ok, .browser-probe-error { margin: 0; font-size: 12px; line-height: 1.45; }
-.browser-probe-ok { color: #2f7a3e; }
-.browser-probe-error { color: #b2464b; }
-.browser-chrome-panel .browser-domain-hint { margin: 0; padding: 0; }
 .browser-secret-modal p { margin: 0 0 12px; color: #6a6e75; font-size: 13px; line-height: 1.5; }
 .browser-domain-body .settings-error { margin: 0 0 10px; }
 .extensions-settings-page { min-height: 0; overflow: hidden; }

@@ -22,13 +22,8 @@ export type ChromeCdpHttp = (
 
 const CDP_HTTP_TIMEOUT_MS = 2_500;
 
-export function chromeDebugLaunchHint(port: number): string {
-  const userDataDir = process.platform === 'win32' ? '%TEMP%\\jojo-chrome-debug' : '/tmp/jojo-chrome-debug';
-  return `--remote-debugging-port=${port} --remote-allow-origins=* --user-data-dir=${userDataDir}`;
-}
-
-export function chromeCdpUnavailableMessage(port: number): string {
-  return `未在 127.0.0.1:${port} 发现 Chrome 远程调试。日常打开的 Chrome 不会监听该端口。请新开独立进程后再测：${chromeDebugLaunchHint(port)}`;
+export function chromeCdpUnavailableMessage(_port?: number): string {
+  return '无法连接到本机 Chrome。请确认已安装 Google Chrome 后重试。';
 }
 
 function chromeCdpErrorCode(error: unknown): string {
@@ -53,7 +48,7 @@ export function mapChromeCdpError(error: unknown, port: number): Error {
     return new Error(chromeCdpUnavailableMessage(port));
   }
   if (code === 'ETIMEDOUT' || code === 'ERR_SOCKET_TIMEOUT' || /timed out/i.test(text)) {
-    return new Error(`连接 Chrome 调试端口 ${port} 超时。`);
+    return new Error('连接本机 Chrome 超时，请重试。');
   }
   return error instanceof Error ? error : new Error(String(error));
 }
@@ -124,7 +119,7 @@ export async function probeChromeCdp(
   if (!response.ok) throw new Error(`Chrome debug port ${port} returned HTTP ${response.status}.`);
   const payload = await response.json() as ChromeVersionInfo;
   if (!payload?.webSocketDebuggerUrl) {
-    throw new Error(`Chrome did not return a debugger websocket URL. Start Chrome with ${chromeDebugLaunchHint(port)}.`);
+    throw new Error(chromeCdpUnavailableMessage(port));
   }
   return payload;
 }

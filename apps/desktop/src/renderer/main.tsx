@@ -89,34 +89,24 @@ function approvalQuestion(request: ApprovalRequest): string {
 function BrowserSettingsPage({
   enabled,
   mode,
-  chromeDebugPort,
-  chromeNewTab,
   domains,
   error,
   onEnabledChange,
   onModeChange,
-  onChromeDebugPortChange,
-  onChromeNewTabChange,
   onDomainsChange,
   onSubmit
 }: {
   enabled: boolean;
   mode: 'sandbox' | 'chrome';
-  chromeDebugPort: number;
-  chromeNewTab: boolean;
   domains: string;
   error: string;
   onEnabledChange: (enabled: boolean) => void;
   onModeChange: (mode: 'sandbox' | 'chrome') => void;
-  onChromeDebugPortChange: (port: number) => void;
-  onChromeNewTabChange: (value: boolean) => void;
   onDomainsChange: (domains: string) => void;
   onSubmit: () => Promise<void>;
 }) {
   const [draft, setDraft] = useState('');
   const [draftError, setDraftError] = useState('');
-  const [probeResult, setProbeResult] = useState<{ ok: boolean; text: string } | null>(null);
-  const [probing, setProbing] = useState(false);
   const list = parseBrowserDomainList(domains);
 
   const commitDomains = (next: string[]) => {
@@ -150,19 +140,6 @@ function BrowserSettingsPage({
     return true;
   };
 
-  const probeChrome = async () => {
-    setProbing(true);
-    setProbeResult(null);
-    try {
-      const result = await window.desktopAgent.probeChromeBrowser(chromeDebugPort);
-      setProbeResult(result.ok ? { ok: true, text: `已连接 ${result.browser}` } : { ok: false, text: result.error });
-    } catch (cause) {
-      setProbeResult({ ok: false, text: cause instanceof Error ? cause.message : String(cause) });
-    } finally {
-      setProbing(false);
-    }
-  };
-
   return <form className={`settings-content model-settings-page browser-settings-page ${enabled ? '' : 'is-disabled'}`} aria-labelledby="browser-settings-title" onSubmit={(event) => {
     event.preventDefault();
     if (draft.trim() && !addDraft()) return;
@@ -171,7 +148,7 @@ function BrowserSettingsPage({
     <div className="settings-heading">
       <div>
         <h1 id="browser-settings-title">受控浏览器</h1>
-        <p>沙箱模式在右侧栏打开隔离页面。Chrome 附加模式复用本机 Chrome 的真实登录态，默认新开标签，不会抢占当前正在看的页面。</p>
+        <p>沙箱模式在右侧栏打开隔离页面。本机浏览器会自动打开 Chrome，适合需要登录的网站。</p>
       </div>
       <span className={`browser-status-pill ${enabled ? 'on' : ''}`}>{enabled ? '已启用' : '已关闭'}</span>
     </div>
@@ -185,49 +162,30 @@ function BrowserSettingsPage({
       </div>
       <div className="browser-policy-grid">
         <article><span className="browser-policy-tag allow">自动允许</span><p>白名单导航、读取页面、等待、滚动、后退、刷新、页面诊断、Cookie 元数据、录制取消与查看</p></article>
-        <article><span className="browser-policy-tag ask">每次批准</span><p>点击、悬停、脚本、输入、按键、选择、上传、下载、关闭页面、Cookie 值、录制开始/删除/回放；Chrome 下切换已有标签</p></article>
+        <article><span className="browser-policy-tag ask">每次批准</span><p>点击、悬停、脚本、输入、按键、选择、上传、下载、关闭页面、Cookie 值、录制开始/删除/回放；本机浏览器下切换已有标签</p></article>
         <article><span className="browser-policy-tag info">不走浏览器</span><p>普通搜索和已知公开网址使用网页搜索 / 抓取</p></article>
       </div>
     </section>
     <section className="settings-section-card">
       <div className="settings-section-title">
         <h2>浏览器模式</h2>
-        <p>沙箱适合编码和不可信站点。需要 GitHub、知乎等已登录网站时再附加 Chrome。</p>
+        <p>沙箱适合编码和不可信站点。需要登录时选择本机浏览器。</p>
       </div>
       <div className="browser-mode-grid" role="radiogroup" aria-label="浏览器模式">
         <label className={`browser-mode-option ${mode === 'sandbox' ? 'selected' : ''}`}>
           <input type="radio" name="browser-mode" checked={mode === 'sandbox'} disabled={!enabled} onChange={() => onModeChange('sandbox')} />
           <span className="browser-mode-copy">
             <strong>沙箱浏览器</strong>
-            <span>嵌在主窗口右侧栏，Cookie 不与本机 Chrome 共享。</span>
+            <span>嵌在主窗口右侧栏，Cookie 不与本机浏览器共享。</span>
           </span>
         </label>
         <label className={`browser-mode-option ${mode === 'chrome' ? 'selected' : ''}`}>
           <input type="radio" name="browser-mode" checked={mode === 'chrome'} disabled={!enabled} onChange={() => onModeChange('chrome')} />
           <span className="browser-mode-copy">
-            <strong>附加 Chrome</strong>
-            <span>连接已开启远程调试的 Chrome，复用真实登录态。</span>
+            <strong>本机浏览器</strong>
+            <span>自动打开 Chrome 窗口，登录一次后可继续使用。</span>
           </span>
         </label>
-      </div>
-      <div className={`browser-chrome-panel ${mode === 'chrome' ? '' : 'is-inactive'}`}>
-        <div className="browser-chrome-controls">
-          <label className="browser-chrome-port">
-            <span>调试端口</span>
-            <input type="number" min="1" max="65535" step="1" value={chromeDebugPort} disabled={!enabled} onChange={(event) => {
-              const port = Number(event.target.value);
-              if (Number.isInteger(port) && port >= 1 && port <= 65_535) onChromeDebugPortChange(port);
-            }} />
-          </label>
-          <button type="button" disabled={!enabled || probing} onClick={() => void probeChrome()}>{probing ? '检测中…' : '检测连接'}</button>
-        </div>
-        <label className="browser-newtab-toggle">
-          <input type="checkbox" checked={chromeNewTab} disabled={!enabled || mode !== 'chrome'} onChange={(event) => onChromeNewTabChange(event.target.checked)} />
-          <span>附加时总是新开标签，不占用当前正在看的页面</span>
-        </label>
-        {probeResult && <p className={probeResult.ok ? 'browser-probe-ok' : 'browser-probe-error'} role={probeResult.ok ? 'status' : 'alert'}>{probeResult.text}</p>}
-        <p className="browser-domain-hint">已在运行的 Chrome 不会开启调试口。请新开独立进程，例如 <code>--remote-debugging-port={chromeDebugPort} --remote-allow-origins=* --user-data-dir=/tmp/jojo-chrome-debug</code>。</p>
-        <p className="browser-domain-hint">录制保存在应用数据目录的 browser-recordings，可参数化回放；密钥走环境变量或密码框，不会进入模型工具参数。</p>
       </div>
     </section>
     <section className="settings-section-card browser-domain-card">
@@ -1037,14 +995,10 @@ function App() {
     {settingsSection === 'browser' && <BrowserSettingsPage
       enabled={extensionDraft.browser.enabled}
       mode={extensionDraft.browser.mode}
-      chromeDebugPort={extensionDraft.browser.chromeDebugPort}
-      chromeNewTab={extensionDraft.browser.chromeNewTab}
       domains={browserDomains}
       error={extensionError}
       onEnabledChange={(enabled) => setExtensionDraft((current) => ({ ...current, browser: { ...current.browser, enabled } }))}
       onModeChange={(mode) => setExtensionDraft((current) => ({ ...current, browser: { ...current.browser, mode } }))}
-      onChromeDebugPortChange={(chromeDebugPort) => setExtensionDraft((current) => ({ ...current, browser: { ...current.browser, chromeDebugPort } }))}
-      onChromeNewTabChange={(chromeNewTab) => setExtensionDraft((current) => ({ ...current, browser: { ...current.browser, chromeNewTab } }))}
       onDomainsChange={setBrowserDomains}
       onSubmit={async () => {
         setExtensionError('');
