@@ -99,12 +99,17 @@ const TOOL_TITLES: Record<string, string> = {
   browser_close_page: '关闭网页',
   browser_record_start: '开始网页录制',
   browser_record_stop: '停止网页录制',
+  browser_record_cancel: '取消网页录制',
   browser_recordings: '网页录制列表',
+  browser_record_get: '查看网页录制',
+  browser_record_delete: '删除网页录制',
   browser_replay: '回放网页流程',
   browser_read: '读取页面',
+  browser_eval: '网页脚本',
   browser_wait: '等待页面',
   browser_scroll: '滚动页面',
   browser_click: '点击网页',
+  browser_hover: '悬停网页',
   browser_type: '输入网页',
   browser_press: '网页按键',
   browser_select: '网页选择',
@@ -116,7 +121,8 @@ const TOOL_TITLES: Record<string, string> = {
   browser_downloads: '下载列表',
   browser_console: '网页控制台',
   browser_network: '网页网络',
-  browser_errors: '网页错误'
+  browser_errors: '网页错误',
+  browser_cookies: '网页 Cookie'
 };
 
 export function messageText(message: Message): string {

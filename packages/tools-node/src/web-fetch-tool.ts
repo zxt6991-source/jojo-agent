@@ -3,8 +3,21 @@ import { WebFetchInput } from './inputs.js';
 import { htmlToMarkdown } from './web-html.js';
 import { toolResult } from './tool-result.js';
 import { UnsafeWebUrlError, assertSafeHttpUrl } from './web-url.js';
+import {
+  WEB_FETCH_INLINE_BYTES,
+  WEB_FETCH_MAX_BYTES,
+  buildWebFetchOutline,
+  formatWebFetchBytes,
+  previewWebFetchContent,
+  spillWebFetchContent
+} from './web-fetch-storage.js';
 
-export const WEB_FETCH_MAX_BYTES = 512_000;
+export {
+  WEB_FETCH_INLINE_BYTES,
+  WEB_FETCH_MAX_BYTES,
+  WEB_FETCH_PREVIEW_LINES,
+  WEB_FETCH_MAX_HEADINGS
+} from './web-fetch-storage.js';
 export const WEB_FETCH_TIMEOUT_MS = 30_000;
 export const WEB_FETCH_MAX_REDIRECTS = 10;
 const DEFAULT_USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
@@ -24,7 +37,7 @@ export type WebHttpGet = (
 export class WebFetchTool implements Tool {
   readonly definition = {
     name: 'web_fetch',
-    description: 'Fetch a public HTTP(S) URL and return text. HTML is converted to readable Markdown by default. Use this instead of the browser for ordinary documentation and public pages. JavaScript-rendered or login-walled content needs the browser tools. Binary responses are not returned.',
+    description: 'Fetch a public HTTP(S) URL and return text. HTML is converted to readable Markdown by default. Pages larger than 64 KB are saved to a temp file so you can continue with read_file or grep. Use this instead of the browser for ordinary documentation and public pages. JavaScript-rendered or login-walled content needs the browser tools. Binary responses are not returned.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -40,7 +53,8 @@ export class WebFetchTool implements Tool {
 
   constructor(
     private readonly httpGet: WebHttpGet = defaultHttpGet,
-    private readonly maxBytes = WEB_FETCH_MAX_BYTES
+    private readonly maxBytes = WEB_FETCH_MAX_BYTES,
+    private readonly inlineBytes = WEB_FETCH_INLINE_BYTES
   ) {}
 
   async execute(input: unknown, context: ToolContext): Promise<ToolResult> {
@@ -56,12 +70,33 @@ export class WebFetchTool implements Tool {
       if (!isTextualContentType(contentType)) {
         return toolResult(true, `web_fetch: ${parsed.url} returned ${contentType || 'binary'} content. web_fetch only returns text; use browser_download for files, or browser tools for visual content.`);
       }
-      const text = decodeBody(body, contentType);
+      const text = decodeBody(body, contentType, this.maxBytes);
       const cleaned = parsed.clean && isHtmlContentType(contentType) ? htmlToMarkdown(text, finalUrl) || text : text;
-      const truncated = body.byteLength > this.maxBytes || Buffer.byteLength(cleaned) > this.maxBytes;
-      const content = truncated ? `${cleaned.slice(0, this.maxBytes)}\n\n[truncated at ${this.maxBytes} bytes]` : cleaned;
-      const header = `URL: ${finalUrl}\nStatus: ${status}\nContent-Type: ${contentType || 'unknown'}\n`;
-      return toolResult(true, `${header}\n${content}`, truncated ? { truncated: true } : {});
+      const downloadTruncated = body.byteLength > this.maxBytes;
+      const sizeBytes = Buffer.byteLength(cleaned);
+      const header = [
+        `URL: ${finalUrl}`,
+        `Status: ${status}`,
+        `Content-Type: ${contentType || 'unknown'}`,
+        `Size: ${formatWebFetchBytes(sizeBytes)}`
+      ].join('\n');
+      if (sizeBytes <= this.inlineBytes) {
+        return toolResult(true, `${header}\n\n${cleaned}`, downloadTruncated ? { truncated: true } : {});
+      }
+      const savedPath = await spillWebFetchContent(cleaned, finalUrl);
+      const outline = buildWebFetchOutline(cleaned);
+      const preview = previewWebFetchContent(cleaned);
+      const sections = [
+        header,
+        '',
+        'Content is too large to return inline.',
+        downloadTruncated ? `Download was truncated at ${formatWebFetchBytes(this.maxBytes)}.` : '',
+        outline.length ? `Outline:\n${outline.map((item) => `- ${item}`).join('\n')}` : '',
+        preview ? `Preview:\n${preview}` : '',
+        `Full content saved to:\n${savedPath}`,
+        'Use read_file or grep on that path to inspect the rest.'
+      ].filter((section) => section !== '');
+      return toolResult(true, sections.join('\n\n'), { truncated: true });
     } catch (error) {
       if (context.signal.aborted) return toolResult(false, 'web_fetch cancelled.', { code: 'cancelled' });
       if (timeout.aborted) return toolResult(false, 'web_fetch timed out.', { code: 'timeout' });
@@ -139,12 +174,13 @@ function charsetFrom(contentType: string): string | undefined {
   return match?.[2]?.trim();
 }
 
-function decodeBody(body: Buffer, contentType: string): string {
+function decodeBody(body: Buffer, contentType: string, maxBytes: number): string {
   const charset = charsetFrom(contentType) || charsetFromHtml(body) || 'utf-8';
+  const slice = body.subarray(0, maxBytes);
   try {
-    return new TextDecoder(charset, { fatal: false }).decode(body.subarray(0, WEB_FETCH_MAX_BYTES));
+    return new TextDecoder(charset, { fatal: false }).decode(slice);
   } catch {
-    return body.subarray(0, WEB_FETCH_MAX_BYTES).toString('utf8');
+    return slice.toString('utf8');
   }
 }
 

@@ -2,6 +2,8 @@ import { describe, expect, expectTypeOf, it } from 'vitest';
 import {
   ContentBlockSchema,
   BrowserActionSchema,
+  BrowserRecordingDocumentSchema,
+  DEFAULT_BROWSER_SETTINGS,
   DEFAULT_PROVIDERS,
   DEFAULT_SESSION_TITLE,
   IPC,
@@ -13,7 +15,9 @@ import {
   SessionRecordSchema,
   StartTurnInputSchema,
   SESSION_TITLE_MAX_LENGTH,
+  migrateBrowserRecording,
   sessionTitleFromPrompt,
+  slugifyBrowserRecordingName,
   isPlaceholderSessionTitle,
   type DesktopApi,
   type Message
@@ -42,7 +46,7 @@ describe('contracts', () => {
       activeProviderId: 'openai',
       providers: DEFAULT_PROVIDERS,
       utilityModel: { providerId: 'openai', model: 'gpt-5-mini' },
-      extensions: { mcpServers: [], skills: { directories: [], disabled: [] }, browser: { enabled: true, allowedDomains: [] } }
+      extensions: { mcpServers: [], skills: { directories: [], disabled: [] }, browser: { ...DEFAULT_BROWSER_SETTINGS } }
     });
     expect(SaveSettingsInputSchema.parse({
       activeProviderId: 'custom',
@@ -109,17 +113,30 @@ describe('contracts', () => {
     expect(BrowserActionSchema.parse({ action: 'record_start', name: ' Checkout ' }))
       .toEqual({ action: 'record_start', name: 'Checkout' });
     expect(BrowserActionSchema.parse({ action: 'record_stop' })).toEqual({ action: 'record_stop' });
+    expect(BrowserActionSchema.parse({ action: 'record_cancel' })).toEqual({ action: 'record_cancel' });
     expect(BrowserActionSchema.parse({ action: 'recordings' })).toEqual({ action: 'recordings' });
+    expect(BrowserActionSchema.parse({ action: 'record_get', recordingId: 'github-search' }))
+      .toEqual({ action: 'record_get', recordingId: 'github-search' });
+    expect(BrowserActionSchema.parse({ action: 'record_delete', recordingId: 'r1' }))
+      .toEqual({ action: 'record_delete', recordingId: 'r1' });
     expect(BrowserActionSchema.parse({ action: 'replay', recordingId: 'r2' })).toEqual({
-      action: 'replay', recordingId: 'r2', maxRetries: 2, retryDelayMs: 250
+      action: 'replay', recordingId: 'r2', params: {}, maxRetries: 2, retryDelayMs: 250
     });
-    expect(() => BrowserActionSchema.parse({ action: 'replay', recordingId: 'recording-2' })).toThrow();
+    expect(BrowserActionSchema.parse({ action: 'replay', recordingId: 'github-search', params: { keyword: 'jojo' } }))
+      .toMatchObject({ action: 'replay', recordingId: 'github-search', params: { keyword: 'jojo' } });
+    expect(() => BrowserActionSchema.parse({ action: 'replay', recordingId: 'Recording_2' })).toThrow();
     expect(() => BrowserActionSchema.parse({ action: 'replay', recordingId: 'r2', maxRetries: 4 })).toThrow();
     expect(BrowserActionSchema.parse({ action: 'screenshot' })).toEqual({ action: 'screenshot', fullPage: false });
     expect(BrowserActionSchema.parse({ action: 'wait', selector: '#ready' })).toEqual({
       action: 'wait', selector: '#ready', state: 'visible', timeoutMs: 5_000
     });
     expect(BrowserActionSchema.parse({ action: 'click', ref: 'e12' })).toEqual({ action: 'click', ref: 'e12' });
+    expect(BrowserActionSchema.parse({ action: 'hover', selector: '#menu' })).toEqual({ action: 'hover', selector: '#menu' });
+    expect(BrowserActionSchema.parse({ action: 'eval', js: 'document.title' })).toEqual({ action: 'eval', js: 'document.title' });
+    expect(BrowserActionSchema.parse({ action: 'cookies' })).toEqual({ action: 'cookies', includeValues: false });
+    expect(BrowserActionSchema.parse({ action: 'cookies', includeValues: true })).toEqual({ action: 'cookies', includeValues: true });
+    expect(() => BrowserActionSchema.parse({ action: 'eval', js: '' })).toThrow();
+    expect(() => BrowserActionSchema.parse({ action: 'hover' })).toThrow(/selector or ref/u);
     expect(BrowserActionSchema.parse({ action: 'type', ref: 'e3', text: 'hello' }))
       .toEqual({ action: 'type', ref: 'e3', text: 'hello', submit: false });
     expect(() => BrowserActionSchema.parse({ action: 'click' })).toThrow(/selector or ref/u);
@@ -153,6 +170,20 @@ describe('contracts', () => {
     expect(() => ListModelsInputSchema.parse({ baseUrl: 'not-a-url' })).toThrow();
   });
 
+  it('validates persisted browser recordings and slug ids', () => {
+    expect(slugifyBrowserRecordingName('GitHub Search')).toBe('github-search');
+    expect(migrateBrowserRecording({
+      id: 'github-search',
+      name: 'GitHub Search',
+      createdAt: '2026-08-15T00:00:00.000Z',
+      steps: [{ action: 'click', selector: 'input[name="q"]', fingerprint: { tag: 'input', fieldName: 'q' } }]
+    })).toMatchObject({ version: 1, id: 'github-search', params: [] });
+    expect(() => BrowserRecordingDocumentSchema.parse({
+      version: 1, id: 'dup', name: 'Dup', createdAt: '2026-08-15T00:00:00.000Z',
+      params: [{ name: 'q' }, { name: 'q' }], steps: []
+    })).toThrow(/Duplicate recording param/u);
+  });
+
   it('creates a compact session title from the first prompt', () => {
     expect(DEFAULT_SESSION_TITLE).toBe('新会话');
     expect(sessionTitleFromPrompt('  第一行\n\n第二行   内容  ')).toBe('第一行 第二行 内容');
@@ -166,6 +197,13 @@ describe('contracts', () => {
   it('keeps the root barrel API usable by consumers', () => {
     expect(IPC.startTurn).toBe('agent:start');
     expect(IPC.listModels).toBe('models:list');
+    expect(IPC.probeChromeBrowser).toBe('browser:chrome-probe');
+    expect(IPC.browserDockLayout).toBe('browser:dock-layout');
+    expect(IPC.browserDockAction).toBe('browser:dock-action');
+    expect(IPC.browserDockState).toBe('browser:dock-state');
+    expectTypeOf<DesktopApi['setBrowserDockLayout']>().toBeFunction();
+    expectTypeOf<DesktopApi['browserDockAction']>().toBeFunction();
+    expectTypeOf<DesktopApi['onBrowserDockState']>().toBeFunction();
     expectTypeOf<(typeof MessageSchema)['_output']>().toEqualTypeOf<Message>();
     expectTypeOf<DesktopApi['startTurn']>().toBeFunction();
   });

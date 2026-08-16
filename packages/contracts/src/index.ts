@@ -1,4 +1,5 @@
 export * from './agent';
+export * from './browser-recording';
 export * from './desktop';
 export * from './extensions';
 export * from './messages';

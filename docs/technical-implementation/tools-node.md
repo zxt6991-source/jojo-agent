@@ -55,7 +55,7 @@ Tools Node 提供 Node.js 环境中的本地能力及默认权限策略，公开
 
 ### 4.1 `read_file`
 
-读取 UTF-8 普通文件，默认最多返回 512,000 字节。实现只读取“上限 + 1”字节来判断是否截断，不会先把整个大文件载入内存。完整读取会记录 SHA-256、mtime 和大小，供后续修改做并发冲突检测。工作目录内自动允许，目录外需要逐次批准；直接调用执行器时，目录外读取同样要求 `context.approved`。目录目标返回 `not_a_file`，超限结果设置 `truncated` 并附带截断位置。
+读取 UTF-8 普通文件，默认最多返回 512,000 字节。实现只读取“上限 + 1”字节来判断是否截断，不会先把整个大文件载入内存。完整读取会记录 SHA-256、mtime 和大小，供后续修改做并发冲突检测。工作目录内自动允许，目录外需要逐次批准；`web_fetch` 写入 `os.tmpdir()/jojo-web-fetch/` 的临时文件视为例外，Gate 与执行器都会自动允许且不写入修改快照。直接调用执行器时，其他目录外读取同样要求 `context.approved`。目录目标返回 `not_a_file`，超限结果设置 `truncated` 并附带截断位置。
 
 ### 4.2 `list_files`
 
@@ -65,7 +65,7 @@ Tools Node 提供 Node.js 环境中的本地能力及默认权限策略，公开
 
 ### 4.3 `grep` 与 `glob`
 
-两者只遍历工作目录内的普通文件，忽略常见依赖、构建和缓存目录，并跳过越界符号链接。`glob` 支持 `*`、`**` 和 `?`；`grep` 做固定文本逐行搜索，支持大小写控制和可选 glob，跳过大于 1 MB 或含 NUL 的文件。结果上限为 1～1,000 条。
+两者只遍历工作目录内的普通文件，忽略常见依赖、构建和缓存目录，并跳过越界符号链接。`glob` 支持 `*`、`**` 和 `?`；`grep` 做固定文本逐行搜索，支持大小写控制和可选 glob，跳过大于 1 MB 或含 NUL 的文件。结果上限为 1～1,000 条。`grep` 额外允许搜索 `web_fetch` 落盘的临时文件；`glob` 仍拒绝工作目录外路径。
 
 ### 4.4 `web_search` 与 `web_fetch`
 
@@ -73,7 +73,7 @@ Tools Node 提供 Node.js 环境中的本地能力及默认权限策略，公开
 
 `web_search` 按环境变量组装后端：存在 `BRAVE_SEARCH_API_KEY`、`TAVILY_API_KEY` 或 `SERPER_API_KEY` 时优先走对应 API，否则依次请求 DuckDuckGo HTML、DuckDuckGo Lite 和 Bing HTML。任一后端返回至少一条结果即停止；全部失败才报 `network`。查询经 Zod 校验后自动允许。
 
-`web_fetch` 只做 HTTP(S) GET。Gate 用 `parseHttpUrl` 拒绝非 HTTP(S)、内嵌凭据和非法 URL，不在 Gate 里做 DNS。执行器对每个跳转目标调用 `assertSafeHttpUrl`：解析全部 A/AAAA 记录，拦截链路本地、组播、全零/广播、AWS `fd00:ec2::254` 以及 Google metadata 主机。回环和 RFC1918 私网允许，便于抓取本机开发服务。默认跟随最多 10 次重定向、30 秒超时、512,000 字节上限；HTML 默认转为 Markdown。二进制 Content-Type 只回报类型，不回填正文。
+`web_fetch` 只做 HTTP(S) GET。Gate 用 `parseHttpUrl` 拒绝非 HTTP(S)、内嵌凭据和非法 URL，不在 Gate 里做 DNS。执行器对每个跳转目标调用 `assertSafeHttpUrl`：解析全部 A/AAAA 记录，拦截链路本地、组播、全零/广播、AWS `fd00:ec2::254` 以及 Google metadata 主机。回环和 RFC1918 私网允许，便于抓取本机开发服务。默认跟随最多 10 次重定向、30 秒超时；清洗后正文不超过 64 KB 时内联返回，更大页面最多读取 5 MB 并写入 `os.tmpdir()/jojo-web-fetch/`，工具结果只含 URL、状态、类型、大小、标题大纲、前 40 行预览和文件路径，随后用 `read_file` / `grep` 按需查看。超过 24 小时的临时文件会在下次落盘时清理。HTML 默认转为 Markdown。二进制 Content-Type 只回报类型，不回填正文。
 
 网页正文和搜索摘要一律视为不可信外部数据。
 
@@ -111,9 +111,9 @@ Terminal 审批只代表用户同意运行该命令，不是操作系统沙箱�
 
 | 工具 | 工作目录内 | 工作目录外 |
 |---|---|---|
-| `read_file` | 自动允许 | 逐次询问；执行时复核审批状态 |
+| `read_file` | 自动允许 | 逐次询问；执行时复核审批状态。`web_fetch` 临时落盘文件自动允许 |
 | `list_files` | 自动允许 | 拒绝 |
-| `grep` / `glob` | 自动允许 | 拒绝 |
+| `grep` / `glob` | 自动允许 | 拒绝；`grep` 对 `web_fetch` 临时落盘文件自动允许 |
 | `web_search` | 输入校验通过后自动允许 | 不依赖工作目录 |
 | `web_fetch` | URL 语法校验通过后自动允许；执行时再解析 DNS 并拦截危险地址 | 不依赖工作目录 |
 | `write_file` / `edit_file` / `delete_file` | 逐次展示 Diff 并询问；执行时复核审批与快照 | 拒绝 |
@@ -140,7 +140,7 @@ Terminal 达到输出上限后不再收集或上报更多内容，但会继续�
 7. 覆盖/删除备份、原子写入后的内容和权限位；
 8. glob/grep 过滤、忽略目录与结果截断；
 9. 默认工具顺序及实例隔离；
-10. 公开网页 URL 安全、HTML 清洗、搜索回退、本地抓取与危险重定向拦截。
+10. 公开网页 URL 安全、HTML 清洗、搜索回退、本地抓取、大页面落盘与危险重定向拦截。
 
 后续可继续补充平台专项测试，包括 Terminal 进程树回收、Windows 终止行为，以及多字节 UTF-8 恰好落在截断边界时的展示策略。
 

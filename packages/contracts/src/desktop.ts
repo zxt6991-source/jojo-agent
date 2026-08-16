@@ -8,6 +8,7 @@ import { ExtensionSettingsSchema } from './extensions';
 import type { ExtensionSettings, ExtensionStatus, SkillDetail, SkillOperationResult } from './extensions';
 import { ImageContentBlockSchema } from './messages';
 import type { ImageContentBlock, ToolResult } from './messages';
+import { BROWSER_RECORDING_PARAM_NAME_PATTERN, BrowserRecordingIdSchema } from './browser-recording';
 
 export const MAX_IMAGE_ATTACHMENTS = 4;
 export const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
@@ -40,14 +41,22 @@ export const BrowserActionSchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('close_page'), pageId: z.number().int().positive() }),
   z.object({ action: z.literal('record_start'), name: z.string().trim().min(1).max(120).optional() }),
   z.object({ action: z.literal('record_stop') }),
+  z.object({ action: z.literal('record_cancel') }),
   z.object({ action: z.literal('recordings') }),
+  z.object({ action: z.literal('record_get'), recordingId: BrowserRecordingIdSchema }),
+  z.object({ action: z.literal('record_delete'), recordingId: BrowserRecordingIdSchema }),
   z.object({
     action: z.literal('replay'),
-    recordingId: z.string().regex(/^r[1-9][0-9]*$/u),
+    recordingId: BrowserRecordingIdSchema,
+    params: z.record(
+      z.string().regex(BROWSER_RECORDING_PARAM_NAME_PATTERN),
+      z.union([z.string().max(4_000), z.number(), z.boolean()])
+    ).default({}),
     maxRetries: z.number().int().min(0).max(3).default(2),
     retryDelayMs: z.number().int().min(100).max(2_000).default(250)
   }),
   z.object({ action: z.literal('read'), maxNodes: z.number().int().min(20).max(2_000).default(300) }),
+  z.object({ action: z.literal('eval'), js: z.string().trim().min(1).max(20_000) }),
   z.object({
     action: z.literal('wait'),
     selector: z.string().trim().min(1).max(2_000).optional(),
@@ -63,6 +72,7 @@ export const BrowserActionSchema = z.discriminatedUnion('action', [
     deltaY: z.number().int().min(-100_000).max(100_000).default(600)
   }),
   z.object({ action: z.literal('click'), selector: z.string().trim().min(1).max(2_000).optional(), ref: z.string().regex(/^e[1-9][0-9]*$/u).optional() }),
+  z.object({ action: z.literal('hover'), selector: z.string().trim().min(1).max(2_000).optional(), ref: z.string().regex(/^e[1-9][0-9]*$/u).optional() }),
   z.object({ action: z.literal('type'), selector: z.string().trim().min(1).max(2_000).optional(), ref: z.string().regex(/^e[1-9][0-9]*$/u).optional(), text: z.string().max(100_000), submit: z.boolean().default(false) }),
   z.object({
     action: z.literal('press'),
@@ -112,14 +122,15 @@ export const BrowserActionSchema = z.discriminatedUnion('action', [
     kind: z.enum(['exception', 'failed_load', 'log']).optional(),
     limit: z.number().int().min(1).max(100).default(50),
     clear: z.boolean().default(false)
-  })
+  }),
+  z.object({ action: z.literal('cookies'), includeValues: z.boolean().default(false) })
 ]).superRefine((action, context) => {
-  if (!['wait', 'scroll', 'click', 'type', 'press', 'select', 'upload'].includes(action.action)) return;
+  if (!['wait', 'scroll', 'click', 'hover', 'type', 'press', 'select', 'upload'].includes(action.action)) return;
   const target = action as { action: string; selector?: string; ref?: string };
   if (target.selector && target.ref) {
     context.addIssue({ code: 'custom', message: 'Provide either selector or ref, not both.' });
   }
-  if (['wait', 'click', 'type', 'select', 'upload'].includes(action.action) && !target.selector && !target.ref) {
+  if (['wait', 'click', 'hover', 'type', 'select', 'upload'].includes(action.action) && !target.selector && !target.ref) {
     context.addIssue({ code: 'custom', message: `Browser ${action.action} requires selector or ref.` });
   }
 });
@@ -167,6 +178,37 @@ export const ListModelsInputSchema = z.object({
 
 export const SaveExtensionSettingsInputSchema = ExtensionSettingsSchema;
 
+export const BrowserDockLayoutSchema = z.object({
+  sessionId: z.string().min(1),
+  overlayOpen: z.boolean(),
+  bounds: z.object({
+    x: z.number(),
+    y: z.number(),
+    width: z.number(),
+    height: z.number()
+  }).nullable()
+});
+
+export const BrowserDockActionSchema = z.object({
+  sessionId: z.string().min(1),
+  type: z.enum(['back', 'forward', 'reload', 'select', 'close-tab', 'close']),
+  pageId: z.number().int().positive().optional()
+});
+
+export type BrowserDockTab = {
+  pageId: number;
+  title: string;
+  url: string;
+  active: boolean;
+};
+
+export type BrowserDockState = {
+  sessionId: string;
+  pages: BrowserDockTab[];
+  canGoBack: boolean;
+  canGoForward: boolean;
+};
+
 export type DesktopApi = {
   listSessions(): Promise<SessionMeta[]>;
   createSession(input: z.input<typeof CreateSessionInputSchema>): Promise<SessionMeta | null>;
@@ -190,12 +232,18 @@ export type DesktopApi = {
   exportSkill(input: z.input<typeof SkillPathInputSchema>): Promise<SkillOperationResult>;
   trashSkill(input: z.input<typeof SkillPathInputSchema>): Promise<SkillOperationResult>;
   saveExtensionSettings(input: z.input<typeof SaveExtensionSettingsInputSchema>): Promise<ExtensionSettings>;
+  probeChromeBrowser(port?: number): Promise<{ ok: true; browser: string } | { ok: false; error: string }>;
+  setBrowserDockLayout(input: z.input<typeof BrowserDockLayoutSchema>): Promise<void>;
+  browserDockAction(input: z.input<typeof BrowserDockActionSchema>): Promise<void>;
+  resolveBrowserSecret(input: { requestId: string; value?: string }): Promise<void>;
   connectMcpOAuth(input: z.input<typeof McpServerIdInputSchema>): Promise<void>;
   disconnectMcpOAuth(input: z.input<typeof McpServerIdInputSchema>): Promise<void>;
   reconnectMcp(input: z.input<typeof McpServerIdInputSchema>): Promise<void>;
   onAgentEvent(listener: (event: AgentEvent) => void): () => void;
   onSessionsChanged(listener: () => void): () => void;
   onExtensionsChanged(listener: () => void): () => void;
+  onBrowserSecretRequest(listener: (request: { requestId: string; name: string; description?: string }) => void): () => void;
+  onBrowserDockState(listener: (state: BrowserDockState | null) => void): () => void;
 };
 
 export type WorkerCommand =
@@ -243,6 +291,12 @@ export const IPC = {
   exportSkill: 'extensions:skill-export',
   trashSkill: 'extensions:skill-trash',
   saveExtensionSettings: 'extensions:save',
+  probeChromeBrowser: 'browser:chrome-probe',
+  browserDockLayout: 'browser:dock-layout',
+  browserDockAction: 'browser:dock-action',
+  browserDockState: 'browser:dock-state',
+  browserSecretRequest: 'browser:secret-request',
+  browserSecretResolve: 'browser:secret-resolve',
   connectMcpOAuth: 'extensions:mcp-oauth-connect',
   disconnectMcpOAuth: 'extensions:mcp-oauth-disconnect',
   reconnectMcp: 'extensions:mcp-reconnect',

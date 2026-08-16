@@ -1,9 +1,9 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import type {
-  AgentEvent, ApprovalRequest, ExtensionSettings, ExtensionStatus, ImageContentBlock, Message, ProviderConfig, ProviderSettings, SessionMeta, SkillDetail, SkillStatus, WorkspaceChanges
+  AgentEvent, ApprovalRequest, BrowserDockState, ExtensionSettings, ExtensionStatus, ImageContentBlock, Message, ProviderConfig, ProviderSettings, SessionMeta, SkillDetail, SkillStatus, WorkspaceChanges
 } from '@desktop-agent/contracts';
-import { DEFAULT_PROVIDERS, DEFAULT_SESSION_TITLE } from '@desktop-agent/contracts';
+import { DEFAULT_BROWSER_SETTINGS, DEFAULT_PROVIDERS, DEFAULT_SESSION_TITLE } from '@desktop-agent/contracts';
 import {
   applyLiveEvent,
   buildConversationSnapshot,
@@ -24,7 +24,7 @@ const defaultSettings: ProviderSettings = {
   activeProviderId: 'openai',
   providers: DEFAULT_PROVIDERS.map((provider) => ({ ...provider })),
   utilityModel: { providerId: 'openai', model: 'gpt-5-mini' },
-  extensions: { mcpServers: [], skills: { directories: [], disabled: [] }, browser: { enabled: true, allowedDomains: [] } }
+  extensions: { mcpServers: [], skills: { directories: [], disabled: [] }, browser: { ...DEFAULT_BROWSER_SETTINGS } }
 };
 
 function providerById(settings: ProviderSettings, id: string): ProviderConfig {
@@ -57,7 +57,12 @@ function skillScope(skill: SkillStatus): string {
 
 function approvalTitle(request: ApprovalRequest): string {
   if (request.call.name.startsWith('mcp__')) return '调用外部 MCP 工具';
-  if (request.call.name.startsWith('browser_')) return request.call.name === 'browser_open' ? '打开网页' : request.call.name === 'browser_download' ? '下载网页文件' : '操作网页';
+  if (request.call.name === 'browser_open') return '打开网页';
+  if (request.call.name === 'browser_download') return '下载网页文件';
+  if (request.call.name === 'browser_eval') return '执行网页脚本';
+  if (request.call.name === 'browser_hover') return '悬停网页';
+  if (request.call.name === 'browser_cookies') return '读取网页 Cookie';
+  if (request.call.name.startsWith('browser_')) return '操作网页';
   if (request.call.name === 'terminal') return '运行本地命令';
   if (request.call.name === 'read_file') return '读取工作区外的文件';
   if (request.preview) return `${request.preview.kind === 'create' ? '创建' : request.preview.kind === 'delete' ? '删除' : '修改'}文件`;
@@ -83,21 +88,35 @@ function approvalQuestion(request: ApprovalRequest): string {
 
 function BrowserSettingsPage({
   enabled,
+  mode,
+  chromeDebugPort,
+  chromeNewTab,
   domains,
   error,
   onEnabledChange,
+  onModeChange,
+  onChromeDebugPortChange,
+  onChromeNewTabChange,
   onDomainsChange,
   onSubmit
 }: {
   enabled: boolean;
+  mode: 'sandbox' | 'chrome';
+  chromeDebugPort: number;
+  chromeNewTab: boolean;
   domains: string;
   error: string;
   onEnabledChange: (enabled: boolean) => void;
+  onModeChange: (mode: 'sandbox' | 'chrome') => void;
+  onChromeDebugPortChange: (port: number) => void;
+  onChromeNewTabChange: (value: boolean) => void;
   onDomainsChange: (domains: string) => void;
   onSubmit: () => Promise<void>;
 }) {
   const [draft, setDraft] = useState('');
   const [draftError, setDraftError] = useState('');
+  const [probeResult, setProbeResult] = useState<{ ok: boolean; text: string } | null>(null);
+  const [probing, setProbing] = useState(false);
   const list = parseBrowserDomainList(domains);
 
   const commitDomains = (next: string[]) => {
@@ -131,6 +150,19 @@ function BrowserSettingsPage({
     return true;
   };
 
+  const probeChrome = async () => {
+    setProbing(true);
+    setProbeResult(null);
+    try {
+      const result = await window.desktopAgent.probeChromeBrowser(chromeDebugPort);
+      setProbeResult(result.ok ? { ok: true, text: `已连接 ${result.browser}` } : { ok: false, text: result.error });
+    } catch (cause) {
+      setProbeResult({ ok: false, text: cause instanceof Error ? cause.message : String(cause) });
+    } finally {
+      setProbing(false);
+    }
+  };
+
   return <form className={`settings-content model-settings-page browser-settings-page ${enabled ? '' : 'is-disabled'}`} aria-labelledby="browser-settings-title" onSubmit={(event) => {
     event.preventDefault();
     if (draft.trim() && !addDraft()) return;
@@ -139,7 +171,7 @@ function BrowserSettingsPage({
     <div className="settings-heading">
       <div>
         <h1 id="browser-settings-title">受控浏览器</h1>
-        <p>网页在独立沙箱窗口中运行，不与主界面共享登录态。普通搜索和公开页阅读使用网页搜索 / 抓取，不经过这里。</p>
+        <p>沙箱模式在右侧栏打开隔离页面。Chrome 附加模式复用本机 Chrome 的真实登录态，默认新开标签，不会抢占当前正在看的页面。</p>
       </div>
       <span className={`browser-status-pill ${enabled ? 'on' : ''}`}>{enabled ? '已启用' : '已关闭'}</span>
     </div>
@@ -147,21 +179,62 @@ function BrowserSettingsPage({
       <div className="browser-toggle-row">
         <div className="browser-toggle-copy">
           <strong id="browser-enabled-label">启用浏览器工具</strong>
-          <span>关闭后智能体不能打开或操作沙箱网页。查公开资料仍可使用网页搜索和抓取。</span>
+          <span>关闭后智能体不能打开或操作网页。查公开资料仍可使用网页搜索和抓取。</span>
         </div>
         <button type="button" role="switch" aria-checked={enabled} aria-labelledby="browser-enabled-label" className={`extension-switch ${enabled ? 'on' : ''}`} onClick={() => onEnabledChange(!enabled)}><span /></button>
       </div>
       <div className="browser-policy-grid">
-        <article><span className="browser-policy-tag allow">自动允许</span><p>白名单导航、读取页面、等待、滚动、后退、刷新、页面诊断</p></article>
-        <article><span className="browser-policy-tag ask">每次批准</span><p>点击、输入、按键、选择、上传、下载、关闭页面、录制开始与回放</p></article>
+        <article><span className="browser-policy-tag allow">自动允许</span><p>白名单导航、读取页面、等待、滚动、后退、刷新、页面诊断、Cookie 元数据、录制取消与查看</p></article>
+        <article><span className="browser-policy-tag ask">每次批准</span><p>点击、悬停、脚本、输入、按键、选择、上传、下载、关闭页面、Cookie 值、录制开始/删除/回放；Chrome 下切换已有标签</p></article>
         <article><span className="browser-policy-tag info">不走浏览器</span><p>普通搜索和已知公开网址使用网页搜索 / 抓取</p></article>
+      </div>
+    </section>
+    <section className="settings-section-card">
+      <div className="settings-section-title">
+        <h2>浏览器模式</h2>
+        <p>沙箱适合编码和不可信站点。需要 GitHub、知乎等已登录网站时再附加 Chrome。</p>
+      </div>
+      <div className="browser-mode-grid" role="radiogroup" aria-label="浏览器模式">
+        <label className={`browser-mode-option ${mode === 'sandbox' ? 'selected' : ''}`}>
+          <input type="radio" name="browser-mode" checked={mode === 'sandbox'} disabled={!enabled} onChange={() => onModeChange('sandbox')} />
+          <span className="browser-mode-copy">
+            <strong>沙箱浏览器</strong>
+            <span>嵌在主窗口右侧栏，Cookie 不与本机 Chrome 共享。</span>
+          </span>
+        </label>
+        <label className={`browser-mode-option ${mode === 'chrome' ? 'selected' : ''}`}>
+          <input type="radio" name="browser-mode" checked={mode === 'chrome'} disabled={!enabled} onChange={() => onModeChange('chrome')} />
+          <span className="browser-mode-copy">
+            <strong>附加 Chrome</strong>
+            <span>连接已开启远程调试的 Chrome，复用真实登录态。</span>
+          </span>
+        </label>
+      </div>
+      <div className={`browser-chrome-panel ${mode === 'chrome' ? '' : 'is-inactive'}`}>
+        <div className="browser-chrome-controls">
+          <label className="browser-chrome-port">
+            <span>调试端口</span>
+            <input type="number" min="1" max="65535" step="1" value={chromeDebugPort} disabled={!enabled} onChange={(event) => {
+              const port = Number(event.target.value);
+              if (Number.isInteger(port) && port >= 1 && port <= 65_535) onChromeDebugPortChange(port);
+            }} />
+          </label>
+          <button type="button" disabled={!enabled || probing} onClick={() => void probeChrome()}>{probing ? '检测中…' : '检测连接'}</button>
+        </div>
+        <label className="browser-newtab-toggle">
+          <input type="checkbox" checked={chromeNewTab} disabled={!enabled || mode !== 'chrome'} onChange={(event) => onChromeNewTabChange(event.target.checked)} />
+          <span>附加时总是新开标签，不占用当前正在看的页面</span>
+        </label>
+        {probeResult && <p className={probeResult.ok ? 'browser-probe-ok' : 'browser-probe-error'} role={probeResult.ok ? 'status' : 'alert'}>{probeResult.text}</p>}
+        <p className="browser-domain-hint">已在运行的 Chrome 不会开启调试口。请新开独立进程，例如 <code>--remote-debugging-port={chromeDebugPort} --remote-allow-origins=* --user-data-dir=/tmp/jojo-chrome-debug</code>。</p>
+        <p className="browser-domain-hint">录制保存在应用数据目录的 browser-recordings，可参数化回放；密钥走环境变量或密码框，不会进入模型工具参数。</p>
       </div>
     </section>
     <section className="settings-section-card browser-domain-card">
       <div className="settings-section-title with-meta">
         <div>
           <h2>始终允许的域名</h2>
-          <p>列出的主机首次打开或新建页面时自动允许。未列出的站点会先请求一次批准；点击、输入和下载仍逐次批准。</p>
+          <p>列出的主机首次打开或新建页面时自动允许。未列出的站点会先请求一次批准；点击、悬停、脚本、输入、下载和 Cookie 值仍逐次批准。</p>
         </div>
         <span className="browser-domain-count">{list.length}</span>
       </div>
@@ -310,6 +383,77 @@ function ReviewPanel({ changes, selectedPath, onSelect, onClose }: {
   </aside>;
 }
 
+function formatBrowserDockUrl(url: string): string {
+  if (!url || url === 'about:blank') return '';
+  try {
+    const parsed = new URL(url);
+    return `${parsed.host}${parsed.pathname === '/' ? '' : parsed.pathname}${parsed.search}`;
+  } catch {
+    return url;
+  }
+}
+
+function BrowserDock({
+  sessionId,
+  state,
+  overlayOpen
+}: {
+  sessionId: string;
+  state: BrowserDockState;
+  overlayOpen: boolean;
+}) {
+  const frameRef = useRef<HTMLDivElement>(null);
+  const active = state.pages.find((page) => page.active) ?? state.pages[0];
+
+  useLayoutEffect(() => {
+    const report = () => {
+      const rect = frameRef.current?.getBoundingClientRect();
+      void window.desktopAgent.setBrowserDockLayout({
+        sessionId,
+        overlayOpen,
+        bounds: rect && rect.width >= 2 && rect.height >= 2
+          ? { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
+          : null
+      });
+    };
+    report();
+    const frame = frameRef.current;
+    const observer = frame ? new ResizeObserver(report) : undefined;
+    if (frame) observer?.observe(frame);
+    window.addEventListener('resize', report);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener('resize', report);
+      void window.desktopAgent.setBrowserDockLayout({ sessionId, overlayOpen, bounds: null });
+    };
+  }, [sessionId, overlayOpen]);
+
+  const run = (type: 'back' | 'forward' | 'reload' | 'select' | 'close-tab' | 'close', pageId?: number) => {
+    void window.desktopAgent.browserDockAction({ sessionId, type, ...(pageId ? { pageId } : {}) });
+  };
+
+  return <aside className="browser-dock" aria-label="沙箱浏览器">
+    <div className="browser-dock-tabs">
+      <div className="browser-dock-tab-list" role="tablist" aria-label="浏览器标签">
+        {state.pages.map((page) => <div key={page.pageId} className={`browser-dock-tab ${page.active ? 'active' : ''}`}>
+          <button type="button" role="tab" aria-selected={page.active} title={page.url} onClick={() => run('select', page.pageId)}>
+            {page.title || '新标签页'}
+          </button>
+          <button type="button" className="browser-dock-tab-close" aria-label={`关闭 ${page.title || '标签'}`} onClick={() => run('close-tab', page.pageId)}>×</button>
+        </div>)}
+      </div>
+      <button type="button" className="browser-dock-close" aria-label="关闭浏览器" title="关闭浏览器" onClick={() => run('close')}>×</button>
+    </div>
+    <div className="browser-dock-toolbar">
+      <button type="button" aria-label="后退" title="后退" disabled={!state.canGoBack} onClick={() => run('back')}>←</button>
+      <button type="button" aria-label="前进" title="前进" disabled={!state.canGoForward} onClick={() => run('forward')}>→</button>
+      <button type="button" aria-label="刷新" title="刷新" onClick={() => run('reload')}>↻</button>
+      <div className="browser-dock-url" title={active?.url}>{formatBrowserDockUrl(active?.url ?? '') || 'about:blank'}</div>
+    </div>
+    <div className="browser-dock-frame" ref={frameRef} />
+  </aside>;
+}
+
 function App() {
   const [sessions, setSessions] = useState<SessionMeta[]>([]);
   const sessionDirectoriesRef = useRef(new Map<string, string>());
@@ -344,6 +488,8 @@ function App() {
   const [skillDirectories, setSkillDirectories] = useState('');
   const [browserDomains, setBrowserDomains] = useState('');
   const [extensionError, setExtensionError] = useState('');
+  const [browserSecret, setBrowserSecret] = useState<{ requestId: string; name: string; description?: string } | null>(null);
+  const [browserSecretValue, setBrowserSecretValue] = useState('');
   const [extensionSearch, setExtensionSearch] = useState('');
   const [extensionEditorOpen, setExtensionEditorOpen] = useState(false);
   const [selectedSkill, setSelectedSkill] = useState<SkillStatus | null>(null);
@@ -363,6 +509,7 @@ function App() {
   const [workspaceChangesError, setWorkspaceChangesError] = useState('');
   const [reviewOpen, setReviewOpen] = useState(false);
   const [reviewPath, setReviewPath] = useState('');
+  const [browserDock, setBrowserDock] = useState<BrowserDockState | null>(null);
   const [usage, setUsage] = useState({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
   const [contextUsage, setContextUsage] = useState<{ estimated: number; window: number; compacted: number } | null>(null);
   const conversationRef = useRef<HTMLDivElement>(null);
@@ -399,7 +546,10 @@ function App() {
       },
       browser: {
         enabled: extensionDraft.browser.enabled,
-        allowedDomains: parseBrowserDomainList(browserDomains)
+        allowedDomains: parseBrowserDomainList(browserDomains),
+        mode: extensionDraft.browser.mode,
+        chromeDebugPort: extensionDraft.browser.chromeDebugPort,
+        chromeNewTab: extensionDraft.browser.chromeNewTab
       }
     };
     const saved = await window.desktopAgent.saveExtensionSettings(next);
@@ -447,6 +597,11 @@ function App() {
     void refreshExtensionStatus();
     const offSessions = window.desktopAgent.onSessionsChanged(() => void refreshSessions());
     const offExtensions = window.desktopAgent.onExtensionsChanged(() => void refreshExtensionStatus());
+    const offSecret = window.desktopAgent.onBrowserSecretRequest((request) => {
+      setBrowserSecret(request);
+      setBrowserSecretValue('');
+    });
+    const offDock = window.desktopAgent.onBrowserDockState((state) => setBrowserDock(state));
     const offEvents = window.desktopAgent.onAgentEvent((event: AgentEvent) => {
       if (event.type === 'turn.started') {
         setRunning(true); setRunningSessionId(event.sessionId); setError(''); setLiveSteps(emptyLiveSteps()); setTurnStartedAt(Date.now());
@@ -465,7 +620,7 @@ function App() {
       else if (event.type === 'turn.failed') { setError(event.message); setRunning(false); setRunningSessionId(null); setTurnStartedAt(null); setApproval(null); void reloadActive(); }
       else if (event.type === 'turn.completed' || event.type === 'turn.cancelled') { setRunning(false); setRunningSessionId(null); setTurnStartedAt(null); setApproval(null); void reloadActive(); }
     });
-    return () => { offSessions(); offExtensions(); offEvents(); };
+    return () => { offSessions(); offExtensions(); offSecret(); offDock(); offEvents(); };
   }, []);
 
   useEffect(() => {
@@ -628,6 +783,9 @@ function App() {
     providers: current.providers.map((provider) => provider.id === current.activeProviderId ? { ...provider, ...update } : provider)
   }));
   const sessionBusy = runningSessionId === activeId;
+  const overlayOpen = settingsOpen || Boolean(approval) || Boolean(browserSecret) || skillCreateOpen || Boolean(selectedSkill);
+  const visibleDock = browserDock && activeId && browserDock.sessionId === activeId ? browserDock : null;
+  const browsing = Boolean(visibleDock);
   const snapshot = useMemo(() => buildConversationSnapshot({
     messages,
     liveSteps: sessionBusy ? liveSteps : [],
@@ -640,6 +798,11 @@ function App() {
     if (!el || !atBottomRef.current) return;
     el.scrollTop = el.scrollHeight;
   }, [snapshot, workspaceChanges, conversationView, error]);
+
+  useLayoutEffect(() => {
+    if (!activeId || visibleDock) return;
+    void window.desktopAgent.setBrowserDockLayout({ sessionId: activeId, overlayOpen, bounds: null });
+  }, [activeId, overlayOpen, visibleDock]);
 
   const onConversationScroll = () => {
     const el = conversationRef.current;
@@ -726,7 +889,7 @@ function App() {
           <div><h1>{active.title}</h1><div className="working-directory">{active.workingDirectory}</div></div>
           <ConversationViewTabs mode={conversationView} onChange={setConversationView} />
         </header>
-        <div className={`workspace-content ${reviewOpen ? 'reviewing' : ''}`}>
+        <div className={`workspace-content ${browsing ? 'browsing' : reviewOpen ? 'reviewing' : ''}`}>
         <div className="chat-pane">
         <div className="conversation" ref={conversationRef} onScroll={onConversationScroll} role="region" aria-label="对话记录">
           {snapshot.nodes.length === 0 && !sessionBusy && conversationView === 'chat' && <div className="empty"><div className="empty-icon">⌁</div><h2>从本地项目开始</h2><p>可以让我阅读文件、列出目录，或在你批准后执行命令。</p></div>}
@@ -761,7 +924,9 @@ function App() {
           </div>
         </div><div className="hint">Enter 发送 · Shift+Enter 换行</div></footer>
         </div>
-        {reviewOpen && workspaceChanges && <ReviewPanel changes={workspaceChanges} selectedPath={reviewPath} onSelect={setReviewPath} onClose={() => setReviewOpen(false)} />}
+        {visibleDock && activeId
+          ? <BrowserDock key={activeId} sessionId={activeId} state={visibleDock} overlayOpen={overlayOpen} />
+          : reviewOpen && workspaceChanges && <ReviewPanel changes={workspaceChanges} selectedPath={reviewPath} onSelect={setReviewPath} onClose={() => setReviewOpen(false)} />}
         </div>
       </> : <section className="welcome"><div className="empty-icon">⌁</div><h1>Desktop Agent</h1><p>选择一个本地目录，开始安全、可控的 AI 协作。</p><button className="primary" onClick={() => void createProject()}>选择项目目录</button></section>}
     </main>
@@ -774,6 +939,28 @@ function App() {
         <button className="approval-allow" onClick={() => { void window.desktopAgent.resolveApproval({ requestId: approval.requestId, allow: true }); setApproval(null); }}><span>允许一次</span><kbd>↵</kbd></button>
       </div>
     </div></div>}
+    {browserSecret && <div className="modal-backdrop"><form className="modal browser-secret-modal" role="dialog" aria-modal="true" aria-labelledby="browser-secret-title" onSubmit={(event) => {
+      event.preventDefault();
+      void window.desktopAgent.resolveBrowserSecret({ requestId: browserSecret.requestId, value: browserSecretValue });
+      setBrowserSecret(null);
+      setBrowserSecretValue('');
+    }}>
+      <div className="modal-tag">浏览器密钥</div>
+      <h2 id="browser-secret-title">输入 {browserSecret.name}</h2>
+      <p>此值不会进入模型上下文或工具参数。也可预先设置环境变量 JOJO_BROWSER_SECRET_{browserSecret.name.replace(/[^a-zA-Z0-9]+/gu, '_').toUpperCase()}。</p>
+      {browserSecret.description && <p>{browserSecret.description}</p>}
+      <label>密钥
+        <input type="password" autoFocus value={browserSecretValue} onChange={(event) => setBrowserSecretValue(event.target.value)} />
+      </label>
+      <div className="modal-actions">
+        <button type="button" onClick={() => {
+          void window.desktopAgent.resolveBrowserSecret({ requestId: browserSecret.requestId });
+          setBrowserSecret(null);
+          setBrowserSecretValue('');
+        }}>取消</button>
+        <button className="primary" type="submit">继续回放</button>
+      </div>
+    </form></div>}
     {settingsOpen && <section className="settings-screen" aria-label="设置">
       <aside className="settings-navigation">
         <button className="settings-back" type="button" onClick={() => setSettingsOpen(false)}><span aria-hidden="true">←</span> 返回</button>
@@ -849,9 +1036,15 @@ function App() {
     </form>}
     {settingsSection === 'browser' && <BrowserSettingsPage
       enabled={extensionDraft.browser.enabled}
+      mode={extensionDraft.browser.mode}
+      chromeDebugPort={extensionDraft.browser.chromeDebugPort}
+      chromeNewTab={extensionDraft.browser.chromeNewTab}
       domains={browserDomains}
       error={extensionError}
       onEnabledChange={(enabled) => setExtensionDraft((current) => ({ ...current, browser: { ...current.browser, enabled } }))}
+      onModeChange={(mode) => setExtensionDraft((current) => ({ ...current, browser: { ...current.browser, mode } }))}
+      onChromeDebugPortChange={(chromeDebugPort) => setExtensionDraft((current) => ({ ...current, browser: { ...current.browser, chromeDebugPort } }))}
+      onChromeNewTabChange={(chromeNewTab) => setExtensionDraft((current) => ({ ...current, browser: { ...current.browser, chromeNewTab } }))}
       onDomainsChange={setBrowserDomains}
       onSubmit={async () => {
         setExtensionError('');

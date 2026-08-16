@@ -2,6 +2,7 @@ import { appendFile, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { DEFAULT_BROWSER_SETTINGS } from '@desktop-agent/contracts';
 import { JsonConfigStore, JsonlSessionStore } from '../src/index.js';
 
 describe('JsonlSessionStore', () => {
@@ -59,7 +60,7 @@ describe('JsonConfigStore', () => {
         })
       ]),
       utilityModel: { providerId: 'openai', model: 'legacy-model' },
-      extensions: { mcpServers: [], skills: { directories: [], disabled: [] }, browser: { enabled: true, allowedDomains: [] } }
+      extensions: { mcpServers: [], skills: { directories: [], disabled: [] }, browser: { ...DEFAULT_BROWSER_SETTINGS } }
     });
   });
 
@@ -104,7 +105,7 @@ describe('JsonConfigStore', () => {
     settings.extensions = {
       mcpServers: [{ id: 'files', name: 'Files', enabled: true, transport: 'stdio', command: 'node', args: ['server.js'] }],
       skills: { directories: ['/skills'], disabled: ['disabled-skill'] },
-      browser: { enabled: true, allowedDomains: ['example.com'] }
+      browser: { ...DEFAULT_BROWSER_SETTINGS, allowedDomains: ['example.com'] }
     };
     await store.save(settings);
 

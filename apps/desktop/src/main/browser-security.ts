@@ -3,6 +3,24 @@ import path from 'node:path';
 
 export const MAX_BROWSER_UPLOAD_FILE_BYTES = 50 * 1024 * 1024;
 export const MAX_BROWSER_UPLOAD_TOTAL_BYTES = 100 * 1024 * 1024;
+export const BROWSER_EVAL_MAX_JS_CHARS = 20_000;
+export const BROWSER_EVAL_MAX_RESULT_CHARS = 64_000;
+export const BROWSER_EVAL_TIMEOUT_MS = 8_000;
+
+export function serializeBrowserEvalValue(value: unknown): { json: string; truncated: boolean } {
+  let json: string;
+  try {
+    json = JSON.stringify(value === undefined ? null : value);
+    if (typeof json !== 'string') json = JSON.stringify(String(value));
+  } catch {
+    json = JSON.stringify(String(value));
+  }
+  if (json.length <= BROWSER_EVAL_MAX_RESULT_CHARS) return { json, truncated: false };
+  return {
+    json: `${json.slice(0, BROWSER_EVAL_MAX_RESULT_CHARS)}\n...[truncated]`,
+    truncated: true
+  };
+}
 
 export function normalizeDomain(value: string): string {
   return value.trim().toLowerCase().replace(/\.$/u, '');

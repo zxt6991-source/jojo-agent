@@ -22,10 +22,24 @@ describe('BrowserPermissionGate', () => {
     await expect(gate.check(call('browser_record_start', { name: 'Checkout' }), context)).resolves.toMatchObject({ decision: 'ask' });
     await expect(gate.check(call('browser_replay', { recordingId: 'r1' }), context)).resolves.toMatchObject({ decision: 'ask' });
     await expect(gate.check(call('browser_record_stop', {}), context)).resolves.toEqual({ decision: 'allow' });
+    await expect(gate.check(call('browser_record_cancel', {}), context)).resolves.toEqual({ decision: 'allow' });
     await expect(gate.check(call('browser_recordings', {}), context)).resolves.toEqual({ decision: 'allow' });
+    await expect(gate.check(call('browser_record_get', { recordingId: 'github-search' }), context)).resolves.toEqual({ decision: 'allow' });
+    await expect(gate.check(call('browser_record_delete', { recordingId: 'github-search' }), context)).resolves.toMatchObject({ decision: 'ask' });
+    await expect(gate.check(call('browser_replay', { recordingId: 'github-search', params: { keyword: 'jojo' } }), context)).resolves.toMatchObject({ decision: 'ask' });
     await expect(gate.check(call('browser_type', { selector: '#email', text: 'hello' }), context)).resolves.toMatchObject({ decision: 'ask' });
     await expect(gate.check(call('browser_click', { ref: 'e12' }), context)).resolves.toMatchObject({
       decision: 'ask', request: { reason: 'Click browser element e12' }
+    });
+    await expect(gate.check(call('browser_hover', { ref: 'e4' }), context)).resolves.toMatchObject({
+      decision: 'ask', request: { reason: 'Hover browser element e4' }
+    });
+    await expect(gate.check(call('browser_eval', { js: 'document.title' }), context)).resolves.toMatchObject({
+      decision: 'ask', request: { reason: 'Evaluate JavaScript in the controlled browser page' }
+    });
+    await expect(gate.check(call('browser_cookies', {}), context)).resolves.toEqual({ decision: 'allow' });
+    await expect(gate.check(call('browser_cookies', { includeValues: true }), context)).resolves.toMatchObject({
+      decision: 'ask', request: { reason: 'Read controlled-browser cookie values' }
     });
     await expect(gate.check(call('browser_press', { selector: '#email', key: 'Enter' }), context)).resolves.toMatchObject({ decision: 'ask' });
     await expect(gate.check(call('browser_select', { selector: '#country', values: ['CN'] }), context)).resolves.toMatchObject({ decision: 'ask' });
@@ -42,6 +56,14 @@ describe('BrowserPermissionGate', () => {
     await expect(gate.check(call('browser_errors', {}), context)).resolves.toEqual({ decision: 'allow' });
   });
 
+  it('asks before attaching an existing Chrome tab', async () => {
+    const gate = new BrowserPermissionGate(base, () => ({ enabled: true, allowedDomains: [], mode: 'chrome' }));
+    await expect(gate.check(call('browser_select_page', { pageId: 3 }), context)).resolves.toMatchObject({
+      decision: 'ask', request: { reason: 'Attach Chrome tab 3' }
+    });
+    await expect(gate.check(call('browser_pages', {}), context)).resolves.toEqual({ decision: 'allow' });
+  });
+
   it('denies browser calls when disabled and delegates non-browser tools', async () => {
     const gate = new BrowserPermissionGate(base, () => ({ enabled: false, allowedDomains: [] }));
     await expect(gate.check(call('browser_read', {}), context)).resolves.toMatchObject({ decision: 'deny', code: 'browser_disabled' });
@@ -52,13 +74,24 @@ describe('BrowserPermissionGate', () => {
     const bridge = new BrowserToolBridge(() => undefined, () => ({ enabled: true, allowedDomains: [] }));
     expect(bridge.tools().map((tool) => tool.definition.name)).toEqual([
       'browser_open', 'browser_new_page', 'browser_pages', 'browser_select_page', 'browser_close_page',
-      'browser_record_start', 'browser_record_stop', 'browser_recordings', 'browser_replay',
-      'browser_read', 'browser_wait', 'browser_scroll', 'browser_click', 'browser_type',
+      'browser_record_start', 'browser_record_stop', 'browser_record_cancel', 'browser_recordings',
+      'browser_record_get', 'browser_record_delete', 'browser_replay',
+      'browser_read', 'browser_eval', 'browser_wait', 'browser_scroll', 'browser_click', 'browser_hover', 'browser_type',
       'browser_press', 'browser_select', 'browser_upload', 'browser_back', 'browser_reload', 'browser_screenshot',
-      'browser_download', 'browser_downloads', 'browser_console', 'browser_network', 'browser_errors'
+      'browser_download', 'browser_downloads', 'browser_console', 'browser_network', 'browser_errors', 'browser_cookies'
     ]);
+    for (const tool of bridge.tools()) {
+      expect(tool.definition.inputSchema, tool.definition.name).toMatchObject({ type: 'object' });
+      expect(tool.definition.inputSchema, tool.definition.name).not.toHaveProperty('oneOf');
+      expect(tool.definition.inputSchema, tool.definition.name).not.toHaveProperty('anyOf');
+      expect(tool.definition.inputSchema, tool.definition.name).not.toHaveProperty('not');
+    }
     expect(bridge.tools().find((tool) => tool.definition.name === 'browser_wait')?.definition.inputSchema)
-      .toMatchObject({ oneOf: [{ required: ['ref'] }, { required: ['selector'] }], additionalProperties: false });
+      .toMatchObject({
+        type: 'object',
+        properties: { ref: { type: 'string' }, selector: { type: 'string' } },
+        additionalProperties: false
+      });
     expect(bridge.tools().find((tool) => tool.definition.name === 'browser_replay')?.definition.inputSchema)
       .toMatchObject({ required: ['recordingId'], additionalProperties: false });
     expect(bridge.tools().find((tool) => tool.definition.name === 'browser_console')?.definition.inputSchema)

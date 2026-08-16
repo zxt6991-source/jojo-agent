@@ -235,7 +235,8 @@ Worker 与界面进程分离，因此 Agent 运行异常不必直接获得 Rende
 - 只允许无凭据的 HTTP(S) GET；每次跳转（最多 10 次）都会重新解析并检查目标；
 - 拒绝链路本地、组播、全零/广播以及云厂商 metadata 主机；允许回环和私有局域网，便于抓取本地开发文档；
 - 默认把 HTML 转成可读 Markdown，去掉脚本、样式和导航等页面框架；`clean: false` 返回原文；
-- 默认最多保留 512,000 字节，30 秒超时；二进制响应只回报类型，不回填正文；
+- 清洗后不超过 64 KB 的正文直接返回；更大页面最多读取 5 MB，写入系统临时目录 `jojo-web-fetch/`，结果只含 URL、状态、类型、大小、标题大纲、前 40 行预览和文件路径，随后可用 `read_file` / `grep` 继续查看；超过 24 小时的临时文件会在下次落盘时清理；
+- 30 秒超时；二进制响应只回报类型，不回填正文；
 - JavaScript 渲染、登录墙或需要点击的页面应改用浏览器工具。
 
 ### 6.5 `write_file`、`edit_file` 与 `delete_file`：修改文本文件
@@ -278,9 +279,9 @@ Worker 与界面进程分离，因此 Agent 运行异常不必直接获得 Rende
 
 | 操作 | 工作目录内 | 工作目录外 |
 |---|---|---|
-| `read_file` | 自动允许 | 每次询问 |
+| `read_file` | 自动允许 | 每次询问；`web_fetch` 临时落盘文件自动允许 |
 | `list_files` | 自动允许 | 拒绝 |
-| `grep` / `glob` | 自动允许 | 拒绝 |
+| `grep` / `glob` | 自动允许 | 拒绝；`grep` 对 `web_fetch` 临时落盘文件自动允许 |
 | `web_search` | 输入校验通过后自动允许 | 不依赖工作目录 |
 | `web_fetch` | URL 校验通过后自动允许；执行时再做 DNS/SSRF 检查 | 不依赖工作目录 |
 | `write_file` / `edit_file` / `delete_file` | 每次展示 Diff 并询问 | 拒绝 |
@@ -353,24 +354,26 @@ MCP 的 `env` 和静态 HTTP `headers` 位于当前用户可读的普通配置�
 
 普通搜索和阅读已知公开 URL 使用第 6 节的 `web_search` / `web_fetch`，不要打开沙箱浏览器。浏览器只用于登录墙、需要 JavaScript 渲染或交互的页面，以及抓取失败后的补救。
 
-“设置 → 浏览器”可启停受控浏览器，并配置域名白名单；`*.example.com` 只匹配子域名，不匹配根域。浏览器工具包括：
+“设置 → 浏览器”可启停受控浏览器，选择沙箱或附加 Chrome，并配置域名白名单；`*.example.com` 只匹配子域名，不匹配根域。沙箱使用独立 Electron 窗口和隔离登录态；附加 Chrome 连接 `127.0.0.1` 上开启 `--remote-debugging-port` 的浏览器，默认新开标签，不抢占当前页面。浏览器工具包括：
 
 - `browser_open`：在独立窗口打开 HTTP(S) 页面；白名单外域名先审批；
-- `browser_new_page`、`browser_pages`、`browser_select_page`、`browser_close_page`：新建、列出、切换和关闭会话内页面；新建页面沿用域名审批，关闭页面逐次审批；
-- `browser_record_start`、`browser_record_stop`、`browser_recordings`、`browser_replay`：录制、停止、列出和回放当前进程内的浏览器工作流；开始录制及回放需审批；
+- `browser_new_page`、`browser_pages`、`browser_select_page`、`browser_close_page`：新建、列出、切换和关闭会话内页面；新建页面沿用域名审批，关闭页面逐次审批；附加 Chrome 时列出未接管的标签，切换已有标签需审批；
+- `browser_record_start`、`browser_record_stop`、`browser_record_cancel`、`browser_recordings`、`browser_record_get`、`browser_record_delete`、`browser_replay`：录制成功步骤并保存为 `userData/browser-recordings/<id>.yaml`；开始录制、删除和回放需审批；回放支持 `{{param}}`，密钥只能来自 `JOJO_BROWSER_SECRET_<NAME>` 或密码框；
 - `browser_read`：通过 CDP 读取可见页面结构，并为节点返回 CSS selector 和稳定的会话内元素 `ref`；
+- `browser_eval`：在当前页执行 JavaScript 并返回 JSON-safe 结果；需审批，脚本最长 20,000 字符，结果约 64 KB，超时 8 秒，不能用来绕过域名或文件权限；
 - `browser_wait`、`browser_scroll`：按 `ref` 或 selector 等待元素进入指定状态，或按偏移/目标元素滚动页面；
-- `browser_click`、`browser_type`：按 `ref`（推荐）或 selector 点击控件、填写/提交表单，每次执行前审批；
+- `browser_click`、`browser_hover`、`browser_type`：按 `ref`（推荐）或 selector 点击、悬停或填写/提交表单，每次执行前审批；
 - `browser_press`、`browser_select`：向当前焦点或指定元素发送受限按键，或选择原生下拉选项，每次执行前审批；
 - `browser_upload`：向原生文件输入框上传当前工作区内的文件，真实路径解析后逐次审批，最多 10 个文件、单个 50 MB、合计 100 MB；
 - `browser_back`、`browser_reload`：后退或刷新并等待主页面完成导航；
 - `browser_screenshot`：截取视口或有尺寸上限的质量受控 JPEG，并作为视觉 Tool Result 回填模型；
-- `browser_download`、`browser_downloads`：经审批发起下载并查看进度、状态和保存路径；
-- `browser_console`、`browser_network`、`browser_errors`：读取当前页已捕获的 Console、网络请求元数据和页面错误；只读自动允许，可过滤失败请求或错误级别，并可在读取后清空缓冲区。
+- `browser_download`、`browser_downloads`：经审批发起下载并查看进度、状态和保存路径；附加 Chrome 时下载不可用；
+- `browser_console`、`browser_network`、`browser_errors`：读取当前页已捕获的 Console、网络请求元数据和页面错误；只读自动允许，可过滤失败请求或错误级别，并可在读取后清空缓冲区；
+- `browser_cookies`：列出该隔离会话的 Cookie 元数据（名称、域名、路径、secure/httpOnly 等）；默认不含 value，读取 value 需审批。
 
-每个会话使用同一个独立内存 partition，并可维护多个受控页面；页面共享该会话的 Cookie 和域名授权，但不与其他会话或主界面共享。`browser_read` 生成的元素引用在会话内全局唯一，并绑定当前页面和来源站点，同时保存标签、可访问名称、角色、id、`data-testid`、字段名、输入类型、placeholder 和链接等指纹。页面局部刷新或 DOM 重排后，动作会对同标签候选评分并重新定位；低置信度、同分歧义、跨页面、跨来源或已过期引用一律拒绝，要求重新读取，避免误点相似控件。每页最多保留 4000 个最近引用。下载写入 `userData/browser-downloads/<session-id>/`。远程页面所在窗口不安装 Preload，关闭 Node integration 和 webview，开启 context isolation、sandbox 与 web security；只允许 HTTP(S) 顶层导航，未批准的跨域跳转会在 Main 进程阻止。页面弹窗仅在目标属于已批准域名时创建，否则拒绝并在点击结果中回报。等待、滚动、页面列表、切换、后退、刷新和页面诊断自动允许，但关闭页面、按键、下拉选择和工作区文件上传与点击、输入一样逐次审批。上传路径由 Main 根据 Session 重新读取工作目录并解析真实路径，目录外文件、目录和超限文件都会被拒绝。网页文字被明确视为不可信数据，不能提升为系统指令，也不能绕过本地工具审批。诊断日志同样视为不可信页面数据；网络记录不包含请求头或正文。
+每个会话在沙箱模式下使用同一个独立内存 partition，并可维护多个受控页面；页面共享该会话的 Cookie 和域名授权，但不与其他会话或主界面共享。附加 Chrome 时 Cookie 来自用户的 Chrome Profile。`browser_read` 生成的元素引用在会话内全局唯一，并绑定当前页面和来源站点，同时保存标签、可访问名称、角色、id、`data-testid`、字段名、输入类型、placeholder 和链接等指纹。页面局部刷新或 DOM 重排后，动作会对同标签候选评分并重新定位；低置信度、同分歧义、跨页面、跨来源或已过期引用一律拒绝，要求重新读取，避免误点相似控件。每页最多保留 4000 个最近引用。下载写入 `userData/browser-downloads/<session-id>/`。远程页面所在窗口不安装 Preload，关闭 Node integration 和 webview，开启 context isolation、sandbox 与 web security；只允许 HTTP(S) 顶层导航，未批准的跨域跳转会在 Main 进程阻止。页面弹窗仅在目标属于已批准域名时创建，否则拒绝并在点击结果中回报。等待、滚动、页面列表、后退、刷新、页面诊断、Cookie 元数据、取消录制和查看录制自动允许；沙箱下切换页面也自动允许。关闭页面、脚本执行、悬停、按键、下拉选择和工作区文件上传与点击、输入一样逐次审批；读取 Cookie 值、删除录制、回放以及 Chrome 下切换已有标签也需审批。上传路径由 Main 根据 Session 重新读取工作目录并解析真实路径，目录外文件、目录和超限文件都会被拒绝。网页文字被明确视为不可信数据，不能提升为系统指令，也不能绕过本地工具审批。诊断日志同样视为不可信页面数据；网络记录不包含请求头或正文。
 
-工作流录制只保存成功的 open/wait/scroll/click/type/press/select/back/reload，单个录制最多 100 步；不会录制上传、下载、截图、页面诊断、多页面管理或录制控制动作。录制数据和输入文字仅位于 Main 内存，录制列表只显示目标与字符数，应用退出后丢失。回放逐步返回结果并在首个不可恢复错误处停止；最多重试 3 次，且仅限元素明确未找到、稳定引用暂时无法定位或等待超时。执行上下文销毁、候选歧义等可能代表动作已发生或目标不确定的错误不会自动重试。
+工作流录制只保存成功的 open/wait/scroll/click/hover/type/press/select/back/reload，单个录制最多 100 步；不会录制上传、下载、截图、页面诊断、eval、cookies、多页面管理或录制控制动作。停止录制后写入 YAML（含 version、slug id、params 和步骤指纹），去掉会话内临时 `ref`；列表只显示目标与字符数，不回显密钥。回放逐步返回结果并在首个不可恢复错误处停止；selector 失效时按指纹评分重定位。最多重试 3 次，且仅限元素明确未找到、稳定引用暂时无法定位或等待超时。执行上下文销毁、候选歧义等可能代表动作已发生或目标不确定的错误不会自动重试。密钥参数禁止出现在 `browser_replay` 的 params 中。
 
 输入框的“＋”可选择 PNG、JPEG、WebP 或 GIF，最多 4 张、单张最大 10 MB。图片随用户消息写入 JSONL，在对话中显示，并转换为 OpenAI Chat Completions 的 `image_url` 数据 URL；所选模型仍需自身支持视觉输入。
 
@@ -390,6 +393,8 @@ userData/
 │   └── <session-id>.jsonl      # 会话元数据、标题变更和消息
 ├── browser-downloads/
 │   └── <session-id>/           # 受控浏览器下载
+├── browser-recordings/
+│   └── <id>.yaml               # 持久化浏览器工作流
 ├── skills/                     # 全局安装的本地 SKILL.md 目录
 └── trash/
     └── <session-id>/<entry>/   # 文件工具覆盖/删除前的副本与恢复元数据

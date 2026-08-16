@@ -154,6 +154,12 @@ describe('tool presentation', () => {
     expect(toolSummary('web_fetch', { url: 'https://example.com/docs', clean: true })).toBe('https://example.com/docs');
     expect(toolTitle('web_search')).toBe('网页搜索');
     expect(toolTitle('web_fetch')).toBe('抓取网页');
+    expect(toolTitle('browser_eval')).toBe('网页脚本');
+    expect(toolTitle('browser_hover')).toBe('悬停网页');
+    expect(toolTitle('browser_cookies')).toBe('网页 Cookie');
+    expect(toolTitle('browser_record_cancel')).toBe('取消网页录制');
+    expect(toolTitle('browser_record_get')).toBe('查看网页录制');
+    expect(toolTitle('browser_record_delete')).toBe('删除网页录制');
     expect(toolSummary('read_file', { path: '/repo/apps/desktop/src/renderer/main.tsx' }, '/repo')).toBe('apps/desktop/src/renderer/main.tsx');
     expect(terminalCommandLine({ command: 'pnpm', args: ['test', '--', 'agent'] })).toBe('pnpm test -- agent');
     expect(relativizeToCwd('/repo/src/a.ts', '/repo')).toBe('src/a.ts');

@@ -1,19 +1,29 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { mkdtemp } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   DefaultPermissionGate,
+  GrepTool,
+  ReadFileTool,
   WebFetchTool,
   WebSearchTool,
+  buildWebFetchOutline,
+  cleanupExpiredWebFetchFiles,
   htmlToMarkdown,
   isBlockedFetchAddress,
   parseBingHtml,
   parseDuckDuckGoHtml,
-  parseHttpUrl
+  parseHttpUrl,
+  previewWebFetchContent,
+  spillWebFetchContent,
+  webFetchSpillDirectory
 } from '../src/index.js';
 
-const context = (options: { signal?: AbortSignal } = {}) => ({
+const context = (options: { signal?: AbortSignal; workingDirectory?: string } = {}) => ({
   sessionId: 's1',
-  workingDirectory: '/workspace',
+  workingDirectory: options.workingDirectory ?? os.tmpdir(),
   approved: false,
   signal: options.signal ?? new AbortController().signal,
   onProgress: () => undefined
@@ -87,13 +97,13 @@ describe('web html helpers', () => {
 describe('web permission gate', () => {
   it('allows search and public fetch, and rejects unsafe fetch URLs', async () => {
     const gate = new DefaultPermissionGate();
-    await expect(gate.check(call('web_search', { query: 'zod schema' }), { sessionId: 's1', workingDirectory: '/workspace' }))
+    await expect(gate.check(call('web_search', { query: 'zod schema' }), { sessionId: 's1', workingDirectory: os.tmpdir() }))
       .resolves.toEqual({ decision: 'allow' });
-    await expect(gate.check(call('web_fetch', { url: 'https://example.com/docs' }), { sessionId: 's1', workingDirectory: '/workspace' }))
+    await expect(gate.check(call('web_fetch', { url: 'https://example.com/docs' }), { sessionId: 's1', workingDirectory: os.tmpdir() }))
       .resolves.toEqual({ decision: 'allow' });
-    await expect(gate.check(call('web_fetch', { url: 'javascript:alert(1)' }), { sessionId: 's1', workingDirectory: '/workspace' }))
+    await expect(gate.check(call('web_fetch', { url: 'javascript:alert(1)' }), { sessionId: 's1', workingDirectory: os.tmpdir() }))
       .resolves.toMatchObject({ decision: 'deny', code: 'unsafe_url' });
-    await expect(gate.check(call('web_search', { query: '' }), { sessionId: 's1', workingDirectory: '/workspace' }))
+    await expect(gate.check(call('web_search', { query: '' }), { sessionId: 's1', workingDirectory: os.tmpdir() }))
       .resolves.toMatchObject({ decision: 'deny', code: 'invalid_input' });
   });
 });
@@ -109,7 +119,44 @@ describe('web_fetch', () => {
       expect(result.content).toContain('URL: ');
       expect(result.content).toContain('# Hello');
       expect(result.content).toContain('Public docs.');
+      expect(result.content).not.toContain('Full content saved to:');
     });
+  });
+
+  it('spills large pages to a temp file with outline and preview', async () => {
+      const body = `<html><article><h1>Heading One</h1><h2>Installation</h2><p>${'Large documentation paragraph. '.repeat(80)}</p></article></html>`;
+    await withServer((_request, response) => {
+      response.setHeader('Content-Type', 'text/html; charset=utf-8');
+      response.end(body);
+    }, async (origin) => {
+      const workspace = await mkdtemp(path.join(os.tmpdir(), 'jojo-web-fetch-ws-'));
+      const result = await new WebFetchTool(undefined, 5_000_000, 200).execute({ url: `${origin}/rfc` }, context({ workingDirectory: workspace }));
+      expect(result.ok).toBe(true);
+      expect(result.truncated).toBe(true);
+      expect(result.content).toContain('Content is too large to return inline.');
+      expect(result.content).toMatch(/Outline:\n- # /u);
+      expect(result.content).toContain('Full content saved to:');
+      const savedPath = /Full content saved to:\n(.+)$/mu.exec(result.content)?.[1]?.trim();
+      expect(savedPath).toBeTruthy();
+      const read = await new ReadFileTool().execute({ path: savedPath }, context({ workingDirectory: workspace }));
+      expect(read.ok).toBe(true);
+      expect(read.content).toContain('Heading One');
+      await expect(new DefaultPermissionGate().check(call('read_file', { path: savedPath }), { sessionId: 's1', workingDirectory: workspace }))
+        .resolves.toEqual({ decision: 'allow' });
+      await expect(new DefaultPermissionGate().check(call('grep', { query: 'Heading One', path: savedPath }), { sessionId: 's1', workingDirectory: workspace }))
+        .resolves.toEqual({ decision: 'allow' });
+      const grep = await new GrepTool().execute({ query: 'Heading One', path: savedPath }, context({ workingDirectory: workspace }));
+      expect(grep.ok).toBe(true);
+      expect(grep.content).toContain('Heading One');
+    });
+  });
+
+  it('builds an outline, preview, and expires old spill files', async () => {
+    expect(buildWebFetchOutline('# Intro\n\ntext\n## Install\n\n## Config')).toEqual(['# Intro', '## Install', '## Config']);
+    expect(previewWebFetchContent('a\nb\nc\nd', 2)).toBe('a\nb');
+    const saved = await spillWebFetchContent('# Saved', 'https://example.com/docs');
+    expect(saved.startsWith(webFetchSpillDirectory())).toBe(true);
+    expect(await cleanupExpiredWebFetchFiles(Date.now() + 48 * 60 * 60 * 1000)).toBeGreaterThan(0);
   });
 
   it('does not dump binary bodies and blocks metadata IPs and redirects', async () => {

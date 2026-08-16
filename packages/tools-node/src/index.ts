@@ -27,6 +27,17 @@ export { GrepTool } from './grep-tool.js';
 export { WebFetchTool } from './web-fetch-tool.js';
 export { WebSearchTool, createDefaultSearchBackends } from './web-search-tool.js';
 export { htmlToMarkdown, parseBingHtml, parseDuckDuckGoHtml, stripHtml } from './web-html.js';
+export {
+  WEB_FETCH_INLINE_BYTES,
+  WEB_FETCH_MAX_BYTES,
+  buildWebFetchOutline,
+  cleanupExpiredWebFetchFiles,
+  formatWebFetchBytes,
+  isWebFetchSpillPath,
+  previewWebFetchContent,
+  spillWebFetchContent,
+  webFetchSpillDirectory
+} from './web-fetch-storage.js';
 export { UnsafeWebUrlError, assertSafeHttpUrl, isBlockedFetchAddress, parseHttpUrl } from './web-url.js';
 
 export type DefaultToolOptions = {

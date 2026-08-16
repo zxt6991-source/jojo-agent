@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import { IPC, type AgentEvent, type DesktopApi } from '@desktop-agent/contracts';
+import { IPC, type AgentEvent, type BrowserDockState, type DesktopApi } from '@desktop-agent/contracts';
 
 const api: DesktopApi = {
   listSessions: () => ipcRenderer.invoke(IPC.listSessions),
@@ -24,6 +24,10 @@ const api: DesktopApi = {
   exportSkill: (input) => ipcRenderer.invoke(IPC.exportSkill, input),
   trashSkill: (input) => ipcRenderer.invoke(IPC.trashSkill, input),
   saveExtensionSettings: (input) => ipcRenderer.invoke(IPC.saveExtensionSettings, input),
+  probeChromeBrowser: (port) => ipcRenderer.invoke(IPC.probeChromeBrowser, port),
+  setBrowserDockLayout: (input) => ipcRenderer.invoke(IPC.browserDockLayout, input),
+  browserDockAction: (input) => ipcRenderer.invoke(IPC.browserDockAction, input),
+  resolveBrowserSecret: (input) => ipcRenderer.invoke(IPC.browserSecretResolve, input),
   connectMcpOAuth: (input) => ipcRenderer.invoke(IPC.connectMcpOAuth, input),
   disconnectMcpOAuth: (input) => ipcRenderer.invoke(IPC.disconnectMcpOAuth, input),
   reconnectMcp: (input) => ipcRenderer.invoke(IPC.reconnectMcp, input),
@@ -41,6 +45,16 @@ const api: DesktopApi = {
     const handler = () => listener();
     ipcRenderer.on(IPC.extensionsChanged, handler);
     return () => ipcRenderer.removeListener(IPC.extensionsChanged, handler);
+  },
+  onBrowserSecretRequest: (listener) => {
+    const handler = (_event: Electron.IpcRendererEvent, request: { requestId: string; name: string; description?: string }) => listener(request);
+    ipcRenderer.on(IPC.browserSecretRequest, handler);
+    return () => ipcRenderer.removeListener(IPC.browserSecretRequest, handler);
+  },
+  onBrowserDockState: (listener) => {
+    const handler = (_event: Electron.IpcRendererEvent, state: BrowserDockState | null) => listener(state);
+    ipcRenderer.on(IPC.browserDockState, handler);
+    return () => ipcRenderer.removeListener(IPC.browserDockState, handler);
   }
 };
 

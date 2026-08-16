@@ -4,15 +4,17 @@ import { access, cp, mkdir, readFile, rename, stat, writeFile } from 'node:fs/pr
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  ApprovalInputSchema, CreateSessionInputSchema, CreateSkillInputSchema, GetExtensionStatusInputSchema, ImportSkillInputSchema, IPC, ListModelsInputSchema, MAX_IMAGE_ATTACHMENTS, MAX_IMAGE_BYTES, McpServerIdInputSchema, RenameSessionInputSchema, SaveExtensionSettingsInputSchema, SaveSettingsInputSchema,
+  ApprovalInputSchema, BrowserDockActionSchema, BrowserDockLayoutSchema, CreateSessionInputSchema, CreateSkillInputSchema, GetExtensionStatusInputSchema, ImportSkillInputSchema, IPC, ListModelsInputSchema, MAX_IMAGE_ATTACHMENTS, MAX_IMAGE_BYTES, McpServerIdInputSchema, RenameSessionInputSchema, SaveExtensionSettingsInputSchema, SaveSettingsInputSchema,
   SessionIdInputSchema, SkillPathInputSchema, StartTurnInputSchema, UpdateSkillInputSchema,
   type ExtensionStatus, type ProviderSettings, type WorkerCommand, type WorkerMessage
 } from '@desktop-agent/contracts';
+import { z } from 'zod';
 import { createProvider } from '@desktop-agent/providers';
 import { createSkillSource, discoverSkills, parseSkillSource, skillId, userSkillDirectories, type SkillDirectory } from '@desktop-agent/extensions';
 import { JsonConfigStore, JsonlSessionStore } from '@desktop-agent/storage';
 import { collectWorkspaceChanges } from './workspace-changes';
 import { BrowserRuntime } from './browser-runtime';
+import { mapChromeCdpError, probeChromeCdp } from './browser-backends/chrome-cdp-client';
 
 declare const MAIN_WINDOW_VITE_DEV_SERVER_URL: string | undefined;
 declare const MAIN_WINDOW_VITE_NAME: string;
@@ -38,6 +40,7 @@ const oauthRequests = new Map<string, {
   timer: ReturnType<typeof setTimeout>;
 }>();
 const workerRequests = new Map<string, { resolve: () => void; reject: (error: Error) => void }>();
+const browserSecretPrompts = new Map<string, { resolve: (value: string | undefined) => void }>();
 let mcpOAuthCredentialWrite: Promise<void> = Promise.resolve();
 
 function assertTrusted(event: IpcMainInvokeEvent): void {
@@ -168,6 +171,24 @@ function sendToRenderer(channel: string, value?: unknown): void {
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, value);
 }
 
+function promptBrowserSecret(input: { name: string; description?: string }): Promise<string | undefined> {
+  return new Promise((resolve) => {
+    const requestId = crypto.randomUUID();
+    browserSecretPrompts.set(requestId, { resolve });
+    sendToRenderer(IPC.browserSecretRequest, {
+      requestId,
+      name: input.name,
+      ...(input.description ? { description: input.description } : {})
+    });
+    setTimeout(() => {
+      const pending = browserSecretPrompts.get(requestId);
+      if (!pending) return;
+      browserSecretPrompts.delete(requestId);
+      pending.resolve(undefined);
+    }, 300_000);
+  });
+}
+
 function skillDirectories(settings: ProviderSettings, workingDirectory?: string): SkillDirectory[] {
   return [
     ...(workingDirectory ? [
@@ -255,14 +276,22 @@ function startWorker(): void {
         if (!settings.extensions.browser.enabled) throw new Error('Browser tools are disabled in Settings.');
         const session = await sessionStore.get(message.sessionId);
         if (!session) throw new Error('Browser session does not exist.');
-        const result = await browserRuntime.execute(
-          message.sessionId,
-          message.action,
-          message.approved,
-          settings.extensions.browser.allowedDomains,
-          session.workingDirectory
-        );
-        worker?.postMessage({ type: 'browser.result', requestId: message.requestId, result } satisfies WorkerCommand);
+        try {
+          const result = await browserRuntime.execute(
+            message.sessionId,
+            message.action,
+            message.approved,
+            settings.extensions.browser,
+            session.workingDirectory
+          );
+          worker?.postMessage({ type: 'browser.result', requestId: message.requestId, result } satisfies WorkerCommand);
+        } catch (error) {
+          worker?.postMessage({
+            type: 'browser.result',
+            requestId: message.requestId,
+            error: mapChromeCdpError(error, settings.extensions.browser.chromeDebugPort).message
+          } satisfies WorkerCommand);
+        }
       })().catch((error) => worker?.postMessage({
         type: 'browser.result', requestId: message.requestId,
         error: error instanceof Error ? error.message : String(error)
@@ -485,6 +514,33 @@ function registerIpc(): void {
     await pushConfig();
     return extensions;
   });
+  ipcMain.handle(IPC.browserDockLayout, async (event, raw) => {
+    assertTrusted(event);
+    browserRuntime?.setDockLayout(BrowserDockLayoutSchema.parse(raw));
+  });
+  ipcMain.handle(IPC.browserDockAction, async (event, raw) => {
+    assertTrusted(event);
+    await browserRuntime?.handleDockAction(BrowserDockActionSchema.parse(raw));
+  });
+  ipcMain.handle(IPC.probeChromeBrowser, async (event, raw) => {
+    assertTrusted(event);
+    const settings = await configStore.get(await readApiKeys());
+    const port = z.number().int().min(1).max(65_535).optional().parse(raw) ?? settings.extensions.browser.chromeDebugPort;
+    try {
+      const info = await probeChromeCdp(port);
+      return { ok: true, browser: info.browser };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+  ipcMain.handle(IPC.browserSecretResolve, async (event, raw) => {
+    assertTrusted(event);
+    const input = z.object({ requestId: z.string().min(1), value: z.string().max(4_000).optional() }).parse(raw);
+    const pending = browserSecretPrompts.get(input.requestId);
+    if (!pending) return;
+    browserSecretPrompts.delete(input.requestId);
+    pending.resolve(input.value?.trim() || undefined);
+  });
   ipcMain.handle(IPC.connectMcpOAuth, async (event, raw) => {
     assertTrusted(event);
     const { serverId } = McpServerIdInputSchema.parse(raw);
@@ -546,7 +602,10 @@ else {
     const dataDirectory = app.getPath('userData');
     sessionStore = new JsonlSessionStore(path.join(dataDirectory, 'sessions'));
     configStore = new JsonConfigStore(path.join(dataDirectory, 'config.json'));
-    browserRuntime = new BrowserRuntime(dataDirectory);
+    browserRuntime = new BrowserRuntime(dataDirectory, promptBrowserSecret, {
+      window: () => mainWindow,
+      onDock: (state) => sendToRenderer(IPC.browserDockState, state)
+    });
     secretPath = path.join(dataDirectory, 'secrets', 'provider-keys.bin');
     legacySecretPath = path.join(dataDirectory, 'secrets', 'provider-key.bin');
     mcpOAuthSecretPath = path.join(dataDirectory, 'secrets', 'mcp-oauth.bin');
@@ -557,6 +616,8 @@ else {
   app.on('before-quit', () => {
     quitting = true;
     for (const requestId of oauthRequests.keys()) finishMcpOAuth(requestId, new Error('Application is closing.'));
+    for (const pending of browserSecretPrompts.values()) pending.resolve(undefined);
+    browserSecretPrompts.clear();
     browserRuntime?.close();
     worker?.kill();
   });

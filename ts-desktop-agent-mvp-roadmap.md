@@ -627,12 +627,12 @@ MVP 只实现三个工具：
 功能：
 
 - ✅ 通过 Electron `webContents.debugger` 建立 CDP 1.3 连接；
-- ✅ `browser_open`、`browser_click`、`browser_type`、`browser_screenshot`、内存内动作录制/回放，以及带 CSS selector、稳定元素 ref 和安全自动重定位的页面结构读取；
+- ✅ `browser_open`、`browser_click`、`browser_hover`、`browser_eval`、`browser_type`、`browser_screenshot`、`browser_cookies`、内存内动作录制/回放，以及带 CSS selector、稳定元素 ref 和安全自动重定位的页面结构读取；
 - ✅ 按会话隔离的下载目录、状态记录与 `browser_downloads`；
 - ✅ `browser_console`、`browser_network`、`browser_errors` 读取受控页面的 Console、网络元数据和页面错误；
 - ✅ 公开信息检索由 `web_search` / `web_fetch` 承担，浏览器不负责普通搜索和已知公开 URL；
 - ✅ 最多 4 张、单张 10 MB 的图片消息，JSONL 持久化、对话预览和视觉模型 `image_url` 请求；
-- ✅ Browser Tool 启停、域名白名单、未列出域名审批，以及点击、输入、下载逐次审批；
+- ✅ Browser Tool 启停、域名白名单、未列出域名审批，以及点击、悬停、脚本、输入、Cookie 值和下载逐次审批；
 - ✅ 远程页面使用独立内存 partition，无 Preload、Node.js、webview 和新窗口能力，不与主 Renderer 共享 IPC 或 Session。
 
 验收场景：

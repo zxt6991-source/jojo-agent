@@ -39,18 +39,32 @@ export const McpServerConfigSchema = z.discriminatedUnion('transport', [
 ]);
 export type McpServerConfig = z.infer<typeof McpServerConfigSchema>;
 
+export const DEFAULT_BROWSER_SETTINGS = {
+  enabled: true,
+  allowedDomains: [] as string[],
+  mode: 'sandbox' as const,
+  chromeDebugPort: 9222,
+  chromeNewTab: true
+};
+
+export const BrowserSettingsSchema = z.object({
+  enabled: z.boolean().default(true),
+  allowedDomains: z.array(z.string().trim().min(1).max(253).regex(/^(?:\*\.)?[a-z0-9.-]+$/iu))
+    .max(200)
+    .default([]),
+  mode: z.enum(['sandbox', 'chrome']).default('sandbox'),
+  chromeDebugPort: z.number().int().min(1).max(65_535).default(9222),
+  chromeNewTab: z.boolean().default(true)
+});
+export type BrowserSettings = z.infer<typeof BrowserSettingsSchema>;
+
 export const ExtensionSettingsSchema = z.object({
   mcpServers: z.array(McpServerConfigSchema).max(50).default([]),
   skills: z.object({
     directories: z.array(z.string().trim().min(1)).max(50).default([]),
     disabled: z.array(z.string().trim().min(1)).max(500).default([])
   }).default({ directories: [], disabled: [] }),
-  browser: z.object({
-    enabled: z.boolean().default(true),
-    allowedDomains: z.array(z.string().trim().min(1).max(253).regex(/^(?:\*\.)?[a-z0-9.-]+$/iu))
-      .max(200)
-      .default([])
-  }).default({ enabled: true, allowedDomains: [] })
+  browser: BrowserSettingsSchema.default(() => ({ ...DEFAULT_BROWSER_SETTINGS }))
 }).superRefine((settings, context) => {
   const ids = new Set<string>();
   for (const server of settings.mcpServers) {
@@ -63,7 +77,7 @@ export type ExtensionSettings = z.infer<typeof ExtensionSettingsSchema>;
 export const DEFAULT_EXTENSION_SETTINGS: ExtensionSettings = {
   mcpServers: [],
   skills: { directories: [], disabled: [] },
-  browser: { enabled: true, allowedDomains: [] }
+  browser: { ...DEFAULT_BROWSER_SETTINGS }
 };
 
 export type McpConnectionState = 'disabled' | 'connecting' | 'auth_required' | 'authorizing' | 'connected' | 'error';

@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import type { Tool, ToolContext, ToolResult } from '@desktop-agent/contracts';
 import { ReadFileInput } from './inputs.js';
 import { toolResult } from './tool-result.js';
+import { isWebFetchSpillPath } from './web-fetch-storage.js';
 import { resolveWorkspacePath } from './workspace-paths.js';
 import { FileSnapshotRegistry } from './file-snapshots.js';
 
@@ -11,7 +12,7 @@ const DEFAULT_MAX_BYTES = 512_000;
 export class ReadFileTool implements Tool {
   readonly definition = {
     name: 'read_file',
-    description: 'Read a UTF-8 text file. Paths are relative to the session working directory unless absolute.',
+    description: 'Read a UTF-8 text file. Paths are relative to the session working directory unless absolute. Also reads pages saved by web_fetch.',
     inputSchema: {
       type: 'object',
       properties: { path: { type: 'string' } },
@@ -28,8 +29,9 @@ export class ReadFileTool implements Tool {
   async execute(input: unknown, context: ToolContext): Promise<ToolResult> {
     const { path } = ReadFileInput.parse(input);
     const resolved = await resolveWorkspacePath(context.workingDirectory, path);
+    const spill = !resolved.inside && await isWebFetchSpillPath(resolved.target);
 
-    if (!resolved.inside && !context.approved) {
+    if (!resolved.inside && !spill && !context.approved) {
       return toolResult(false, 'Path is outside the working directory.', { code: 'permission_denied' });
     }
 
@@ -43,7 +45,7 @@ export class ReadFileTool implements Tool {
       const bytes = await this.readPrefix(file);
       const truncated = bytes.byteLength > this.maxBytes;
       const content = bytes.subarray(0, this.maxBytes).toString('utf8');
-      if (this.snapshots) {
+      if (this.snapshots && !spill) {
         const finalInfo = await file.stat();
         if (!truncated && info.size === bytes.byteLength && finalInfo.size === info.size && finalInfo.mtimeMs === info.mtimeMs) {
           this.snapshots.set(resolved.target, {

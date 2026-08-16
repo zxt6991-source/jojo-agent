@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { MessageSchema } from './messages';
-import { ExtensionSettingsSchema } from './extensions';
+import { ExtensionSettingsSchema, DEFAULT_BROWSER_SETTINGS } from './extensions';
 
 export const DEFAULT_SESSION_TITLE = '新会话';
 export const SESSION_TITLE_MAX_LENGTH = 120;
@@ -74,7 +74,7 @@ export const ProviderSettingsSchema = z.object({
   providers: z.array(ProviderConfigSchema).min(1).default(() => DEFAULT_PROVIDERS.map((provider) => ({ ...provider }))),
   utilityModel: ModelSelectionSchema.default({ providerId: 'openai', model: 'gpt-5-mini' }),
   extensions: ExtensionSettingsSchema.default({
-    mcpServers: [], skills: { directories: [], disabled: [] }, browser: { enabled: true, allowedDomains: [] }
+    mcpServers: [], skills: { directories: [], disabled: [] }, browser: { ...DEFAULT_BROWSER_SETTINGS }
   })
 }).superRefine((settings, context) => {
   const ids = new Set<string>();

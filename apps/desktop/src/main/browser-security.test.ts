@@ -11,7 +11,8 @@ import {
   isAllowedBrowserUrl,
   isRetryableBrowserStepError,
   resolveBrowserUploadPaths,
-  safeDownloadFilename
+  safeDownloadFilename,
+  serializeBrowserEvalValue
 } from './browser-security';
 
 describe('browser security helpers', () => {
@@ -103,5 +104,15 @@ describe('browser security helpers', () => {
     } finally {
       await rm(temporary, { recursive: true, force: true });
     }
+  });
+
+  it('serializes eval results as JSON-safe text with a size cap', () => {
+    expect(serializeBrowserEvalValue({ href: '/docs' })).toEqual({ json: '{"href":"/docs"}', truncated: false });
+    expect(serializeBrowserEvalValue(undefined)).toEqual({ json: 'null', truncated: false });
+    const huge = 'x'.repeat(70_000);
+    const serialized = serializeBrowserEvalValue(huge);
+    expect(serialized.truncated).toBe(true);
+    expect(serialized.json.endsWith('\n...[truncated]')).toBe(true);
+    expect(serialized.json.length).toBeLessThan(70_000);
   });
 });

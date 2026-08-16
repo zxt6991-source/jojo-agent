@@ -8,6 +8,7 @@ import { GlobInput, GrepInput, ListFilesInput, ReadFileInput, TerminalInput, Web
 import { FileSnapshotRegistry } from './file-snapshots.js';
 import { mutationErrorCode, prepareFileMutation } from './file-mutation.js';
 import { parseHttpUrl, UnsafeWebUrlError } from './web-url.js';
+import { isWebFetchSpillPath } from './web-fetch-storage.js';
 import { resolveWorkspacePath } from './workspace-paths.js';
 
 export class DefaultPermissionGate implements PermissionGate {
@@ -45,9 +46,9 @@ export class DefaultPermissionGate implements PermissionGate {
     if (!parsed.success) return { decision: 'deny', reason: parsed.error.message, code: 'invalid_input' };
     try {
       const resolved = await resolveWorkspacePath(workingDirectory, parsed.data.path);
-      return resolved.inside
-        ? { decision: 'allow' }
-        : { decision: 'deny', reason: 'Searching outside the working directory is not allowed.' };
+      if (resolved.inside) return { decision: 'allow' };
+      if (call.name === 'grep' && await isWebFetchSpillPath(resolved.target)) return { decision: 'allow' };
+      return { decision: 'deny', reason: 'Searching outside the working directory is not allowed.' };
     } catch (error) {
       return this.denyError(error);
     }
@@ -144,16 +145,15 @@ export class DefaultPermissionGate implements PermissionGate {
 
     try {
       const resolved = await resolveWorkspacePath(context.workingDirectory, parsed.data.path);
-      return resolved.inside
-        ? { decision: 'allow' }
-        : {
-            decision: 'ask',
-            request: this.createRequest(
-              call,
-              context.sessionId,
-              'Read a file outside the working directory'
-            )
-          };
+      if (resolved.inside || await isWebFetchSpillPath(resolved.target)) return { decision: 'allow' };
+      return {
+        decision: 'ask',
+        request: this.createRequest(
+          call,
+          context.sessionId,
+          'Read a file outside the working directory'
+        )
+      };
     } catch (error) {
       return this.denyError(error);
     }

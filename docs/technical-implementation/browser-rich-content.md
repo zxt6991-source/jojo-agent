@@ -42,17 +42,21 @@ Worker 每轮都会注入这段约束（浏览器关闭时仍保留前半句）�
 ```text
 packages/contracts
   src/desktop.ts          BrowserAction、Worker 的 browser.request/result、chooseImages IPC
-  src/extensions.ts       extensions.browser.enabled / allowedDomains
+  src/extensions.ts       extensions.browser.enabled / allowedDomains / mode / chromeDebugPort / chromeNewTab
+  src/browser-recording.ts YAML 录制文档、params、fingerprint
   src/messages.ts         用户图片与工具截图的 image block
 
 apps/desktop
   src/worker/browser-tools.ts          工具定义、Bridge、PermissionGate
   src/worker/worker.ts                 组装 tools / Gate / 系统提示；转发 browser.result
-  src/main/browser-runtime.ts          窗口、CDP、录制、下载、截图
+  src/main/browser-runtime.ts          窗口、CDP、录制、下载、截图；Chrome attach
+  src/main/browser-recording-store.ts  YAML 落盘
+  src/main/browser-recording-params.ts {{param}} 替换与密钥解析
+  src/main/browser-backends/chrome-cdp-client.ts  Chrome 调试端口探测与 CDP WebSocket
   src/main/browser-security.ts         URL/域名、上传 realpath、ref 评分、按键表
   src/main/browser-diagnostics.ts      诊断记录的构造、过滤、截断
-  src/main/main.ts                     收 browser.request；chooseImages
-  src/renderer/main.tsx                BrowserSettingsPage、图片附件、审批文案
+  src/main/main.ts                     收 browser.request；Chrome 探测；密钥 prompt IPC
+  src/renderer/main.tsx                BrowserSettingsPage、图片附件、审批文案、密钥框
   src/renderer/browser-settings.ts     域名解析与校验
   src/renderer/conversation.ts         工具中文标题
 
@@ -69,6 +73,7 @@ packages/providers
 | `apps/desktop/src/worker/browser-tools.test.ts` | Gate 允许/询问/关闭、工具目录 |
 | `apps/desktop/src/main/browser-security.test.ts` | 域名、下载名、上传路径、ref 评分、可重试错误 |
 | `apps/desktop/src/main/browser-diagnostics.test.ts` | 过滤、截断、凭据剥离、缓冲区上限 |
+| `apps/desktop/src/main/browser-recording-store.test.ts` | YAML 落盘、参数替换、Chrome 探测 HTTP |
 | `apps/desktop/src/renderer/browser-settings.test.ts` | 设置页域名解析 |
 | `packages/providers/test/providers.test.ts` | `image_url` 与纯文本降级 |
 
@@ -95,7 +100,7 @@ sequenceDiagram
   Core->>Bridge: execute(approved)
   Bridge->>Main: browser.request
   Main->>Main: 重读 settings + Session 工作目录
-  Main->>RT: execute(action, approved, domains, cwd)
+  Main->>RT: execute(action, approved, settings, cwd)
   RT->>Page: CDP / loadURL / webRequest
   RT-->>Main: ToolResult
   Main-->>Bridge: browser.result
@@ -105,11 +110,11 @@ sequenceDiagram
 要点：
 
 1. Worker 消息是 `browser.request` / `browser.result`（`packages/contracts/src/desktop.ts`）。这条通道目前只有 TypeScript 类型，没有 Zod 运行时校验。
-2. Main **不**使用 Worker 传来的白名单。它调用 `configStore.get` 和 `sessionStore.get`，把持久化域名和会话工作目录交给 Runtime。
+2. Main **不**使用 Worker 传来的白名单。它调用 `configStore.get` 和 `sessionStore.get`，把完整 `extensions.browser` 和会话工作目录交给 Runtime。
 3. `context.approved` 只在用户点过「允许一次」后为 true。白名单导航的 Gate 是 `allow`，此时 `approved` 仍为 false；Runtime 靠域名规则放行 `open` / `new_page`。
 4. 高风险动作在 Runtime 还有第二道闸：`APPROVAL_REQUIRED_ACTIONS`。即使有人绕过 Gate 直接 `postMessage`，`approved !== true` 也会被扔掉。
 
-当前必须 `approved === true` 的动作：`close_page`、`record_start`、`replay`、`click`、`type`、`press`、`select`、`upload`、`download`。
+当前必须 `approved === true` 的动作：`close_page`、`record_start`、`record_delete`、`replay`、`click`、`hover`、`eval`、`type`、`press`、`select`、`upload`、`download`。`cookies` 仅在 `includeValues: true` 时要求审批。Chrome 模式下 `select_page` 也要求审批。
 
 ## 4. 运行时状态（只在 Main 内存）
 
@@ -122,12 +127,12 @@ sequenceDiagram
 | `activePageId` | 当前动作作用的页面 |
 | `grantedDomains` | 本进程内已经打开或批准过的主机，供顶层导航拦截和后续 Runtime 检查 |
 | `elementRefs` | 每页的 `eN` → 指纹；会话内单调递增，单页最多约 4000 |
-| `recordings` | 内存工作流；`rN` ID |
+| `draftRecording` | 尚未落盘的进行中录制 |
 | `downloads` | 当前 Session 的下载记录 |
 | `downloadPermitUntil` | 仅刚获批的 `browser_download` 会打开短时许可；页面自己触发的下载会被取消 |
 | `console` / `network` / `errors` | 每页诊断缓冲 |
 
-窗口配置（`createPageWindow`）：无 Preload、`nodeIntegration: false`、`contextIsolation`、`sandbox`、`webSecurity`、禁止 webview。先 `show: false`，主文档导航成功后再显示，避免空白窗口抢焦点。
+窗口配置（`createPageWindow`）：无 Preload、`nodeIntegration: false`、`contextIsolation`、`sandbox`、`webSecurity`、禁止 webview。先 `show: false`，主文档导航成功后再显示，避免空白窗口抢焦点。`mode: 'chrome'` 时改为连接 `127.0.0.1:chromeDebugPort`，默认 `PUT /json/new` 开新标签；`browser_pages` 会列出尚未接管的用户标签，`browser_select_page` 才 attach。只关闭 `owned` 标签。录制列表等不需要页面的动作不会先开 Chrome 标签。
 
 `grantedDomains` **不会**同步回 Worker。因此未写入设置的域名，每次 `browser_open` / `browser_new_page` 仍会在 Gate 询问；Main 侧的集合主要用于 `will-navigate` / `will-redirect` / 弹窗，避免页面跳到未批准主机。
 
@@ -141,9 +146,10 @@ sequenceDiagram
 
 | 工具 | Runtime 做什么 |
 |---|---|
-| `browser_pages` / `browser_select_page` | 列页面或切换活动页并聚焦 |
-| `browser_record_stop` / `browser_recordings` | 停录、列出录制（列表不回显输入文字） |
+| `browser_pages` / `browser_select_page` | 列页面或切换活动页并聚焦；Chrome 下列出未接管标签，切换需审批 |
+| `browser_record_stop` / `browser_record_cancel` / `browser_recordings` / `browser_record_get` | 停录并落盘、取消草稿、列出或读取 YAML（列表不回显输入文字） |
 | `browser_read` | CDP 读可见语义节点，分配 `eN`；Accessibility tree 回退 |
+| `browser_cookies` | 列当前隔离 Session 的 Cookie 元数据（默认不含 value） |
 | `browser_wait` | 按 ref/selector 轮询 attached/detached/visible/hidden，最长 30s |
 | `browser_scroll` | 像素滚动或 `scrollIntoView` |
 | `browser_back` / `browser_reload` | Electron history / reload，等待主文档结果 |
@@ -157,8 +163,10 @@ sequenceDiagram
 |---|---|---|
 | `browser_open` / `browser_new_page` | 主机不在设置白名单 | 只允许无凭据 HTTP(S)；成功后把主机加入 `grantedDomains` |
 | `browser_close_page` | 每次 | 关掉活动页后改选剩余页 |
-| `browser_record_start` / `browser_replay` | 每次 | 见第 7 节 |
-| `browser_click` / `type` / `press` / `select` | 每次 | 优先 `ref`，不要和 `selector` 同时传 |
+| `browser_record_start` / `browser_record_delete` / `browser_replay` | 每次 | 见第 7 节 |
+| `browser_click` / `hover` / `type` / `press` / `select` | 每次 | 优先 `ref`，不要和 `selector` 同时传 |
+| `browser_eval` | 每次 | 必须已打开真实页面；JS ≤ 20,000 字符；结果 JSON-safe 且 ≤ 64 KB；超时 8s；不能用来绕过域名或文件权限 |
+| `browser_cookies` | 仅 `includeValues: true` | 默认只返回 name/domain/path/flags；value 仍限于该隔离 Session |
 | `browser_upload` | 每次 | Main 用 Session 工作目录 `realpath`；最多 10 个文件、单个 50 MB、合计 100 MB |
 | `browser_download` | 每次 | 再次校验 HTTP(S)+域名；写入 `userData/browser-downloads/<session-id>/` |
 
@@ -181,13 +189,13 @@ sequenceDiagram
 
 ## 7. 录制与回放
 
-录制在 `BrowserState.recordings`，不落盘。开始录制要审批，因为 `type` 会保留原文以便回放；对外列表只显示目标与字符数。
+录制草稿在 `BrowserState.draftRecording`，停止后由 `BrowserRecordingStore` 写入 `userData/browser-recordings/<slug>.yaml`。开始录制要审批，因为 `type` 会保留原文以便回放；对外列表只显示目标与字符数。YAML 含 `version`、params 和步骤指纹，不保存会话内临时 `ref`。
 
-- 可录：`open` / `wait` / `scroll` / `click` / `type` / `press` / `select` / `back` / `reload`
-- 不录：上传、下载、截图、诊断、多页面管理、录制控制本身
-- 单条最多 100 步；关掉最后一个页面**不会**清录制；退出应用会清
+- 可录：`open` / `wait` / `scroll` / `click` / `hover` / `type` / `press` / `select` / `back` / `reload`
+- 不录：上传、下载、截图、诊断、eval、cookies、多页面管理、录制控制本身
+- 单条最多 100 步；关掉最后一个页面**不会**清已保存的 YAML
 
-回放必须审批，期间禁止再录。逐步执行，失败只在能证明动作尚未发生时重试（元素未找到、ref 暂时无法安全定位、等待超时）。执行上下文销毁、候选歧义、导航失败等**不**重试，避免双击或重复提交。默认最多再试 2 次（Schema 上限 3），间隔 100–2000 ms。可重试判定在 `isRetryableBrowserStepError`。
+回放必须审批，期间禁止再录。`{{param}}` 只替换 url/text/selector/values/filename。secret params 的解析顺序是环境变量 `JOJO_BROWSER_SECRET_<NAME>` → 当前 Session 缓存 → Renderer 密码框；模型传入的 params 若包含 secret 名称会直接失败。selector 找不到时按指纹调用 `chooseBrowserElementCandidate` 重定位。逐步执行，失败只在能证明动作尚未发生时重试（元素未找到、ref 暂时无法安全定位、等待超时）。执行上下文销毁、候选歧义、导航失败等**不**重试，避免双击或重复提交。默认最多再试 2 次（Schema 上限 3），间隔 100–2000 ms。可重试判定在 `isRetryableBrowserStepError`。
 
 ## 8. 页面诊断
 
@@ -260,8 +268,9 @@ sequenceDiagram
 - 域名限制针对**顶层导航**和显式下载目标；子资源仍按普通浏览器加载。
 - 页面脚本拿不到 `DesktopApi`，也不能自己发 Main IPC。
 - 高风险动作必须 Gate + Runtime 双检；工作目录和白名单以 Main 重读的持久化为准。
-- 浏览器登录态不跨应用重启。不要在文档或提示词里声称录制/Cookie 已持久化。
+- 沙箱登录态不跨应用重启。YAML 录制会持久化，但密钥不得写入 YAML、JSONL 或模型工具参数。
 - 诊断网络记录禁止包含头和正文。
+- Chrome attach 默认新开标签；只关闭本进程创建的标签，不自动接管用户当前页。
 
 ## 13. 常见故障
 
