@@ -41,6 +41,9 @@ importers:
       '@desktop-agent/extensions':
         specifier: workspace:*
         version: link:../../packages/extensions
+      '@desktop-agent/orchestration':
+        specifier: workspace:*
+        version: link:../../packages/orchestration
       '@desktop-agent/providers':
         specifier: workspace:*
         version: link:../../packages/providers
@@ -132,6 +135,15 @@ importers:
       yaml:
         specifier: ^2.9.0
         version: 2.9.0
+      zod:
+        specifier: ^4.1.13
+        version: 4.4.3
+
+  packages/orchestration:
+    dependencies:
+      '@desktop-agent/contracts':
+        specifier: workspace:*
+        version: link:../contracts
       zod:
         specifier: ^4.1.13
         version: 4.4.3

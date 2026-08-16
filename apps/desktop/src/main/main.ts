@@ -236,6 +236,7 @@ function startWorker(): void {
   worker.on('message', (message: WorkerMessage) => {
     if (message.type === 'ready') void pushConfig();
     else if (message.type === 'agent.event') sendToRenderer(IPC.agentEvent, message.event);
+    else if (message.type === 'orchestration.event') sendToRenderer(IPC.orchestrationEvent, message.event);
     else if (message.type === 'sessions.changed') sendToRenderer(IPC.sessionsChanged);
     else if (message.type === 'extensions.status') {
       extensionStatus = message.status;

@@ -188,10 +188,11 @@ export async function runAgentTurn(options: AgentRunOptions): Promise<AgentRunRe
       outputContinuations = 0;
     }
 
-    throw new AgentError(
-      'max_iterations',
-      `The turn exceeded ${maxIterations} model iterations.`
-    );
+    if (options.allowPartialOnMaxIterations) {
+      options.emit({ type: 'turn.completed', stopReason: 'max_iterations' });
+      return { messages: state.messages, stopReason: 'max_iterations' };
+    }
+    throw new AgentError('max_iterations', `The turn exceeded ${maxIterations} model iterations.`);
   } catch (error) {
     return handleTurnError(error, options, state.messages);
   }

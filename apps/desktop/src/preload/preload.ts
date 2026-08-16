@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import { IPC, type AgentEvent, type BrowserDockState, type DesktopApi } from '@desktop-agent/contracts';
+import { IPC, type AgentEvent, type BrowserDockState, type DesktopApi, type OrchestrationEvent } from '@desktop-agent/contracts';
 
 const api: DesktopApi = {
   listSessions: () => ipcRenderer.invoke(IPC.listSessions),
@@ -35,6 +35,11 @@ const api: DesktopApi = {
     const handler = (_event: Electron.IpcRendererEvent, value: AgentEvent) => listener(value);
     ipcRenderer.on(IPC.agentEvent, handler);
     return () => ipcRenderer.removeListener(IPC.agentEvent, handler);
+  },
+  onOrchestrationEvent: (listener) => {
+    const handler = (_event: Electron.IpcRendererEvent, value: OrchestrationEvent) => listener(value);
+    ipcRenderer.on(IPC.orchestrationEvent, handler);
+    return () => ipcRenderer.removeListener(IPC.orchestrationEvent, handler);
   },
   onSessionsChanged: (listener) => {
     const handler = () => listener();

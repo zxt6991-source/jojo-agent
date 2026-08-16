@@ -30,6 +30,23 @@ function createOptions(
 }
 
 describe('runAgentTurn', () => {
+  it('returns accumulated messages at the iteration limit when partial results are enabled', async () => {
+    const provider = new ScriptedProvider([[
+      { type: 'text_delta', text: 'partial evidence' },
+      { type: 'tool_call_completed', call: { id: 'partial-call', name: 'echo', input: {} } },
+      { type: 'response_completed', stopReason: 'tool_calls' }
+    ]]);
+    const events: AgentEvent[] = [];
+    const result = await runAgentTurn(createOptions(provider, {
+      maxIterations: 1,
+      allowPartialOnMaxIterations: true,
+      emit: (event) => events.push(event)
+    }));
+    expect(result.stopReason).toBe('max_iterations');
+    expect(result.messages.some((message) => message.role === 'assistant')).toBe(true);
+    expect(events).toContainEqual({ type: 'turn.completed', stopReason: 'max_iterations' });
+  });
+
   it('runs a tool and feeds its result into the next model request', async () => {
     const events: AgentEvent[] = [];
     const provider = new ScriptedProvider([

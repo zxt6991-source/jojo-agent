@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { AgentEvent } from './agent';
 import type { Message } from './messages';
+import type { OrchestrationEvent } from './orchestration';
 import type { ProviderSettings, SessionMeta } from './persistence';
 import { SESSION_TITLE_MAX_LENGTH } from './persistence';
 import type { WorkspaceChanges } from './workspace';
@@ -240,6 +241,7 @@ export type DesktopApi = {
   disconnectMcpOAuth(input: z.input<typeof McpServerIdInputSchema>): Promise<void>;
   reconnectMcp(input: z.input<typeof McpServerIdInputSchema>): Promise<void>;
   onAgentEvent(listener: (event: AgentEvent) => void): () => void;
+  onOrchestrationEvent(listener: (event: OrchestrationEvent) => void): () => void;
   onSessionsChanged(listener: () => void): () => void;
   onExtensionsChanged(listener: () => void): () => void;
   onBrowserSecretRequest(listener: (request: { requestId: string; name: string; description?: string }) => void): () => void;
@@ -260,6 +262,7 @@ export type WorkerCommand =
 export type WorkerMessage =
   | { type: 'ready' }
   | { type: 'agent.event'; event: AgentEvent }
+  | { type: 'orchestration.event'; event: OrchestrationEvent }
   | { type: 'sessions.changed' }
   | { type: 'extensions.status'; status: ExtensionStatus }
   | { type: 'mcp.oauth.authorization'; requestId: string; url: string }
@@ -301,6 +304,7 @@ export const IPC = {
   disconnectMcpOAuth: 'extensions:mcp-oauth-disconnect',
   reconnectMcp: 'extensions:mcp-reconnect',
   agentEvent: 'agent:event',
+  orchestrationEvent: 'orchestration:event',
   sessionsChanged: 'sessions:changed',
   extensionsChanged: 'extensions:changed'
 } as const;

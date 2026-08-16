@@ -23,6 +23,8 @@ export type AgentRunOptions = {
   permissionGate: PermissionGate;
   signal: AbortSignal;
   maxIterations?: number;
+  /** Return accumulated messages instead of throwing when the iteration limit is reached. */
+  allowPartialOnMaxIterations?: boolean;
   contextWindowTokens?: number;
   maxOutputTokens?: number;
   summarize?: (source: string, signal: AbortSignal) => Promise<string>;
