@@ -10,6 +10,8 @@ describe('orchestration permission gates', () => {
     const inner: PermissionGate = { check: async () => ({ decision: 'deny', reason: 'inner' }) };
     const gate = new OrchestrationPermissionGate(inner);
     await expect(gate.check(call('sub_agent_start'), context)).resolves.toEqual({ decision: 'allow' });
+    await expect(gate.check(call('sub_agent_send'), context)).resolves.toEqual({ decision: 'allow' });
+    await expect(gate.check(call('sub_agent_close'), context)).resolves.toEqual({ decision: 'allow' });
     await expect(gate.check(call('terminal'), context)).resolves.toEqual({ decision: 'deny', reason: 'inner' });
   });
 

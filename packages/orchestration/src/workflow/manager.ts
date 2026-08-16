@@ -1,4 +1,5 @@
 import {
+  WorkflowArgsSchema,
   WorkflowDefinitionSchema,
   type OrchestrationEvent,
   type WorkflowRunSnapshot,
@@ -77,6 +78,8 @@ export class WorkflowManager {
   start(input: WorkflowStartRequest): WorkflowRunSnapshot {
     const parsed = parseDefinition(input.definition);
     if (!parsed.success) throw new OrchestrationError('workflow_invalid_definition', parsed.error.message, parsed.error.issues);
+    const parsedArgs = WorkflowArgsSchema.safeParse(input.args ?? {});
+    if (!parsedArgs.success) throw new OrchestrationError('workflow_invalid_args', parsedArgs.error.message, parsedArgs.error.issues);
     const active = this.list(input.sessionId).filter((workflow) => !TERMINAL_STATES.has(workflow.state));
     if (active.length >= this.maxPerSession) {
       throw new OrchestrationError('workflow_limit_reached', `A session may have at most ${this.maxPerSession} active workflows.`);
@@ -88,6 +91,7 @@ export class WorkflowManager {
       workingDirectory: input.workingDirectory,
       providerId: input.providerId,
       model: input.model,
+      args: parsedArgs.data,
       definition: parsed.data,
       createdAt: new Date().toISOString()
     };
@@ -205,6 +209,10 @@ export class WorkflowManager {
     return live ? cloneSnapshot(live.snapshot) : undefined;
   }
 
+  workingDirectory(id: string): string | undefined {
+    return this.workflows.get(id)?.request.workingDirectory;
+  }
+
   list(sessionId: string): WorkflowRunSnapshot[] {
     return [...this.workflows.values()]
       .filter((workflow) => workflow.snapshot.sessionId === sessionId)
@@ -236,6 +244,18 @@ export class WorkflowManager {
     for (const workflow of this.workflows.values()) {
       if (workflow.snapshot.sessionId === sessionId) this.cancel(workflow.snapshot.id);
     }
+  }
+
+  async quiesceSession(sessionId: string): Promise<void> {
+    const workflows = [...this.workflows.values()].filter((workflow) => workflow.snapshot.sessionId === sessionId);
+    for (const workflow of workflows) {
+      if (!workflow.settled) this.cancel(workflow.snapshot.id);
+    }
+    await Promise.all(workflows.map((workflow) => workflow.done));
+    await Promise.all(workflows.map(async (workflow) => {
+      await workflow.persistenceWrites;
+      if (workflow.persistenceError) throw workflow.persistenceError;
+    }));
   }
 
   private async execute(live: LiveWorkflow, initialSnapshot?: WorkflowRunSnapshot, createJournal = true): Promise<void> {

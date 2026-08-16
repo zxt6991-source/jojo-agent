@@ -39,7 +39,11 @@ const oauthRequests = new Map<string, {
   reject: (error: Error) => void;
   timer: ReturnType<typeof setTimeout>;
 }>();
-const workerRequests = new Map<string, { resolve: () => void; reject: (error: Error) => void }>();
+const workerRequests = new Map<string, {
+  resolve: () => void;
+  reject: (error: Error) => void;
+  timer: ReturnType<typeof setTimeout>;
+}>();
 const workflowRuns = new Map<string, WorkflowRunSnapshot>();
 const browserSecretPrompts = new Map<string, { resolve: (value: string | undefined) => void }>();
 let mcpOAuthCredentialWrite: Promise<void> = Promise.resolve();
@@ -110,8 +114,30 @@ async function pushConfig(): Promise<void> {
   worker?.postMessage({ type: 'config.update', settings, apiKeys, mcpOAuthCredentials } satisfies WorkerCommand);
 }
 
-function waitForWorker(requestId: string): Promise<void> {
-  return new Promise((resolve, reject) => workerRequests.set(requestId, { resolve, reject }));
+function waitForWorker(requestId: string, timeoutMs = 120_000): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      workerRequests.delete(requestId);
+      reject(new Error('Agent runtime request timed out.'));
+    }, timeoutMs);
+    workerRequests.set(requestId, { resolve, reject, timer });
+  });
+}
+
+function finishWorkerRequest(requestId: string, error?: Error): void {
+  const request = workerRequests.get(requestId);
+  if (!request) return;
+  workerRequests.delete(requestId);
+  clearTimeout(request.timer);
+  if (error) request.reject(error); else request.resolve();
+}
+
+async function stopSessionRuntime(sessionId: string): Promise<void> {
+  if (!worker) return;
+  const requestId = crypto.randomUUID();
+  const completion = waitForWorker(requestId);
+  worker.postMessage({ type: 'session.stop', requestId, sessionId } satisfies WorkerCommand);
+  await completion;
 }
 
 async function beginMcpOAuth(serverId: string): Promise<void> {
@@ -241,12 +267,11 @@ function startWorker(): void {
       if (message.event.type === 'workflow.changed') workflowRuns.set(message.event.workflow.id, message.event.workflow);
       sendToRenderer(IPC.orchestrationEvent, message.event);
     }
+    else if (message.type === 'session.stopped') {
+      finishWorkerRequest(message.requestId, message.ok ? undefined : new Error(message.error ?? 'Session stop failed.'));
+    }
     else if (message.type === 'workflow.action.result') {
-      const request = workerRequests.get(message.requestId);
-      if (request) {
-        workerRequests.delete(message.requestId);
-        if (message.ok) request.resolve(); else request.reject(new Error(message.error ?? 'Workflow action failed.'));
-      }
+      finishWorkerRequest(message.requestId, message.ok ? undefined : new Error(message.error ?? 'Workflow action failed.'));
     }
     else if (message.type === 'sessions.changed') sendToRenderer(IPC.sessionsChanged);
     else if (message.type === 'extensions.status') {
@@ -271,11 +296,7 @@ function startWorker(): void {
     }
     else if (message.type === 'mcp.oauth.result') {
       void mcpOAuthCredentialWrite.then(() => {
-        const request = workerRequests.get(message.requestId);
-        if (request) {
-          workerRequests.delete(message.requestId);
-          if (message.ok) request.resolve(); else request.reject(new Error(message.error ?? 'MCP OAuth operation failed.'));
-        }
+        finishWorkerRequest(message.requestId, message.ok ? undefined : new Error(message.error ?? 'MCP OAuth operation failed.'));
         if (message.ok) finishMcpOAuth(message.requestId);
         else finishMcpOAuth(message.requestId, new Error(message.error ?? 'MCP OAuth authorization failed.'));
       }).catch((error) => finishMcpOAuth(message.requestId, error instanceof Error ? error : new Error(String(error))));
@@ -312,6 +333,9 @@ function startWorker(): void {
     else if (message.type === 'worker.error') sendToRenderer(IPC.agentEvent, { type: 'turn.failed', code: 'worker_error', message: message.message });
   });
   worker.on('exit', (code) => {
+    for (const requestId of workerRequests.keys()) {
+      finishWorkerRequest(requestId, new Error(`Agent runtime exited (${code}).`));
+    }
     sendToRenderer(IPC.agentEvent, { type: 'turn.failed', code: 'worker_exit', message: `Agent runtime exited (${code}).` });
     worker = null;
     if (!quitting) setTimeout(startWorker, 1_000);
@@ -331,7 +355,7 @@ function registerIpc(): void {
   });
   ipcMain.handle(IPC.deleteSession, async (event, raw) => {
     assertTrusted(event); const { sessionId } = SessionIdInputSchema.parse({ sessionId: raw });
-    worker?.postMessage({ type: 'session.stop', sessionId } satisfies WorkerCommand);
+    await stopSessionRuntime(sessionId);
     await sessionStore.delete(sessionId); sendToRenderer(IPC.sessionsChanged);
   });
   ipcMain.handle(IPC.loadMessages, async (event, raw) => {
@@ -372,10 +396,9 @@ function registerIpc(): void {
     assertTrusted(event); const input = WorkflowRunActionInputSchema.parse(raw);
     if (!worker) throw new Error('Agent runtime is not available.');
     const requestId = crypto.randomUUID();
-    await new Promise<void>((resolve, reject) => {
-      workerRequests.set(requestId, { resolve, reject });
-      worker!.postMessage({ type: 'workflow.resume', requestId, ...input } satisfies WorkerCommand);
-    });
+    const completion = waitForWorker(requestId);
+    worker.postMessage({ type: 'workflow.resume', requestId, ...input } satisfies WorkerCommand);
+    await completion;
   });
   ipcMain.handle(IPC.resolveApproval, async (event, raw) => {
     assertTrusted(event); const input = ApprovalInputSchema.parse(raw);

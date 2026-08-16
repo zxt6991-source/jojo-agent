@@ -1,4 +1,5 @@
 import type { AgentEvent, SubAgentProfile, UsageTotals } from '@desktop-agent/contracts';
+import type { AgentToolPolicy } from './tool-policy.js';
 
 export type LeafAgentRunRequest = {
   id: string;
@@ -10,11 +11,17 @@ export type LeafAgentRunRequest = {
   model: string;
   maxIterations: number;
   timeoutMs: number;
+  tools?: AgentToolPolicy;
+  readOnly?: boolean;
+  outputSchema?: Record<string, unknown>;
+  continuable?: boolean;
 };
 
 export type LeafAgentRunResult = {
   result: string;
   stopReason: string;
+  model?: string;
+  continuationId?: string;
   usage: UsageTotals;
   incomplete: boolean;
 };
@@ -25,6 +32,13 @@ export interface LeafAgentRunner {
     signal: AbortSignal,
     onEvent: (event: AgentEvent) => void
   ): Promise<LeafAgentRunResult>;
+  continue?(
+    continuationId: string,
+    task: string,
+    signal: AbortSignal,
+    onEvent: (event: AgentEvent) => void
+  ): Promise<LeafAgentRunResult>;
+  close?(continuationId: string): Promise<void>;
 }
 
 export type SubAgentStartRequest = {
@@ -35,7 +49,10 @@ export type SubAgentStartRequest = {
   profile: SubAgentProfile;
   providerId: string;
   model: string;
-  timeoutMs: number;
+  timeoutMs?: number;
   maxIterations?: number;
+  tools?: AgentToolPolicy;
+  readOnly?: boolean;
+  outputSchema?: Record<string, unknown>;
   depth?: number;
 };

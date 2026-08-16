@@ -5,6 +5,8 @@ export const ORCHESTRATION_TOOL_NAMES = new Set([
   'sub_agent_wait',
   'sub_agent_status',
   'sub_agent_cancel',
+  'sub_agent_send',
+  'sub_agent_close',
   'workflow_start',
   'workflow_wait',
   'workflow_status',

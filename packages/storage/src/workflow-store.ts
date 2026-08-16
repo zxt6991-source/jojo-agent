@@ -57,8 +57,15 @@ function stepRecordType(state: WorkflowStepState): WorkflowJournalRecordType {
 }
 
 function transitionRecord(previous: WorkflowRunSnapshot, next: WorkflowRunSnapshot): WorkflowJournalRecord {
-  const changedStep = next.steps.find((step) => previous.steps.find((item) => item.id === step.id)?.state !== step.state);
-  const type = changedStep ? stepRecordType(changedStep.state) : workflowRecordType(next.state);
+  const changedStep = next.steps.find((step) => {
+    const prior = previous.steps.find((item) => item.id === step.id);
+    return prior?.state !== step.state || prior.attempt !== step.attempt;
+  });
+  const priorStep = changedStep ? previous.steps.find((step) => step.id === changedStep.id) : undefined;
+  const retrying = Boolean(changedStep && priorStep
+    && changedStep.state === 'queued'
+    && changedStep.attempt > priorStep.attempt);
+  const type = retrying ? 'step.retrying' : changedStep ? stepRecordType(changedStep.state) : workflowRecordType(next.state);
   return {
     schemaVersion: 1,
     type,

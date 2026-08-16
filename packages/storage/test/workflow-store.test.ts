@@ -35,7 +35,7 @@ describe('JsonlWorkflowStore', () => {
     const initial = runningSnapshot(createdAt);
     await store.create({
       id: initial.id, sessionId: initial.sessionId, workingDirectory: '/tmp/project',
-      providerId: 'provider', model: 'model', definition, createdAt
+      providerId: 'provider', model: 'model', args: { target: 'src' }, definition, createdAt
     }, initial);
     const completed: WorkflowRunSnapshot = {
       ...initial,
@@ -54,9 +54,46 @@ describe('JsonlWorkflowStore', () => {
     const loaded = await store.load(initial.id);
     expect(loaded?.snapshot).toMatchObject({ state: 'completed', result: 'evidence' });
     expect(loaded?.request.definitionHash).toBe(store.definitionHash(definition));
+    expect(loaded?.request.args).toEqual({ target: 'src' });
     expect(loaded?.definitionHashMatches).toBe(true);
     expect(loaded?.warnings).toHaveLength(1);
     const records = (await readFile(file, 'utf8')).split('\n').filter((line) => line.endsWith('}')).map((line) => JSON.parse(line));
     expect(records.map((record) => record.type)).toEqual(['workflow.started', 'step.completed', 'workflow.log']);
+  });
+
+  it('records an attempt increment as step.retrying', async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), 'workflow-store-retry-'));
+    const store = new JsonlWorkflowStore(directory);
+    const createdAt = new Date().toISOString();
+    const running = runningSnapshot(createdAt);
+    const failed: WorkflowRunSnapshot = {
+      ...running,
+      revision: 1,
+      steps: [{
+        ...running.steps[0]!, state: 'failed', errorCode: 'provider_error', error: 'Retry later.',
+        incomplete: true, finishedAt: new Date().toISOString()
+      }]
+    };
+    const retrying: WorkflowRunSnapshot = {
+      ...failed,
+      revision: 2,
+      steps: [{
+        id: 'inspect', state: 'queued', attempt: 2, createdAt,
+        startedAt: createdAt, incomplete: false, usage: { ...failed.steps[0]!.usage }
+      }]
+    };
+    await store.create({
+      id: running.id, sessionId: running.sessionId, workingDirectory: '/tmp/project',
+      providerId: 'provider', model: 'model', args: {}, definition, createdAt
+    }, running);
+    await store.appendTransition(running, failed);
+    await store.appendTransition(failed, retrying);
+
+    const records = (await readFile(path.join(directory, 'wf_store.jsonl'), 'utf8'))
+      .split('\n').filter(Boolean).map((line) => JSON.parse(line));
+    expect(records.map((record) => record.type)).toEqual([
+      'workflow.started', 'step.failed', 'step.retrying'
+    ]);
+    expect(records[2]).toMatchObject({ stepId: 'inspect', snapshot: { steps: [{ attempt: 2 }] } });
   });
 });

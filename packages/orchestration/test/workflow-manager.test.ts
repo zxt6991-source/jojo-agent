@@ -131,6 +131,41 @@ describe('WorkflowManager', () => {
     expect(settled.every((run) => run.state === 'cancelled')).toBe(true);
   });
 
+  it('quiesces all workflows in a session and flushes persistence writes', async () => {
+    let persistenceFinished = false;
+    const persistence = new MemoryWorkflowPersistence();
+    persistence.appendTransition = async (_previous, next) => {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      const run = persistence.runs.find((item) => item.snapshot.id === next.id);
+      if (run) run.snapshot = next;
+      persistenceFinished = true;
+    };
+    const runner: LeafAgentRunner = {
+      run: async (_request, signal) => new Promise((resolve) => signal.addEventListener('abort', () => resolve({
+        result: '', stopReason: 'cancelled', usage: emptyUsage(), incomplete: true
+      }), { once: true }))
+    };
+    const manager = new WorkflowManager(
+      new WorkflowEngine(runner, new AgentExecutionScheduler(2)), () => undefined, { persistence }
+    );
+    const first = manager.start(startInput({
+      schemaVersion: 1, name: 'first', steps: [{ id: 'run', type: 'agent', task: 'Wait' }]
+    }));
+    const second = manager.start(startInput({
+      schemaVersion: 1, name: 'second', steps: [{ id: 'run', type: 'agent', task: 'Wait' }]
+    }));
+    await vi.waitFor(() => {
+      expect(manager.get(first.id)?.steps[0]?.state).toBe('running');
+      expect(manager.get(second.id)?.steps[0]?.state).toBe('running');
+    });
+
+    await manager.quiesceSession('session');
+
+    expect(manager.get(first.id)?.state).toBe('cancelled');
+    expect(manager.get(second.id)?.state).toBe('cancelled');
+    expect(persistenceFinished).toBe(true);
+  });
+
   it('restores interrupted work, reuses completed steps, and accrues rerun usage', async () => {
     const persistence = new MemoryWorkflowPersistence();
     const createdAt = new Date().toISOString();
@@ -143,7 +178,7 @@ describe('WorkflowManager', () => {
     });
     const request: StoredWorkflowRequest = {
       id: 'wf_resume', sessionId: 'session', workingDirectory: process.cwd(), providerId: 'provider', model: 'model',
-      definition, definitionHash: persistence.definitionHash(definition), createdAt
+      args: {}, definition, definitionHash: persistence.definitionHash(definition), createdAt
     };
     const usage = (inputTokens: number) => ({ inputTokens, outputTokens: 0, cacheReadInputTokens: 0, cacheWriteInputTokens: 0 });
     persistence.runs.push({ request, warnings: [], definitionHashMatches: true, snapshot: {
@@ -180,7 +215,7 @@ describe('WorkflowManager', () => {
     const createdAt = new Date().toISOString();
     const definition = WorkflowDefinitionSchema.parse(validDefinition);
     persistence.runs.push({
-      request: { id: 'wf_mismatch', sessionId: 'session', workingDirectory: process.cwd(), providerId: 'provider', model: 'model', definition, definitionHash: 'b'.repeat(64), createdAt },
+      request: { id: 'wf_mismatch', sessionId: 'session', workingDirectory: process.cwd(), providerId: 'provider', model: 'model', args: {}, definition, definitionHash: 'b'.repeat(64), createdAt },
       warnings: ['mismatch'], definitionHashMatches: false,
       snapshot: {
         id: 'wf_mismatch', sessionId: 'session', name: definition.name, state: 'interrupted', revision: 1, createdAt,
@@ -196,8 +231,12 @@ describe('WorkflowManager', () => {
 
 describe('workflow tools', () => {
   it('exposes start/wait/status/cancel and returns structured results', async () => {
+    const tasks: string[] = [];
     const runner: LeafAgentRunner = {
-      run: async () => ({ result: 'done', stopReason: 'stop', usage: emptyUsage(), incomplete: false })
+      run: async (request) => {
+        tasks.push(request.task);
+        return { result: 'done', stopReason: 'stop', usage: emptyUsage(), incomplete: false };
+      }
     };
     const manager = new WorkflowManager(new WorkflowEngine(runner, new AgentExecutionScheduler(2)), () => undefined);
     const tools = createWorkflowTools(manager, { providerId: 'provider', model: 'model' });
@@ -236,5 +275,19 @@ steps:
 
     const missingCancel = await tools[3]!.execute({ id: 'wf_missing' }, context);
     expect(missingCancel).toMatchObject({ ok: false, code: 'workflow_not_found' });
+
+    const withArgs = await tools[0]!.execute({
+      args: { target: 'packages/orchestration' },
+      definition: {
+        schemaVersion: 1, name: 'args workflow', steps: [{
+          id: 'inspect', type: 'agent', task: 'Inspect',
+          inputs: { target: { valueFrom: '$workflow.args.target' } }
+        }]
+      }
+    }, context);
+    expect(withArgs.ok).toBe(true);
+    const argsId = (JSON.parse(withArgs.content) as { id: string }).id;
+    await manager.wait(argsId, context.signal, 1_000);
+    expect(tasks.at(-1)).toContain('"target": "packages/orchestration"');
   });
 });

@@ -14,8 +14,9 @@ describe('WorkflowCard', () => {
       },
       steps: Array.from({ length: 32 }, (_, index) => ({
         id: `step_${index + 1}`,
+        ...(index === 0 ? { profile: 'code-review', model: 'review-model' } : {}),
         state: index === 0 ? 'failed' as const : 'pending' as const,
-        attempt: 1,
+        attempt: index === 0 ? 2 : 1,
         createdAt,
         ...(index === 0 ? { errorCode: 'provider_timeout' as const, error: 'Provider timed out.' } : {}),
         incomplete: index === 0,
@@ -31,6 +32,8 @@ describe('WorkflowCard', () => {
     expect(html).toContain('wf_render_32');
     expect(html).toContain('开始于');
     expect(html).toContain('provider_timeout');
+    expect(html).toContain('code-review · review-model');
+    expect(html).toContain('第 2 次尝试');
     expect(html.match(/class="workflow-step /gu)).toHaveLength(32);
   });
 });

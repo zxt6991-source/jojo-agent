@@ -8,11 +8,30 @@ export const UsageTotalsSchema = z.object({
 });
 export type UsageTotals = z.infer<typeof UsageTotalsSchema>;
 
-export const SubAgentProfileSchema = z.enum(['explore', 'synthesize']);
+export const SubAgentProfileSchema = z.string().trim().min(1).max(64).regex(/^[a-z][a-z0-9-]*$/u);
 export type SubAgentProfile = z.infer<typeof SubAgentProfileSchema>;
 
-export const SubAgentStateSchema = z.enum(['queued', 'running', 'completed', 'failed', 'cancelled', 'timed_out']);
+export const SubAgentStateSchema = z.enum(['queued', 'running', 'idle', 'completed', 'failed', 'cancelled', 'timed_out', 'closed']);
 export type SubAgentState = z.infer<typeof SubAgentStateSchema>;
+
+export const StructuredOutputErrorCodeSchema = z.enum([
+  'output_schema_invalid',
+  'output_schema_validation_failed'
+]);
+export type StructuredOutputErrorCode = z.infer<typeof StructuredOutputErrorCodeSchema>;
+
+export const SubAgentRoundSchema = z.object({
+  index: z.number().int().positive(),
+  input: z.string().min(1).max(40_000),
+  output: z.string().optional(),
+  startedAt: z.string().datetime().optional(),
+  finishedAt: z.string().datetime().optional(),
+  usage: UsageTotalsSchema,
+  stopReason: z.string().optional(),
+  error: z.string().optional(),
+  incomplete: z.boolean().default(false)
+});
+export type SubAgentRound = z.infer<typeof SubAgentRoundSchema>;
 
 export const SubAgentSnapshotSchema = z.object({
   id: z.string().min(1),
@@ -28,8 +47,12 @@ export const SubAgentSnapshotSchema = z.object({
   usage: UsageTotalsSchema,
   stopReason: z.string().optional(),
   result: z.string().optional(),
+  structuredResult: z.unknown().optional(),
+  schemaValid: z.boolean().optional(),
+  errorCode: StructuredOutputErrorCodeSchema.optional(),
   error: z.string().optional(),
-  incomplete: z.boolean().default(false)
+  incomplete: z.boolean().default(false),
+  rounds: z.array(SubAgentRoundSchema).default([])
 });
 export type SubAgentSnapshot = z.infer<typeof SubAgentSnapshotSchema>;
 
@@ -49,6 +72,10 @@ export const WorkflowStepErrorCodeSchema = z.enum([
   'provider_error',
   'max_iterations',
   'invalid_profile',
+  'output_schema_invalid',
+  'output_schema_validation_failed',
+  'workflow_reference_invalid',
+  'workflow_reference_not_found',
   'workflow_step_failed',
   'workflow_deadlock'
 ]);
@@ -71,10 +98,67 @@ const WorkflowStepBaseSchema = z.object({
   continueOnError: z.boolean().default(false)
 });
 
+export const AgentToolPolicySchema = z.object({
+  allow: z.array(z.string().trim().min(1).max(64)).max(32).optional(),
+  deny: z.array(z.string().trim().min(1).max(64)).max(32).optional()
+}).strict();
+export type AgentToolPolicy = z.infer<typeof AgentToolPolicySchema>;
+
+export const WorkflowRetryableErrorCodeSchema = z.enum([
+  'step_timeout',
+  'provider_timeout',
+  'provider_error',
+  'output_schema_validation_failed'
+]);
+export type WorkflowRetryableErrorCode = z.infer<typeof WorkflowRetryableErrorCodeSchema>;
+
+export const WorkflowRetryPolicySchema = z.object({
+  maxAttempts: z.number().int().min(1).max(5),
+  backoffMs: z.number().int().min(0).max(30_000).default(1_000),
+  retryOn: z.array(WorkflowRetryableErrorCodeSchema).min(1).max(4).default([
+    'provider_timeout',
+    'provider_error'
+  ])
+}).strict();
+export type WorkflowRetryPolicy = z.infer<typeof WorkflowRetryPolicySchema>;
+
+export const WorkflowArgumentValueSchema = z.union([
+  z.string().max(40_000),
+  z.number().finite(),
+  z.boolean()
+]);
+export const WorkflowArgsSchema = z.record(
+  z.string().regex(/^[A-Za-z][A-Za-z0-9_-]{0,63}$/u),
+  WorkflowArgumentValueSchema
+).superRefine((args, context) => {
+  if (Object.keys(args).length > 32) context.addIssue({ code: 'custom', message: 'Workflow args may contain at most 32 entries.' });
+});
+export type WorkflowArgs = z.infer<typeof WorkflowArgsSchema>;
+
+export const WorkflowStepInputSchema = z.object({
+  valueFrom: z.string().regex(/^\$(?:workflow\.args\.[A-Za-z][A-Za-z0-9_-]{0,63}|steps\.[A-Za-z][A-Za-z0-9_-]{0,63}\.(?:output|structuredResult(?:\.[A-Za-z0-9_-]+)*))$/u)
+}).strict();
+export type WorkflowStepInput = z.infer<typeof WorkflowStepInputSchema>;
+
+export const WorkflowStepInputsSchema = z.record(
+  z.string().regex(/^[A-Za-z][A-Za-z0-9_-]{0,63}$/u),
+  WorkflowStepInputSchema
+).superRefine((inputs, context) => {
+  if (Object.keys(inputs).length > 32) context.addIssue({ code: 'custom', message: 'Workflow step inputs may contain at most 32 entries.' });
+});
+export type WorkflowStepInputs = z.infer<typeof WorkflowStepInputsSchema>;
+
 export const WorkflowAgentStepSchema = WorkflowStepBaseSchema.extend({
   type: z.literal('agent'),
   profile: SubAgentProfileSchema.default('explore'),
-  task: z.string().trim().min(1).max(40_000)
+  model: z.string().trim().min(1).max(200).optional(),
+  maxIterations: z.number().int().min(1).max(20).optional(),
+  tools: AgentToolPolicySchema.optional(),
+  readOnly: z.boolean().optional(),
+  inputs: WorkflowStepInputsSchema.optional(),
+  retry: WorkflowRetryPolicySchema.optional(),
+  task: z.string().trim().min(1).max(40_000),
+  outputSchema: z.record(z.string(), z.unknown()).optional()
 });
 export type WorkflowAgentStep = z.infer<typeof WorkflowAgentStepSchema>;
 
@@ -100,6 +184,16 @@ export const WorkflowDefinitionSchema = z.object({
         context.addIssue({ code: 'custom', path: ['steps', index, 'dependsOn'], message: `Step ${step.id} cannot depend on itself.` });
       } else if (!stepIds.has(dependency)) {
         context.addIssue({ code: 'custom', path: ['steps', index, 'dependsOn'], message: `Unknown dependency: ${dependency}` });
+      }
+    }
+    for (const input of Object.values(step.inputs ?? {})) {
+      const match = /^\$steps\.([A-Za-z][A-Za-z0-9_-]{0,63})\./u.exec(input.valueFrom);
+      if (!match) continue;
+      const sourceStepId = match[1]!;
+      if (!stepIds.has(sourceStepId)) {
+        context.addIssue({ code: 'custom', path: ['steps', index, 'inputs'], message: `Unknown input source step: ${sourceStepId}` });
+      } else if (!step.dependsOn.includes(sourceStepId)) {
+        context.addIssue({ code: 'custom', path: ['steps', index, 'inputs'], message: `Input source ${sourceStepId} must be a direct dependency of ${step.id}.` });
       }
     }
   }
@@ -129,12 +223,16 @@ export type WorkflowDefinition = z.infer<typeof WorkflowDefinitionSchema>;
 
 export const WorkflowStepSnapshotSchema = z.object({
   id: z.string().min(1),
+  profile: SubAgentProfileSchema.optional(),
+  model: z.string().min(1).optional(),
   state: WorkflowStepStateSchema,
   attempt: z.number().int().positive().default(1),
   createdAt: z.string().datetime(),
   startedAt: z.string().datetime().optional(),
   finishedAt: z.string().datetime().optional(),
   output: z.string().optional(),
+  structuredResult: z.unknown().optional(),
+  schemaValid: z.boolean().optional(),
   error: z.string().optional(),
   errorCode: WorkflowStepErrorCodeSchema.optional(),
   stopReason: z.string().optional(),
@@ -183,6 +281,7 @@ export const StoredWorkflowRequestSchema = z.object({
   workingDirectory: z.string().min(1),
   providerId: z.string().min(1),
   model: z.string().min(1),
+  args: WorkflowArgsSchema.default({}),
   definition: WorkflowDefinitionSchema,
   definitionHash: z.string().regex(/^[a-f0-9]{64}$/u),
   createdAt: z.string().datetime()
@@ -198,6 +297,7 @@ export const WorkflowJournalRecordTypeSchema = z.enum([
   'workflow.timed_out',
   'workflow.interrupted',
   'step.started',
+  'step.retrying',
   'step.completed',
   'step.failed',
   'step.cancelled',

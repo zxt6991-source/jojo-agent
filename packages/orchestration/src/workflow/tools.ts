@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { orchestrationErrorCode } from '../errors.js';
 import { WorkflowManager } from './manager.js';
 
-const StartInput = z.object({ definition: z.unknown() });
+const StartInput = z.object({ definition: z.unknown(), args: z.unknown().optional() });
 const WaitInput = z.object({
   id: z.string().min(1),
   timeoutMs: z.number().int().min(100).max(120_000).default(60_000)
@@ -37,10 +37,48 @@ export function createWorkflowTools(manager: WorkflowManager, options: WorkflowT
           type: 'object',
           properties: {
             id: { type: 'string' }, type: { type: 'string', enum: ['agent'] },
-            profile: { type: 'string', enum: ['explore', 'synthesize'] }, task: { type: 'string' },
+            profile: { type: 'string', description: 'Registered agent profile name.' },
+            model: { type: 'string', description: 'Configured model id or inherit.' },
+            maxIterations: { type: 'integer', minimum: 1, maximum: 20 },
+            readOnly: { type: 'boolean', description: 'May only tighten the selected profile policy.' },
+            tools: {
+              type: 'object',
+              properties: {
+                allow: { type: 'array', items: { type: 'string' }, maxItems: 32 },
+                deny: { type: 'array', items: { type: 'string' }, maxItems: 32 }
+              },
+              additionalProperties: false
+            },
+            inputs: {
+              type: 'object',
+              additionalProperties: {
+                type: 'object',
+                properties: { valueFrom: { type: 'string' } },
+                required: ['valueFrom'],
+                additionalProperties: false
+              }
+            },
+            retry: {
+              type: 'object',
+              properties: {
+                maxAttempts: { type: 'integer', minimum: 1, maximum: 5 },
+                backoffMs: { type: 'integer', minimum: 0, maximum: 30000 },
+                retryOn: {
+                  type: 'array', minItems: 1, maxItems: 4, uniqueItems: true,
+                  items: {
+                    type: 'string',
+                    enum: ['step_timeout', 'provider_timeout', 'provider_error', 'output_schema_validation_failed']
+                  }
+                }
+              },
+              required: ['maxAttempts'],
+              additionalProperties: false
+            },
+            task: { type: 'string' },
             dependsOn: { type: 'array', items: { type: 'string' }, maxItems: 16 },
             timeoutMs: { type: 'integer', minimum: 5000, maximum: 300000 },
-            continueOnError: { type: 'boolean' }
+            continueOnError: { type: 'boolean' },
+            outputSchema: { type: 'object', description: 'JSON Schema that the step output must match.' }
           },
           required: ['id', 'type', 'task'], additionalProperties: false
         }
@@ -53,10 +91,17 @@ export function createWorkflowTools(manager: WorkflowManager, options: WorkflowT
     {
       definition: {
         name: 'workflow_start',
-        description: 'Start a validated declarative agent DAG from a JSON object or serialized JSON/YAML. Returns immediately with a workflow id.',
+        description: 'Start a validated declarative agent DAG from a JSON object or serialized JSON/YAML, with optional bounded runtime args. Returns immediately with a workflow id.',
         inputSchema: {
           type: 'object',
-          properties: { definition: { oneOf: [definitionSchema, { type: 'string', maxLength: 120000 }] } },
+          properties: {
+            definition: { oneOf: [definitionSchema, { type: 'string', maxLength: 120000 }] },
+            args: {
+              type: 'object',
+              maxProperties: 32,
+              additionalProperties: { type: ['string', 'number', 'boolean'] }
+            }
+          },
           required: ['definition'], additionalProperties: false
         }
       },
@@ -69,6 +114,7 @@ export function createWorkflowTools(manager: WorkflowManager, options: WorkflowT
             workingDirectory: context.workingDirectory,
             providerId: options.providerId,
             model: options.model,
+            ...(parsed.data.args !== undefined ? { args: parsed.data.args } : {}),
             definition: parsed.data.definition
           });
           return result(true, { id: workflow.id, state: workflow.state, name: workflow.name });

@@ -258,7 +258,7 @@ export type DesktopApi = {
 export type WorkerCommand =
   | { type: 'turn.start'; payload: z.input<typeof StartTurnInputSchema> }
   | { type: 'turn.cancel'; sessionId: string }
-  | { type: 'session.stop'; sessionId: string }
+  | { type: 'session.stop'; requestId: string; sessionId: string }
   | { type: 'workflow.cancel'; sessionId: string; workflowId: string }
   | { type: 'workflow.resume'; requestId: string; sessionId: string; workflowId: string }
   | { type: 'approval.resolve'; requestId: string; allow: boolean }
@@ -273,6 +273,7 @@ export type WorkerMessage =
   | { type: 'ready' }
   | { type: 'agent.event'; event: AgentEvent }
   | { type: 'orchestration.event'; event: OrchestrationEvent }
+  | { type: 'session.stopped'; requestId: string; sessionId: string; ok: boolean; error?: string }
   | { type: 'workflow.action.result'; requestId: string; ok: boolean; error?: string }
   | { type: 'sessions.changed' }
   | { type: 'extensions.status'; status: ExtensionStatus }

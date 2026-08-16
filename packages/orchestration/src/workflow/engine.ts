@@ -8,20 +8,31 @@ import type {
 } from '@desktop-agent/contracts';
 import { createLinkedAbortController } from '../abort.js';
 import { OrchestrationError } from '../errors.js';
+import { assertOutputSchema, validateStructuredOutput } from '../structured-output.js';
 import { accrueUsage, emptyUsage } from '../usage.js';
 import { AgentExecutionScheduler } from '../subagent/scheduler.js';
 import type { LeafAgentRunner, LeafAgentRunResult } from '../subagent/types.js';
+import { resolveWorkflowStepInputs } from './data/references.js';
 import { buildStepPrompt, truncateWorkflowOutput } from './prompt-builder.js';
+import { shouldRetryWorkflowStep, waitForRetryBackoff } from './retry.js';
 import type { WorkflowEngineCallbacks, WorkflowExecutionRequest } from './types.js';
 
 const FAILURE_STATES = new Set<WorkflowStepState>(['failed', 'timed_out', 'cancelled', 'blocked', 'interrupted']);
 const TERMINAL_STATES = new Set<WorkflowStepState>(['completed', ...FAILURE_STATES]);
 
+function effectiveStepModel(step: WorkflowAgentStep, workflowModel: string): string {
+  return step.model && step.model !== 'inherit' ? step.model : workflowModel;
+}
+
 function cloneSnapshot(snapshot: WorkflowRunSnapshot): WorkflowRunSnapshot {
   return {
     ...snapshot,
     usage: { ...snapshot.usage },
-    steps: snapshot.steps.map((step) => ({ ...step, usage: { ...step.usage } })),
+    steps: snapshot.steps.map((step) => ({
+      ...step,
+      ...(step.structuredResult !== undefined ? { structuredResult: structuredClone(step.structuredResult) } : {}),
+      usage: { ...step.usage }
+    })),
     failedStepIds: [...snapshot.failedStepIds],
     blockedStepIds: [...snapshot.blockedStepIds]
   };
@@ -50,6 +61,10 @@ function stepFailureCode(error: unknown): WorkflowStepErrorCode {
     if (error.code === 'provider_timeout') return 'provider_timeout';
     if (error.code === 'provider_error') return 'provider_error';
     if (error.code === 'invalid_profile') return 'invalid_profile';
+    if (error.code === 'output_schema_invalid') return 'output_schema_invalid';
+    if (error.code === 'output_schema_validation_failed') return 'output_schema_validation_failed';
+    if (error.code === 'workflow_reference_invalid') return 'workflow_reference_invalid';
+    if (error.code === 'workflow_reference_not_found') return 'workflow_reference_not_found';
   }
   return 'workflow_step_failed';
 }
@@ -71,6 +86,8 @@ export function createResumedWorkflowSnapshot(
       if (!prior) {
         return {
           id: definition.id,
+          profile: definition.profile,
+          model: effectiveStepModel(definition, request.model),
           state: 'pending',
           attempt: 1,
           createdAt: previous.createdAt,
@@ -78,9 +95,16 @@ export function createResumedWorkflowSnapshot(
           usage: emptyUsage()
         };
       }
-      if (prior.state === 'completed') return { ...prior, usage: { ...prior.usage } };
+      if (prior.state === 'completed') return {
+        ...prior,
+        profile: prior.profile ?? definition.profile,
+        model: prior.model ?? effectiveStepModel(definition, request.model),
+        usage: { ...prior.usage }
+      };
       return {
         id: prior.id,
+        profile: definition.profile,
+        model: effectiveStepModel(definition, request.model),
         state: 'pending',
         attempt: prior.state === 'pending' ? prior.attempt : prior.attempt + 1,
         createdAt: prior.createdAt,
@@ -106,6 +130,8 @@ export function createInitialWorkflowSnapshot(request: WorkflowExecutionRequest)
     startedAt: request.createdAt,
     steps: request.definition.steps.map((step) => ({
       id: step.id,
+      profile: step.profile,
+      model: effectiveStepModel(step, request.model),
       state: 'pending',
       attempt: 1,
       createdAt: request.createdAt,
@@ -155,6 +181,26 @@ export class WorkflowEngine {
       };
       changed();
     };
+    const resetStepForRetry = (stepId: string, attempt: number) => {
+      snapshot = {
+        ...snapshot,
+        steps: snapshot.steps.map((step) => {
+          if (step.id !== stepId) return step;
+          return {
+            id: step.id,
+            ...(step.profile ? { profile: step.profile } : {}),
+            ...(step.model ? { model: step.model } : {}),
+            state: 'queued' as const,
+            attempt,
+            createdAt: step.createdAt,
+            ...(step.startedAt ? { startedAt: step.startedAt } : {}),
+            incomplete: false,
+            usage: { ...step.usage }
+          };
+        })
+      };
+      changed();
+    };
     const log = (level: 'info' | 'warning' | 'error', message: string, stepId?: string) => callbacks.onLog({
       type: 'workflow.log', runId: request.id, ...(stepId ? { stepId } : {}), level, message, createdAt: new Date().toISOString()
     });
@@ -171,55 +217,94 @@ export class WorkflowEngine {
 
     const executeStep = async (step: WorkflowAgentStep): Promise<void> => {
       updateStep(step.id, { state: 'queued' });
-      const stepController = createLinkedAbortController([workflowController.controller.signal]);
-      let release: (() => void) | undefined;
-      let stepTimedOut = false;
-      let stepTimer: ReturnType<typeof setTimeout> | undefined;
-      try {
-        release = await this.scheduler.acquire(stepController.controller.signal);
-        if (workflowController.controller.signal.aborted) return;
-        updateStep(step.id, { state: 'running', startedAt: new Date().toISOString() });
-        log('info', 'Started workflow agent step.', step.id);
-        const baseUsage = { ...snapshot.steps.find((item) => item.id === step.id)!.usage };
-        stepTimer = setTimeout(() => {
-          stepTimedOut = true;
-          stepController.controller.abort();
-        }, step.timeoutMs ?? 120_000);
-        const result = await this.runner.run({
-          id: `${request.id}:${step.id}`,
-          sessionId: request.sessionId,
-          workingDirectory: request.workingDirectory,
-          task: buildStepPrompt(step, dependencySnapshots(step)),
-          profile: step.profile,
-          providerId: request.providerId,
-          model: request.model,
-          maxIterations: 8,
-          timeoutMs: step.timeoutMs ?? 120_000
-        }, stepController.controller.signal, (event) => {
-          if (event.type !== 'usage') return;
-          const current = snapshot.steps.find((item) => item.id === step.id);
-          if (!current || TERMINAL_STATES.has(current.state)) return;
-          const usage = { ...current.usage };
-          accrueUsage(usage, event);
-          updateStep(step.id, { usage });
-        });
-        this.completeStep(step, result, baseUsage, stepTimedOut, workflowController.controller.signal.aborted, workflowTimedOut, updateStep, log);
-      } catch (error) {
-        if (workflowTimedOut) {
-          updateStep(step.id, { state: 'cancelled', stopReason: 'workflow_timeout', errorCode: 'workflow_timeout', incomplete: true, finishedAt: new Date().toISOString() });
-        } else if (stepTimedOut) {
-          updateStep(step.id, { state: 'timed_out', stopReason: 'step_timeout', errorCode: 'step_timeout', error: 'Workflow step timed out.', incomplete: true, finishedAt: new Date().toISOString() });
-          log('error', 'Workflow step timed out.', step.id);
-        } else if (workflowController.controller.signal.aborted) {
-          updateStep(step.id, { state: 'cancelled', stopReason: 'cancelled', errorCode: 'workflow_cancelled', incomplete: true, finishedAt: new Date().toISOString() });
-        } else {
-          updateStep(step.id, { state: 'failed', stopReason: 'workflow_step_failed', errorCode: stepFailureCode(error), error: error instanceof Error ? error.message : String(error), incomplete: true, finishedAt: new Date().toISOString() });
-          log('error', error instanceof Error ? error.message : String(error), step.id);
+      let attemptsThisRun = 0;
+      while (!workflowController.controller.signal.aborted) {
+        attemptsThisRun += 1;
+        const stepController = createLinkedAbortController([workflowController.controller.signal]);
+        let release: (() => void) | undefined;
+        let stepTimedOut = false;
+        let stepTimer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          release = await this.scheduler.acquire(stepController.controller.signal);
+          if (workflowController.controller.signal.aborted) return;
+          const current = snapshot.steps.find((item) => item.id === step.id)!;
+          updateStep(step.id, {
+            state: 'running',
+            ...(current.startedAt ? {} : { startedAt: new Date().toISOString() })
+          });
+          log('info', `Started workflow agent step attempt ${current.attempt}.`, step.id);
+          const baseUsage = { ...current.usage };
+          stepTimer = setTimeout(() => {
+            stepTimedOut = true;
+            stepController.controller.abort();
+          }, step.timeoutMs ?? 120_000);
+          if (step.outputSchema) assertOutputSchema(step.outputSchema);
+          const model = effectiveStepModel(step, request.model);
+          const dependencies = dependencySnapshots(step);
+          const resolvedInputs = resolveWorkflowStepInputs(step, dependencies, request.args);
+          const result = await this.runner.run({
+            id: `${request.id}:${step.id}`,
+            sessionId: request.sessionId,
+            workingDirectory: request.workingDirectory,
+            task: buildStepPrompt(step, dependencies, resolvedInputs),
+            profile: step.profile,
+            providerId: request.providerId,
+            model,
+            maxIterations: step.maxIterations ?? 8,
+            timeoutMs: step.timeoutMs ?? 120_000,
+            ...(step.tools ? { tools: step.tools } : {}),
+            ...(step.readOnly !== undefined ? { readOnly: step.readOnly } : {}),
+            ...(step.outputSchema ? { outputSchema: step.outputSchema } : {})
+          }, stepController.controller.signal, (event) => {
+            if (event.type !== 'usage') return;
+            const latest = snapshot.steps.find((item) => item.id === step.id);
+            if (!latest || TERMINAL_STATES.has(latest.state)) return;
+            const usage = { ...latest.usage };
+            accrueUsage(usage, event);
+            updateStep(step.id, { usage });
+          });
+          if (result.model && result.model !== model) updateStep(step.id, { model: result.model });
+          this.completeStep(step, result, baseUsage, stepTimedOut, workflowController.controller.signal.aborted, workflowTimedOut, updateStep, log);
+        } catch (error) {
+          if (workflowTimedOut) {
+            updateStep(step.id, { state: 'cancelled', stopReason: 'workflow_timeout', errorCode: 'workflow_timeout', incomplete: true, finishedAt: new Date().toISOString() });
+          } else if (stepTimedOut) {
+            updateStep(step.id, { state: 'timed_out', stopReason: 'step_timeout', errorCode: 'step_timeout', error: 'Workflow step timed out.', incomplete: true, finishedAt: new Date().toISOString() });
+            log('error', 'Workflow step timed out.', step.id);
+          } else if (workflowController.controller.signal.aborted) {
+            updateStep(step.id, { state: 'cancelled', stopReason: 'cancelled', errorCode: 'workflow_cancelled', incomplete: true, finishedAt: new Date().toISOString() });
+          } else {
+            const errorCode = stepFailureCode(error);
+            updateStep(step.id, {
+              state: 'failed', stopReason: errorCode, errorCode,
+              ...(errorCode === 'output_schema_invalid' || errorCode === 'output_schema_validation_failed' ? { schemaValid: false } : {}),
+              error: error instanceof Error ? error.message : String(error), incomplete: true, finishedAt: new Date().toISOString()
+            });
+            log('error', error instanceof Error ? error.message : String(error), step.id);
+          }
+        } finally {
+          if (stepTimer) clearTimeout(stepTimer);
+          stepController.dispose();
+          release?.();
         }
-      } finally {
-        if (stepTimer) clearTimeout(stepTimer);
-        stepController.dispose();
-        release?.();
+
+        const failedAttempt = snapshot.steps.find((item) => item.id === step.id)!;
+        if (!shouldRetryWorkflowStep(step.retry, failedAttempt.errorCode, attemptsThisRun)) return;
+        const nextAttempt = failedAttempt.attempt + 1;
+        resetStepForRetry(step.id, nextAttempt);
+        log('warning', `Retrying after ${failedAttempt.errorCode}; attempt ${nextAttempt} starts in ${step.retry!.backoffMs}ms.`, step.id);
+        try {
+          await waitForRetryBackoff(step.retry!.backoffMs, workflowController.controller.signal);
+        } catch {
+          updateStep(step.id, {
+            state: 'cancelled',
+            stopReason: workflowTimedOut ? 'workflow_timeout' : 'cancelled',
+            errorCode: workflowTimedOut ? 'workflow_timeout' : 'workflow_cancelled',
+            incomplete: true,
+            finishedAt: new Date().toISOString()
+          });
+          return;
+        }
       }
     };
 
@@ -327,8 +412,19 @@ export class WorkflowEngine {
         output: output.output, usage: addUsage(baseUsage, result.usage), incomplete: true, finishedAt: new Date().toISOString()
       });
     } else {
+      const structured = step.outputSchema ? validateStructuredOutput(result.result, step.outputSchema) : undefined;
+      if (structured && !structured.ok) {
+        update(step.id, {
+          state: 'failed', stopReason: structured.code, errorCode: structured.code,
+          output: output.output, schemaValid: false, error: structured.message,
+          usage: addUsage(baseUsage, result.usage), incomplete: true, finishedAt: new Date().toISOString()
+        });
+        log('error', structured.message, step.id);
+        return;
+      }
       update(step.id, {
         state: 'completed', stopReason: result.stopReason, output: output.output, usage: addUsage(baseUsage, result.usage),
+        ...(structured?.ok ? { structuredResult: structuredClone(structured.value), schemaValid: true } : {}),
         ...(result.stopReason === 'max_iterations' ? { errorCode: 'max_iterations' as const } : {}),
         incomplete: result.incomplete || output.truncated, finishedAt: new Date().toISOString()
       });

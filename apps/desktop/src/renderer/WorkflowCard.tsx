@@ -40,7 +40,12 @@ const WorkflowStepRow = memo(function WorkflowStepRow({ step, now }: { step: Wor
   return <details className={`workflow-step ${step.state}`}>
     <summary aria-disabled={!expandable}>
       <StepStateIcon step={step} />
-      <span className="workflow-step-name">{step.id}</span>
+      <span className="workflow-step-identity">
+        <span className="workflow-step-name">{step.id}</span>
+        {(step.profile || step.model || step.attempt > 1) && <span className="workflow-step-config">
+          {[step.profile, step.model, ...(step.attempt > 1 ? [`第 ${step.attempt} 次尝试`] : [])].filter(Boolean).join(' · ')}
+        </span>}
+      </span>
       <span className="workflow-step-state">{workflowStepStateLabel(step.state)}{step.incomplete ? ' · 不完整' : ''}</span>
       <span className="workflow-step-duration">{duration(step.startedAt, step.finishedAt, now)}</span>
       <span className="workflow-step-usage">{step.usage.inputTokens || step.usage.outputTokens ? usageText(step.usage) : ''}</span>

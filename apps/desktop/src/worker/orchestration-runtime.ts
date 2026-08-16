@@ -2,15 +2,19 @@ import { AgentError, runAgentTurn } from '@desktop-agent/agent-core';
 import type { Message, ProviderConfig } from '@desktop-agent/contracts';
 import {
   accrueUsage,
+  type AgentProfileRegistry,
+  createBuiltinAgentProfileRegistry,
   emptyUsage,
   NonInteractivePermissionGate,
   OrchestrationError,
+  resolveAgentToolPolicy,
+  structuredOutputInstruction,
+  type LeafAgentRunRequest,
   type LeafAgentRunner
 } from '@desktop-agent/orchestration';
 import { createProvider } from '@desktop-agent/providers';
 import { createDefaultToolRuntime } from '@desktop-agent/tools-node';
 
-const EXPLORE_TOOLS = new Set(['read_file', 'list_files', 'grep', 'glob', 'web_search', 'web_fetch']);
 const INCOMPLETE_STOP_REASONS = new Set(['max_iterations', 'length', 'max_tokens']);
 
 type ProviderRuntime = { config: ProviderConfig; apiKey: string };
@@ -18,6 +22,7 @@ type ProviderRuntime = { config: ProviderConfig; apiKey: string };
 export type DesktopLeafAgentRunnerOptions = {
   resolveProvider(providerId: string): ProviderRuntime | undefined;
   trashDirectory: string;
+  profileRegistry?: AgentProfileRegistry;
 };
 
 function finalAssistantText(messages: Message[]): string {
@@ -35,34 +40,49 @@ function finalAssistantText(messages: Message[]): string {
 }
 
 export function createDesktopLeafAgentRunner(options: DesktopLeafAgentRunnerOptions): LeafAgentRunner {
-  return {
-    async run(request, signal, onEvent) {
+  const profileRegistry = options.profileRegistry ?? createBuiltinAgentProfileRegistry();
+  const continuations = new Map<string, { request: LeafAgentRunRequest; history: Message[] }>();
+  const execute = async (
+    request: LeafAgentRunRequest,
+    history: Message[],
+    task: string,
+    signal: AbortSignal,
+    onEvent: Parameters<LeafAgentRunner['run']>[2],
+    continuationId?: string
+  ) => {
+      const profile = profileRegistry.get(request.profile, request.workingDirectory);
       const providerRuntime = options.resolveProvider(request.providerId);
       if (!providerRuntime) throw new OrchestrationError('provider_error', `Provider is unavailable: ${request.providerId}`);
-      if (!providerRuntime.config.models.includes(request.model)) {
-        throw new OrchestrationError('provider_error', `Model ${request.model} is not configured.`);
-      }
-      if (request.profile !== 'explore' && request.profile !== 'synthesize') {
-        throw new OrchestrationError('invalid_profile', `Unsupported agent profile: ${String(request.profile)}`);
+      const model = profile.model && profile.model !== 'inherit' ? profile.model : request.model;
+      if (!providerRuntime.config.models.includes(model)) {
+        throw new OrchestrationError('provider_error', `Model ${model} is not configured.`);
       }
       const toolRuntime = createDefaultToolRuntime({ trashDirectory: options.trashDirectory });
-      const tools = request.profile === 'explore'
-        ? toolRuntime.tools.filter((tool) => EXPLORE_TOOLS.has(tool.definition.name))
-        : [];
+      const policy = resolveAgentToolPolicy(
+        toolRuntime.tools.map((tool) => tool.definition.name),
+        profile,
+        {
+          ...(request.tools ? { tools: request.tools } : {}),
+          ...(request.readOnly !== undefined ? { readOnly: request.readOnly } : {})
+        }
+      );
+      const allowedTools = new Set(policy.allowedTools);
+      const tools = toolRuntime.tools.filter((tool) => allowedTools.has(tool.definition.name));
       const usage = emptyUsage();
       let result: Awaited<ReturnType<typeof runAgentTurn>>;
       try {
         result = await runAgentTurn({
           sessionId: request.sessionId,
           workingDirectory: request.workingDirectory,
-          model: request.model,
-          history: [],
-          userText: request.task,
+          model,
+          history,
+          userText: task,
           provider: createProvider(providerRuntime.config, providerRuntime.apiKey),
           tools,
-          instructions: [request.profile === 'explore'
-            ? 'You are a read-only coding sub-agent. Focus only on the delegated task. Inspect the project using the available read-only tools. Return concise findings with relevant file paths, symbols, and unresolved uncertainties.'
-            : 'You are a synthesis sub-agent. Use only the supplied dependency results. Distinguish consensus, conflicts, missing evidence, and incomplete upstream results.'],
+          instructions: [
+            profile.systemPrompt,
+            ...(request.outputSchema ? [structuredOutputInstruction(request.outputSchema)] : [])
+          ],
           permissionGate: new NonInteractivePermissionGate(toolRuntime.permissionGate),
           signal,
           maxIterations: request.maxIterations,
@@ -81,12 +101,26 @@ export function createDesktopLeafAgentRunner(options: DesktopLeafAgentRunnerOpti
         }
         throw error;
       }
+      const nextContinuationId = request.continuable ? continuationId ?? `sac_${crypto.randomUUID()}` : undefined;
+      if (nextContinuationId) continuations.set(nextContinuationId, { request, history: result.messages });
       return {
         result: finalAssistantText(result.messages),
         stopReason: result.stopReason,
+        model,
+        ...(nextContinuationId ? { continuationId: nextContinuationId } : {}),
         usage,
         incomplete: INCOMPLETE_STOP_REASONS.has(result.stopReason)
       };
+  };
+  return {
+    run: (request, signal, onEvent) => execute(request, [], request.task, signal, onEvent),
+    continue: async (continuationId, task, signal, onEvent) => {
+      const continuation = continuations.get(continuationId);
+      if (!continuation) throw new OrchestrationError('subagent_closed', `Sub-agent continuation is unavailable: ${continuationId}`);
+      return execute(continuation.request, continuation.history, task, signal, onEvent, continuationId);
+    },
+    close: async (continuationId) => {
+      continuations.delete(continuationId);
     }
   };
 }

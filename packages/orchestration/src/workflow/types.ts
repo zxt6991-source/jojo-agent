@@ -1,5 +1,6 @@
 import type {
   OrchestrationEvent,
+  WorkflowArgs,
   WorkflowDefinition,
   WorkflowRunSnapshot
 } from '@desktop-agent/contracts';
@@ -10,12 +11,14 @@ export type WorkflowExecutionRequest = {
   workingDirectory: string;
   providerId: string;
   model: string;
+  args: WorkflowArgs;
   definition: WorkflowDefinition;
   createdAt: string;
 };
 
-export type WorkflowStartRequest = Omit<WorkflowExecutionRequest, 'id' | 'createdAt' | 'definition'> & {
+export type WorkflowStartRequest = Omit<WorkflowExecutionRequest, 'id' | 'createdAt' | 'definition' | 'args'> & {
   definition: unknown;
+  args?: unknown;
 };
 
 export type WorkflowEngineCallbacks = {
