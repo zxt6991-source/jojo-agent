@@ -5,6 +5,7 @@
   "exports": "./src/index.ts",
   "dependencies": {
     "@desktop-agent/contracts": "workspace:*",
+    "yaml": "^2.9.0",
     "zod": "^4.1.13"
   }
 }

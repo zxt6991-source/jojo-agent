@@ -15,6 +15,8 @@ import {
   type SessionRecord
 } from '@desktop-agent/contracts';
 
+export { JsonlWorkflowStore, MAX_WORKFLOW_JOURNAL_BYTES, workflowDefinitionHash } from './workflow-store.js';
+
 const StoredConfigV1Schema = z.object({
   schemaVersion: z.literal(1),
   provider: z.object({ baseUrl: z.string().url(), model: z.string().min(1) })

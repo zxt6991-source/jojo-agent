@@ -1,7 +1,7 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import type {
-  AgentEvent, ApprovalRequest, BrowserDockState, ExtensionSettings, ExtensionStatus, ImageContentBlock, Message, ProviderConfig, ProviderSettings, SessionMeta, SkillDetail, SkillStatus, WorkspaceChanges
+  AgentEvent, ApprovalRequest, BrowserDockState, ExtensionSettings, ExtensionStatus, ImageContentBlock, Message, ProviderConfig, ProviderSettings, SessionMeta, SkillDetail, SkillStatus, WorkflowRunSnapshot, WorkspaceChanges
 } from '@desktop-agent/contracts';
 import { DEFAULT_BROWSER_SETTINGS, DEFAULT_PROVIDERS, DEFAULT_SESSION_TITLE } from '@desktop-agent/contracts';
 import {
@@ -15,6 +15,8 @@ import {
 import { browserDomainIssue, parseBrowserDomainList } from './browser-settings';
 import { ChatTranscript, ConversationViewTabs, Markdown, TrajectoryView } from './ConversationViews';
 import { Sidebar } from './Sidebar';
+import { WorkflowCard } from './WorkflowCard';
+import { mergeWorkflowSnapshot, workflowsForSession } from './workflow-state';
 import './styles.css';
 
 type DiffLine = { type: 'addition' | 'deletion' | 'context' | 'hunk' | 'meta'; oldLine?: number; newLine?: number; text: string };
@@ -470,6 +472,7 @@ function App() {
   const [browserDock, setBrowserDock] = useState<BrowserDockState | null>(null);
   const [usage, setUsage] = useState({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
   const [contextUsage, setContextUsage] = useState<{ estimated: number; window: number; compacted: number } | null>(null);
+  const [workflows, setWorkflows] = useState<WorkflowRunSnapshot[]>([]);
   const conversationRef = useRef<HTMLDivElement>(null);
   const atBottomRef = useRef(true);
   const [atBottom, setAtBottom] = useState(true);
@@ -534,13 +537,18 @@ function App() {
     if (directory) setCollapsedProjects((items) => items.filter((path) => path !== directory));
     setUsage({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
     setContextUsage(null);
-    const [nextMessages, nextChanges] = await Promise.all([
+    const [nextMessages, nextChanges, nextWorkflows] = await Promise.all([
       window.desktopAgent.loadMessages(id),
-      loadWorkspaceChanges(id)
+      loadWorkspaceChanges(id),
+      window.desktopAgent.listWorkflowRuns(id)
     ]);
     if (activeIdRef.current !== id) return;
     setMessages(nextMessages);
     setWorkspaceChanges(nextChanges);
+    setWorkflows((items) => [
+      ...items.filter((workflow) => workflow.sessionId !== id),
+      ...nextWorkflows
+    ]);
     setReviewPath(nextChanges?.files[0]?.path ?? '');
   };
 
@@ -560,6 +568,11 @@ function App() {
       setBrowserSecretValue('');
     });
     const offDock = window.desktopAgent.onBrowserDockState((state) => setBrowserDock(state));
+    const offOrchestration = window.desktopAgent.onOrchestrationEvent((event) => {
+      if (event.type === 'workflow.changed') {
+        setWorkflows((current) => mergeWorkflowSnapshot(current, event.workflow));
+      }
+    });
     const offEvents = window.desktopAgent.onAgentEvent((event: AgentEvent) => {
       if (event.type === 'turn.started') {
         setRunning(true); setRunningSessionId(event.sessionId); setError(''); setLiveSteps(emptyLiveSteps()); setTurnStartedAt(Date.now());
@@ -578,7 +591,7 @@ function App() {
       else if (event.type === 'turn.failed') { setError(event.message); setRunning(false); setRunningSessionId(null); setTurnStartedAt(null); setApproval(null); void reloadActive(); }
       else if (event.type === 'turn.completed' || event.type === 'turn.cancelled') { setRunning(false); setRunningSessionId(null); setTurnStartedAt(null); setApproval(null); void reloadActive(); }
     });
-    return () => { offSessions(); offExtensions(); offSecret(); offDock(); offEvents(); };
+    return () => { offSessions(); offExtensions(); offSecret(); offDock(); offOrchestration(); offEvents(); };
   }, []);
 
   useEffect(() => {
@@ -711,6 +724,7 @@ function App() {
       setInspectedId(null);
       setUsage({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
       setContextUsage(null);
+      setWorkflows((items) => items.filter((workflow) => workflow.sessionId !== session.id));
     }
     await window.desktopAgent.deleteSession(session.id);
     const remaining = sessions.filter((item) => item.id !== session.id);
@@ -744,6 +758,7 @@ function App() {
   const overlayOpen = settingsOpen || Boolean(approval) || Boolean(browserSecret) || skillCreateOpen || Boolean(selectedSkill);
   const visibleDock = browserDock && activeId && browserDock.sessionId === activeId ? browserDock : null;
   const browsing = Boolean(visibleDock);
+  const visibleWorkflows = useMemo(() => workflowsForSession(workflows, activeId), [workflows, activeId]);
   const snapshot = useMemo(() => buildConversationSnapshot({
     messages,
     liveSteps: sessionBusy ? liveSteps : [],
@@ -755,7 +770,7 @@ function App() {
     const el = conversationRef.current;
     if (!el || !atBottomRef.current) return;
     el.scrollTop = el.scrollHeight;
-  }, [snapshot, workspaceChanges, conversationView, error]);
+  }, [snapshot, workspaceChanges, visibleWorkflows, conversationView, error]);
 
   useLayoutEffect(() => {
     if (!activeId || visibleDock) return;
@@ -854,6 +869,18 @@ function App() {
           {conversationView === 'chat'
             ? <ChatTranscript snapshot={snapshot} running={sessionBusy} turnStartedAt={turnStartedAt} onInspect={inspectRecord} />
             : <TrajectoryView snapshot={snapshot} selectedId={inspectedId} onSelect={setInspectedId} />}
+          {conversationView === 'chat' && visibleWorkflows.map((workflow) => <WorkflowCard
+            key={workflow.id}
+            workflow={workflow}
+            onCancel={async (item) => {
+              try { await window.desktopAgent.cancelWorkflow({ sessionId: item.sessionId, workflowId: item.id }); }
+              catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+            }}
+            onResume={async (item) => {
+              try { await window.desktopAgent.resumeWorkflow({ sessionId: item.sessionId, workflowId: item.id }); }
+              catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+            }}
+          />)}
           {error && <div className="error-banner">{error}</div>}
           {workspaceChangesError && <div className="changes-error">无法读取文件修改：{workspaceChangesError}</div>}
           {!sessionBusy && messages.length > 0 && workspaceChanges && workspaceChanges.files.length > 0 && <WorkspaceChangesCard changes={workspaceChanges} onReview={openReview} />}

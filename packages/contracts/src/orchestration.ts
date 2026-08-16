@@ -41,6 +41,29 @@ export type WorkflowStepState = z.infer<typeof WorkflowStepStateSchema>;
 export const WorkflowRunStateSchema = z.enum(['running', 'completed', 'failed', 'cancelled', 'timed_out', 'interrupted']);
 export type WorkflowRunState = z.infer<typeof WorkflowRunStateSchema>;
 
+export const WorkflowStepErrorCodeSchema = z.enum([
+  'step_timeout',
+  'workflow_timeout',
+  'workflow_cancelled',
+  'provider_timeout',
+  'provider_error',
+  'max_iterations',
+  'invalid_profile',
+  'workflow_step_failed',
+  'workflow_deadlock'
+]);
+export type WorkflowStepErrorCode = z.infer<typeof WorkflowStepErrorCodeSchema>;
+
+export const WorkflowErrorCodeSchema = z.enum([
+  'workflow_timeout',
+  'workflow_cancelled',
+  'workflow_step_failed',
+  'workflow_deadlock',
+  'workflow_interrupted',
+  'workflow_persistence_failed'
+]);
+export type WorkflowErrorCode = z.infer<typeof WorkflowErrorCodeSchema>;
+
 const WorkflowStepBaseSchema = z.object({
   id: z.string().regex(/^[A-Za-z][A-Za-z0-9_-]{0,63}$/u),
   dependsOn: z.array(z.string()).max(16).default([]),
@@ -113,6 +136,7 @@ export const WorkflowStepSnapshotSchema = z.object({
   finishedAt: z.string().datetime().optional(),
   output: z.string().optional(),
   error: z.string().optional(),
+  errorCode: WorkflowStepErrorCodeSchema.optional(),
   stopReason: z.string().optional(),
   incomplete: z.boolean().default(false),
   usage: UsageTotalsSchema
@@ -124,6 +148,7 @@ export const WorkflowRunSnapshotSchema = z.object({
   sessionId: z.string().min(1),
   name: z.string().min(1),
   state: WorkflowRunStateSchema,
+  revision: z.number().int().nonnegative().default(0),
   createdAt: z.string().datetime(),
   startedAt: z.string().datetime().optional(),
   finishedAt: z.string().datetime().optional(),
@@ -131,6 +156,9 @@ export const WorkflowRunSnapshotSchema = z.object({
   usage: UsageTotalsSchema,
   result: z.string().optional(),
   error: z.string().optional(),
+  errorCode: WorkflowErrorCodeSchema.optional(),
+  failedStepIds: z.array(z.string()).default([]),
+  blockedStepIds: z.array(z.string()).default([]),
   incomplete: z.boolean().default(false)
 });
 export type WorkflowRunSnapshot = z.infer<typeof WorkflowRunSnapshotSchema>;
@@ -148,3 +176,56 @@ export const OrchestrationEventSchema = z.discriminatedUnion('type', [
   })
 ]);
 export type OrchestrationEvent = z.infer<typeof OrchestrationEventSchema>;
+
+export const StoredWorkflowRequestSchema = z.object({
+  id: z.string().min(1),
+  sessionId: z.string().min(1),
+  workingDirectory: z.string().min(1),
+  providerId: z.string().min(1),
+  model: z.string().min(1),
+  definition: WorkflowDefinitionSchema,
+  definitionHash: z.string().regex(/^[a-f0-9]{64}$/u),
+  createdAt: z.string().datetime()
+});
+export type StoredWorkflowRequest = z.infer<typeof StoredWorkflowRequestSchema>;
+
+export const WorkflowJournalRecordTypeSchema = z.enum([
+  'workflow.started',
+  'workflow.updated',
+  'workflow.completed',
+  'workflow.failed',
+  'workflow.cancelled',
+  'workflow.timed_out',
+  'workflow.interrupted',
+  'step.started',
+  'step.completed',
+  'step.failed',
+  'step.cancelled',
+  'step.timed_out',
+  'step.blocked',
+  'workflow.log'
+]);
+export type WorkflowJournalRecordType = z.infer<typeof WorkflowJournalRecordTypeSchema>;
+
+export const WorkflowJournalRecordSchema = z.object({
+  schemaVersion: z.literal(1),
+  type: WorkflowJournalRecordTypeSchema,
+  runId: z.string().min(1),
+  createdAt: z.string().datetime(),
+  request: StoredWorkflowRequestSchema.optional(),
+  snapshot: WorkflowRunSnapshotSchema.optional(),
+  stepId: z.string().optional(),
+  level: z.enum(['info', 'warning', 'error']).optional(),
+  message: z.string().optional()
+}).superRefine((record, context) => {
+  if (record.type === 'workflow.started' && (!record.request || !record.snapshot)) {
+    context.addIssue({ code: 'custom', message: 'workflow.started requires request and snapshot.' });
+  }
+  if (record.type.startsWith('step.') && !record.stepId) {
+    context.addIssue({ code: 'custom', message: `${record.type} requires stepId.` });
+  }
+  if (record.type === 'workflow.log' && (!record.level || !record.message)) {
+    context.addIssue({ code: 'custom', message: 'workflow.log requires level and message.' });
+  }
+});
+export type WorkflowJournalRecord = z.infer<typeof WorkflowJournalRecordSchema>;

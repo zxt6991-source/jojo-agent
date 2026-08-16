@@ -144,6 +144,9 @@ importers:
       '@desktop-agent/contracts':
         specifier: workspace:*
         version: link:../contracts
+      yaml:
+        specifier: ^2.9.0
+        version: 2.9.0
       zod:
         specifier: ^4.1.13
         version: 4.4.3

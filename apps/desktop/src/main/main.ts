@@ -5,8 +5,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   ApprovalInputSchema, BrowserDockActionSchema, BrowserDockLayoutSchema, CreateSessionInputSchema, CreateSkillInputSchema, GetExtensionStatusInputSchema, ImportSkillInputSchema, IPC, ListModelsInputSchema, MAX_IMAGE_ATTACHMENTS, MAX_IMAGE_BYTES, McpServerIdInputSchema, RenameSessionInputSchema, SaveExtensionSettingsInputSchema, SaveSettingsInputSchema,
-  SessionIdInputSchema, SkillPathInputSchema, StartTurnInputSchema, UpdateSkillInputSchema,
-  type ExtensionStatus, type ProviderSettings, type WorkerCommand, type WorkerMessage
+  SessionIdInputSchema, SkillPathInputSchema, StartTurnInputSchema, UpdateSkillInputSchema, WorkflowRunActionInputSchema,
+  type ExtensionStatus, type ProviderSettings, type WorkerCommand, type WorkerMessage, type WorkflowRunSnapshot
 } from '@desktop-agent/contracts';
 import { z } from 'zod';
 import { createProvider } from '@desktop-agent/providers';
@@ -40,6 +40,7 @@ const oauthRequests = new Map<string, {
   timer: ReturnType<typeof setTimeout>;
 }>();
 const workerRequests = new Map<string, { resolve: () => void; reject: (error: Error) => void }>();
+const workflowRuns = new Map<string, WorkflowRunSnapshot>();
 const browserSecretPrompts = new Map<string, { resolve: (value: string | undefined) => void }>();
 let mcpOAuthCredentialWrite: Promise<void> = Promise.resolve();
 
@@ -236,7 +237,17 @@ function startWorker(): void {
   worker.on('message', (message: WorkerMessage) => {
     if (message.type === 'ready') void pushConfig();
     else if (message.type === 'agent.event') sendToRenderer(IPC.agentEvent, message.event);
-    else if (message.type === 'orchestration.event') sendToRenderer(IPC.orchestrationEvent, message.event);
+    else if (message.type === 'orchestration.event') {
+      if (message.event.type === 'workflow.changed') workflowRuns.set(message.event.workflow.id, message.event.workflow);
+      sendToRenderer(IPC.orchestrationEvent, message.event);
+    }
+    else if (message.type === 'workflow.action.result') {
+      const request = workerRequests.get(message.requestId);
+      if (request) {
+        workerRequests.delete(message.requestId);
+        if (message.ok) request.resolve(); else request.reject(new Error(message.error ?? 'Workflow action failed.'));
+      }
+    }
     else if (message.type === 'sessions.changed') sendToRenderer(IPC.sessionsChanged);
     else if (message.type === 'extensions.status') {
       extensionStatus = message.status;
@@ -320,7 +331,7 @@ function registerIpc(): void {
   });
   ipcMain.handle(IPC.deleteSession, async (event, raw) => {
     assertTrusted(event); const { sessionId } = SessionIdInputSchema.parse({ sessionId: raw });
-    worker?.postMessage({ type: 'turn.cancel', sessionId } satisfies WorkerCommand);
+    worker?.postMessage({ type: 'session.stop', sessionId } satisfies WorkerCommand);
     await sessionStore.delete(sessionId); sendToRenderer(IPC.sessionsChanged);
   });
   ipcMain.handle(IPC.loadMessages, async (event, raw) => {
@@ -346,6 +357,25 @@ function registerIpc(): void {
   ipcMain.handle(IPC.cancelTurn, async (event, raw) => {
     assertTrusted(event); const { sessionId } = SessionIdInputSchema.parse({ sessionId: raw });
     worker?.postMessage({ type: 'turn.cancel', sessionId } satisfies WorkerCommand);
+  });
+  ipcMain.handle(IPC.listWorkflowRuns, async (event, raw) => {
+    assertTrusted(event); const { sessionId } = SessionIdInputSchema.parse({ sessionId: raw });
+    return [...workflowRuns.values()]
+      .filter((workflow) => workflow.sessionId === sessionId)
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+  });
+  ipcMain.handle(IPC.cancelWorkflow, async (event, raw) => {
+    assertTrusted(event); const input = WorkflowRunActionInputSchema.parse(raw);
+    worker?.postMessage({ type: 'workflow.cancel', ...input } satisfies WorkerCommand);
+  });
+  ipcMain.handle(IPC.resumeWorkflow, async (event, raw) => {
+    assertTrusted(event); const input = WorkflowRunActionInputSchema.parse(raw);
+    if (!worker) throw new Error('Agent runtime is not available.');
+    const requestId = crypto.randomUUID();
+    await new Promise<void>((resolve, reject) => {
+      workerRequests.set(requestId, { resolve, reject });
+      worker!.postMessage({ type: 'workflow.resume', requestId, ...input } satisfies WorkerCommand);
+    });
   });
   ipcMain.handle(IPC.resolveApproval, async (event, raw) => {
     assertTrusted(event); const input = ApprovalInputSchema.parse(raw);

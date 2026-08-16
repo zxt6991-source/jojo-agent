@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import type { AgentEvent } from './agent';
 import type { Message } from './messages';
-import type { OrchestrationEvent } from './orchestration';
+import type { OrchestrationEvent, WorkflowRunSnapshot } from './orchestration';
 import type { ProviderSettings, SessionMeta } from './persistence';
 import { SESSION_TITLE_MAX_LENGTH } from './persistence';
 import type { WorkspaceChanges } from './workspace';
@@ -139,6 +139,10 @@ export type BrowserAction = z.infer<typeof BrowserActionSchema>;
 
 export const SessionIdInputSchema = z.object({ sessionId: z.string() });
 export const ApprovalInputSchema = z.object({ requestId: z.string(), allow: z.boolean() });
+export const WorkflowRunActionInputSchema = z.object({
+  sessionId: z.string().min(1),
+  workflowId: z.string().min(1)
+});
 export const McpServerIdInputSchema = z.object({ serverId: z.string().trim().min(1).max(64) });
 export const SkillPathInputSchema = z.object({ path: z.string().trim().min(1).max(4_096) });
 export const CreateSkillInputSchema = z.object({
@@ -219,6 +223,9 @@ export type DesktopApi = {
   getWorkspaceChanges(sessionId: string): Promise<WorkspaceChanges>;
   startTurn(input: z.input<typeof StartTurnInputSchema>): Promise<void>;
   cancelTurn(sessionId: string): Promise<void>;
+  listWorkflowRuns(sessionId: string): Promise<WorkflowRunSnapshot[]>;
+  cancelWorkflow(input: z.input<typeof WorkflowRunActionInputSchema>): Promise<void>;
+  resumeWorkflow(input: z.input<typeof WorkflowRunActionInputSchema>): Promise<void>;
   resolveApproval(input: z.input<typeof ApprovalInputSchema>): Promise<void>;
   chooseDirectory(): Promise<string | null>;
   chooseImages(): Promise<ImageContentBlock[]>;
@@ -251,6 +258,9 @@ export type DesktopApi = {
 export type WorkerCommand =
   | { type: 'turn.start'; payload: z.input<typeof StartTurnInputSchema> }
   | { type: 'turn.cancel'; sessionId: string }
+  | { type: 'session.stop'; sessionId: string }
+  | { type: 'workflow.cancel'; sessionId: string; workflowId: string }
+  | { type: 'workflow.resume'; requestId: string; sessionId: string; workflowId: string }
   | { type: 'approval.resolve'; requestId: string; allow: boolean }
   | { type: 'config.update'; settings: ProviderSettings; apiKeys: Record<string, string>; mcpOAuthCredentials: Record<string, unknown> }
   | { type: 'mcp.oauth.start'; requestId: string; serverId: string; redirectUrl: string; state: string }
@@ -263,6 +273,7 @@ export type WorkerMessage =
   | { type: 'ready' }
   | { type: 'agent.event'; event: AgentEvent }
   | { type: 'orchestration.event'; event: OrchestrationEvent }
+  | { type: 'workflow.action.result'; requestId: string; ok: boolean; error?: string }
   | { type: 'sessions.changed' }
   | { type: 'extensions.status'; status: ExtensionStatus }
   | { type: 'mcp.oauth.authorization'; requestId: string; url: string }
@@ -280,6 +291,9 @@ export const IPC = {
   getWorkspaceChanges: 'workspace:changes',
   startTurn: 'agent:start',
   cancelTurn: 'agent:cancel',
+  listWorkflowRuns: 'orchestration:workflow-list',
+  cancelWorkflow: 'orchestration:workflow-cancel',
+  resumeWorkflow: 'orchestration:workflow-resume',
   resolveApproval: 'agent:approval',
   chooseDirectory: 'system:choose-directory',
   chooseImages: 'system:choose-images',
