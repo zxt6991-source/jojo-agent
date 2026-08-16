@@ -179,7 +179,7 @@ function bindChromeCdpSocket(
   }
 ): ChromeCdpTransport {
   socket.setNoDelay(true);
-  let buffer = head.length ? Buffer.from(head) : Buffer.alloc(0);
+  let buffer: Buffer<ArrayBufferLike> = head.length ? Buffer.from(head) : Buffer.alloc(0);
   let closed = false;
   const close = (error?: Error) => {
     if (closed) return;

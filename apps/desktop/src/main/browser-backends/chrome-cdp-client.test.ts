@@ -102,7 +102,7 @@ describe('chrome cdp websocket client', () => {
       socket.write(
         `HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`
       );
-      let buffer = Buffer.alloc(0);
+      let buffer: Buffer<ArrayBufferLike> = Buffer.alloc(0);
       socket.on('data', (chunk) => {
         buffer = Buffer.concat([buffer, chunk]);
         const parsed = consumeChromeCdpFrames(buffer);
