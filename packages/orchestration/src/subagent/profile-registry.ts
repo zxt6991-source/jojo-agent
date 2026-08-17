@@ -107,8 +107,8 @@ export function createBuiltinAgentProfileRegistry(): AgentProfileRegistry {
     {
       name: 'general',
       source: 'builtin',
-      description: 'Perform a general engineering task with the configured tool permissions.',
-      systemPrompt: 'You are a general engineering sub-agent. Complete only the delegated task, respect the available tools and permission decisions, and report every material change.',
+      description: 'Perform a general engineering task in an isolated git worktree. Changes are never merged automatically.',
+      systemPrompt: 'You are a general engineering sub-agent running in an isolated git worktree. Complete only the delegated task, stay inside the assigned working directory, report every material change, and do not merge into the default branch.',
       readOnly: false,
       maxIterations: 8,
       timeoutMs: 120_000

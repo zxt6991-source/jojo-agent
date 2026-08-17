@@ -69,6 +69,32 @@ describe('runAgentTurn', () => {
     expect(events.some((event) => event.type === 'turn.completed')).toBe(true);
   });
 
+  it('marks tools approved after the permission gate allows them', async () => {
+    let approved: boolean | undefined;
+    const writeTool: Tool = {
+      definition: { name: 'write_file', description: 'write', inputSchema: { type: 'object' } },
+      execute: async (_input, context) => {
+        approved = context.approved;
+        return { callId: '', ok: true, content: 'wrote' };
+      }
+    };
+    const provider = new ScriptedProvider([
+      [
+        { type: 'tool_call_completed', call: { id: 'w1', name: 'write_file', input: { path: 'a.ts', content: 'x' } } },
+        { type: 'response_completed', stopReason: 'tool_calls' }
+      ],
+      [
+        { type: 'text_delta', text: 'done' },
+        { type: 'response_completed', stopReason: 'stop' }
+      ]
+    ]);
+    await runAgentTurn(createOptions(provider, {
+      tools: [writeTool],
+      permissionGate: { check: async () => ({ decision: 'allow' }) }
+    }));
+    expect(approved).toBe(true);
+  });
+
   it('does not execute a duplicate call id twice', async () => {
     const execute = vi.fn(echoTool.execute);
     const provider = new ScriptedProvider([

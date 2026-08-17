@@ -1,16 +1,18 @@
 import { AgentError, runAgentTurn } from '@desktop-agent/agent-core';
-import type { Message, ProviderConfig } from '@desktop-agent/contracts';
+import type { Message, ModelProvider, ProviderConfig } from '@desktop-agent/contracts';
 import {
   accrueUsage,
   type AgentProfileRegistry,
   createBuiltinAgentProfileRegistry,
+  createWorkflowToolRuntime,
   emptyUsage,
   NonInteractivePermissionGate,
   OrchestrationError,
   resolveAgentToolPolicy,
   structuredOutputInstruction,
   type LeafAgentRunRequest,
-  type LeafAgentRunner
+  type LeafAgentRunner,
+  type WorkflowToolRuntime
 } from '@desktop-agent/orchestration';
 import { createProvider } from '@desktop-agent/providers';
 import { createDefaultToolRuntime } from '@desktop-agent/tools-node';
@@ -23,6 +25,7 @@ export type DesktopLeafAgentRunnerOptions = {
   resolveProvider(providerId: string): ProviderRuntime | undefined;
   trashDirectory: string;
   profileRegistry?: AgentProfileRegistry;
+  createModelProvider?: (input: { runtime: ProviderRuntime; request: LeafAgentRunRequest }) => ModelProvider;
 };
 
 function finalAssistantText(messages: Message[]): string {
@@ -37,6 +40,14 @@ function finalAssistantText(messages: Message[]): string {
     if (text) return text;
   }
   return '';
+}
+
+export function createDesktopWorkflowToolRuntime(options: { trashDirectory: string }): WorkflowToolRuntime {
+  const runtime = createDefaultToolRuntime({ trashDirectory: options.trashDirectory });
+  return createWorkflowToolRuntime({
+    tools: runtime.tools,
+    permissionGate: new NonInteractivePermissionGate(runtime.permissionGate)
+  });
 }
 
 export function createDesktopLeafAgentRunner(options: DesktopLeafAgentRunnerOptions): LeafAgentRunner {
@@ -77,7 +88,9 @@ export function createDesktopLeafAgentRunner(options: DesktopLeafAgentRunnerOpti
           model,
           history,
           userText: task,
-          provider: createProvider(providerRuntime.config, providerRuntime.apiKey),
+          provider: options.createModelProvider
+            ? options.createModelProvider({ runtime: providerRuntime, request })
+            : createProvider(providerRuntime.config, providerRuntime.apiKey),
           tools,
           instructions: [
             profile.systemPrompt,

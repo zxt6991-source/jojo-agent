@@ -20,6 +20,97 @@ export const StructuredOutputErrorCodeSchema = z.enum([
 ]);
 export type StructuredOutputErrorCode = z.infer<typeof StructuredOutputErrorCodeSchema>;
 
+export const IsolationTypeSchema = z.enum(['none', 'worktree']);
+export type IsolationType = z.infer<typeof IsolationTypeSchema>;
+
+export const IsolationConfigSchema = z.object({
+  type: IsolationTypeSchema
+}).strict();
+export type IsolationConfig = z.infer<typeof IsolationConfigSchema>;
+
+export const IsolationErrorCodeSchema = z.enum([
+  'isolation_required',
+  'worktree_not_a_git_repository',
+  'worktree_create_failed',
+  'worktree_cleanup_failed',
+  'worktree_path_invalid'
+]);
+export type IsolationErrorCode = z.infer<typeof IsolationErrorCodeSchema>;
+
+export const ResourceGroupErrorCodeSchema = z.enum(['resource_group_conflict']);
+export type ResourceGroupErrorCode = z.infer<typeof ResourceGroupErrorCodeSchema>;
+
+export const WorkflowResourceGroupSchema = z.object({
+  group: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/u),
+  maxConcurrency: z.number().int().min(1).max(4).default(1)
+}).strict();
+export type WorkflowResourceGroup = z.infer<typeof WorkflowResourceGroupSchema>;
+
+const tokenBudgetFields = {
+  maxInputTokens: z.number().int().min(1).max(10_000_000).optional(),
+  maxOutputTokens: z.number().int().min(1).max(10_000_000).optional(),
+  maxTotalTokens: z.number().int().min(1).max(20_000_000).optional()
+};
+
+type TokenBudgetFields = {
+  maxInputTokens?: number | undefined;
+  maxOutputTokens?: number | undefined;
+  maxTotalTokens?: number | undefined;
+};
+
+function tokenBudgetHasLimit(budget: TokenBudgetFields): boolean {
+  return budget.maxInputTokens !== undefined
+    || budget.maxOutputTokens !== undefined
+    || budget.maxTotalTokens !== undefined;
+}
+
+export const WorkflowStepBudgetSchema = z.object(tokenBudgetFields).strict().superRefine((budget, context) => {
+  if (!tokenBudgetHasLimit(budget)) {
+    context.addIssue({ code: 'custom', message: 'Budget must declare at least one token limit.' });
+  }
+});
+export type WorkflowStepBudget = z.infer<typeof WorkflowStepBudgetSchema>;
+
+export const WorkflowBudgetSchema = z.object({
+  ...tokenBudgetFields,
+  maxCostUsd: z.number().positive().max(10_000).optional(),
+  inputUsdPerMillion: z.number().nonnegative().max(1_000).optional(),
+  outputUsdPerMillion: z.number().nonnegative().max(1_000).optional()
+}).strict().superRefine((budget, context) => {
+  if (!tokenBudgetHasLimit(budget) && budget.maxCostUsd === undefined) {
+    context.addIssue({ code: 'custom', message: 'Budget must declare at least one token or cost limit.' });
+  }
+  if (budget.maxCostUsd !== undefined && (budget.inputUsdPerMillion === undefined || budget.outputUsdPerMillion === undefined)) {
+    context.addIssue({
+      code: 'custom',
+      message: 'maxCostUsd requires inputUsdPerMillion and outputUsdPerMillion.'
+    });
+  }
+});
+export type WorkflowBudget = z.infer<typeof WorkflowBudgetSchema>;
+
+export const IsolationSnapshotSchema = z.object({
+  type: z.literal('worktree'),
+  workingDirectory: z.string().min(1).max(1024),
+  worktreePath: z.string().min(1).max(1024),
+  branch: z.string().min(1).max(255),
+  commit: z.string().min(1).max(64).optional(),
+  changedFiles: z.array(z.string().min(1).max(1024)).max(100).default([]),
+  diffStat: z.string().max(16_000).optional(),
+  diff: z.string().max(250_000).optional(),
+  hasChanges: z.boolean(),
+  cleanedUp: z.boolean().default(false),
+  truncated: z.boolean().default(false)
+}).strict();
+export type IsolationSnapshot = z.infer<typeof IsolationSnapshotSchema>;
+
+export const SubAgentErrorCodeSchema = z.enum([
+  ...StructuredOutputErrorCodeSchema.options,
+  ...IsolationErrorCodeSchema.options,
+  ...ResourceGroupErrorCodeSchema.options
+]);
+export type SubAgentErrorCode = z.infer<typeof SubAgentErrorCodeSchema>;
+
 export const SubAgentRoundSchema = z.object({
   index: z.number().int().positive(),
   input: z.string().min(1).max(40_000),
@@ -49,15 +140,17 @@ export const SubAgentSnapshotSchema = z.object({
   result: z.string().optional(),
   structuredResult: z.unknown().optional(),
   schemaValid: z.boolean().optional(),
-  errorCode: StructuredOutputErrorCodeSchema.optional(),
+  errorCode: SubAgentErrorCodeSchema.optional(),
   error: z.string().optional(),
   incomplete: z.boolean().default(false),
+  isolation: IsolationSnapshotSchema.optional(),
+  resourceGroup: z.string().min(1).optional(),
   rounds: z.array(SubAgentRoundSchema).default([])
 });
 export type SubAgentSnapshot = z.infer<typeof SubAgentSnapshotSchema>;
 
 export const WorkflowStepStateSchema = z.enum([
-  'pending', 'queued', 'running', 'completed', 'failed', 'cancelled', 'timed_out', 'blocked', 'interrupted'
+  'pending', 'queued', 'running', 'completed', 'failed', 'cancelled', 'timed_out', 'blocked', 'interrupted', 'skipped'
 ]);
 export type WorkflowStepState = z.infer<typeof WorkflowStepStateSchema>;
 
@@ -77,7 +170,22 @@ export const WorkflowStepErrorCodeSchema = z.enum([
   'workflow_reference_invalid',
   'workflow_reference_not_found',
   'workflow_step_failed',
-  'workflow_deadlock'
+  'workflow_deadlock',
+  'isolation_required',
+  'worktree_not_a_git_repository',
+  'worktree_create_failed',
+  'worktree_cleanup_failed',
+  'worktree_path_invalid',
+  'tool_not_allowed',
+  'permission_denied',
+  'workflow_step_type_unsupported',
+  'foreach_items_invalid',
+  'foreach_item_limit',
+  'workflow_depth_exceeded',
+  'saved_workflow_not_found',
+  'workflow_invalid_args',
+  'resource_group_conflict',
+  'workflow_budget_exceeded'
 ]);
 export type WorkflowStepErrorCode = z.infer<typeof WorkflowStepErrorCodeSchema>;
 
@@ -135,6 +243,31 @@ export const WorkflowArgsSchema = z.record(
 });
 export type WorkflowArgs = z.infer<typeof WorkflowArgsSchema>;
 
+export const WorkflowInputTypeSchema = z.enum(['string', 'number', 'boolean']);
+export type WorkflowInputType = z.infer<typeof WorkflowInputTypeSchema>;
+
+export const WorkflowInputDefinitionSchema = z.object({
+  type: WorkflowInputTypeSchema,
+  required: z.boolean().default(false),
+  default: WorkflowArgumentValueSchema.optional(),
+  description: z.string().max(500).optional()
+}).strict().superRefine((input, context) => {
+  if (input.default === undefined) return;
+  const actual = typeof input.default;
+  if (actual !== input.type) {
+    context.addIssue({ code: 'custom', message: `Workflow input default must be a ${input.type}.` });
+  }
+});
+export type WorkflowInputDefinition = z.infer<typeof WorkflowInputDefinitionSchema>;
+
+export const WorkflowInputDefinitionsSchema = z.record(
+  z.string().regex(/^[A-Za-z][A-Za-z0-9_-]{0,63}$/u),
+  WorkflowInputDefinitionSchema
+).superRefine((inputs, context) => {
+  if (Object.keys(inputs).length > 32) context.addIssue({ code: 'custom', message: 'Workflow input definitions may contain at most 32 entries.' });
+});
+export type WorkflowInputDefinitions = z.infer<typeof WorkflowInputDefinitionsSchema>;
+
 export const WorkflowStepInputSchema = z.object({
   valueFrom: z.string().regex(/^\$(?:workflow\.args\.[A-Za-z][A-Za-z0-9_-]{0,63}|steps\.[A-Za-z][A-Za-z0-9_-]{0,63}\.(?:output|structuredResult(?:\.[A-Za-z0-9_-]+)*))$/u)
 }).strict();
@@ -157,18 +290,150 @@ export const WorkflowAgentStepSchema = WorkflowStepBaseSchema.extend({
   readOnly: z.boolean().optional(),
   inputs: WorkflowStepInputsSchema.optional(),
   retry: WorkflowRetryPolicySchema.optional(),
+  isolation: IsolationConfigSchema.optional(),
+  resources: WorkflowResourceGroupSchema.optional(),
+  budget: WorkflowStepBudgetSchema.optional(),
   task: z.string().trim().min(1).max(40_000),
   outputSchema: z.record(z.string(), z.unknown()).optional()
 });
 export type WorkflowAgentStep = z.infer<typeof WorkflowAgentStepSchema>;
 
+export const WorkflowToolStepNameSchema = z.enum([
+  'read_file',
+  'list_files',
+  'grep',
+  'glob',
+  'web_search',
+  'web_fetch'
+]);
+export type WorkflowToolStepName = z.infer<typeof WorkflowToolStepNameSchema>;
+
+const MAX_WORKFLOW_TOOL_INPUT_BYTES = 16 * 1024;
+
+export const WorkflowToolStepInputSchema = z.record(
+  z.string().regex(/^[A-Za-z][A-Za-z0-9_-]{0,63}$/u),
+  z.unknown()
+).superRefine((input, context) => {
+  if (Object.keys(input).length > 32) {
+    context.addIssue({ code: 'custom', message: 'Workflow tool input may contain at most 32 entries.' });
+    return;
+  }
+  let serialized: string;
+  try { serialized = JSON.stringify(input); }
+  catch {
+    context.addIssue({ code: 'custom', message: 'Workflow tool input must be JSON-serializable.' });
+    return;
+  }
+  if (serialized === undefined || Buffer.byteLength(serialized) > MAX_WORKFLOW_TOOL_INPUT_BYTES) {
+    context.addIssue({ code: 'custom', message: `Workflow tool input may not exceed ${MAX_WORKFLOW_TOOL_INPUT_BYTES} bytes.` });
+  }
+});
+export type WorkflowToolStepInput = z.infer<typeof WorkflowToolStepInputSchema>;
+
+export const WorkflowToolStepSchema = WorkflowStepBaseSchema.extend({
+  type: z.literal('tool'),
+  tool: WorkflowToolStepNameSchema,
+  input: WorkflowToolStepInputSchema.default({}),
+  inputs: WorkflowStepInputsSchema.optional(),
+  retry: WorkflowRetryPolicySchema.optional(),
+  outputSchema: z.record(z.string(), z.unknown()).optional()
+});
+export type WorkflowToolStep = z.infer<typeof WorkflowToolStepSchema>;
+
+export const WorkflowForeachAgentTemplateSchema = WorkflowAgentStepSchema.omit({
+  id: true,
+  dependsOn: true,
+  continueOnError: true
+});
+export type WorkflowForeachAgentTemplate = z.infer<typeof WorkflowForeachAgentTemplateSchema>;
+
+export const WorkflowForeachToolTemplateSchema = WorkflowToolStepSchema.omit({
+  id: true,
+  dependsOn: true,
+  continueOnError: true
+});
+export type WorkflowForeachToolTemplate = z.infer<typeof WorkflowForeachToolTemplateSchema>;
+
+export const WorkflowForeachTemplateSchema = z.discriminatedUnion('type', [
+  WorkflowForeachAgentTemplateSchema,
+  WorkflowForeachToolTemplateSchema
+]);
+export type WorkflowForeachTemplate = z.infer<typeof WorkflowForeachTemplateSchema>;
+
+export const WorkflowForeachStepSchema = WorkflowStepBaseSchema.extend({
+  type: z.literal('foreach'),
+  items: WorkflowStepInputSchema,
+  itemLimit: z.number().int().min(1).max(20).default(8),
+  concurrency: z.number().int().min(1).max(4).default(2),
+  template: WorkflowForeachTemplateSchema
+});
+export type WorkflowForeachStep = z.infer<typeof WorkflowForeachStepSchema>;
+
+export const WorkflowConditionOpSchema = z.enum(['equals', 'notEquals', 'exists']);
+export type WorkflowConditionOp = z.infer<typeof WorkflowConditionOpSchema>;
+
+export const WorkflowConditionWhenSchema = z.object({
+  op: WorkflowConditionOpSchema,
+  left: WorkflowStepInputSchema,
+  right: z.union([z.string().max(4_000), z.number().finite(), z.boolean()]).optional()
+}).strict().superRefine((when, context) => {
+  if (when.op === 'exists' && when.right !== undefined) {
+    context.addIssue({ code: 'custom', path: ['right'], message: 'exists does not take a right operand.' });
+  }
+  if (when.op !== 'exists' && when.right === undefined) {
+    context.addIssue({ code: 'custom', path: ['right'], message: 'equals/notEquals require a right operand.' });
+  }
+});
+export type WorkflowConditionWhen = z.infer<typeof WorkflowConditionWhenSchema>;
+
+export const WorkflowConditionStepSchema = WorkflowStepBaseSchema.extend({
+  type: z.literal('condition'),
+  when: WorkflowConditionWhenSchema,
+  then: z.array(z.string().regex(/^[A-Za-z][A-Za-z0-9_-]{0,63}$/u)).max(16).default([]),
+  else: z.array(z.string().regex(/^[A-Za-z][A-Za-z0-9_-]{0,63}$/u)).max(16).default([])
+});
+export type WorkflowConditionStep = z.infer<typeof WorkflowConditionStepSchema>;
+
+export const WorkflowNestedArgSchema = z.union([
+  z.string().max(40_000),
+  z.number().finite(),
+  z.boolean(),
+  WorkflowStepInputSchema
+]);
+export type WorkflowNestedArg = z.infer<typeof WorkflowNestedArgSchema>;
+
+export const WorkflowCallStepSchema = WorkflowStepBaseSchema.extend({
+  type: z.literal('workflow'),
+  name: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/u),
+  args: z.record(
+    z.string().regex(/^[A-Za-z][A-Za-z0-9_-]{0,63}$/u),
+    WorkflowNestedArgSchema
+  ).superRefine((args, context) => {
+    if (Object.keys(args).length > 32) {
+      context.addIssue({ code: 'custom', message: 'Nested workflow args may contain at most 32 entries.' });
+    }
+  }).optional()
+});
+export type WorkflowCallStep = z.infer<typeof WorkflowCallStepSchema>;
+
+export const WorkflowStepSchema = z.discriminatedUnion('type', [
+  WorkflowAgentStepSchema,
+  WorkflowToolStepSchema,
+  WorkflowForeachStepSchema,
+  WorkflowConditionStepSchema,
+  WorkflowCallStepSchema
+]);
+export type WorkflowStep = z.infer<typeof WorkflowStepSchema>;
+
 export const WorkflowDefinitionSchema = z.object({
   schemaVersion: z.literal(1),
   name: z.string().trim().min(1).max(120),
   description: z.string().max(4_000).optional(),
+  inputs: WorkflowInputDefinitionsSchema.optional(),
   maxConcurrency: z.number().int().min(1).max(4).default(3),
   timeoutMs: z.number().int().min(5_000).max(1_800_000).default(600_000),
-  steps: z.array(WorkflowAgentStepSchema).min(1).max(32),
+  budget: WorkflowBudgetSchema.optional(),
+  steps: z.array(WorkflowStepSchema).min(1).max(32),
   outputStepId: z.string().optional()
 }).superRefine((definition, context) => {
   const stepIds = new Set<string>();
@@ -186,19 +451,131 @@ export const WorkflowDefinitionSchema = z.object({
         context.addIssue({ code: 'custom', path: ['steps', index, 'dependsOn'], message: `Unknown dependency: ${dependency}` });
       }
     }
-    for (const input of Object.values(step.inputs ?? {})) {
+    const declaredInputs = step.type === 'agent' || step.type === 'tool'
+      ? step.inputs
+      : step.type === 'foreach'
+        ? step.template.inputs
+        : undefined;
+    for (const input of Object.values(declaredInputs ?? {})) {
       const match = /^\$steps\.([A-Za-z][A-Za-z0-9_-]{0,63})\./u.exec(input.valueFrom);
       if (!match) continue;
       const sourceStepId = match[1]!;
+      const inputPath = step.type === 'foreach' ? ['steps', index, 'template', 'inputs'] : ['steps', index, 'inputs'];
       if (!stepIds.has(sourceStepId)) {
-        context.addIssue({ code: 'custom', path: ['steps', index, 'inputs'], message: `Unknown input source step: ${sourceStepId}` });
+        context.addIssue({ code: 'custom', path: inputPath, message: `Unknown input source step: ${sourceStepId}` });
       } else if (!step.dependsOn.includes(sourceStepId)) {
-        context.addIssue({ code: 'custom', path: ['steps', index, 'inputs'], message: `Input source ${sourceStepId} must be a direct dependency of ${step.id}.` });
+        context.addIssue({ code: 'custom', path: inputPath, message: `Input source ${sourceStepId} must be a direct dependency of ${step.id}.` });
+      }
+    }
+    if (step.type === 'foreach') {
+      const match = /^\$steps\.([A-Za-z][A-Za-z0-9_-]{0,63})\./u.exec(step.items.valueFrom);
+      if (!match) {
+        context.addIssue({
+          code: 'custom',
+          path: ['steps', index, 'items'],
+          message: 'Foreach items must reference a direct dependency step.'
+        });
+      } else {
+        const sourceStepId = match[1]!;
+        if (!stepIds.has(sourceStepId)) {
+          context.addIssue({ code: 'custom', path: ['steps', index, 'items'], message: `Unknown foreach source step: ${sourceStepId}` });
+        } else if (!step.dependsOn.includes(sourceStepId)) {
+          context.addIssue({ code: 'custom', path: ['steps', index, 'items'], message: `Foreach source ${sourceStepId} must be a direct dependency of ${step.id}.` });
+        }
+      }
+    }
+    if (step.type === 'condition') {
+      const match = /^\$steps\.([A-Za-z][A-Za-z0-9_-]{0,63})\./u.exec(step.when.left.valueFrom);
+      if (match) {
+        const sourceStepId = match[1]!;
+        if (!stepIds.has(sourceStepId)) {
+          context.addIssue({ code: 'custom', path: ['steps', index, 'when', 'left'], message: `Unknown condition source step: ${sourceStepId}` });
+        } else if (!step.dependsOn.includes(sourceStepId)) {
+          context.addIssue({ code: 'custom', path: ['steps', index, 'when', 'left'], message: `Condition source ${sourceStepId} must be a direct dependency of ${step.id}.` });
+        }
+      }
+      const branchIds = [...step.then, ...step.else];
+      const seen = new Set<string>();
+      for (const branchId of branchIds) {
+        if (seen.has(branchId)) {
+          context.addIssue({ code: 'custom', path: ['steps', index], message: `Condition branch ${branchId} cannot appear in both then and else.` });
+        }
+        seen.add(branchId);
+        if (branchId === step.id) {
+          context.addIssue({ code: 'custom', path: ['steps', index], message: `Condition ${step.id} cannot branch to itself.` });
+        } else if (!stepIds.has(branchId)) {
+          context.addIssue({ code: 'custom', path: ['steps', index], message: `Unknown condition branch: ${branchId}` });
+        } else {
+          const branch = definition.steps.find((item) => item.id === branchId);
+          if (branch && !branch.dependsOn.includes(step.id)) {
+            context.addIssue({
+              code: 'custom',
+              path: ['steps', index],
+              message: `Condition branch ${branchId} must depend on ${step.id}.`
+            });
+          }
+        }
+      }
+    }
+    if (step.type === 'workflow') {
+      for (const [name, value] of Object.entries(step.args ?? {})) {
+        if (!value || typeof value !== 'object' || !('valueFrom' in value)) continue;
+        const match = /^\$steps\.([A-Za-z][A-Za-z0-9_-]{0,63})\./u.exec(value.valueFrom);
+        if (!match) continue;
+        const sourceStepId = match[1]!;
+        if (!stepIds.has(sourceStepId)) {
+          context.addIssue({ code: 'custom', path: ['steps', index, 'args', name], message: `Unknown nested workflow arg source step: ${sourceStepId}` });
+        } else if (!step.dependsOn.includes(sourceStepId)) {
+          context.addIssue({ code: 'custom', path: ['steps', index, 'args', name], message: `Nested workflow arg source ${sourceStepId} must be a direct dependency of ${step.id}.` });
+        }
       }
     }
   }
+
+  const resourceGroups = new Map<string, number>();
+  for (const [index, step] of definition.steps.entries()) {
+    const resources = step.type === 'agent'
+      ? step.resources
+      : step.type === 'foreach' && step.template.type === 'agent'
+        ? step.template.resources
+        : undefined;
+    if (!resources) continue;
+    const previous = resourceGroups.get(resources.group);
+    if (previous !== undefined && previous !== resources.maxConcurrency) {
+      context.addIssue({
+        code: 'custom',
+        path: step.type === 'foreach' ? ['steps', index, 'template', 'resources'] : ['steps', index, 'resources'],
+        message: `Resource group ${resources.group} maxConcurrency must be ${previous}.`
+      });
+    }
+    resourceGroups.set(resources.group, resources.maxConcurrency);
+  }
   if (definition.outputStepId && !stepIds.has(definition.outputStepId)) {
     context.addIssue({ code: 'custom', path: ['outputStepId'], message: `Unknown output step: ${definition.outputStepId}` });
+  }
+
+  const declaredInputs = definition.inputs;
+  if (declaredInputs) {
+    const placeholder = /\{\{inputs\.([A-Za-z][A-Za-z0-9_-]{0,63})\}\}/gu;
+    for (const [index, step] of definition.steps.entries()) {
+      const task = step.type === 'agent'
+        ? step.task
+        : step.type === 'foreach' && step.template.type === 'agent'
+          ? step.template.task
+          : undefined;
+      if (!task) continue;
+      placeholder.lastIndex = 0;
+      for (const match of task.matchAll(placeholder)) {
+        const name = match[1]!;
+        if (!Object.prototype.hasOwnProperty.call(declaredInputs, name)) {
+          context.addIssue({
+            code: 'custom',
+            path: step.type === 'foreach' ? ['steps', index, 'template', 'task'] : ['steps', index, 'task'],
+            message: `Unknown workflow input placeholder: ${name}`
+          });
+        }
+      }
+    }
   }
 
   const dependencies = new Map(definition.steps.map((step) => [step.id, step.dependsOn]));
@@ -223,8 +600,14 @@ export type WorkflowDefinition = z.infer<typeof WorkflowDefinitionSchema>;
 
 export const WorkflowStepSnapshotSchema = z.object({
   id: z.string().min(1),
+  type: z.enum(['agent', 'tool', 'foreach', 'condition', 'workflow']).optional(),
   profile: SubAgentProfileSchema.optional(),
+  tool: WorkflowToolStepNameSchema.optional(),
+  workflow: z.string().min(1).optional(),
   model: z.string().min(1).optional(),
+  parentId: z.string().min(1).optional(),
+  index: z.number().int().nonnegative().optional(),
+  item: z.unknown().optional(),
   state: WorkflowStepStateSchema,
   attempt: z.number().int().positive().default(1),
   createdAt: z.string().datetime(),
@@ -237,7 +620,36 @@ export const WorkflowStepSnapshotSchema = z.object({
   errorCode: WorkflowStepErrorCodeSchema.optional(),
   stopReason: z.string().optional(),
   incomplete: z.boolean().default(false),
-  usage: UsageTotalsSchema
+  usage: UsageTotalsSchema,
+  isolation: IsolationSnapshotSchema.optional(),
+  resourceGroup: z.string().min(1).optional(),
+  dependsOn: z.array(z.string().min(1)).max(16).optional(),
+  instances: z.array(z.object({
+    id: z.string().min(1),
+    type: z.enum(['agent', 'tool']).optional(),
+    profile: SubAgentProfileSchema.optional(),
+    tool: WorkflowToolStepNameSchema.optional(),
+    model: z.string().min(1).optional(),
+    resourceGroup: z.string().min(1).optional(),
+    parentId: z.string().min(1).optional(),
+    index: z.number().int().nonnegative().optional(),
+    item: z.unknown().optional(),
+    state: WorkflowStepStateSchema,
+    attempt: z.number().int().positive().default(1),
+    createdAt: z.string().datetime(),
+    startedAt: z.string().datetime().optional(),
+    finishedAt: z.string().datetime().optional(),
+    output: z.string().optional(),
+    structuredResult: z.unknown().optional(),
+    schemaValid: z.boolean().optional(),
+    error: z.string().optional(),
+    errorCode: WorkflowStepErrorCodeSchema.optional(),
+    stopReason: z.string().optional(),
+    incomplete: z.boolean().default(false),
+    usage: UsageTotalsSchema,
+    isolation: IsolationSnapshotSchema.optional()
+  })).max(20).optional(),
+  child: z.unknown().optional()
 });
 export type WorkflowStepSnapshot = z.infer<typeof WorkflowStepSnapshotSchema>;
 
@@ -252,6 +664,7 @@ export const WorkflowRunSnapshotSchema = z.object({
   finishedAt: z.string().datetime().optional(),
   steps: z.array(WorkflowStepSnapshotSchema),
   usage: UsageTotalsSchema,
+  budget: WorkflowBudgetSchema.optional(),
   result: z.string().optional(),
   error: z.string().optional(),
   errorCode: WorkflowErrorCodeSchema.optional(),

@@ -241,8 +241,16 @@ describe('workflow tools', () => {
     const manager = new WorkflowManager(new WorkflowEngine(runner, new AgentExecutionScheduler(2)), () => undefined);
     const tools = createWorkflowTools(manager, { providerId: 'provider', model: 'model' });
     expect(tools.map((tool) => tool.definition.name)).toEqual([
-      'workflow_start', 'workflow_wait', 'workflow_status', 'workflow_cancel', 'workflow_resume'
+      'workflow_start', 'workflow_wait', 'workflow_status', 'workflow_cancel', 'workflow_resume', 'workflow_list'
     ]);
+    const startSchema = JSON.stringify(tools[0]!.definition.inputSchema);
+    expect(startSchema).toContain('"enum":["tool"]');
+    expect(startSchema).toContain('"enum":["foreach"]');
+    expect(startSchema).toContain('"enum":["condition"]');
+    expect(startSchema).toContain('"enum":["workflow"]');
+    expect(startSchema).toContain('main-worktree-writer');
+    expect(startSchema).toContain('list_files');
+    expect(startSchema).not.toContain('terminal');
     const context: ToolContext = {
       sessionId: 'session', workingDirectory: process.cwd(), signal: new AbortController().signal,
       approved: true, onProgress: () => undefined
@@ -260,6 +268,11 @@ describe('workflow tools', () => {
       schemaVersion: 1, name: 'invalid', steps: [{ id: 'a', type: 'agent', task: 'A', dependsOn: ['missing'] }]
     } }, context);
     expect(invalid).toMatchObject({ ok: false, code: 'workflow_invalid_definition' });
+
+    const shell = await tools[0]!.execute({ definition: {
+      schemaVersion: 1, name: 'shell', steps: [{ id: 'sh', type: 'tool', tool: 'terminal', input: { command: 'ls' } }]
+    } }, context);
+    expect(shell).toMatchObject({ ok: false, code: 'workflow_invalid_definition' });
 
     const yaml = await tools[0]!.execute({ definition: `
 schemaVersion: 1

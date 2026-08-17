@@ -26,6 +26,6 @@ export function workflowStateLabel(state: WorkflowRunState): string {
 export function workflowStepStateLabel(state: WorkflowStepState): string {
   return {
     pending: '等待中', queued: '排队中', running: '运行中', completed: '已完成', failed: '失败',
-    cancelled: '已取消', timed_out: '已超时', blocked: '已阻塞', interrupted: '已中断'
+    cancelled: '已取消', timed_out: '已超时', blocked: '已阻塞', interrupted: '已中断', skipped: '已跳过'
   }[state];
 }

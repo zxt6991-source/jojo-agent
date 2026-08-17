@@ -1,4 +1,4 @@
-import type { AgentEvent, SubAgentProfile, UsageTotals } from '@desktop-agent/contracts';
+import type { AgentEvent, IsolationConfig, SubAgentProfile, UsageTotals, WorkflowResourceGroup } from '@desktop-agent/contracts';
 import type { AgentToolPolicy } from './tool-policy.js';
 
 export type LeafAgentRunRequest = {
@@ -14,6 +14,7 @@ export type LeafAgentRunRequest = {
   tools?: AgentToolPolicy;
   readOnly?: boolean;
   outputSchema?: Record<string, unknown>;
+  isolation?: IsolationConfig;
   continuable?: boolean;
 };
 
@@ -54,5 +55,7 @@ export type SubAgentStartRequest = {
   tools?: AgentToolPolicy;
   readOnly?: boolean;
   outputSchema?: Record<string, unknown>;
+  isolation?: IsolationConfig;
+  resources?: WorkflowResourceGroup;
   depth?: number;
 };

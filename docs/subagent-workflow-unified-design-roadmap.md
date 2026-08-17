@@ -57,22 +57,34 @@ Typed Inputs / Step Reference ✅
   ↓
 Retry Policy ✅
   ↓
-Worktree Isolation / Diff Review
+Worktree Isolation / Diff Review ✅
   ↓
-Step Executor / Tool Step
+Step Executor / Tool Step ✅
   ↓
-Saved Workflow / Args / Templates
+Saved Workflow / Args / Templates ✅
   ↓
-foreach / condition / sub-workflow
+foreach ✅
   ↓
-预算、资源组与 DAG 可视化
+condition / sub-workflow ✅
+  ↓
+Concurrency Group ✅
+  ↓
+Electron Worker 写 Agent E2E ✅
+  ↓
+Budget / Provider Semaphore ✅
+  ↓
+DAG Viewer / Timeline ✅
+  ↓
+可视化编辑器 / 窗口级 E2E
 ```
 
 其中近期最高优先级不是新增更多 Step 类型，而是：
 
 1. 把当前已实现能力通过完整测试和 E2E 收口；
 2. 让 Workflow 从“自然语言结果拼接器”升级为结构化数据流；
-3. 在开放并行写入前完成 Worktree 隔离和可审查的 Branch / Diff 生命周期。
+3. 在开放并行写入前完成 Worktree 隔离和可审查的 Branch / Diff 生命周期。 ✅ 运行时隔离、Diff 审查、不自动 Merge、Concurrency Group 与 Electron Worker 写 Agent E2E 已落地。
+
+下一主路径不是 pipeline。DAG Viewer / Timeline 已落地；可视化编辑器和窗口级 Playwright 仍不做。不要把 pipeline 标成已完成。
 
 ---
 
@@ -98,7 +110,7 @@ foreach / condition / sub-workflow
 
 - Workflow Engine、Manager、DAG、Journal、Resume 和基础 UI 视为已有能力；
 - Built-in Profile、Tool Policy、`sub_agent_send/close` 和 Structured Output 视为当前工作区已实现能力；
-- 自定义 Profile 加载、Typed Inputs 与 Retry 已实现；Worktree、Saved Workflow 和高级 Step 仍视为待实现；
+- 自定义 Profile 加载、Typed Inputs、Retry、Worktree Isolation、StepExecutor/Tool Step、Saved Workflow、foreach、condition、sub-workflow、Concurrency Group、Budget / Provider Semaphore 与 DAG Viewer / Timeline 已实现；pipeline / 可视化编辑器仍视为待实现；
 - 旧文档中的未完成复选框不能单独作为当前状态依据。
 
 ---
@@ -213,7 +225,7 @@ Main → Child → Grandchild
 - Request 只能比 Profile 更严格；
 - `readOnly=true` 必须在 Runtime 层移除写工具；
 - 子 Agent 不获得 `sub_agent_*` 和 `workflow_*`；
-- 后台 Agent 不发起交互式审批，`ask` 转为拒绝。
+- 后台 Agent 不发起交互式审批；对已通过路径校验的 `write_file` / `edit_file` / `delete_file` / `terminal`，`ask` 转为 `allow`，其余 `ask` 仍拒绝。
 
 ### 4.6 Workflow 保持声明式 DAG
 
@@ -233,8 +245,8 @@ Workflow 的优势应是：
 min(
   workflow.maxConcurrency,
   global AgentExecutionScheduler limit,
-  future provider-specific limit,
-  future resource-group limit
+  resource-group limit,
+  future provider-specific limit
 )
 ```
 
@@ -278,14 +290,13 @@ min(
 | `explore` | 搜索、阅读和解释代码 | 只读文件与 Web 工具 | 适合并行调查 |
 | `code-review` | 缺陷、安全和可维护性审查 | 只读文件工具 | 不修改工作区 |
 | `synthesize` | 汇总依赖结果 | 无工具 | 只使用提供的证据 |
-| `general` | 通用工程任务 | 非只读 Profile | 尚无 Worktree 隔离，不应作为并行写入的稳定方案 |
+| `general` | 通用工程任务 | 非只读 Profile | 可写任务默认强制 `isolation: worktree`，结果不自动 Merge |
 
 #### 当前限制
 
 - User/Project Profile 已支持基础加载，但尚无桌面管理和诊断界面；
 - Continuation 保存在 Worker 内存中，进程重启后不可恢复；
 - 子 Agent Snapshot 本身未做持久化；
-- `general` 尚未与强制 Worktree 策略绑定；
 - 子 Agent 的完整桌面可视化不如 WorkflowCard 完整；
 - Profile 加载警告尚未进入桌面可观察界面；
 - 仍需补充长时间运行、Retention、Context 上限和资源回收 E2E。
@@ -314,25 +325,32 @@ min(
 - Step Structured Output；
 - Step 级 `model/maxIterations/tools/readOnly` 与 Profile/Model UI 展示 ✅；
 - Workflow Args、显式 `inputs.valueFrom` 和受限 Step Reference ✅；
+- Agent Step `isolation` 与 Worktree Isolation Snapshot ✅；
 - 结果截断与不完整标记；
 - Append-only Journal；
 - Restore、interrupted 和 Resume；
 - Definition Hash 一致性检查；
 - 已完成 Step 在 Resume 时不重复运行；
-- WorkflowCard 的状态、进度、耗时、Usage、错误、输出、取消和恢复。
+- WorkflowCard 的状态、进度、耗时、Usage、错误、输出、取消、恢复、Attempt 与 Isolation Diff。
 
 #### 当前限制
 
-- Workflow Step 仍只有 `agent`；
+- Workflow Step 支持 `agent` 与 allowlist `tool`；Engine 通过 StepExecutor 执行，Tool Step 不占用 LLM Scheduler；
 - V1 Step 仍通过 Prompt 拼接依赖；显式 Inputs Step 已改为受限结构化注入；
 - 未声明 Inputs 的 V1 Step 仍使用依赖 Prompt 拼接；声明 Inputs 的 Step 已使用显式数据注入；
 - ✅ Workflow Agent Step 已支持有界、白名单驱动的自动 Retry Policy；
-- Workflow Args 已支持受限运行时值，但尚无 Saved Workflow Input Definition；
-- 没有 Saved Workflow Registry；
-- 没有 Tool Step、foreach、condition 或 sub-workflow；
-- 没有 Worktree Isolation；
-- 没有预算、成本上限和 Concurrency Group；
-- UI 是运行卡片，不是 DAG 图或可视化编辑器。
+- ✅ Workflow Args 支持受限运行时值，Saved Workflow 可声明 Input Definition（string/number/boolean、required/default）；
+- ✅ Saved Workflow Registry：project `.jojo/workflows` > user `~/.jojo/workflows` > builtin，支持 Reload；
+- ✅ 内置模板：`repo-understand`、`architecture-review`、`code-review`；`workflow_start({ name, args })` 与 `workflow_list`；
+- ✅ Tool Step：只允许 `read_file | list_files | grep | glob | web_search | web_fetch`，权限继续生效，输出可进入 Typed Inputs；无任意 Shell；
+- ✅ foreach：Virtual Step Instance、itemLimit、continueOnError、双重限流、Resume 跳过已完成实例、输出按 index 顺序；
+- ✅ condition：`equals` / `notEquals` / `exists`，未走分支为 `skipped`，join 在 skipped+completed 时仍执行，无 eval；
+- ✅ sub-workflow：按 name 调用 Saved Workflow，`maxWorkflowDepth = 3`（含 root），嵌套走 Engine 内 `run()`，Resume 保留 child snapshot；
+- ✅ Concurrency Group：同名 `resources.group` 受 `maxConcurrency` 限制，Sub-Agent 与 Workflow 共用一个 limiter；不同 group / 独立 Worktree 可并行；
+- ✅ Worktree Isolation：可写 Agent 默认独立 Worktree，无修改自动清理，有修改保留 Branch/Diff 且不自动 Merge；
+- ✅ Budget / Provider Semaphore：启动前 Token/USD 检查；同 Provider 可限流；
+- ✅ WorkflowCard 依赖图 + 时间线：snapshot 携带 `dependsOn`，节点展示 state/duration/tokens/errorCode，详情含结构化输出与 Diff；
+- 不是可视化编辑器；Step 级 Logs / Tool Calls 列表仍未进入 snapshot。
 
 ### 5.3 状态总表
 
@@ -343,16 +361,21 @@ min(
 | Tool Policy | 已实现 | 补越权、未知工具和自定义 Profile 安全测试 |
 | Model Override | Sub-Agent 与 Workflow Step 已实现，UI 可展示 ✅ | 后续补 Provider 级成本统计 |
 | Agent Continue / Round | 已实现 | 补 Retention、Context 上限和重启语义 |
-| Structured Output | 已与 Typed Inputs 打通 ✅ | 后续增加 UI 结构化数据查看器 |
-| Workflow DAG Runtime | 已实现 | 不重写，按执行器和数据解析职责拆分 |
-| Workflow UI | 基础版与 Step Profile/Model/Attempt 展示已实现 ✅ | 增加结构化输出查看器和 DAG 可视化 |
+| Structured Output | 已与 Typed Inputs 打通 ✅ | WorkflowCard 已展示 structuredResult；后续可补更丰富的查看器 |
+| Workflow DAG Runtime | 已实现，Engine 只负责 DAG/状态/调度/取消/Timeout/Retry ✅ | 不重写；condition/sub-workflow 已接入，后续不把 pipeline 塞进 Engine |
+| Workflow UI | 基础卡片 + 依赖图 + 时间线 + Attempt/Isolation Diff/foreach/condition/child/budget ✅ | 可视化编辑器与 Step Logs/Tool Calls 仍不做 |
 | Journal / Resume | 已实现 | 补真实崩溃恢复 E2E |
 | Custom Profile | 基础加载已实现 ✅ | 增加 UI、诊断与更多安全 E2E |
 | Typed Inputs / Reference | Args、显式引用与 V1/V2 Prompt 路径已实现 ✅ | 后续扩展声明式 Input Definition |
-| Retry Policy | Step 级白名单重试、Backoff、Attempt Journal/Usage/Resume 与 UI 已实现 ✅ | 后续结合 Budget 与可视化 Timeline |
-| Worktree Isolation | 未实现 | 开放稳定写 Agent 前置条件 |
-| Saved Workflow / Args | Runtime Args 已实现，Saved Registry 未实现 | 后续增加声明、默认值和模板 |
-| Tool / Control Step | 未实现 | 先抽 StepExecutor，再逐类增加 |
+| Retry Policy | Step 级白名单重试、Backoff、Attempt Journal/Usage/Resume 与 UI 已实现 ✅ | 时间线已能看到 attempt 对应的耗时 |
+| Worktree Isolation | Isolation Manager、强制可写隔离、Branch/Diff/DiffStat、Cleanup 与 UI 已实现 ✅ | Electron Worker 写 Agent E2E 已补；窗口级 Playwright 仍不做 |
+| Concurrency Group | `resources.group` + 全局 ResourceGroupLimiter，同组限流、异组并行、与 Scheduler / Provider Semaphore 叠加 ✅ | 不默认把可写 Agent 绑到 main-worktree-writer |
+| Budget / Provider Semaphore | 启动前 Token/USD 预算与按 Provider 限流已实现 ✅ | 不中断已启动的 Step；主工作树直写互斥仍不做 |
+| Saved Workflow / Args | Registry、Input Definition、三个内置模板、Reload 与 `workflow_start({ name, args })` 已实现 ✅ | 后续可补保存到磁盘的 GUI 与更多模板 |
+| Tool / Control Step | Agent + allowlist Tool Step、condition、sub-workflow 已实现 ✅ | 不开放任意 Shell；pipeline / human / HTTP 仍不做 |
+| foreach | Virtual instances、itemLimit、双重限流、Resume 与 UI 已实现 ✅ | 保持现有语义，不摊平进 snapshot.steps |
+| condition | equals/notEquals/exists、skipped 级联、join 可运行、Resume 保留 skipped ✅ | 不增加 eval / Function / 额外运算符 |
+| sub-workflow | 按 name 调用 Saved Workflow、depth≤3、Engine 内递归、child snapshot Resume ✅ | 不支持 inline nested definition，不走 WorkflowManager |
 
 ---
 
@@ -700,8 +723,7 @@ workflow.log
 
 ### 9.4 可写 Agent
 
-- 未完成 Worktree Isolation 前，不把 `general` 视为稳定的并行写入能力；
-- 可写 Step 默认要求独立 Worktree；
+- 可写 Sub-Agent / Workflow Step 默认强制独立 Worktree；显式 `isolation: none` 被拒绝；
 - 不自动 Merge；
 - 返回 Branch、Changed Files、DiffStat 和可审查 Diff；
 - 用户明确批准后才进入合并流程。
@@ -717,7 +739,7 @@ workflow.log
 #### 工作项
 
 - ✅ 固化 Contracts、Profile、Tool Policy、Continue 和 Structured Output 的回归测试；
-- ✅ 已有 `A/B/C → D` Workflow 确定性集成测试；仍需补 Electron E2E；
+- ✅ 已有 `A/B/C → D` Workflow 确定性集成测试；Electron Worker 写 Agent E2E 已补（真实 `write_file` + Worktree + WorkflowCard）；窗口级 Playwright 仍不做；
 - ✅ queued/running Cancel 自动化测试；
 - ✅ Step/Workflow Timeout 自动化测试；
 - ✅ failed dependency / blocked 自动化测试；
@@ -836,54 +858,58 @@ $steps.<stepId>.structuredResult.<path>
 - ✅ Retry 仅作用于明确可重试错误；
 - ✅ V1 Workflow 无行为回归。
 
-### Phase C：安全的 Writable Multi-Agent
+### Phase C：安全的 Writable Multi-Agent ✅
 
 目标：允许多个 Coding Agent 并行修改，但不污染主工作区。
 
-#### C1. Isolation Manager
+#### C1. Isolation Manager ✅
 
-建议新增：
+已新增：
 
 ```text
 packages/orchestration/src/isolation/
 ├── types.ts
+├── policy.ts
+├── paths.ts
 ├── manager.ts
 └── git-worktree.ts
 ```
 
-接口负责：
+接口已实现：
 
 ```text
 prepare → isolated cwd / branch
-finish  → changed files / diff stat / commit metadata
-cleanup → 仅清理 Runtime 所有资源
+inspect → changed files / diff stat / diff
+finish  → 无修改则清理，有修改则保留审查结果
+cleanup → 仅清理 Runtime 创建且登记过的路径
 ```
 
-#### C2. Worktree 生命周期
+#### C2. Worktree 生命周期 ✅
 
 ```text
 无修改
   → 自动清理临时 Worktree 和 Runtime 创建的临时 Branch
 
 有修改
-  → 保留 Branch
-  → 返回 Worktree、Branch、Changed Files、DiffStat
+  → 保留 Branch 与 Worktree
+  → 返回 Worktree、Branch、Changed Files、DiffStat、Diff
   → 等待审查
 ```
 
 第一版不自动 Merge。
 
-#### C3. `general` Profile 安全收口
+#### C3. `general` Profile 安全收口 ✅
 
-- 可写任务默认要求 `isolation: worktree`；
-- 非 Git 仓库返回明确错误或降级为显式串行模式；
-- Terminal 和文件写入继续经过 Permission/Capability；
-- Agent 不能写出 Worktree；
-- 失败和取消后产生的修改仍可审查。
+- 可写任务默认要求 `isolation: worktree`；显式 `none` 返回 `isolation_required`；
+- 非 Git 仓库返回 `worktree_not_a_git_repository`；
+- Terminal 和文件写入继续经过 Permission/Capability，cwd 切换到 Worktree；
+- 后台 Agent 对已通过路径校验的 Worktree 内写入/终端不再弹审批；越权路径仍 deny；
+- Agent 不能写出 Worktree：工具层仍按工作目录 canonicalize；
+- 失败和取消后产生的修改仍可审查；无修改则清理。
 
-#### C4. Concurrency Group
+#### C4. Concurrency Group ✅
 
-增加资源组，为同一主工作树写操作提供互斥：
+已增加资源组，为需要互斥的 Agent 提供独立于 LLM Scheduler 的限流：
 
 ```yaml
 resources:
@@ -891,23 +917,37 @@ resources:
   maxConcurrency: 1
 ```
 
-独立 Worktree 可使用不同 Group 并行。
+已落地：
+
+- Agent Step、foreach agent template 与 `sub_agent_start` 可声明 `resources`；
+- 同名 group 必须使用相同 `maxConcurrency`（定义期校验；运行时冲突为 `resource_group_conflict`）；
+- 默认 `maxConcurrency = 1`，最大 4；
+- 先拿 resource group，再拿 Provider Semaphore，再拿 `AgentExecutionScheduler`；
+- Sub-Agent 与 Workflow 共用同一个 `ResourceGroupLimiter`；
+- 不同 group 可并行；未声明 resources 的独立 Worktree 写 Agent 仍可并行；
+- 不自动把可写 Agent 绑到 `main-worktree-writer`（它们已经强制 Worktree）；
+- 取消等待 group 的 Step 不会启动 runner。
+
+主工作树直写互斥仍随 `isolation: none` 一起不做。
 
 #### Exit Gate
 
-- [ ] 至少三个写 Agent 可在独立 Worktree 并行；
-- [ ] 主工作区和 Git Index 保持不变；
-- [ ] 同文件修改不会发生直接文件系统覆盖；
-- [ ] Branch、Changed Files、DiffStat 和完整 Diff 可查看；
-- [ ] Cancel/Failure/Cleanup 无路径逃逸或误删；
-- [ ] 不自动 Merge；
-- [ ] 非 Git 仓库行为明确且测试覆盖。
+- ✅ 至少三个写 Agent 可在独立 Worktree 并行（自动化测试 + Electron Worker 真实 `write_file` E2E）；
+- ✅ 主工作区和 Git Index 保持不变；
+- ✅ 同文件修改不会发生直接文件系统覆盖；
+- ✅ Branch、Changed Files、DiffStat 和完整 Diff 可查看；
+- ✅ Cancel/Failure/Cleanup 无路径逃逸或误删；
+- ✅ 不自动 Merge；
+- ✅ 非 Git 仓库行为明确且测试覆盖；
+- ✅ 同名 resource group 串行，异组并行；
+- ✅ Sub-Agent 与 Workflow 共用 limiter；
+- ✅ 同组 maxConcurrency 冲突有稳定错误码。
 
 ### Phase D：可复用 Workflow 与执行器扩展
 
 目标：在数据契约和隔离稳定后，提高 Workflow 的复用性和非 LLM 执行效率。
 
-#### D1. StepExecutor 抽象
+#### D1. StepExecutor 抽象 ✅
 
 将 `engine.ts` 逐步拆为：
 
@@ -925,27 +965,28 @@ workflow/
     └── tool-step.ts
 ```
 
-Engine 只负责状态机、依赖、调度、取消、Timeout 和 Retry；具体 Step 执行由 Executor 负责。
+Engine 只负责状态机、依赖、调度、取消、Timeout 和 Retry；具体 Step 执行由 Executor 负责。 ✅
 
-#### D2. Tool Step
+#### D2. Tool Step ✅
 
 很多确定性操作不应经过 LLM：
 
 ```yaml
-- id: status
+- id: files
   type: tool
-  tool: git_status
-  input: {}
+  tool: list_files
+  input: { path: . }
 ```
 
-要求：
+已落地：
 
-- 只能调用 Workflow 允许且 Runtime 注册的 Tool；
+- 只能调用 Workflow 允许且 Runtime 注册的 Tool（`read_file | list_files | grep | glob | web_search | web_fetch`）；
 - Tool Capability 和 Permission 继续生效；
 - 第一版不直接把任意 Shell 暴露为 Workflow Step；
-- Tool 输出可以进入 Structured Input Reference。
+- Tool 输出可以进入 Structured Input Reference；
+- Tool Step 受 Workflow `maxConcurrency` 限制，但不占用全局 LLM Scheduler。
 
-#### D3. Saved Workflow / Args / Templates
+#### D3. Saved Workflow / Args / Templates ✅
 
 来源层级：
 
@@ -955,22 +996,23 @@ project .jojo/workflows
   > builtin
 ```
 
-支持：
+已落地：
 
-- `workflow_start({ name, args })`；
+- `workflow_start({ name, args })` 与 `workflow_list`；
 - string/number/boolean 等有限类型 Args；
-- required/default 校验；
-- `{{inputs.xxx}}` 或统一引用语法；
-- Reload；
-- 至少提供 repo-understand、architecture-review、code-review 三个模板。
+- required/default 校验，类型错误在执行前失败；
+- Agent Task 仅支持 `{{inputs.xxx}}`，Step 数据流继续使用 `$workflow.args` / `$steps...`；
+- Reload；同名覆盖 project > user > builtin；单个坏文件不影响其他定义；
+- 内置模板 `repo-understand`、`architecture-review`、`code-review` 只使用只读 Profile 与 allowlist Tool，不能获得额外权限；
+- Resume 使用启动时冻结的 Definition Snapshot，并再次校验 Args 与 Input Definition。
 
 #### Exit Gate
 
-- [ ] Agent 和 Tool Step 使用统一状态、日志、Usage 和取消协议；
-- [ ] Saved Workflow 可发现、校验、运行和 Reload；
-- [ ] Args 类型错误在执行前失败；
-- [ ] 模板不能获得额外权限；
-- [ ] Resume 能验证 Definition 与 Args 一致性。
+- [x] Agent 和 Tool Step 使用统一状态、日志、Usage 和取消协议；
+- [x] Saved Workflow 可发现、校验、运行和 Reload；
+- [x] Args 类型错误在执行前失败；
+- [x] 模板不能获得额外权限；
+- [x] Resume 能验证 Definition 与 Args 一致性。
 
 ### Phase E：高级声明式编排与可观察性
 
@@ -983,55 +1025,143 @@ condition
   ↓
 sub-workflow
   ↓
+budget / provider semaphore / cost ✅
+  ↓
+DAG viewer / timeline ✅
+  ↓
 pipeline
   ↓
-budget / provider semaphore / cost
-  ↓
-DAG viewer / timeline / visual editor
+visual editor
 ```
 
 #### foreach
 
-- 使用 Virtual Step Instance；
-- 设置 itemLimit；
-- 每个实例可观察、可取消、可恢复；
-- 受 Workflow 和 Global Scheduler 双重限流；
-- 输出顺序固定。
+已落地：
+
+- 静态 DAG 上使用 `type: foreach`，不改写 definition；
+- Virtual Step Instance 挂在父 Step `instances` 上，不摊平进 `snapshot.steps`；
+- `items.valueFrom` 必须是直接依赖的 `$steps.<id>.structuredResult...` 数组；
+- `itemLimit` 默认 8、最大 20，超出则 `foreach_item_limit`，不静默截断；
+- 0 个 item 时父 Step 以 `structuredResult: []` 完成；
+- `concurrency` 默认 2、最大 4，并受 workflow `maxConcurrency` 上限约束；父 Step 占用 1 个 workflow running slot；
+- Agent 子实例仍走全局 `AgentExecutionScheduler`，Tool 子实例不占 LLM slot；
+- template 只能是 agent 或 tool，禁止嵌套 foreach；`{{item}}` / `{{index}}` 在实例执行时插值；
+- `continueOnError` 为 false 时停止启动后续 item，等待 in-flight 后父 Step 失败；为 true 时收齐后父 Step 完成；
+- Retry 在 template 上，不在父 Step 上；
+- Resume 原样保留已完成实例，其余带着存储的 `item` 重置为 pending；
+- 父 Step `structuredResult` 按 index 顺序聚合，usage 为实例之和。
+
+#### Exit Gate
+
+- [x] 0/1/上限 items，超限失败且不截断；
+- [x] 非数组 items 失败为 `foreach_items_invalid`；
+- [x] 输出顺序固定，不受完成先后影响；
+- [x] `continueOnError` 停止后续或收齐后完成；
+- [x] Agent 实例走全局 Scheduler，Tool 实例不占 LLM slot；
+- [x] Resume 跳过已完成实例并保留 stored item；
+- [x] 下游可通过 `$steps.<foreach>.structuredResult.N` 引用。
 
 #### condition
 
-只支持有限运算：
+已落地：
 
-```text
-equals / notEquals / exists
-```
+- 静态 DAG 上使用 `type: condition`，不改写 definition；
+- 只支持 `equals` / `notEquals` / `exists`，`.strict()`，无 eval / Function；
+- `left` 使用 `{ valueFrom }`，`$steps.` 必须是直接依赖；
+- `then` / `else` 必须存在、必须 `dependsOn` 该 condition、互斥、不能指向自身；
+- 命中后 condition 以 `structuredResult: { matched }` 完成，未走分支的根节点标为 `skipped`；
+- Skip cascade：pending 步在所有依赖已终态、至少一个 `skipped`、且没有 `completed` 时才跳过；join（skipped + completed）仍执行；
+- `skipped` 是终态，不是失败，也不算 incomplete；Resume 原样保留；
+- `exists` 缺字段为 false；`equals` / `notEquals` 缺字段失败为 `workflow_reference_not_found`；
+- 不占 Agent Scheduler；condition 本身不 Retry。
 
-分支未执行节点使用明确的 `skipped` 状态，不执行任意代码。
+#### Exit Gate
+
+- [x] then/else 静态校验（存在、dependsOn、互斥）；
+- [x] 拒绝 eval 等额外键；
+- [x] then 链 cascade skip，join 仍运行；
+- [x] `exists` 缺字段走 else，`equals` 缺字段失败；
+- [x] Resume 保持 skipped，不重跑。
 
 #### sub-workflow
 
-- 与递归 Sub-Agent 分开设计；
-- 设置 `maxWorkflowDepth`，建议默认 3；
-- Definition、Args、Usage 和 Resume 继续可追踪。
+已落地：
+
+- 与递归 Sub-Agent 分开；只按 name 调用 Saved Workflow（project > user > builtin），禁止 inline nested definition；
+- args 为字面量或 `{ valueFrom }`，解析后必须是 string/number/boolean，再走 `resolveWorkflowArgs`；
+- `$steps.` 引用必须是直接依赖；
+- `maxWorkflowDepth = 3`（含 root）。Root depth 默认 1；嵌套为 `depth + 1`；`depth > 3` 在启动子 run 前抛 `workflow_depth_exceeded`；
+- 嵌套执行走 `WorkflowEngine.run()`，不走 WorkflowManager，不占 `maxPerSession`，不发第二张 workflow card；
+- 子 request id 为 `${request.id}:${step.id}`；父 Step 占 1 个 workflow slot，子 Agent Step 共用同一 `AgentExecutionScheduler`；
+- 完整 child `WorkflowRunSnapshot` 存在 `step.child`；父 usage = 子 usage，父 output = child.result；
+- Resume：未完成的 workflow step 保持 pending 并克隆 `child`；嵌套 `run(..., child)` 走 `createResumedWorkflowSnapshot`，已完成子步跳过；
+- 未知 name → `saved_workflow_not_found`；非法 args → `workflow_invalid_args`；子 run 非 success → 父 `workflow_step_failed`（timeout/cancel 除外）。
+
+#### Exit Gate
+
+- [x] 按 name 调用 Saved Workflow 并插值 args；
+- [x] valueFrom 必须来自直接依赖；
+- [x] 未知 name 与 depth 4 有稳定错误码；
+- [x] Resume 不重跑已完成的 child steps。
 
 #### Budget 与 Provider Semaphore
 
-支持 Workflow/Step 级 Token 和成本预算，并在启动新 Step 前检查剩余额度。不同 Provider 可以有独立 Semaphore。
+已落地：
+
+```yaml
+budget:
+  maxInputTokens: 200000
+  maxOutputTokens: 50000
+  maxTotalTokens: 250000
+  maxCostUsd: 2.0
+  inputUsdPerMillion: 3
+  outputUsdPerMillion: 15
+```
+
+Step 级（仅 Token）：
+
+```yaml
+budget:
+  maxOutputTokens: 8000
+```
+
+- Workflow 与 Agent Step / foreach agent template 可声明 budget；`.strict()`，至少一项限额；`maxCostUsd` 必须同时给出费率；
+- 在启动下一消耗 Token 的 Step（agent、foreach agent、nested workflow）前检查已累计 usage（含 in-flight）；不足则 `blocked` + `workflow_budget_exceeded`，不启动 runner、不占用 LLM slot；
+- Tool / condition 不消耗预算，预算耗尽后仍可运行；
+- 不中断已启动的 Step；超额后阻止后续 Step 与 Retry；
+- USD 成本按 `(input+cacheRead)*inputUsdPerMillion + (output+cacheWrite)*outputUsdPerMillion` / 1e6；
+- Resume 使用已累计 usage，剩余不足则继续 blocked；
+- Provider Semaphore 按 `providerId` 独立限流，与 `min(workflow.maxConcurrency, AgentExecutionScheduler, resource-group)` 叠加；未配置的 Provider 不限流；
+- 获取顺序：resource group → provider → LLM scheduler；Sub-Agent 与 Workflow 共用同一个 `ProviderSemaphore`。
+
+#### Exit Gate
+
+- [x] 启动前检查剩余 Token / USD，不足不启动下一消耗 Step；
+- [x] 稳定错误码 `workflow_budget_exceeded`；
+- [x] Retry 在预算耗尽后不再发起；
+- [x] Resume 尊重已用额度；
+- [x] 同 Provider 串行、异 Provider 可并行；Sub-Agent 与 Workflow 共用 semaphore；
+- [x] WorkflowCard 展示预算剩余与错误码。
 
 #### DAG UI
 
-每个节点展示：
+已落地运行时 Viewer，不是可视化编辑器：
 
-```text
-state / attempt / profile / model / duration
-tokens / cost / stopReason / errorCode / worktree
-```
+- Step snapshot 携带 `dependsOn`（Resume / Journal 向后兼容，缺省视为无依赖）；
+- WorkflowCard 默认「依赖图」：按最长路径分层，节点展示 state / duration / tokens / errorCode / worktree，边为 `dependsOn`；
+- 「时间线」按 `startedAt`–`finishedAt` 相对 run origin 排列已开始的 Step；
+- 点击节点或时间线条目会选中并展开对应 Step 列表项；
+- 详情在原有 Output / Error / Diff 之上增加 Structured Output；
+- foreach 实例与 nested child 仍挂在父节点详情里，不摊平进顶层图；
+- 不做拖拽编辑、保存回 Definition，也不把 Logs / Tool Calls 写入 snapshot。
 
-详情展示：
+#### Exit Gate
 
-```text
-Inputs / Output / Structured Output / Logs / Tool Calls / Usage / Diff
-```
+- [x] 线性链与 fan-in/fan-out 分层正确；
+- [x] 节点反映实时 state / duration / usage / errorCode；
+- [x] 时间线只包含已开始的 Step；
+- [x] Structured Output 可在详情中查看；
+- [x] 可视化编辑器仍明确未做。
 
 ---
 
@@ -1039,19 +1169,19 @@ Inputs / Output / Structured Output / Logs / Tool Calls / Usage / Diff
 
 | PR | 内容 | 依赖 | 主要验收 |
 |---|---|---|---|
-| PR-00 | 当前能力收口与 E2E（部分完成） | 无 | ✅ 全仓 Gate、崩溃恢复、Cancel/Timeout；待 Electron E2E |
+| PR-00 | 当前能力收口与 E2E（部分完成） | 无 | ✅ 全仓 Gate、崩溃恢复、Cancel/Timeout、Electron Worker 写 Agent E2E；窗口级 Playwright 仍不做 |
 | PR-01 | User/Project Profile Loader ✅ | PR-00 | ✅ 来源、覆盖、Reload、权限边界 |
 | PR-02 | Workflow Agent Options ✅ | PR-00 | ✅ model/tools/readOnly/maxIterations、Snapshot、UI |
 | PR-03 | Typed Inputs / Reference Resolver ✅ | PR-02 | ✅ 显式字段、Args、无 eval、Journal、V1 兼容 |
 | PR-04 | Retry Policy ✅ | PR-03 | ✅ attempt、backoff、retryOn、Scheduler、Cancel、Usage、Journal、Resume、UI |
-| PR-05 | Isolation Manager | PR-00 | Worktree 创建、边界和 Cleanup |
-| PR-06 | Writable Agent / Branch / Diff | PR-05 | 主工作区不变、不自动 Merge |
-| PR-07 | StepExecutor 拆分与 Tool Step | PR-03 | Engine 行为无回归、权限一致 |
-| PR-08 | Saved Workflow / Args / Templates | PR-03、PR-07 | 发现、校验、Reload、参数化 |
-| PR-09 | foreach | PR-04、PR-07 | 动态实例、限流、恢复 |
-| PR-10 | condition / sub-workflow | PR-09 | 静态验证、深度限制、skipped |
-| PR-11 | Budget / Resource Group | PR-04、PR-06 | 启动前预算、写资源互斥 |
-| PR-12 | DAG Viewer / Timeline | 前述状态稳定 | 实时状态、错误、Usage、Diff |
+| PR-05 | Isolation Manager ✅ | PR-00 | ✅ Worktree 创建、边界和 Cleanup |
+| PR-06 | Writable Agent / Branch / Diff ✅ | PR-05 | ✅ 主工作区不变、不自动 Merge、UI Diff |
+| PR-07 | StepExecutor 拆分与 Tool Step ✅ | PR-03 | ✅ Engine 行为无回归、权限一致、Tool 不占 LLM slot |
+| PR-08 | Saved Workflow / Args / Templates ✅ | PR-03、PR-07 | ✅ 发现、校验、Reload、参数化 |
+| PR-09 | foreach ✅ | PR-04、PR-07 | ✅ 动态实例、限流、恢复 |
+| PR-10 | condition / sub-workflow ✅ | PR-09 | ✅ 静态验证、深度限制、skipped |
+| PR-11 | Budget / Provider Semaphore ✅ | PR-04、PR-06、C4 | ✅ 启动前预算；Provider 限流与 Group/Scheduler 叠加；写资源互斥已由 Concurrency Group 承担 |
+| PR-12 | DAG Viewer / Timeline ✅ | 前述状态稳定 | ✅ 依赖图、时间线、错误/Usage/Diff/结构化输出；不是可视化编辑器 |
 
 可并行关系：
 
@@ -1093,9 +1223,13 @@ Workflow：
 - cancel/timeout；
 - retry success/exhausted；
 - typed reference valid/missing/type mismatch；
+- tool step allowlist / permission_denied / 不占用 LLM Scheduler；
+- saved workflow 发现/覆盖/Reload/args 校验/resume 一致性；
 - resume 后 completed 不重跑；
 - Worktree failure/cleanup；
-- foreach 0/1/上限 Items。
+- foreach 0/1/上限 Items；
+- budget 启动前拦截 / retry 跳过 / resume；
+- provider semaphore 同 Provider 串行、异 Provider 并行。
 
 Workflow Engine 测试优先使用 `FakeLeafAgentRunner`，不依赖真实 LLM。
 
@@ -1212,7 +1346,7 @@ apps/desktop/src/renderer/
 ### Iteration 1：当前能力收口
 
 - ✅ 完成全仓工程 Gate；
-- ✅ Workflow 并发、Cancel、Timeout、Blocked、Crash Resume 已有自动化覆盖；待补 Electron E2E；
+- ✅ Workflow 并发、Cancel、Timeout、Blocked、Crash Resume 已有自动化覆盖；Electron Worker 写 Agent E2E 已补；
 - ✅ Sub-Agent Continue、Structured Output 和 Session Quiescent 验证；Retention 长时 E2E 待补；
 - ✅ 校正 UI 与文档中的实现状态。
 
@@ -1225,15 +1359,15 @@ apps/desktop/src/renderer/
 - ✅ Retry Policy；
 - 对应 Error Code、Journal 和 UI Attempt 信息。
 
-### Iteration 3：安全并行写入
+### Iteration 3：安全并行写入 ✅
 
-- Isolation Manager；
-- Git Worktree；
-- `general` 强制隔离策略；
-- Branch / Changed Files / DiffStat / Diff；
-- Cancel/Failure Cleanup；
-- 三 Agent 并行写入 E2E；
-- 明确禁止自动 Merge。
+- ✅ Isolation Manager；
+- ✅ Git Worktree；
+- ✅ `general` 强制隔离策略；
+- ✅ Branch / Changed Files / DiffStat / Diff；
+- ✅ Cancel/Failure Cleanup；
+- ✅ 三 Agent 并行写入自动化测试；Electron Worker 真实 `write_file` E2E 已补；
+- ✅ 明确禁止自动 Merge。
 
 完成这三个迭代后，Jojo Agent 将从：
 
@@ -1247,7 +1381,7 @@ apps/desktop/src/renderer/
 具备结构化数据流和安全并行编码能力的 Multi-Agent Runtime
 ```
 
-之后再投入 Saved Workflow、高级 Step 和可视化编辑器，收益更稳定，返工风险也更低。
+Saved Workflow、Worktree Isolation、Tool Step、foreach、condition、sub-workflow、Concurrency Group、Electron Worker 写 Agent E2E、Budget / Provider Semaphore 与 DAG Viewer / Timeline 已落地。不要提前做 pipeline 或可视化编辑器。窗口级 Playwright 仍不是当前切片。
 
 ---
 
@@ -1261,14 +1395,19 @@ apps/desktop/src/renderer/
 - [x] Built-in Profile、Tool Policy、Continue 和 Structured Output 可用；
 - [x] Workflow 可执行、并发、取消和恢复声明式 DAG；
 - [x] Workflow 有 Journal、Usage、错误定位和基础 UI；
-- [ ] 当前能力通过完整工程 Gate 和关键 Electron E2E；
+- [x] Electron Worker 写 Agent E2E：三个 `general` Step 经 DesktopLeafAgentRunner 调用真实 `write_file`，主工作区不变，Step snapshot 含 Branch/Diff；越权路径被拒绝；
+- [ ] 当前能力通过完整工程 Gate 和窗口级 Electron E2E；
 - ✅ User/Project Profile 可安全加载；
 - ✅ Workflow 使用 Typed Inputs 和稳定引用；
 - ✅ Retry 有确定语义并可恢复；
-- [ ] 可写 Agent 使用独立 Worktree；
-- [ ] 多个写 Agent 可并行且主工作区不变；
-- [ ] Branch / Diff 可审查且默认不自动 Merge；
-- [ ] Workflow 可保存、参数化和复用；
-- [ ] 新 Step 类型不绕过 Permission、Scheduler、Journal 或 Resume；
-- [ ] Budget、Resource Group 和 UI 能解释真实运行状态；
+- ✅ 可写 Agent 使用独立 Worktree；
+- ✅ 多个写 Agent 可并行且主工作区不变；
+- ✅ Branch / Diff 可审查且默认不自动 Merge；
+- [x] Workflow 可保存、参数化和复用；
+- [x] foreach 新 Step 类型不绕过 Permission、Scheduler、Journal 或 Resume；
+- [x] condition / sub-workflow 与其它新 Step 类型不绕过 Permission、Scheduler、Journal 或 Resume；
+- [x] Concurrency Group 对 Sub-Agent 与 Workflow 生效，且不绕过 Scheduler；
+- [x] Budget 在启动前拦截，Provider Semaphore 与 Group/Scheduler 叠加；UI 能解释预算与错误码；
+- [x] DAG Viewer / Timeline 能展示依赖、状态、Usage、错误、Diff 与结构化输出；
+- [ ] 可视化编辑器 / 窗口级 Electron E2E；
 - [ ] 所有关键路径均有自动化测试。

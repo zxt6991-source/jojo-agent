@@ -11,8 +11,11 @@ export const ORCHESTRATION_TOOL_NAMES = new Set([
   'workflow_wait',
   'workflow_status',
   'workflow_cancel',
-  'workflow_resume'
+  'workflow_resume',
+  'workflow_list'
 ]);
+
+const WORKSPACE_BOUNDED_MUTATION_TOOLS = new Set(['write_file', 'edit_file', 'delete_file', 'terminal']);
 
 type PermissionContext = { sessionId: string; workingDirectory: string };
 
@@ -31,6 +34,7 @@ export class NonInteractivePermissionGate implements PermissionGate {
   async check(call: ToolCall, context: PermissionContext): Promise<PermissionDecision> {
     const decision = await this.inner.check(call, context);
     if (decision.decision !== 'ask') return decision;
+    if (WORKSPACE_BOUNDED_MUTATION_TOOLS.has(call.name)) return { decision: 'allow' };
     return {
       decision: 'deny',
       code: 'subagent_requires_approval',

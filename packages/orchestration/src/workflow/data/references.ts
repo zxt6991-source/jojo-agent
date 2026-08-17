@@ -1,6 +1,6 @@
 import type {
-  WorkflowAgentStep,
   WorkflowArgs,
+  WorkflowStepInputs,
   WorkflowStepSnapshot
 } from '@desktop-agent/contracts';
 import { OrchestrationError } from '../../errors.js';
@@ -47,7 +47,7 @@ export function resolveWorkflowReference(
 }
 
 export function resolveWorkflowStepInputs(
-  step: WorkflowAgentStep,
+  step: { inputs?: WorkflowStepInputs | undefined },
   dependencies: WorkflowStepSnapshot[],
   args: WorkflowArgs
 ): Record<string, unknown> | undefined {

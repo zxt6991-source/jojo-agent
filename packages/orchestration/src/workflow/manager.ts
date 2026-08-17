@@ -1,5 +1,4 @@
 import {
-  WorkflowArgsSchema,
   WorkflowDefinitionSchema,
   type OrchestrationEvent,
   type WorkflowRunSnapshot,
@@ -8,8 +7,11 @@ import {
 import { parse as parseYaml } from 'yaml';
 import { abortError } from '../abort.js';
 import { OrchestrationError } from '../errors.js';
+import { materializeWorkflowDefinition, resolveWorkflowArgs } from './data/args.js';
 import { WorkflowEngine, createInitialWorkflowSnapshot, createResumedWorkflowSnapshot } from './engine.js';
 import type { WorkflowPersistence } from './persistence.js';
+import type { SavedWorkflowRegistry } from './saved/registry.js';
+import type { SavedWorkflowSummary } from './saved/types.js';
 import type { WorkflowExecutionRequest, WorkflowStartRequest } from './types.js';
 
 const TERMINAL_STATES = new Set<WorkflowRunState>(['completed', 'failed', 'cancelled', 'timed_out', 'interrupted']);
@@ -33,13 +35,32 @@ export type WorkflowManagerOptions = {
   maxPerSession?: number;
   retention?: number;
   persistence?: WorkflowPersistence;
+  savedWorkflows?: SavedWorkflowRegistry;
 };
 
 function cloneSnapshot(snapshot: WorkflowRunSnapshot): WorkflowRunSnapshot {
   return {
     ...snapshot,
+    ...(snapshot.budget ? { budget: { ...snapshot.budget } } : {}),
     usage: { ...snapshot.usage },
-    steps: snapshot.steps.map((step) => ({ ...step, usage: { ...step.usage } })),
+    steps: snapshot.steps.map((step) => ({
+      ...step,
+      ...(step.structuredResult !== undefined ? { structuredResult: structuredClone(step.structuredResult) } : {}),
+      ...(step.item !== undefined ? { item: structuredClone(step.item) } : {}),
+      ...(step.isolation ? { isolation: { ...step.isolation, changedFiles: [...step.isolation.changedFiles] } } : {}),
+      ...(step.instances ? {
+        instances: step.instances.map((instance) => ({
+          ...instance,
+          ...(instance.structuredResult !== undefined ? { structuredResult: structuredClone(instance.structuredResult) } : {}),
+          ...(instance.item !== undefined ? { item: structuredClone(instance.item) } : {}),
+          ...(instance.isolation ? { isolation: { ...instance.isolation, changedFiles: [...instance.isolation.changedFiles] } } : {}),
+          usage: { ...instance.usage }
+        }))
+      } : {}),
+      ...(step.child ? { child: structuredClone(step.child) } : {}),
+      ...(step.dependsOn ? { dependsOn: [...step.dependsOn] } : {}),
+      usage: { ...step.usage }
+    })),
     failedStepIds: [...snapshot.failedStepIds],
     blockedStepIds: [...snapshot.blockedStepIds]
   };
@@ -64,6 +85,7 @@ export class WorkflowManager {
   private readonly maxPerSession: number;
   private readonly retention: number;
   private readonly persistence: WorkflowPersistence | undefined;
+  private readonly savedWorkflows: SavedWorkflowRegistry | undefined;
 
   constructor(
     private readonly engine: WorkflowEngine,
@@ -73,13 +95,13 @@ export class WorkflowManager {
     this.maxPerSession = options.maxPerSession ?? 4;
     this.retention = options.retention ?? 32;
     this.persistence = options.persistence;
+    this.savedWorkflows = options.savedWorkflows;
   }
 
   start(input: WorkflowStartRequest): WorkflowRunSnapshot {
-    const parsed = parseDefinition(input.definition);
-    if (!parsed.success) throw new OrchestrationError('workflow_invalid_definition', parsed.error.message, parsed.error.issues);
-    const parsedArgs = WorkflowArgsSchema.safeParse(input.args ?? {});
-    if (!parsedArgs.success) throw new OrchestrationError('workflow_invalid_args', parsedArgs.error.message, parsedArgs.error.issues);
+    const definition = this.resolveDefinition(input);
+    const args = resolveWorkflowArgs(definition.inputs, input.args);
+    const materialized = materializeWorkflowDefinition(definition, args);
     const active = this.list(input.sessionId).filter((workflow) => !TERMINAL_STATES.has(workflow.state));
     if (active.length >= this.maxPerSession) {
       throw new OrchestrationError('workflow_limit_reached', `A session may have at most ${this.maxPerSession} active workflows.`);
@@ -91,8 +113,8 @@ export class WorkflowManager {
       workingDirectory: input.workingDirectory,
       providerId: input.providerId,
       model: input.model,
-      args: parsedArgs.data,
-      definition: parsed.data,
+      args,
+      definition: materialized,
       createdAt: new Date().toISOString()
     };
     let resolveDone: () => void = () => undefined;
@@ -165,6 +187,11 @@ export class WorkflowManager {
         && this.persistence?.definitionHash(live.request.definition) !== live.persistedDefinitionHash)) {
       throw new OrchestrationError('workflow_resume_mismatch', 'The persisted workflow definition no longer matches its definition hash.');
     }
+    try {
+      resolveWorkflowArgs(live.request.definition.inputs, live.request.args);
+    } catch {
+      throw new OrchestrationError('workflow_resume_mismatch', 'The persisted workflow args no longer match the definition inputs.');
+    }
     if (!['interrupted', 'failed', 'timed_out', 'cancelled'].includes(live.snapshot.state)) {
       throw new OrchestrationError('workflow_resume_invalid_state', `Workflow cannot resume from state: ${live.snapshot.state}`);
     }
@@ -219,6 +246,10 @@ export class WorkflowManager {
       .map((workflow) => cloneSnapshot(workflow.snapshot));
   }
 
+  listSaved(workingDirectory: string): SavedWorkflowSummary[] {
+    return this.savedWorkflows?.summarize(workingDirectory) ?? [];
+  }
+
   cancel(id: string): WorkflowRunSnapshot {
     const live = this.workflows.get(id);
     if (!live) throw new OrchestrationError('workflow_not_found', `Workflow not found: ${id}`);
@@ -256,6 +287,23 @@ export class WorkflowManager {
       await workflow.persistenceWrites;
       if (workflow.persistenceError) throw workflow.persistenceError;
     }));
+  }
+
+  private resolveDefinition(input: WorkflowStartRequest) {
+    const hasDefinition = input.definition !== undefined;
+    const hasName = input.name !== undefined && input.name !== '';
+    if (hasDefinition === hasName) {
+      throw new OrchestrationError('workflow_invalid_definition', 'Provide exactly one of definition or name.');
+    }
+    if (hasName) {
+      if (!this.savedWorkflows) {
+        throw new OrchestrationError('saved_workflow_not_found', `Unknown saved workflow: ${input.name}`);
+      }
+      return this.savedWorkflows.get(input.name!, input.workingDirectory).definition;
+    }
+    const parsed = parseDefinition(input.definition);
+    if (!parsed.success) throw new OrchestrationError('workflow_invalid_definition', parsed.error.message, parsed.error.issues);
+    return parsed.data;
   }
 
   private async execute(live: LiveWorkflow, initialSnapshot?: WorkflowRunSnapshot, createJournal = true): Promise<void> {

@@ -14,10 +14,12 @@ export type WorkflowExecutionRequest = {
   args: WorkflowArgs;
   definition: WorkflowDefinition;
   createdAt: string;
+  depth?: number;
 };
 
 export type WorkflowStartRequest = Omit<WorkflowExecutionRequest, 'id' | 'createdAt' | 'definition' | 'args'> & {
-  definition: unknown;
+  definition?: unknown;
+  name?: string;
   args?: unknown;
 };
 

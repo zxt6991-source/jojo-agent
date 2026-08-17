@@ -46,6 +46,7 @@ function definition(
     tools?: { allow?: string[]; deny?: string[] };
     readOnly?: boolean;
     inputs?: Record<string, { valueFrom: string }>;
+    isolation?: { type: 'none' | 'worktree' };
     retry?: {
       maxAttempts: number;
       backoffMs?: number;
@@ -93,6 +94,7 @@ describe('WorkflowEngine', () => {
       .run(request(workflow), new AbortController().signal, callbacks());
     expect(starts).toEqual(['a', 'b', 'c']);
     expect(final).toMatchObject({ state: 'completed', result: 'output-c', incomplete: false });
+    expect(final.steps.map((step) => step.dependsOn)).toEqual([[], ['a'], ['b']]);
     expect(final.usage).toMatchObject({ inputTokens: 3, outputTokens: 3 });
   });
 
@@ -660,12 +662,11 @@ describe('workflow prompt limits', () => {
       id: 'source', state: 'completed' as const, attempt: 1, createdAt: new Date().toISOString(),
       output: 'x'.repeat(MAX_DEPENDENCY_OUTPUT_CHARACTERS + 100), incomplete: false, usage: emptyUsage()
     };
-    const prompt = buildStepPrompt(
-      WorkflowDefinitionSchema.parse({ schemaVersion: 1, name: 'prompt', steps: [
-        { id: 'summary', type: 'agent', task: 'Summarize', dependsOn: [] }
-      ] }).steps[0]!,
-      [dependency]
-    );
+    const parsedStep = WorkflowDefinitionSchema.parse({ schemaVersion: 1, name: 'prompt', steps: [
+      { id: 'summary', type: 'agent', task: 'Summarize', dependsOn: [] }
+    ] }).steps[0]!;
+    if (parsedStep.type !== 'agent') throw new Error('expected agent step');
+    const prompt = buildStepPrompt(parsedStep, [dependency]);
     expect(prompt).toContain('[Dependency output truncated]');
     expect(prompt.length).toBeLessThan(MAX_DEPENDENCY_OUTPUT_CHARACTERS + 200);
 

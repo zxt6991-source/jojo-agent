@@ -1,6 +1,6 @@
 import type {
   OrchestrationEvent,
-  StructuredOutputErrorCode,
+  SubAgentErrorCode,
   SubAgentRound,
   SubAgentSnapshot,
   SubAgentState,
@@ -8,10 +8,15 @@ import type {
 } from '@desktop-agent/contracts';
 import { abortError } from '../abort.js';
 import { OrchestrationError } from '../errors.js';
+import { IsolationManager } from '../isolation/manager.js';
+import { resolveIsolationType, withIsolationTask } from '../isolation/policy.js';
+import { copyIsolationSnapshot, type IsolationContext } from '../isolation/types.js';
 import { assertOutputSchema, validateStructuredOutput } from '../structured-output.js';
 import { accrueUsage, emptyUsage } from '../usage.js';
 import { AgentProfileRegistry, createBuiltinAgentProfileRegistry } from './profile-registry.js';
 import { AgentExecutionScheduler } from './scheduler.js';
+import { acquireResourceAndAgentSlots, ResourceGroupLimiter } from './resource-groups.js';
+import { ProviderSemaphore } from './provider-semaphore.js';
 import type { LeafAgentRunner, SubAgentStartRequest } from './types.js';
 
 const TERMINAL_STATES = new Set<SubAgentState>(['completed', 'failed', 'cancelled', 'timed_out', 'closed']);
@@ -21,6 +26,7 @@ type LiveSubAgent = {
   request: SubAgentStartRequest & { timeoutMs: number };
   controller: AbortController | undefined;
   continuationId: string | undefined;
+  isolationContext: IsolationContext | undefined;
   done: Promise<void>;
   resolveDone: () => void;
   settled: boolean;
@@ -30,12 +36,16 @@ export type SubAgentManagerOptions = {
   maxPerSession?: number;
   retention?: number;
   profileRegistry?: AgentProfileRegistry;
+  isolation?: IsolationManager;
+  resourceGroups?: ResourceGroupLimiter;
+  providers?: ProviderSemaphore;
 };
 
 function copySnapshot(snapshot: SubAgentSnapshot): SubAgentSnapshot {
   return {
     ...snapshot,
     ...(snapshot.structuredResult !== undefined ? { structuredResult: structuredClone(snapshot.structuredResult) } : {}),
+    ...(snapshot.isolation ? { isolation: copyIsolationSnapshot(snapshot.isolation) } : {}),
     usage: { ...snapshot.usage },
     rounds: snapshot.rounds.map((round) => ({ ...round, usage: { ...round.usage } }))
   };
@@ -64,6 +74,9 @@ export class SubAgentManager {
   private readonly maxPerSession: number;
   private readonly retention: number;
   private readonly profileRegistry: AgentProfileRegistry;
+  private readonly isolation: IsolationManager | undefined;
+  private readonly resourceGroups: ResourceGroupLimiter;
+  private readonly providers: ProviderSemaphore;
 
   constructor(
     private readonly runner: LeafAgentRunner,
@@ -74,11 +87,22 @@ export class SubAgentManager {
     this.maxPerSession = options.maxPerSession ?? 8;
     this.retention = options.retention ?? 32;
     this.profileRegistry = options.profileRegistry ?? createBuiltinAgentProfileRegistry();
+    this.isolation = options.isolation;
+    this.resourceGroups = options.resourceGroups ?? new ResourceGroupLimiter();
+    this.providers = options.providers ?? new ProviderSemaphore();
   }
 
   start(request: SubAgentStartRequest): SubAgentSnapshot {
     if ((request.depth ?? 0) >= 1) throw new OrchestrationError('nested_subagent_forbidden', 'Nested sub-agents are not allowed.');
     const profile = this.profileRegistry.get(request.profile, request.workingDirectory);
+    const isolationType = resolveIsolationType({
+      profile,
+      ...(request.readOnly !== undefined ? { requestReadOnly: request.readOnly } : {}),
+      ...(request.isolation?.type ? { requestedType: request.isolation.type } : {})
+    });
+    if (isolationType === 'worktree' && !this.isolation) {
+      throw new OrchestrationError('worktree_create_failed', 'Worktree isolation is not configured.');
+    }
     const effectiveRequest: SubAgentStartRequest & { timeoutMs: number } = {
       ...request,
       model: profile.model && profile.model !== 'inherit' ? profile.model : request.model,
@@ -89,6 +113,7 @@ export class SubAgentManager {
         : {})
     };
     if (effectiveRequest.outputSchema) assertOutputSchema(effectiveRequest.outputSchema);
+    if (effectiveRequest.resources) this.resourceGroups.register(effectiveRequest.resources);
     const liveForSession = this.list(request.sessionId).filter((agent) => !TERMINAL_STATES.has(agent.state));
     if (liveForSession.length >= this.maxPerSession) {
       throw new OrchestrationError('subagent_limit_reached', `A session may have at most ${this.maxPerSession} active sub-agents.`);
@@ -110,11 +135,13 @@ export class SubAgentManager {
         model: effectiveRequest.model,
         usage: emptyUsage(),
         incomplete: false,
+        ...(effectiveRequest.resources ? { resourceGroup: effectiveRequest.resources.group } : {}),
         rounds: [{ index: 1, input: request.task, usage: emptyUsage(), incomplete: false }]
       },
       request: effectiveRequest,
       controller: new AbortController(),
       continuationId: undefined,
+      isolationContext: undefined,
       done,
       resolveDone,
       settled: false
@@ -165,6 +192,7 @@ export class SubAgentManager {
     if (live.snapshot.state === 'idle') {
       live.snapshot = { ...live.snapshot, state: 'cancelled', finishedAt: new Date().toISOString(), stopReason: 'cancelled', incomplete: true };
       void this.closeContinuation(live);
+      void this.settleIsolation(live);
       this.notify(live);
       return copySnapshot(live.snapshot);
     }
@@ -212,6 +240,7 @@ export class SubAgentManager {
     if (live.snapshot.state !== 'idle') throw new OrchestrationError('subagent_closed', `Sub-agent cannot be closed from state: ${live.snapshot.state}`);
     await this.closeContinuation(live);
     live.snapshot = { ...live.snapshot, state: 'closed', finishedAt: new Date().toISOString() };
+    await this.settleIsolation(live);
     this.notify(live);
     return copySnapshot(live.snapshot);
   }
@@ -227,6 +256,7 @@ export class SubAgentManager {
     for (const agent of agents) this.cancel(agent.snapshot.id);
     await Promise.all(agents.map((agent) => agent.done));
     await Promise.all(agents.map((agent) => this.closeContinuation(agent)));
+    await Promise.all(agents.map((agent) => this.settleIsolation(agent)));
   }
 
   private async execute(live: LiveSubAgent, message: string, continuation: boolean): Promise<void> {
@@ -238,7 +268,14 @@ export class SubAgentManager {
     let timedOut = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      release = await this.scheduler.acquire(controller.signal);
+      release = await acquireResourceAndAgentSlots({
+        resourceGroups: this.resourceGroups,
+        signal: controller.signal,
+        scheduler: this.scheduler,
+        providers: this.providers,
+        providerId: request.providerId,
+        ...(request.resources ? { resources: request.resources } : {})
+      });
       if (live.settled) return;
       const startedAt = new Date().toISOString();
       live.snapshot = {
@@ -252,6 +289,23 @@ export class SubAgentManager {
         timedOut = true;
         controller.abort();
       }, request.timeoutMs);
+      if (!continuation && !live.isolationContext) {
+        const profile = this.profileRegistry.get(request.profile, request.workingDirectory);
+        const isolationType = resolveIsolationType({
+          profile,
+          ...(request.readOnly !== undefined ? { requestReadOnly: request.readOnly } : {}),
+          ...(request.isolation?.type ? { requestedType: request.isolation.type } : {})
+        });
+        if (isolationType === 'worktree') {
+          if (!this.isolation) throw new OrchestrationError('worktree_create_failed', 'Worktree isolation is not configured.');
+          live.isolationContext = await this.isolation.prepare({
+            ownerId: live.snapshot.id,
+            sessionId: request.sessionId,
+            workingDirectory: request.workingDirectory,
+            branchHint: live.snapshot.id
+          });
+        }
+      }
       const handleEvent: Parameters<LeafAgentRunner['run']>[2] = (event) => {
         if (event.type !== 'usage' || live.settled) return;
         accrueUsage(live.snapshot.usage, event);
@@ -260,12 +314,12 @@ export class SubAgentManager {
         this.notify(live);
       };
       const result = continuation
-        ? await this.runner.continue!(live.continuationId!, message, controller.signal, handleEvent)
+        ? await this.runner.continue!(live.continuationId!, withIsolationTask(message, live.isolationContext), controller.signal, handleEvent)
         : await this.runner.run({
             id: live.snapshot.id,
             sessionId: request.sessionId,
-            workingDirectory: request.workingDirectory,
-            task: message,
+            workingDirectory: live.isolationContext?.workingDirectory ?? request.workingDirectory,
+            task: withIsolationTask(message, live.isolationContext),
             profile: request.profile,
             providerId: request.providerId,
             model: request.model,
@@ -305,10 +359,15 @@ export class SubAgentManager {
       if (live.settled) return;
       if (timedOut) this.finish(live, 'timed_out', baseUsage, { stopReason: 'timeout', error: 'Sub-agent timed out.', incomplete: true });
       else if (controller.signal.aborted) this.finish(live, 'cancelled', baseUsage, { stopReason: 'cancelled' });
-      else this.finish(live, 'failed', baseUsage, { error: error instanceof Error ? error.message : String(error), incomplete: true });
+      else this.finish(live, 'failed', baseUsage, {
+        error: error instanceof Error ? error.message : String(error),
+        ...(error instanceof OrchestrationError ? { errorCode: error.code as SubAgentErrorCode } : {}),
+        incomplete: true
+      });
     } finally {
       if (timer) clearTimeout(timer);
       release?.();
+      await this.settleIsolation(live);
     }
   }
 
@@ -322,7 +381,7 @@ export class SubAgentManager {
       structuredResult?: unknown;
       schemaValid?: boolean;
       error?: string;
-      errorCode?: StructuredOutputErrorCode;
+      errorCode?: SubAgentErrorCode;
       incomplete?: boolean;
       usage?: SubAgentSnapshot['usage'];
     }
@@ -366,6 +425,22 @@ export class SubAgentManager {
   private updateCurrentRound(rounds: SubAgentRound[], update: Partial<SubAgentRound>): SubAgentRound[] {
     const current = rounds.length - 1;
     return rounds.map((round, index) => index === current ? { ...round, ...update } : round);
+  }
+
+  private async settleIsolation(live: LiveSubAgent): Promise<void> {
+    const context = live.isolationContext;
+    if (!context || !this.isolation) return;
+    const keep = live.snapshot.state === 'idle' || live.snapshot.state === 'queued' || live.snapshot.state === 'running';
+    try {
+      const isolation = keep
+        ? await this.isolation.inspect(context)
+        : await this.isolation.finish(context);
+      if (!keep) live.isolationContext = undefined;
+      live.snapshot = { ...live.snapshot, isolation };
+      this.notify(live);
+    } catch {
+      if (!keep) live.isolationContext = undefined;
+    }
   }
 
   private async closeContinuation(live: LiveSubAgent): Promise<void> {

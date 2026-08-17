@@ -100,7 +100,7 @@ async function executeKnownTool(
       sessionId: options.sessionId,
       workingDirectory: options.workingDirectory,
       signal: options.signal,
-      approved: decision.decision === 'ask',
+      approved: true,
       onProgress: (text) => options.emit({ type: 'tool.progress', id: call.id, text })
     });
     return { ...result, callId: call.id };

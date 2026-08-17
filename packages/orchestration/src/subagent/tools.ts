@@ -16,6 +16,11 @@ const StartInput = z.object({
   timeoutMs: z.number().int().min(5_000).max(300_000).optional(),
   tools: ToolPolicyInput.optional(),
   readOnly: z.boolean().optional(),
+  isolation: z.object({ type: z.enum(['none', 'worktree']) }).optional(),
+  resources: z.object({
+    group: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/u),
+    maxConcurrency: z.number().int().min(1).max(4).default(1)
+  }).strict().optional(),
   outputSchema: z.record(z.string(), z.unknown()).optional()
 });
 const WaitInput = z.object({
@@ -47,6 +52,21 @@ export function createSubAgentTools(manager: SubAgentManager, options: SubAgentT
             task: { type: 'string' }, label: { type: 'string' }, profile: { type: 'string' }, model: { type: 'string' },
             maxIterations: { type: 'integer', minimum: 1, maximum: 20 },
             timeoutMs: { type: 'integer', minimum: 5000, maximum: 300000 }, readOnly: { type: 'boolean' },
+            isolation: {
+              type: 'object',
+              description: 'Writable agents require worktree isolation. Read-only agents default to none.',
+              properties: { type: { type: 'string', enum: ['none', 'worktree'] } },
+              required: ['type'], additionalProperties: false
+            },
+            resources: {
+              type: 'object',
+              description: 'Named concurrency group shared with workflow agent steps. Same group is limited by maxConcurrency.',
+              properties: {
+                group: { type: 'string' },
+                maxConcurrency: { type: 'integer', minimum: 1, maximum: 4 }
+              },
+              required: ['group'], additionalProperties: false
+            },
             outputSchema: { type: 'object', description: 'JSON Schema that the final agent output must match.' },
             tools: {
               type: 'object', properties: {
@@ -76,6 +96,8 @@ export function createSubAgentTools(manager: SubAgentManager, options: SubAgentT
               ...(parsed.data.tools.deny ? { deny: parsed.data.tools.deny } : {})
             } } : {}),
             ...(parsed.data.readOnly !== undefined ? { readOnly: parsed.data.readOnly } : {}),
+            ...(parsed.data.isolation ? { isolation: parsed.data.isolation } : {}),
+            ...(parsed.data.resources ? { resources: parsed.data.resources } : {}),
             ...(parsed.data.outputSchema ? { outputSchema: parsed.data.outputSchema } : {}),
             depth: 0
           });

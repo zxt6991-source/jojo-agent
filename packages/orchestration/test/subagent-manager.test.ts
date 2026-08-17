@@ -234,4 +234,14 @@ describe('SubAgentManager', () => {
     });
     expect(snapshot?.structuredResult).toBeUndefined();
   });
+
+  it('rejects writable sub-agents when worktree isolation is unavailable', () => {
+    const manager = new SubAgentManager({
+      run: async () => completed()
+    }, new AgentExecutionScheduler(1), () => undefined);
+    expect(() => manager.start({ ...request('write'), profile: 'general' }))
+      .toThrowError(expect.objectContaining({ code: 'worktree_create_failed' }));
+    expect(() => manager.start({ ...request('write'), profile: 'general', isolation: { type: 'none' } }))
+      .toThrowError(expect.objectContaining({ code: 'isolation_required' }));
+  });
 });
