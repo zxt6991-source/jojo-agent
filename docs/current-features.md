@@ -1,12 +1,12 @@
-# Desktop Agent 当前功能与上手指南
+# Jojo Agent 当前功能与上手指南
 
-> 文档状态：2026-08-15
-> 当前版本：0.1.0（MVP + Coding Agent Phase 1 + Phase 3 MCP/Skills + Phase 4 Browser/Rich Content）
-> 说明：本文以当前仓库代码为准，只描述已经实现的能力。路线图中的规划不等于可用功能。
+> 文档状态：2026-08-18
+> 当前版本：0.1.0（MVP + Coding Agent Phase 1 + Phase 3 MCP/Skills + Phase 4 Browser/Rich Content + Phase 5 Sub-Agent/Workflow）
+> 说明：本文以当前仓库代码为准，只描述已经实现的能力。路线图中的规划不等于可用功能。Sub-Agent / Workflow 设计见 [`subagent-workflow-unified-design-roadmap.md`](./subagent-workflow-unified-design-roadmap.md)。
 
 ## 1. 先用一分钟认识项目
 
-Desktop Agent 是一个本地优先的 Electron 桌面 AI Agent。它把一次 AI 对话绑定到一个本地目录，让模型在明确的权限边界内了解项目并执行操作。
+Jojo Agent 是一个本地优先的 Electron 桌面 AI Agent。它把一次 AI 对话绑定到一个本地目录，让模型在明确的权限边界内了解项目并执行操作。主 Agent 可委派后台 Sub-Agent，或启动声明式 Workflow DAG。
 
 当前版本最适合以下场景：
 
@@ -14,11 +14,14 @@ Desktop Agent 是一个本地优先的 Electron 桌面 AI Agent。它把一次 A
 - 查找项目结构、配置和实现入口；
 - 在审阅逐行 Diff 后创建、精确编辑或删除项目内文本文件；
 - 在用户逐次批准后运行测试、构建或其他本地命令；
-- 观察 Git 工作区中已有或本轮产生的文件变化。
+- 观察 Git 工作区中已有或本轮产生的文件变化；
 - 用 `web_search` / `web_fetch` 检索和阅读公开网页，而不打开浏览器；
-- 在受控浏览器中操作需要登录或交互的网页，并把图片交给视觉模型分析。
+- 在受控浏览器中操作需要登录或交互的网页，并把图片交给视觉模型分析；
+- 用只读 Sub-Agent 并行探索或评审代码；
+- 启动内置或自定义 Saved Workflow，在对话中查看依赖图、时间线和步骤结果；
+- 让可写 `general` Agent 在独立 Git Worktree 中改代码，主工作区不自动 Merge。
 
-它现在可以完成范围明确的小型代码任务，并可通过 MCP、本地 Skills 和受控浏览器扩展能力，但仍不是完整的自主编程 Agent：没有专用 Git 写操作和子 Agent 等能力。
+它现在可以完成范围明确的小型代码任务，并可通过 MCP、本地 Skills、受控浏览器、Sub-Agent 和 Workflow 扩展能力，但仍不是完整的自主编程 Agent：没有专用 Git 提交工具、可视化 Workflow 编辑器或窗口级 Playwright。
 
 专用写工具只允许修改工作目录内的 UTF-8 文本，执行前展示 Diff 并询问一次。获批的终端命令仍可能绕过这些文件工具限制并修改其他内容，因此用户仍需检查完整命令。
 
@@ -29,7 +32,7 @@ Desktop Agent 是一个本地优先的 Electron 桌面 AI Agent。它把一次 A
 - Node.js 22 或更高版本；
 - pnpm 10 或更高版本；
 - 一个支持 OpenAI Chat Completions、SSE 流式响应和 Tool Calls 的模型服务；
-- Git 为可选依赖，仅“文件修改审阅”功能需要它。
+- Git 对“文件修改审阅”和可写 Sub-Agent / Workflow Worktree 是必需的；纯只读对话可以没有 Git。
 
 先确认本机版本：
 
@@ -165,6 +168,38 @@ Worker 与界面进程分离，因此 Agent 运行异常不必直接获得 Rende
 
 当前最多收集 100 个变更文件，每个文件的 Patch 最多保留约 250,000 字节，超过限制时会显示截断提示。
 
+### 5.3 后台 Sub-Agent
+
+主 Agent 可通过编排工具启动后台 Sub-Agent，不阻塞当前轮次结束。内置 Profile：
+
+| Profile | 权限 | 用途 |
+|---|---|---|
+| `explore` | 只读：文件检索 + `web_search` / `web_fetch` | 理解代码与公开资料 |
+| `code-review` | 只读：文件检索 | 缺陷、回归与安全评审 |
+| `synthesize` | 无工具 | 汇总上游步骤证据 |
+| `general` | 可写，强制独立 Git Worktree | 在隔离分支完成工程任务，默认不 Merge |
+
+可叠加 `~/.jojo/agents/*.md` 与项目 `.jojo/agents/*.md`（项目覆盖用户，再覆盖 builtin）。Sub-Agent 使用独立上下文与 Usage，不能再派生 Sub-Agent 或 Workflow。工具：`sub_agent_start`、`sub_agent_wait`、`sub_agent_status`、`sub_agent_cancel`、`sub_agent_send`、`sub_agent_close`。
+
+### 5.4 Workflow DAG
+
+主 Agent 可启动声明式 Workflow。引擎按 `dependsOn` 调度可并行步骤，支持 Timeout / Cancel、Retry、Typed Inputs、Tool Step、foreach、condition、嵌套 Saved Workflow、Token / 可选 USD Budget，以及资源组与 Provider 限流。JSONL Journal 支持中断后 Resume，已完成步骤不重跑。
+
+工具：`workflow_start`、`workflow_wait`、`workflow_status`、`workflow_cancel`、`workflow_resume`、`workflow_list`。
+
+内置模板：`repo-understand`、`architecture-review`、`code-review`，均需 `args.target`。自定义 YAML 放在项目 `.jojo/workflows/` 或 `~/.jojo/workflows/`（项目覆盖用户，再覆盖 builtin）。
+
+对话中的 WorkflowCard 默认显示依赖图，可切换时间线，点击步骤会展开列表中的详情（Usage、错误码、结构化输出、Isolation Diff）。这是查看器，不是可视化编辑器。没有 `pipeline` / `human` / HTTP Step。
+
+桌面手测示例：
+
+```text
+列出可用的 saved workflow。
+用 repo-understand 理解 packages/orchestration，target 填 packages/orchestration。
+```
+
+自动化测试用 Fake / Scripted runner，不打真实 LLM：`pnpm test`。窗口级 Playwright 尚未接入。
+
 ## 6. 十个内置工具
 
 ### 6.1 `read_file`：读取文本文件
@@ -274,6 +309,8 @@ Worker 与界面进程分离，因此 Agent 运行异常不必直接获得 Rende
 - 停止轮次或超时后会尝试终止整个进程组。
 
 因为默认不使用 Shell，`&&`、管道、重定向和通配符不会自动生效。模型仍可能请求显式运行 `sh -c` 等命令；这类请求同样会完整显示在审批卡片中，应特别谨慎检查。
+
+主 Agent 另外拥有 §5.3 / §5.4 的 Sub-Agent 与 Workflow 编排工具。这些工具不直接读写文件；实际文件与终端操作仍走本节工具，并受对应 Profile 的 Tool Policy 约束。可写 `general` 在独立 Worktree 内执行，不向主工作区弹逐次写文件审批，完成后通过 Isolation Diff 审阅。
 
 ## 7. 权限规则
 
@@ -413,24 +450,25 @@ userData/
 
 ## 10. 进程和包的职责
 
-项目使用 pnpm workspace，包含一个桌面应用和六个共享包：
+项目使用 pnpm workspace，包含一个桌面应用和七个共享包：
 
 | 模块 | 当前职责 | 新手何时需要看 |
 |---|---|---|
 | `apps/desktop` | Electron Main、Preload、React Renderer、Worker 和打包配置 | 修改界面、IPC、窗口、任务编排或打包时 |
 | `packages/contracts` | 消息、事件、IPC、配置类型及 Zod Schema | 新增跨进程字段或能力时先看 |
 | `packages/agent-core` | 不依赖 Electron 的 Agent 工具循环 | 修改模型与工具如何反复协作时 |
+| `packages/orchestration` | Sub-Agent、Workflow Engine、Isolation、Saved Workflow | 修改并行委派、DAG 调度或 Worktree 隔离时 |
 | `packages/providers` | OpenAI Chat Completions 兼容协议 | 接入或排查模型服务时 |
 | `packages/tools-node` | 文件、目录、公开网页检索、终端工具和权限 Gate | 新增工具或修改审批策略时 |
-| `packages/storage` | JSONL 会话和普通配置存储 | 修改持久化格式时 |
+| `packages/storage` | JSONL 会话、Workflow Journal 和普通配置存储 | 修改持久化格式时 |
 | `packages/extensions` | MCP stdio/HTTP 客户端、延迟工具发现和 Skills | 修改外部扩展机制时 |
 
 四类运行时职责：
 
-- Renderer：显示会话、对话节点流、轨迹、审批、设置和 Diff；
+- Renderer：显示会话、对话节点流、轨迹、审批、设置、Diff 和 WorkflowCard；
 - Preload：通过 `contextBridge` 只暴露白名单业务 API；
 - Main：管理窗口、IPC、目录选择、安全存储、Git Diff 和 Worker 生命周期；
-- Worker：运行 Provider、Agent Core、工具、权限判断和会话写入。
+- Worker：运行 Provider、Agent Core、Orchestration、工具、权限判断和会话写入。
 
 ## 11. 想修改某个功能，从哪里开始
 
@@ -447,6 +485,8 @@ userData/
 | 修改受控浏览器 CDP 与安全规则 | `apps/desktop/src/main/browser-runtime.ts`、`apps/desktop/src/main/browser-security.ts`、`apps/desktop/src/main/browser-diagnostics.ts`、`apps/desktop/src/worker/browser-tools.ts` |
 | 修改 Git 文件变化采集 | `apps/desktop/src/main/workspace-changes.ts` |
 | 修改一轮 Agent 的执行逻辑 | `packages/agent-core/src/index.ts` |
+| 修改 Sub-Agent、Workflow 或 Worktree 隔离 | `packages/orchestration/src/index.ts` |
+| 修改 WorkflowCard / 依赖图 | `apps/desktop/src/renderer/WorkflowCard.tsx`、`apps/desktop/src/renderer/workflow-dag.ts` |
 | 修改 Provider HTTP/超时/错误处理 | `packages/providers/src/openai-compatible-provider.ts` |
 | 修改 Chat Completions 请求或流解析 | `packages/providers/src/chat-completions-request.ts`、`packages/providers/src/chat-completions-stream.ts` |
 | 修改底层 SSE 解码 | `packages/providers/src/sse.ts` |
@@ -471,16 +511,7 @@ userData/
 | `pnpm build` | 通过 Electron Forge 为当前平台生成分发产物 |
 | `pnpm --filter @desktop-agent/desktop package` | 只生成未封装的应用目录 |
 
-当前共有 139 个单元测试，覆盖：
-
-- Agent 工具循环、重复 Tool Call 和审批拒绝后继续；
-- 动态工具刷新、MCP 大工具集延迟激活和 Skill 按需加载；
-- Provider 请求序列化、SSE 分片解析、Tool Call 聚合、错误分类、超时与取消；
-- 大文件截断、目录符号链接逃逸和工作目录外读取审批；
-- JSONL 损坏尾恢复和单会话并发锁；
-- Git 已跟踪/未跟踪文件 Diff、非 Git 目录和会话子目录范围。
-- 浏览器 URL/域名权限、下载文件名净化、页面结构输出、Console/网络/页面错误诊断过滤、图片契约与视觉请求序列化；
-- 公开网页搜索/抓取的 URL 安全检查、HTML 清洗、权限 Gate 与本地 HTTP 回退。
+`pnpm test` 覆盖 Agent Core、Orchestration（Sub-Agent、Workflow DAG、Budget、Worktree 隔离）、Storage Journal Resume、Workflow 依赖图 UI，以及原有工具 / Provider / 浏览器契约。自动化测试使用 Fake 或 Scripted runner，不调用真实 LLM。
 
 提交代码前建议依次运行：
 
@@ -516,17 +547,18 @@ pnpm test
 ## 14. 当前尚未实现
 
 - 通用 unified patch 输入工具（当前提供完整写入与精确文本编辑）；
-- Git 提交、分支等专用写操作；
+- Git 提交、分支、自动 Merge 等专用写操作（可写 Agent 停在独立 Worktree，需人工审阅）；
 - 多 Provider 注册、列表和会话级切换；
-- 子 Agent 和工作流；
+- 可视化 Workflow 编辑器（当前只有依赖图 / 时间线查看器）；
+- `pipeline` / `human` / HTTP Workflow Step；
+- 窗口级 Playwright 与真实模型集成测试；
 - 长期记忆和向量数据库；
 - 定时任务与后台自动化；
 - 自动更新；
 - 云端账号、同步和协作；
-- 代码签名与 macOS notarization；
-- 默认 CI 中的真实模型集成测试。
+- 代码签名与 macOS notarization。
 
-判断某项能力是否存在时，以本节、十个内置工具和实际源码为准，不要只依据路线图或界面外观。
+判断某项能力是否存在时，以本节、十个内置工具、编排工具和实际源码为准，不要只依据路线图或界面外观。
 
 ## 15. 常见问题
 
@@ -550,7 +582,11 @@ pnpm test
 
 ### 为什么看不到文件修改卡？
 
-请确认目录位于 Git 仓库中、会话已经发送过至少一条消息，并且修改位于会话选择的目录内。该视图最多展示 100 个文件，过大内容会截断。
+请确认目录位于 Git 仓库中、会话已经发送过至少一条消息，并且修改位于会话选择的目录内。该视图最多展示 100 个文件，过大内容会截断。可写 Sub-Agent 的改动在独立 Worktree 中，不会出现在主工作区修改卡里；请在 WorkflowCard / Isolation Diff 中审阅。
+
+### 如何启动一个 Workflow？
+
+让主 Agent 调用 `workflow_list`，或直接 `workflow_start({ name: "repo-understand", args: { target: "packages/orchestration" } })`。需要 Git 仓库才能跑可写步骤。对话中会出现 WorkflowCard，可取消或 Resume。自定义 YAML 放在项目 `.jojo/workflows/`。
 
 ### 点击停止后，已经写入的内容会回滚吗？
 

@@ -1,27 +1,26 @@
-# TypeScript Desktop Agent
+# Jojo Agent
 
-一个本地优先的 Electron Coding Agent。它可以流式对话、检索和读取项目，在用户审阅 Diff 并逐次批准后修改文件或执行本地命令。实现以 [`ts-desktop-agent-mvp-roadmap.md`](./ts-desktop-agent-mvp-roadmap.md) 为范围基准。
+本地优先的 Electron Coding Agent。一次对话绑定一个本地目录，模型可检索和阅读项目；主 Agent 修改文件或执行命令前会展示 Diff / 命令并逐次批准。后台 Sub-Agent 与声明式 Workflow DAG 可并行执行只读分析，或在独立 Git Worktree 中写入且不自动 Merge。
+
+上手细节见 [`docs/current-features.md`](./docs/current-features.md)。Sub-Agent / Workflow 设计以 [`docs/subagent-workflow-unified-design-roadmap.md`](./docs/subagent-workflow-unified-design-roadmap.md) 为准；与代码冲突时以 Contracts、Runtime 和测试为准。早期 MVP 规划仍见 [`ts-desktop-agent-mvp-roadmap.md`](./ts-desktop-agent-mvp-roadmap.md)。
 
 ## 已实现
 
-- Electron Main / sandboxed Preload / React Renderer / Utility Process 四层运行时；
-- OpenAI Chat Completions 兼容 Provider，支持自定义服务地址、模型发现、逐轮模型选择和统一流事件；
-- 上下文窗口估算、大 Tool Result 回收、安全历史压缩、缓存用量归一化与输出截断续写；
-- 纯 TypeScript Agent Core，支持多轮工具循环、拒绝回填、重复调用保护和最大迭代限制；
-- `read_file`、`list_files`、`grep`、`glob`、`web_search`、`web_fetch`、`write_file`、`edit_file`、`delete_file`、`terminal` 十个工具；
-- 修改前读取检查、SHA-256/mtime/大小冲突检测、精确文本编辑、原子替换与应用回收站；
-- 工作目录约束、真实路径与符号链接检查、输入/输出上限、Terminal 超时与进程组回收；
-- 文件修改展示逐行 Diff 并每次审批；Terminal 每次审批，工作目录外文件读取逐次审批；
-- 按项目目录分组的多会话侧边栏（也可切成单列表），支持搜索、相对时间和运行/审批状态点；默认模型生成标题/摘要，以及会话创建、重命名、删除、恢复和损坏尾记录容错；
-- 操作系统安全存储按 Provider 加密 API Key；
-- Markdown 消毒、可折叠工具行、对话/轨迹视图、审批弹窗、停止按钮、模型服务设置与输入框模型选择；
-- Electron Forge、ASAR 和 Electron Fuses 生产打包配置。
-- MCP stdio / Streamable HTTP 客户端、工具/资源/提示词发现、`list_changed` 在线刷新、会话恢复、显式重连与逐次审批；工具 Schema 超过上下文 token 预算时自动切换为 manifest + describe/call；
-- 本地 `SKILL.md` 发现、启停和 `load_skill` 按需注入，自动扫描项目内 `.codex/skills` 与 `.agents/skills`。
-- 独立沙箱窗口中的 CDP 受控浏览器，可选附加本机 Chrome 以复用登录态；支持多页面管理、稳定元素引用、指纹重定位、YAML 持久化录制/参数化回放，以及结构读取、页面脚本、等待、滚动、点击、悬停、输入、按键、下拉选择、工作区文件上传、后退、刷新、截图、下载、Cookie 元数据和页面诊断；普通搜索和公开页阅读走 `web_search` / `web_fetch`，大页面会落盘供 `read_file` / `grep` 继续查看，不经过浏览器。
-- 图片附件、对话内预览、JSONL 恢复和 OpenAI Chat Completions 视觉消息。
+- Electron Main / sandboxed Preload / React Renderer / Utility Process；
+- OpenAI Chat Completions 兼容 Provider：自定义 Base URL、模型发现、逐轮选模型、流式输出；
+- Agent Core：多轮工具循环、上下文估算、大结果回收、历史压缩、拒绝回填、重复调用保护；
+- 十个主 Agent 工具：`read_file`、`list_files`、`grep`、`glob`、`web_search`、`web_fetch`、`write_file`、`edit_file`、`delete_file`、`terminal`；
+- 工作目录边界、真实路径 / 符号链接检查、写前冲突检测、精确编辑、回收站、Terminal 超时与进程组回收；
+- 主会话文件修改与 Terminal 逐次审批；工作区外读取逐次审批；
+- 多会话侧边栏、对话 / 轨迹视图、Markdown 消毒、审批弹窗、停止、加密 API Key；
+- MCP（stdio / Streamable HTTP）与本地 `SKILL.md`；工具 Schema 过大时改为 manifest + describe/call；
+- 受控 CDP 浏览器（沙箱或附加本机 Chrome）、图片附件与视觉消息；
+- 后台 Sub-Agent：Profile（`explore` / `general` / `code-review` / `synthesize`，可叠加 user/project）、Tool Policy、Continue / Send / Close、Structured Output；
+- Workflow DAG：依赖与并发、Timeout / Cancel、Retry、Typed Inputs、Tool Step、foreach / condition / 嵌套 Saved Workflow、Budget、资源组与 Provider 限流、JSONL Journal / Resume；
+- 可写 Agent 强制 Git Worktree 隔离，Branch / Diff 可审查，默认不自动 Merge；
+- WorkflowCard：步骤列表、依赖图、时间线、Usage、预算、错误码、结构化输出与 Isolation Diff。
 
-尚未实现子 Agent、记忆、自动化和专用 Git 写操作。
+尚未实现：可视化 Workflow 编辑器、窗口级 Playwright、pipeline / human / HTTP Step、长期记忆、专用 Git 提交工具、自动更新与云同步。
 
 ## 开发
 
@@ -32,17 +31,15 @@ pnpm install
 pnpm dev
 ```
 
-首次启动后：
+首次启动：
 
-1. 打开“设置”，配置 OpenAI Chat Completions 兼容服务的 API Base URL 和 API Key，再获取模型列表并选择默认模型；
-2. 选择一个本地项目目录创建会话；
-3. 在输入框右下角选择本轮模型并输入任务；可用“＋”添加最多 4 张图片。项目内检索以及公开网页搜索/抓取默认允许；每次文件修改会先展示 Diff，Terminal 也始终弹出审批。
+1. 打开「设置」，填写 OpenAI Chat Completions 兼容服务的 API Base URL 和 API Key，获取模型列表并选择默认模型；
+2. 选择一个本地项目目录创建会话（可写 Sub-Agent / Workflow 需要 Git 仓库）；
+3. 在输入框右下角选择本轮模型后发送任务。可用「＋」添加最多 4 张图片。
 
-“设置 → 浏览器”可启停浏览器工具、选择沙箱或附加 Chrome，并配置域名白名单（支持 `*.example.com`）。未列出的域名首次打开或新建页面时需批准；网页点击、悬停、脚本、输入、按键、下拉选择、文件上传、关闭页面、Cookie 值和下载始终逐次批准。附加 Chrome 时切换已有标签也需批准，默认新开标签，不抢占当前页面。`browser_read` 会为可见语义元素返回 `e1`、`e2` 形式的会话内引用，后续元素动作优先使用 `ref`；DOM 重排导致原 selector 失效时，Main 会根据标签、名称、角色及稳定属性重新定位，候选含糊或置信度不足则停止并要求重新读取。浏览器流程会保存为 `userData/browser-recordings/*.yaml`，可用 `{{param}}` 参数化回放；密钥走 `JOJO_BROWSER_SECRET_<NAME>` 或密码框，禁止放进模型工具参数。开始录制、删除录制和回放都需批准，录制列表不回显输入文字，回放只重试能够确认动作尚未执行的元素缺失/等待超时。普通搜索和已知公开 URL 应使用 `web_search` / `web_fetch`，不要打开沙箱浏览器；超过 64 KB 的抓取结果会写入临时文件，可用 `read_file` / `grep` 继续查看。页面列表、等待、滚动、后退、刷新、Cookie 元数据以及 Console / 网络 / 页面错误诊断自动允许，但顶层导航仍受 Main 进程域名规则约束。网页弹窗只允许已批准域名，其他弹窗被拒绝并回报 Agent。上传文件必须位于当前工作区且通过真实路径和大小检查；浏览器下载保存在应用 `userData/browser-downloads/<session-id>/`。 Chrome 附加模式下 `browser_download` 不可用。
+项目内检索和公开网页搜索 / 抓取默认允许；主会话的文件修改会先展示 Diff，Terminal 始终弹出审批。浏览器、MCP 与 Skills 的配置见 [`docs/current-features.md`](./docs/current-features.md)。
 
-配置扩展时点击左下角“MCP 与 Skills”：面板通过 MCP / 技能标签页、搜索、状态和开关管理已发现的扩展；右上角“配置 MCP”可编辑 Server JSON，“目录设置”可添加额外 Skill 目录。Skill 也会从应用 `userData/skills`、用户级 `.agents` / `.codex` Skills 目录以及项目 `.codex/skills` / `.agents/skills` 自动发现。Agent 可经审批使用 `install_skill` 非交互安装项目 Skill，并在当前 Turn 动态刷新。所有外部 MCP 工具调用都会逐次请求批准。
-
-常用质量命令：
+常用命令：
 
 ```bash
 pnpm typecheck
@@ -51,36 +48,73 @@ pnpm test
 pnpm build
 ```
 
-`pnpm build` 使用 Electron Forge 生成当前平台安装产物；只生成未封装的应用目录可运行：
+`pnpm build` 使用 Electron Forge 生成当前平台安装产物。只生成未封装应用目录：
 
 ```bash
 pnpm --filter @desktop-agent/desktop package
 ```
 
+## 测试 Workflow
+
+自动化测试用 Fake / Scripted runner，不打真实 LLM：
+
+```bash
+pnpm test
+```
+
+只跑 Workflow 相关：
+
+```bash
+pnpm exec vitest run \
+  packages/orchestration/test \
+  packages/storage/test/workflow-resume.integration.test.ts \
+  apps/desktop/src/renderer/workflow-card.test.ts \
+  apps/desktop/src/renderer/workflow-dag.test.ts \
+  apps/desktop/src/worker/write-agent.e2e.test.ts
+```
+
+| 能力 | 测试 |
+|---|---|
+| DAG 调度、取消、超时、Retry | `packages/orchestration/test/workflow-engine.test.ts` |
+| Tool Step、foreach、condition、嵌套 | `workflow-tool-step.test.ts`、`workflow-foreach.test.ts`、`workflow-condition.test.ts`、`workflow-nested.test.ts` |
+| Saved Workflow / Args | `saved-workflow.test.ts` |
+| Budget / Provider 限流 / 资源组 | `workflow-budget.test.ts`、`provider-semaphore.test.ts`、`resource-group.test.ts` |
+| Journal Resume | `packages/storage/test/workflow-resume.integration.test.ts` |
+| 依赖图 / 时间线 UI | `apps/desktop/src/renderer/workflow-dag.test.ts`、`workflow-card.test.ts` |
+| 真实 `write_file` + Worktree | `apps/desktop/src/worker/write-agent.e2e.test.ts` |
+
+桌面手测：`pnpm dev` 后打开 Git 仓库会话，让主 Agent 调用 Workflow 工具，例如「列出可用的 saved workflow」或「用 `repo-understand` 理解 `packages/orchestration`」。
+
+内置模板：`repo-understand`、`architecture-review`、`code-review`（均必填 `args.target`）。也可把 YAML 放到项目 `.jojo/workflows/` 或 `~/.jojo/workflows/`（项目覆盖用户，再覆盖 builtin）。对话中会出现 WorkflowCard，可取消 / 恢复。
+
+`explore` / `code-review` / `synthesize` 只读；`general` 写入独立 Worktree，主工作区与 Git Index 不变。没有窗口级 Playwright。
+
 ## 结构
 
 ```text
-apps/desktop/          Electron Main、Preload、Renderer、Worker
-packages/contracts/   Zod Schema、消息、事件与 IPC 契约
-packages/agent-core/  不依赖 Electron 的 Agent 循环
-packages/providers/   模型协议适配
-packages/tools-node/  文件、目录、终端与权限 Gate
-packages/storage/     JSONL Session 与普通配置
-packages/extensions/  MCP 客户端、延迟工具目录与 Skills 发现
+apps/desktop/             Electron Main、Preload、Renderer、Worker
+packages/contracts/       Zod Schema、消息、事件与 IPC 契约
+packages/agent-core/      不依赖 Electron 的 Agent 循环
+packages/orchestration/   Sub-Agent、Workflow Engine、Isolation、Saved Workflow
+packages/providers/       模型协议适配
+packages/tools-node/      文件、目录、终端与权限 Gate
+packages/storage/         JSONL Session / Workflow Journal 与普通配置
+packages/extensions/      MCP 客户端、延迟工具目录与 Skills 发现
 ```
 
-各 Workspace 的职责、接口边界、核心流程、安全约束和演进方案见 [`docs/technical-implementation/`](./docs/technical-implementation/README.md)。
+各 Workspace 的职责与安全边界见 [`docs/technical-implementation/`](./docs/technical-implementation/README.md)。
 
-会话和配置存储在 Electron `userData` 目录。API Key 独立保存在加密文件中，普通配置和 JSONL 会话均不包含明文密钥。
+会话和配置在 Electron `userData`。API Key 由操作系统安全存储加密；普通配置和 JSONL 不含明文密钥。
 
 ## 当前验证范围
 
 - Agent Core：工具循环、动态工具刷新、重复 Tool Call、拒绝后继续；
-- Extensions：Skill 元数据发现/按需加载、MCP 连接状态和大工具集延迟激活；
-- Tools：大文件截断、项目检索、修改 Diff、读后写冲突、精确编辑、回收站、权限位保留、符号链接逃逸和目录外审批；
-- Storage：JSONL 损坏尾恢复、单会话运行锁；
-- Browser/Rich content：域名与 URL 校验、下载文件名净化、浏览器权限 Gate、页面结构格式化和视觉消息序列化；
+- Orchestration：Sub-Agent 生命周期、Profile / Tool Policy、Workflow DAG、Worktree 隔离、Budget、依赖图 UI；
+- Extensions：Skill 发现 / 按需加载、MCP 连接状态和大工具集延迟激活；
+- Tools：大文件截断、项目检索、修改 Diff、读后写冲突、精确编辑、回收站、符号链接逃逸和目录外审批；
+- Storage：JSONL 损坏尾恢复、单会话运行锁、Workflow Journal Resume；
+- Browser / 富内容：域名与 URL 校验、下载文件名净化、浏览器权限 Gate、视觉消息序列化；
 - TypeScript、ESLint、Vitest；
 - macOS arm64 Electron 生产 package。
 
-真实 Provider 联调、代码签名/notarization 和干净机器安装测试需要相应密钥及发布环境，因此不在默认离线测试中执行。
+真实 Provider 联调、代码签名 / notarization 和干净机器安装测试需要相应密钥及发布环境，不在默认离线测试中执行。
