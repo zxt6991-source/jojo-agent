@@ -17,7 +17,6 @@ import {
 
 export { JsonlWorkflowStore, MAX_WORKFLOW_JOURNAL_BYTES, workflowDefinitionHash } from './workflow-store.js';
 export { JsonlAgentRuntimeStore, MAX_RUNTIME_JOURNAL_BYTES } from './runtime-store.js';
-export { SqliteAgentRuntimeStore } from './sqlite-runtime-store.js';
 
 const StoredConfigV1Schema = z.object({
   schemaVersion: z.literal(1),

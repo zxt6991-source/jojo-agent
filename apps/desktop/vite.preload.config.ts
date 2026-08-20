@@ -1,2 +1,4 @@
 import { defineConfig } from 'vite';
-export default defineConfig({ build: { sourcemap: true } });
+import { electronNodeConfig } from './vite.node.config';
+
+export default defineConfig(electronNodeConfig);

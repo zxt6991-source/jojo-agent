@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { ScriptedProvider } from '@desktop-agent/agent';
 import { projectEntriesToMessages, resumeAgentTurn } from '@desktop-agent/agent-runtime';
 import { runtimeStoreConformance } from '../../agent-runtime/test/store-conformance.js';
-import { SqliteAgentRuntimeStore } from '../src/index.js';
+import { SqliteAgentRuntimeStore } from '../src/sqlite-runtime-store.js';
 
 async function databaseFile(prefix: string): Promise<string> {
   return path.join(await mkdtemp(path.join(os.tmpdir(), prefix)), 'runtime.sqlite');

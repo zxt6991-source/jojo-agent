@@ -33,7 +33,8 @@ import {
   WorkflowEngine,
   WorkflowManager
 } from '@desktop-agent/orchestration';
-import { JsonlSessionStore, JsonlWorkflowStore, SqliteAgentRuntimeStore } from '@desktop-agent/storage';
+import { JsonlSessionStore, JsonlWorkflowStore } from '@desktop-agent/storage';
+import { SqliteAgentRuntimeStore } from '@desktop-agent/storage/sqlite-runtime-store';
 import { createDefaultToolRuntime, redactSensitiveEnvironmentAssignments, TerminalTool } from '@desktop-agent/tools-node';
 import { BrowserPermissionGate, BrowserToolBridge } from './browser-tools';
 import { createDesktopLeafAgentRunner, createDesktopWorkflowToolRuntime } from './orchestration-runtime';
