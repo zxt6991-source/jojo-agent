@@ -37,7 +37,7 @@ Worker 每轮都会注入这段约束（浏览器关闭时仍保留前半句）�
 
 ## 2. 源码地图
 
-本能力跨 Desktop、Contracts、Provider，**不要**把 Electron 或 CDP 泄漏进 `packages/agent-core`。
+本能力跨 Desktop、Contracts、Provider，**不要**把 Electron 或 CDP 泄漏进 `packages/agent`。
 
 ```text
 packages/contracts

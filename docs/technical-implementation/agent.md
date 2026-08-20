@@ -1,11 +1,11 @@
-# Agent Core 技术实现方案
+# Agent 技术实现方案
 
-路径：`packages/agent-core`  
-包名：`@desktop-agent/agent-core`
+路径：`packages/agent`  
+包名：`@desktop-agent/agent`
 
 ## 1. 定位与边界
 
-Agent Core 实现与 Electron、具体 Provider、工具和存储无关的单轮 Agent 循环。调用方通过 `AgentRunOptions` 注入所有副作用，因此核心可以在桌面端、CLI 或测试中复用。
+Agent 包提供与 Electron、具体 Provider、工具和存储无关的模型步骤、消息构造、工具执行原语，以及保留用于兼容的单轮 Agent 循环。`agent-runtime` 复用这些原语实现当前主执行路径。
 
 本包负责消息编排、模型事件消费、工具调度、权限决策、取消、迭代上限和事件输出；不负责 HTTP、文件系统、进程管理、持久化格式或 UI。
 

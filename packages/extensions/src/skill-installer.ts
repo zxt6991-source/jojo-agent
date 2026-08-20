@@ -37,6 +37,7 @@ function projectSkills(skills: DiscoveredSkill[], workingDirectory: string): Dis
 
 export function createInstallSkillTool(options: InstallSkillToolOptions): Tool {
   return {
+    replay: 'never',
     definition: {
       name: 'install_skill',
       description: 'Install Agent Skills into the current workspace. Use this instead of terminal for `npx skills add`. The command is non-interactive and automatically targets the universal agent with copied files. Newly installed skills become available during this turn.',

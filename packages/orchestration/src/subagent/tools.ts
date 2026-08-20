@@ -44,6 +44,7 @@ function visibleSnapshot(snapshot: SubAgentSnapshot): SubAgentSnapshot {
 export function createSubAgentTools(manager: SubAgentManager, options: SubAgentToolOptions): Tool[] {
   return [
     {
+      replay: 'never',
       definition: {
         name: 'sub_agent_start',
         description: 'Start a background leaf agent using a registered profile and an optional stricter tool policy. The task must be self-contained.',
@@ -108,6 +109,7 @@ export function createSubAgentTools(manager: SubAgentManager, options: SubAgentT
       }
     },
     {
+      replay: 'safe',
       definition: {
         name: 'sub_agent_wait',
         description: 'Wait for several background sub-agents together, or return their current states when the wait timeout expires.',
@@ -134,6 +136,7 @@ export function createSubAgentTools(manager: SubAgentManager, options: SubAgentT
       }
     },
     {
+      replay: 'safe',
       definition: {
         name: 'sub_agent_status',
         description: 'Get the current state and final result of one background sub-agent.',
@@ -147,6 +150,7 @@ export function createSubAgentTools(manager: SubAgentManager, options: SubAgentT
       }
     },
     {
+      replay: 'never',
       definition: {
         name: 'sub_agent_cancel',
         description: 'Cancel a queued or running background sub-agent. This operation is idempotent.',
@@ -160,6 +164,7 @@ export function createSubAgentTools(manager: SubAgentManager, options: SubAgentT
       }
     },
     {
+      replay: 'never',
       definition: {
         name: 'sub_agent_send',
         description: 'Send a follow-up message to an idle continuable sub-agent while preserving its context.',
@@ -178,6 +183,7 @@ export function createSubAgentTools(manager: SubAgentManager, options: SubAgentT
       }
     },
     {
+      replay: 'never',
       definition: {
         name: 'sub_agent_close',
         description: 'Permanently close an idle sub-agent and release its continuation context.',

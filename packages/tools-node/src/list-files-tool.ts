@@ -22,6 +22,7 @@ type WalkState = {
 };
 
 export class ListFilesTool implements Tool {
+  readonly replay = 'safe' as const;
   readonly definition = {
     name: 'list_files',
     description: 'List files under a directory in the session working directory. Dependency, VCS, build, and cache directories such as node_modules and .git are intentionally omitted; absence from this result does not prove they do not exist.',

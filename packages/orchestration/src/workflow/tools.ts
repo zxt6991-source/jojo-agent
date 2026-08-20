@@ -299,6 +299,7 @@ const definitionSchema = {
 };
   return [
     {
+      replay: 'never',
       definition: {
         name: 'workflow_start',
         description: 'Start a validated declarative DAG of agent, allowlisted read-only tool, foreach, condition, and nested saved-workflow steps. Pass either an inline definition or a saved workflow name (project > user > builtin), plus optional bounded args. Returns immediately with a workflow id.',
@@ -336,6 +337,7 @@ const definitionSchema = {
       }
     },
     {
+      replay: 'safe',
       definition: {
         name: 'workflow_wait',
         description: 'Wait for a workflow to finish, or return its current snapshot when the wait timeout expires.',
@@ -357,6 +359,7 @@ const definitionSchema = {
       }
     },
     {
+      replay: 'safe',
       definition: {
         name: 'workflow_status',
         description: 'Get the latest workflow and step states, outputs, errors, and usage.',
@@ -370,6 +373,7 @@ const definitionSchema = {
       }
     },
     {
+      replay: 'never',
       definition: {
         name: 'workflow_cancel',
         description: 'Cancel a running workflow and propagate cancellation to every queued or running step.',
@@ -386,6 +390,7 @@ const definitionSchema = {
       }
     },
     {
+      replay: 'never',
       definition: {
         name: 'workflow_resume',
         description: 'Resume an interrupted or failed persisted workflow without rerunning completed steps.',
@@ -402,6 +407,7 @@ const definitionSchema = {
       }
     },
     {
+      replay: 'safe',
       definition: {
         name: 'workflow_list',
         description: 'List saved workflows available for this working directory (project overrides user overrides builtin). Includes name, source, description, and declared inputs.',

@@ -1,7 +1,7 @@
 import type { ImageContentBlock, Message, ToolCall, ToolResult } from '@desktop-agent/contracts';
 import type { AgentRunOptions } from './types.js';
 
-const createId = () => crypto.randomUUID();
+const createId = (): string => crypto.randomUUID();
 const now = () => new Date().toISOString();
 
 export function createUserMessage(text: string, images: ImageContentBlock[] = []): Message {
@@ -16,9 +16,9 @@ export function createUserMessage(text: string, images: ImageContentBlock[] = []
   };
 }
 
-export function createAssistantMessage(text: string, calls: ToolCall[]): Message {
+export function createAssistantMessage(text: string, calls: ToolCall[], id = createId()): Message {
   return {
-    id: createId(),
+    id,
     role: 'assistant',
     createdAt: now(),
     content: [
@@ -28,9 +28,9 @@ export function createAssistantMessage(text: string, calls: ToolCall[]): Message
   };
 }
 
-export function createToolMessage(result: ToolResult): Message {
+export function createToolMessage(result: ToolResult, id = createId()): Message {
   return {
-    id: createId(),
+    id,
     role: 'tool',
     createdAt: now(),
     content: [{ type: 'tool_result', result }]

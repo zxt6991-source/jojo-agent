@@ -6,6 +6,7 @@ import { toolResult } from './tool-result.js';
 import { resolveWorkspacePath } from './workspace-paths.js';
 
 export class GlobTool implements Tool {
+  readonly replay = 'safe' as const;
   readonly definition = {
     name: 'glob',
     description: 'Find project files by a glob pattern such as **/*.ts. Searches only inside the working directory and intentionally omits dependency, VCS, build, and cache directories such as node_modules and .git.',

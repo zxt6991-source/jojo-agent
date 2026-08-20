@@ -37,6 +37,10 @@ describe('SubAgentManager', () => {
 
     await vi.waitFor(() => expect(started).toHaveLength(3));
     expect(started.every((item) => item.task.length === 1)).toBe(true);
+    expect(started.map((item) => item.runtimeLane)).toEqual(agents.map((agent) => ({
+      name: `agent:${agent.id}`,
+      parentLane: 'main'
+    })));
     for (const agent of agents) pending.get(agent.id)!.resolve(completed(agent.label));
     const results = await manager.wait(agents.map((agent) => agent.id), new AbortController().signal, 1_000);
     expect(results.map((agent) => agent.state)).toEqual(['completed', 'completed', 'completed']);

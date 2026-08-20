@@ -94,11 +94,12 @@ pnpm exec vitest run \
 ```text
 apps/desktop/             Electron Main、Preload、Renderer、Worker
 packages/contracts/       Zod Schema、消息、事件与 IPC 契约
-packages/agent-core/      不依赖 Electron 的 Agent 循环
+packages/agent/           模型、消息、工具执行原语与兼容 Agent 循环
+packages/agent-runtime/   Durable Operation、Lane、恢复与上下文投影
 packages/orchestration/   Sub-Agent、Workflow Engine、Isolation、Saved Workflow
 packages/providers/       模型协议适配
 packages/tools-node/      文件、目录、终端与权限 Gate
-packages/storage/         JSONL Session / Workflow Journal 与普通配置
+packages/storage/         SQLite Runtime、JSONL Session / Workflow Journal 与普通配置
 packages/extensions/      MCP 客户端、延迟工具目录与 Skills 发现
 ```
 
@@ -112,7 +113,7 @@ packages/extensions/      MCP 客户端、延迟工具目录与 Skills 发现
 - Orchestration：Sub-Agent 生命周期、Profile / Tool Policy、Workflow DAG、Worktree 隔离、Budget、依赖图 UI；
 - Extensions：Skill 发现 / 按需加载、MCP 连接状态和大工具集延迟激活；
 - Tools：大文件截断、项目检索、修改 Diff、读后写冲突、精确编辑、回收站、符号链接逃逸和目录外审批；
-- Storage：JSONL 损坏尾恢复、单会话运行锁、Workflow Journal Resume；
+- Storage：SQLite Runtime conformance / crash resume、JSONL 损坏尾恢复、单会话运行锁、Workflow Journal Resume；
 - Browser / 富内容：域名与 URL 校验、下载文件名净化、浏览器权限 Gate、视觉消息序列化；
 - TypeScript、ESLint、Vitest；
 - macOS arm64 Electron 生产 package。

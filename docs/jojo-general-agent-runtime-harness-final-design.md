@@ -3145,7 +3145,7 @@ export async function runAgentTurn(
 
 ---
 
-# 110. 现有文件迁移
+# 110. 迁移前文件映射
 
 建议最终映射：
 
@@ -3182,7 +3182,7 @@ new session tree
 
 # 112. 推荐实施顺序
 
-## PR 1：建立 `packages/agent-runtime`
+## ✅ PR 1：建立 `packages/agent-runtime`
 
 新增：
 
@@ -3202,7 +3202,7 @@ operation/interpreter.ts
 
 ---
 
-## PR 2：Interpreter 化现有 Run Loop
+## ✅ PR 2：Interpreter 化现有 Run Loop
 
 把：
 
@@ -3226,7 +3226,7 @@ new state
 
 ---
 
-## PR 3：Tool Effect / Replay Policy
+## ✅ PR 3：Tool Effect / Replay Policy
 
 引入：
 
@@ -3238,7 +3238,7 @@ Runtime 不根据 Tool 名称特判。
 
 ---
 
-## PR 4：RuntimeStore + JSONL Snapshot
+## ✅ PR 4：RuntimeStore + JSONL Snapshot
 
 新增：
 
@@ -3251,7 +3251,7 @@ JsonlAgentRuntimeStore
 
 ---
 
-## PR 5：Crash Resume
+## ✅ PR 5：Crash Resume
 
 实现：
 
@@ -3265,19 +3265,19 @@ approval_pending
 
 ---
 
-## PR 6：Durable Approval
+## ✅ PR 6：Durable Approval
 
 Approval 进入 OperationState。
 
 ---
 
-## PR 7：Durable Compaction
+## ✅ PR 7：Durable Compaction
 
 将 Context 压缩变成 durable Entry。
 
 ---
 
-## PR 8：Session Tree + Main Lane
+## ✅ PR 8：Session Tree + Main Lane
 
 引入：
 
@@ -3290,7 +3290,7 @@ Lane
 
 ---
 
-## PR 9：Child Agent Lane
+## ✅ PR 9：Child Agent Lane
 
 将 Sub-Agent 逐步转成：
 
@@ -3300,7 +3300,7 @@ Lane + Operation
 
 ---
 
-## PR 10：Workflow Agent Step Adapter
+## ✅ PR 10：Workflow Agent Step Adapter
 
 将 Workflow Agent Step 适配：
 
@@ -3310,13 +3310,13 @@ Agent Runtime
 
 ---
 
-## PR 11：`agent-core` → `agent`
+## ✅ PR 11：`agent-core` → `agent`
 
 等 Runtime 边界稳定后，再正式拆包 / 重命名。
 
 ---
 
-## PR 12：SQLite Runtime Store
+## ✅ PR 12：SQLite Runtime Store
 
 最后替换 JSONL Runtime Store。
 
@@ -3342,9 +3342,9 @@ rename / move
 
 ---
 
-# 114. 当前建议目录
+# 114. 迁移初期目录（已完成）
 
-如果现在立即开工：
+PR 1 开始时采用：
 
 ```text
 packages/
@@ -3368,7 +3368,7 @@ packages/
 ...
 ```
 
-初期：
+当时的依赖方向：
 
 ```text
 agent-runtime

@@ -136,6 +136,17 @@ const ACTIONS = {
 
 type BrowserToolName = keyof typeof ACTIONS;
 
+const SAFE_REPLAY_BROWSER_TOOLS = new Set<BrowserToolName>([
+  'browser_pages',
+  'browser_recordings',
+  'browser_record_get',
+  'browser_read',
+  'browser_wait',
+  'browser_screenshot',
+  'browser_downloads',
+  'browser_cookies'
+]);
+
 const TARGET_PROPERTIES = {
   selector: { type: 'string', description: 'CSS selector. Pass either selector or ref, not both. Prefer ref from browser_read when available.' },
   ref: { type: 'string', pattern: '^e[1-9][0-9]*$', description: 'Stable element ref from browser_read. Pass either ref or selector, not both.' }
@@ -279,6 +290,7 @@ export class BrowserToolBridge {
     if (!this.settings().enabled) return [];
     return (Object.keys(ACTIONS) as BrowserToolName[]).map((name) => ({
       definition: { name, description: ACTIONS[name].description, inputSchema: inputSchemaFor(name) },
+      replay: SAFE_REPLAY_BROWSER_TOOLS.has(name) ? 'safe' as const : 'never' as const,
       execute: (input, context) => this.execute(name, input, context)
     }));
   }

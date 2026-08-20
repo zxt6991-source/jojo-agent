@@ -326,6 +326,7 @@ export class SubAgentManager {
             maxIterations: request.maxIterations ?? 8,
             timeoutMs: request.timeoutMs,
             continuable: true,
+            runtimeLane: { name: `agent:${live.snapshot.id}`, parentLane: 'main' },
             ...(request.tools ? { tools: request.tools } : {}),
             ...(request.readOnly !== undefined ? { readOnly: request.readOnly } : {}),
             ...(request.outputSchema ? { outputSchema: request.outputSchema } : {})

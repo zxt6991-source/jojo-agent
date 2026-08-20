@@ -150,9 +150,13 @@ describe('WorkflowEngine', () => {
 
     expect(requests[0]).toMatchObject({
       profile: 'code-review', model: 'step-model', maxIterations: 5, readOnly: true,
-      tools: { allow: ['read_file', 'grep'], deny: ['grep'] }
+      tools: { allow: ['read_file', 'grep'], deny: ['grep'] },
+      runtimeLane: { name: 'workflow:wf_test:review', parentLane: 'main' }
     });
-    expect(requests[1]).toMatchObject({ profile: 'explore', model: 'model', maxIterations: 8 });
+    expect(requests[1]).toMatchObject({
+      profile: 'explore', model: 'model', maxIterations: 8,
+      runtimeLane: { name: 'workflow:wf_test:summary', parentLane: 'main' }
+    });
     expect(final.steps).toMatchObject([
       { id: 'review', profile: 'code-review', model: 'profile-selected-model' },
       { id: 'summary', profile: 'explore', model: 'model' }

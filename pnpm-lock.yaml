@@ -32,9 +32,12 @@ importers:
 
   apps/desktop:
     dependencies:
-      '@desktop-agent/agent-core':
+      '@desktop-agent/agent':
         specifier: workspace:*
-        version: link:../../packages/agent-core
+        version: link:../../packages/agent
+      '@desktop-agent/agent-runtime':
+        specifier: workspace:*
+        version: link:../../packages/agent-runtime
       '@desktop-agent/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
@@ -112,8 +115,17 @@ importers:
         specifier: ^7.2.6
         version: 7.3.6(@types/node@24.13.3)(jiti@2.7.0)(terser@5.49.2)(yaml@2.9.0)
 
-  packages/agent-core:
+  packages/agent:
     dependencies:
+      '@desktop-agent/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+
+  packages/agent-runtime:
+    dependencies:
+      '@desktop-agent/agent':
+        specifier: workspace:*
+        version: link:../agent
       '@desktop-agent/contracts':
         specifier: workspace:*
         version: link:../contracts
@@ -165,6 +177,9 @@ importers:
 
   packages/storage:
     dependencies:
+      '@desktop-agent/agent-runtime':
+        specifier: workspace:*
+        version: link:../agent-runtime
       '@desktop-agent/contracts':
         specifier: workspace:*
         version: link:../contracts

@@ -19,6 +19,11 @@ export type ContextPreparationResult = {
   estimatedTokens: number;
   compactedMessages: number;
   reclaimedToolCharacters: number;
+  compaction?: {
+    summary: string;
+    retainedTail: Message[];
+    tokensBefore: number;
+  };
 };
 
 function textTokens(text: string): number {
@@ -120,6 +125,7 @@ export async function prepareModelContext(options: ContextPreparationOptions): P
   const reclaimed = reclaimToolResults(options.messages);
   const target = Math.max(1_024, Math.floor(options.contextWindowTokens * DEFAULT_TARGET_RATIO) - options.maxOutputTokens);
   let estimatedTokens = estimateContextTokens(reclaimed.messages, options.tools);
+  const tokensBefore = estimatedTokens;
   if (estimatedTokens <= target) {
     return { messages: reclaimed.messages, estimatedTokens, compactedMessages: 0, reclaimedToolCharacters: reclaimed.reclaimed };
   }
@@ -154,6 +160,7 @@ export async function prepareModelContext(options: ContextPreparationOptions): P
   estimatedTokens = estimateContextTokens(messages, options.tools);
   return {
     messages, estimatedTokens, compactedMessages: compacted.length,
-    reclaimedToolCharacters: reclaimed.reclaimed
+    reclaimedToolCharacters: reclaimed.reclaimed,
+    compaction: { summary, retainedTail: kept.flat(), tokensBefore }
   };
 }

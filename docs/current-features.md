@@ -450,17 +450,18 @@ userData/
 
 ## 10. 进程和包的职责
 
-项目使用 pnpm workspace，包含一个桌面应用和七个共享包：
+项目使用 pnpm workspace，包含一个桌面应用和八个共享包：
 
 | 模块 | 当前职责 | 新手何时需要看 |
 |---|---|---|
 | `apps/desktop` | Electron Main、Preload、React Renderer、Worker 和打包配置 | 修改界面、IPC、窗口、任务编排或打包时 |
 | `packages/contracts` | 消息、事件、IPC、配置类型及 Zod Schema | 新增跨进程字段或能力时先看 |
-| `packages/agent-core` | 不依赖 Electron 的 Agent 工具循环 | 修改模型与工具如何反复协作时 |
+| `packages/agent` | 模型步骤、消息构造、工具执行原语与兼容 Agent 循环 | 修改底层模型/工具原语时 |
+| `packages/agent-runtime` | Durable Operation、Lane、恢复与 Context Projection | 修改 Agent 执行状态机或恢复行为时 |
 | `packages/orchestration` | Sub-Agent、Workflow Engine、Isolation、Saved Workflow | 修改并行委派、DAG 调度或 Worktree 隔离时 |
 | `packages/providers` | OpenAI Chat Completions 兼容协议 | 接入或排查模型服务时 |
 | `packages/tools-node` | 文件、目录、公开网页检索、终端工具和权限 Gate | 新增工具或修改审批策略时 |
-| `packages/storage` | JSONL 会话、Workflow Journal 和普通配置存储 | 修改持久化格式时 |
+| `packages/storage` | SQLite Agent Runtime、JSONL 会话 / Workflow Journal 和普通配置存储 | 修改持久化格式时 |
 | `packages/extensions` | MCP stdio/HTTP 客户端、延迟工具发现和 Skills | 修改外部扩展机制时 |
 
 四类运行时职责：
@@ -468,7 +469,7 @@ userData/
 - Renderer：显示会话、对话节点流、轨迹、审批、设置、Diff 和 WorkflowCard；
 - Preload：通过 `contextBridge` 只暴露白名单业务 API；
 - Main：管理窗口、IPC、目录选择、安全存储、Git Diff 和 Worker 生命周期；
-- Worker：运行 Provider、Agent Core、Orchestration、工具、权限判断和会话写入。
+- Worker：运行 Provider、Agent Runtime、Orchestration、工具、权限判断和会话写入。
 
 ## 11. 想修改某个功能，从哪里开始
 
@@ -484,7 +485,8 @@ userData/
 | 修改窗口、安全存储或 Worker 管理 | `apps/desktop/src/main/main.ts` |
 | 修改受控浏览器 CDP 与安全规则 | `apps/desktop/src/main/browser-runtime.ts`、`apps/desktop/src/main/browser-security.ts`、`apps/desktop/src/main/browser-diagnostics.ts`、`apps/desktop/src/worker/browser-tools.ts` |
 | 修改 Git 文件变化采集 | `apps/desktop/src/main/workspace-changes.ts` |
-| 修改一轮 Agent 的执行逻辑 | `packages/agent-core/src/index.ts` |
+| 修改 Durable Agent 执行逻辑 | `packages/agent-runtime/src/index.ts` |
+| 修改模型步骤、消息或工具执行原语 | `packages/agent/src/index.ts` |
 | 修改 Sub-Agent、Workflow 或 Worktree 隔离 | `packages/orchestration/src/index.ts` |
 | 修改 WorkflowCard / 依赖图 | `apps/desktop/src/renderer/WorkflowCard.tsx`、`apps/desktop/src/renderer/workflow-dag.ts` |
 | 修改 Provider HTTP/超时/错误处理 | `packages/providers/src/openai-compatible-provider.ts` |

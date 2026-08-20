@@ -10,6 +10,7 @@ import { FileSnapshotRegistry } from './file-snapshots.js';
 const DEFAULT_MAX_BYTES = 512_000;
 
 export class ReadFileTool implements Tool {
+  readonly replay = 'safe' as const;
   readonly definition = {
     name: 'read_file',
     description: 'Read a UTF-8 text file. Paths are relative to the session working directory unless absolute. Also reads pages saved by web_fetch.',

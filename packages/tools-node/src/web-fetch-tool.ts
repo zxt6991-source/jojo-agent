@@ -35,6 +35,7 @@ export type WebHttpGet = (
 ) => Promise<WebHttpResponse>;
 
 export class WebFetchTool implements Tool {
+  readonly replay = 'safe' as const;
   readonly definition = {
     name: 'web_fetch',
     description: 'Fetch a public HTTP(S) URL and return text. HTML is converted to readable Markdown by default. Pages larger than 64 KB are saved to a temp file so you can continue with read_file or grep. Use this instead of the browser for ordinary documentation and public pages. JavaScript-rendered or login-walled content needs the browser tools. Binary responses are not returned.',

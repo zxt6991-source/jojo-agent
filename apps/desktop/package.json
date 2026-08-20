@@ -9,7 +9,8 @@
     "make": "electron-forge make"
   },
   "dependencies": {
-    "@desktop-agent/agent-core": "workspace:*",
+    "@desktop-agent/agent": "workspace:*",
+    "@desktop-agent/agent-runtime": "workspace:*",
     "@desktop-agent/contracts": "workspace:*",
     "@desktop-agent/extensions": "workspace:*",
     "@desktop-agent/orchestration": "workspace:*",

@@ -216,6 +216,7 @@ export function createSkillTool(skills: DiscoveredSkill[]): Tool | null {
   const byId = new Map(enabled.map((skill) => [skill.id, skill]));
   const catalog = enabled.map((skill) => `${skill.id}: ${skill.description}`).join('\n').slice(0, 16_000);
   return {
+    replay: 'safe',
     definition: {
       name: 'load_skill',
       description: `Load the full instructions for one installed skill when its description matches the task. Load before following it. Available skills:\n${catalog}`,

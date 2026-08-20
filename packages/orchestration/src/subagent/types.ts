@@ -16,6 +16,10 @@ export type LeafAgentRunRequest = {
   outputSchema?: Record<string, unknown>;
   isolation?: IsolationConfig;
   continuable?: boolean;
+  runtimeLane?: {
+    name: string;
+    parentLane?: string;
+  };
 };
 
 export type LeafAgentRunResult = {

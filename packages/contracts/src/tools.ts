@@ -18,5 +18,11 @@ export type ToolContext = {
 
 export interface Tool {
   definition: ToolDefinition;
+  /**
+   * Controls automatic recovery after the runtime stops while this tool may
+   * already have produced an external effect. Missing metadata is treated as
+   * `never`, the conservative default.
+   */
+  replay?: 'safe' | 'never';
   execute(input: unknown, context: ToolContext): Promise<ToolResult>;
 }

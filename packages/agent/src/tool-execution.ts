@@ -3,7 +3,7 @@ import type { Tool, ToolCall, ToolResult } from '@desktop-agent/contracts';
 import { errorMessage, throwIfAborted } from './errors.js';
 import type { AgentRunOptions } from './types.js';
 
-type ToolExecutionState = {
+export type ToolExecutionState = {
   toolsByName: Map<string, Tool>;
   executedCallIds: Set<string>;
   toolCallCounts: Map<string, number>;
@@ -95,6 +95,14 @@ async function executeKnownTool(
     }
   }
 
+  return executeApprovedTool(call, tool, options);
+}
+
+async function executeApprovedTool(
+  call: ToolCall,
+  tool: Tool,
+  options: AgentRunOptions
+): Promise<ToolResult> {
   try {
     const result = await tool.execute(call.input, {
       sessionId: options.sessionId,
@@ -132,6 +140,31 @@ export async function executeToolCall(
     state.executedCallIds.add(call.id);
     result = repeatedCallResult(call, state)
       ?? repeatedObservationResult(call, await executeKnownTool(call, tool, options), state);
+  }
+
+  options.emit({ type: 'tool.finished', id: call.id, result });
+  return result;
+}
+
+/** Executes a tool after the runtime has durably resolved permission. */
+export async function executeApprovedToolCall(
+  call: ToolCall,
+  state: ToolExecutionState,
+  options: AgentRunOptions
+): Promise<ToolResult> {
+  throwIfAborted(options.signal);
+  options.emit({ type: 'tool.started', id: call.id, name: call.name, input: call.input });
+
+  let result: ToolResult;
+  const tool = state.toolsByName.get(call.name);
+  if (state.executedCallIds.has(call.id)) {
+    result = failureResult(call, 'Duplicate tool call id; execution skipped.', 'duplicate_tool_call');
+  } else if (!tool) {
+    result = failureResult(call, `Unknown tool: ${call.name}`, 'unknown_tool');
+  } else {
+    state.executedCallIds.add(call.id);
+    result = repeatedCallResult(call, state)
+      ?? repeatedObservationResult(call, await executeApprovedTool(call, tool, options), state);
   }
 
   options.emit({ type: 'tool.finished', id: call.id, result });

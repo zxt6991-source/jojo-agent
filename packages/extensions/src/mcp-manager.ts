@@ -213,6 +213,7 @@ function createToolEntry(
     ? sdkTool.inputSchema as Record<string, unknown>
     : { type: 'object' };
   const tool: Tool = {
+    replay: 'never',
     definition: { name, description, inputSchema: schema },
     async execute(input, context): Promise<ToolResult> {
       const argumentsValue = input && typeof input === 'object' && !Array.isArray(input)
@@ -602,6 +603,7 @@ export class McpManager {
 
   private createManifestTool(): Tool {
     return {
+      replay: 'safe',
       definition: {
         name: 'mcp_tool_manifest',
         description: `Search the compact manifest of ${this.entries.length} connected MCP tools. Use mcp_tool_describe before mcp_tool_call when arguments are unclear.`,
@@ -632,6 +634,7 @@ export class McpManager {
 
   private createDescribeTool(): Tool {
     return {
+      replay: 'safe',
       definition: {
         name: 'mcp_tool_describe',
         description: 'Return the full description and input schema for one tool from mcp_tool_manifest.',
@@ -654,6 +657,7 @@ export class McpManager {
 
   private createCallTool(): Tool {
     return {
+      replay: 'never',
       definition: {
         name: 'mcp_tool_call',
         description: 'Call one MCP tool by its exact manifest name. This is an external action and requires approval.',
@@ -676,6 +680,7 @@ export class McpManager {
 
   private createListResourcesTool(): Tool {
     return {
+      replay: 'safe',
       definition: {
         name: 'mcp_list_resources',
         description: 'List connected MCP resources and URI templates from the local manifest.',
@@ -701,6 +706,7 @@ export class McpManager {
 
   private createReadResourceTool(): Tool {
     return {
+      replay: 'safe',
       definition: {
         name: 'mcp_read_resource',
         description: 'Read one MCP resource by server id and URI. URI templates must be expanded first.',
@@ -724,6 +730,7 @@ export class McpManager {
 
   private createListPromptsTool(): Tool {
     return {
+      replay: 'safe',
       definition: {
         name: 'mcp_list_prompts',
         description: 'List connected MCP prompt templates from the local manifest.',
@@ -742,6 +749,7 @@ export class McpManager {
 
   private createGetPromptTool(): Tool {
     return {
+      replay: 'safe',
       definition: {
         name: 'mcp_get_prompt',
         description: 'Render an MCP prompt template with string arguments.',

@@ -47,6 +47,7 @@ const definitions: Record<FileToolName, Tool['definition']> = {
 };
 
 class FileMutationTool implements Tool {
+  readonly replay = 'never' as const;
   readonly definition: Tool['definition'];
 
   constructor(

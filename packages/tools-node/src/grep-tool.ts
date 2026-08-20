@@ -10,6 +10,7 @@ import { resolveWorkspacePath } from './workspace-paths.js';
 const MAX_FILE_BYTES = 1_000_000;
 
 export class GrepTool implements Tool {
+  readonly replay = 'safe' as const;
   readonly definition = {
     name: 'grep',
     description: 'Search text in project files and return path:line:content matches. Dependency, VCS, build, and cache directories such as node_modules and .git are intentionally omitted. Also searches pages saved by web_fetch.',

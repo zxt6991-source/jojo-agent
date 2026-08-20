@@ -24,8 +24,8 @@
 
 > **项目实现位置**
 >
-> - 上下文入口：[`prepareModelContext`](../../packages/agent-core/src/context-manager.ts)
-> - 每次模型调用前接入：[`runAgentTurn`](../../packages/agent-core/src/run-agent-turn.ts)
+> - 上下文入口：[`prepareModelContext`](../../packages/agent/src/context-manager.ts)
+> - 每次模型调用前接入：[`runAgentTurn`](../../packages/agent/src/run-agent-turn.ts)
 > - 完整历史读取和持久化注入：[`startTurn`](../../apps/desktop/src/worker/worker.ts)
 
 ## 2. 为什么需要上下文管理
@@ -54,7 +54,7 @@ LLM 并不会自动记住之前的会话。应用每调用一次模型，都要�
 >
 > - Tool Call/Result 消息结构：[`packages/contracts/src/messages.ts`](../../packages/contracts/src/messages.ts)
 > - Chat Completions 消息映射：[`toChatMessages`](../../packages/providers/src/chat-completions-request.ts)
-> - 原子分组：[`groupContextMessages`](../../packages/agent-core/src/context-manager.ts)
+> - 原子分组：[`groupContextMessages`](../../packages/agent/src/context-manager.ts)
 
 ## 3. 先理解几个术语
 
@@ -73,8 +73,8 @@ LLM 并不会自动记住之前的会话。应用每调用一次模型，都要�
 > **项目实现位置**
 >
 > - Message Schema：[`MessageSchema`](../../packages/contracts/src/messages.ts)
-> - Agent 运行参数：[`AgentRunOptions`](../../packages/agent-core/src/types.ts)
-> - Context 返回结果：[`ContextPreparationResult`](../../packages/agent-core/src/context-manager.ts)
+> - Agent 运行参数：[`AgentRunOptions`](../../packages/agent/src/types.ts)
+> - Context 返回结果：[`ContextPreparationResult`](../../packages/agent/src/context-manager.ts)
 
 ## 4. 整体数据流
 
@@ -99,8 +99,8 @@ flowchart TD
 
 > **项目实现位置**
 >
-> - 循环中调用 `prepareModelContext`：[`run-agent-turn.ts`](../../packages/agent-core/src/run-agent-turn.ts)
-> - 构造 `ModelRequest`：[`runModelStep`](../../packages/agent-core/src/model-step.ts)
+> - 循环中调用 `prepareModelContext`：[`run-agent-turn.ts`](../../packages/agent/src/run-agent-turn.ts)
+> - 构造 `ModelRequest`：[`runModelStep`](../../packages/agent/src/model-step.ts)
 > - Provider 接口定义：[`ModelProvider`](../../packages/contracts/src/model.ts)
 
 ## 5. 上下文输入和输出
@@ -151,9 +151,9 @@ type ContextPreparationResult = {
 
 > **项目实现位置**
 >
-> - 类型与算法：[`context-manager.ts`](../../packages/agent-core/src/context-manager.ts)
+> - 类型与算法：[`context-manager.ts`](../../packages/agent/src/context-manager.ts)
 > - 事件定义：[`AgentEvent`](../../packages/contracts/src/agent.ts)
-> - 事件发出：[`runAgentTurn`](../../packages/agent-core/src/run-agent-turn.ts)
+> - 事件发出：[`runAgentTurn`](../../packages/agent/src/run-agent-turn.ts)
 > - UI 消费：[`onAgentEvent`](../../apps/desktop/src/renderer/main.tsx)
 
 ## 6. 第一步：回收大型 Tool Result
@@ -192,7 +192,7 @@ type ContextPreparationResult = {
 >
 > - 阈值常量：`TOOL_RESULT_CHARACTER_LIMIT`、`TOOL_RESULT_EDGE_CHARACTERS`
 > - 回收函数：`reclaimToolResults`
-> - 文件：[`packages/agent-core/src/context-manager.ts`](../../packages/agent-core/src/context-manager.ts)
+> - 文件：[`packages/agent/src/context-manager.ts`](../../packages/agent/src/context-manager.ts)
 > - Tool Result Schema：[`ToolResultSchema`](../../packages/contracts/src/messages.ts)
 
 ## 7. 第二步：估算 token
@@ -229,7 +229,7 @@ ASCII 字符：约 4 字符 / token
 > - 文本估算：`textTokens`
 > - Content Block 估算：`blockTokens`
 > - 完整请求估算：`estimateContextTokens`
-> - 文件：[`packages/agent-core/src/context-manager.ts`](../../packages/agent-core/src/context-manager.ts)
+> - 文件：[`packages/agent/src/context-manager.ts`](../../packages/agent/src/context-manager.ts)
 
 ## 8. 第三步：计算安全预算
 
@@ -267,7 +267,7 @@ target             = 6717 - 1024
 >
 > - 比例常量：`DEFAULT_TARGET_RATIO = 0.82`
 > - 最小预算和公式：`prepareModelContext` 内部的 `target`
-> - 文件：[`packages/agent-core/src/context-manager.ts`](../../packages/agent-core/src/context-manager.ts)
+> - 文件：[`packages/agent/src/context-manager.ts`](../../packages/agent/src/context-manager.ts)
 > - 设置范围 Schema：[`ProviderConfigSchema`](../../packages/contracts/src/persistence.ts)
 > - 设置页输入与校验：[`apps/desktop/src/renderer/main.tsx`](../../apps/desktop/src/renderer/main.tsx)
 
@@ -304,8 +304,8 @@ target             = 6717 - 1024
 > - 提取调用 ID：`messageToolCallIds`
 > - 提取结果 ID：`toolResultIds`
 > - 原子分组：`groupContextMessages`
-> - 文件：[`packages/agent-core/src/context-manager.ts`](../../packages/agent-core/src/context-manager.ts)
-> - 自动化测试：[`context-manager.test.ts`](../../packages/agent-core/test/context-manager.test.ts)
+> - 文件：[`packages/agent/src/context-manager.ts`](../../packages/agent/src/context-manager.ts)
+> - 自动化测试：[`context-manager.test.ts`](../../packages/agent/test/context-manager.test.ts)
 
 ## 10. 第五步：保留新历史，摘要旧历史
 
@@ -348,7 +348,7 @@ keepBudget = max(1024, floor(target × 0.62))
 >
 > - 保留预算和选择逻辑：`prepareModelContext`
 > - 摘要消息构造：`summaryMessage`
-> - 文件：[`packages/agent-core/src/context-manager.ts`](../../packages/agent-core/src/context-manager.ts)
+> - 文件：[`packages/agent/src/context-manager.ts`](../../packages/agent/src/context-manager.ts)
 > - internal 字段定义：[`MessageSchema`](../../packages/contracts/src/messages.ts)
 > - Renderer 过滤内部消息：[`apps/desktop/src/renderer/main.tsx`](../../apps/desktop/src/renderer/main.tsx)
 
@@ -377,7 +377,7 @@ keepBudget = max(1024, floor(target × 0.62))
 > - 摘要源：`sourceForSummary`
 > - 本地回退：`fallbackSummary`
 > - 捕获失败：`prepareModelContext` 中的 `try/catch`
-> - 文件：[`packages/agent-core/src/context-manager.ts`](../../packages/agent-core/src/context-manager.ts)
+> - 文件：[`packages/agent/src/context-manager.ts`](../../packages/agent/src/context-manager.ts)
 > - 摘要提示和 1,024 输出上限：[`apps/desktop/src/worker/worker.ts`](../../apps/desktop/src/worker/worker.ts)
 > - 默认模型请求：`utilityCompletion`
 
@@ -394,7 +394,7 @@ Context Manager 只返回新数组，不调用存储接口，也不覆盖 JSONL�
 
 > **项目实现位置**
 >
-> - 统一提交函数：[`appendMessage`](../../packages/agent-core/src/messages.ts)
+> - 统一提交函数：[`appendMessage`](../../packages/agent/src/messages.ts)
 > - Worker 注入 `commitMessage`：[`apps/desktop/src/worker/worker.ts`](../../apps/desktop/src/worker/worker.ts)
 > - JSONL 追加：[`JsonlSessionStore.appendMessage`](../../packages/storage/src/index.ts)
 > - JSONL Schema：[`SessionRecordSchema`](../../packages/contracts/src/persistence.ts)
@@ -416,9 +416,9 @@ Agent Core 会：
 > **项目实现位置**
 >
 > - 续写次数：`MAX_OUTPUT_CONTINUATIONS = 2`
-> - 停止原因判断：[`runAgentTurn`](../../packages/agent-core/src/run-agent-turn.ts)
-> - 续写消息：[`createContinuationMessage`](../../packages/agent-core/src/messages.ts)
-> - 自动化测试：[`context-manager.test.ts`](../../packages/agent-core/test/context-manager.test.ts)
+> - 停止原因判断：[`runAgentTurn`](../../packages/agent/src/run-agent-turn.ts)
+> - 续写消息：[`createContinuationMessage`](../../packages/agent/src/messages.ts)
+> - 自动化测试：[`context-manager.test.ts`](../../packages/agent/test/context-manager.test.ts)
 
 ## 14. 配置如何传到 Context Manager
 
@@ -470,7 +470,7 @@ Renderer 当前展示估算 token/窗口、压缩消息数、本轮 input/output
 > **项目实现位置**
 >
 > - 事件定义：[`packages/contracts/src/agent.ts`](../../packages/contracts/src/agent.ts)
-> - 事件发出：[`packages/agent-core/src/run-agent-turn.ts`](../../packages/agent-core/src/run-agent-turn.ts)
+> - 事件发出：[`packages/agent/src/run-agent-turn.ts`](../../packages/agent/src/run-agent-turn.ts)
 > - UI 更新和清理：[`apps/desktop/src/renderer/main.tsx`](../../apps/desktop/src/renderer/main.tsx)
 > - UI 样式：[`apps/desktop/src/renderer/styles.css`](../../apps/desktop/src/renderer/styles.css)
 
@@ -513,17 +513,17 @@ maxOutputTokens     = 1024
 
 > **项目实现位置**
 >
-> - 核心约束：[`context-manager.ts`](../../packages/agent-core/src/context-manager.ts)
-> - 取消与续写：[`run-agent-turn.ts`](../../packages/agent-core/src/run-agent-turn.ts)
+> - 核心约束：[`context-manager.ts`](../../packages/agent/src/context-manager.ts)
+> - 取消与续写：[`run-agent-turn.ts`](../../packages/agent/src/run-agent-turn.ts)
 > - UI 内部消息过滤：[`main.tsx`](../../apps/desktop/src/renderer/main.tsx)
-> - 自动化断言：[`context-manager.test.ts`](../../packages/agent-core/test/context-manager.test.ts)
+> - 自动化断言：[`context-manager.test.ts`](../../packages/agent/test/context-manager.test.ts)
 
 ## 18. 测试方法
 
 ### 18.1 定向测试
 
 ```bash
-pnpm exec vitest run packages/agent-core/test/context-manager.test.ts
+pnpm exec vitest run packages/agent/test/context-manager.test.ts
 ```
 
 覆盖原子分组、大结果回收、历史摘要、内部消息和自动续写。
@@ -571,11 +571,11 @@ pnpm test
 
 | 主题 | 实现位置 |
 |---|---|
-| 上下文核心算法 | [`packages/agent-core/src/context-manager.ts`](../../packages/agent-core/src/context-manager.ts) |
-| 模型迭代与自动续写 | [`packages/agent-core/src/run-agent-turn.ts`](../../packages/agent-core/src/run-agent-turn.ts) |
-| ModelRequest 构造 | [`packages/agent-core/src/model-step.ts`](../../packages/agent-core/src/model-step.ts) |
-| 内部续写消息 | [`packages/agent-core/src/messages.ts`](../../packages/agent-core/src/messages.ts) |
-| AgentRunOptions | [`packages/agent-core/src/types.ts`](../../packages/agent-core/src/types.ts) |
+| 上下文核心算法 | [`packages/agent/src/context-manager.ts`](../../packages/agent/src/context-manager.ts) |
+| 模型迭代与自动续写 | [`packages/agent/src/run-agent-turn.ts`](../../packages/agent/src/run-agent-turn.ts) |
+| ModelRequest 构造 | [`packages/agent/src/model-step.ts`](../../packages/agent/src/model-step.ts) |
+| 内部续写消息 | [`packages/agent/src/messages.ts`](../../packages/agent/src/messages.ts) |
+| AgentRunOptions | [`packages/agent/src/types.ts`](../../packages/agent/src/types.ts) |
 | Message / Tool 数据结构 | [`packages/contracts/src/messages.ts`](../../packages/contracts/src/messages.ts) |
 | Context/Usage 事件 | [`packages/contracts/src/agent.ts`](../../packages/contracts/src/agent.ts) |
 | 模型接口 | [`packages/contracts/src/model.ts`](../../packages/contracts/src/model.ts) |
@@ -584,7 +584,7 @@ pnpm test
 | 默认模型摘要注入 | [`apps/desktop/src/worker/worker.ts`](../../apps/desktop/src/worker/worker.ts) |
 | Context UI 与状态清理 | [`apps/desktop/src/renderer/main.tsx`](../../apps/desktop/src/renderer/main.tsx) |
 | JSONL 完整历史 | [`packages/storage/src/index.ts`](../../packages/storage/src/index.ts) |
-| 自动化测试 | [`packages/agent-core/test/context-manager.test.ts`](../../packages/agent-core/test/context-manager.test.ts) |
+| 自动化测试 | [`packages/agent/test/context-manager.test.ts`](../../packages/agent/test/context-manager.test.ts) |
 
 ## 22. 最后总结
 

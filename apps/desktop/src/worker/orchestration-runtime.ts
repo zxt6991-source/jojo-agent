@@ -1,4 +1,5 @@
-import { AgentError, runAgentTurn } from '@desktop-agent/agent-core';
+import { AgentError } from '@desktop-agent/agent';
+import { runAgentTurn, type AgentRuntimeStore } from '@desktop-agent/agent-runtime';
 import type { Message, ModelProvider, ProviderConfig } from '@desktop-agent/contracts';
 import {
   accrueUsage,
@@ -25,6 +26,7 @@ export type DesktopLeafAgentRunnerOptions = {
   resolveProvider(providerId: string): ProviderRuntime | undefined;
   trashDirectory: string;
   profileRegistry?: AgentProfileRegistry;
+  runtimeStore?: AgentRuntimeStore;
   createModelProvider?: (input: { runtime: ProviderRuntime; request: LeafAgentRunRequest }) => ModelProvider;
 };
 
@@ -82,12 +84,21 @@ export function createDesktopLeafAgentRunner(options: DesktopLeafAgentRunnerOpti
       const usage = emptyUsage();
       let result: Awaited<ReturnType<typeof runAgentTurn>>;
       try {
+        const runtimeLane = request.runtimeLane && options.runtimeStore
+          ? {
+              runtimeStore: options.runtimeStore,
+              lane: request.runtimeLane.name,
+              ...(request.runtimeLane.parentLane ? { parentLane: request.runtimeLane.parentLane } : {})
+            }
+          : {};
         result = await runAgentTurn({
           sessionId: request.sessionId,
           workingDirectory: request.workingDirectory,
           model,
+          providerId: request.providerId,
           history,
           userText: task,
+          ...runtimeLane,
           provider: options.createModelProvider
             ? options.createModelProvider({ runtime: providerRuntime, request })
             : createProvider(providerRuntime.config, providerRuntime.apiKey),

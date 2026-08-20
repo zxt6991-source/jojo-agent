@@ -3,7 +3,7 @@ import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ScriptedProvider } from '@desktop-agent/agent-core';
+import { ScriptedProvider } from '@desktop-agent/agent';
 import { WorkflowDefinitionSchema, type ProviderConfig } from '@desktop-agent/contracts';
 import {
   AgentExecutionScheduler,

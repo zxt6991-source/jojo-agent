@@ -24,7 +24,7 @@ MCP 工具 Schema 超过当前模型上下文预算时只暴露紧凑 manifest�
 >
 > - MCP 连接与工具适配：[`McpManager`](../../packages/extensions/src/mcp-manager.ts)
 > - Skill 发现与按需加载：[`discoverSkills` / `createSkillTool`](../../packages/extensions/src/skills.ts)
-> - 动态工具刷新：[`runAgentTurn`](../../packages/agent-core/src/run-agent-turn.ts)
+> - 动态工具刷新：[`runAgentTurn`](../../packages/agent/src/run-agent-turn.ts)
 > - Worker 组合入口：[`startTurn`](../../apps/desktop/src/worker/worker.ts)
 
 ## 2. 目标与非目标
@@ -100,7 +100,7 @@ flowchart TD
     R["Renderer"] --> C["contracts"]
     P["Preload"] --> C
     M["Main"] --> C
-    W["Worker"] --> A["agent-core"]
+    W["Worker"] --> A["agent"]
     W --> E["extensions"]
     W --> T["tools-node"]
     W --> S["storage"]
@@ -116,7 +116,7 @@ flowchart TD
 |---|---|
 | `contracts` | 配置、状态、IPC 和 Tool 类型 |
 | `extensions` | Node MCP client、工具适配、Skill 文件发现、扩展权限 Gate |
-| `agent-core` | 接受静态工具和动态工具提供器，不知道 MCP SDK 或文件系统 |
+| `agent` | 接受静态工具和动态工具提供器，不知道 MCP SDK 或文件系统 |
 | `storage` | 保存扩展配置，不连接 Server |
 | `apps/desktop/worker` | 管理扩展生命周期并注入 Agent Turn |
 | `apps/desktop/main` | 校验设置 IPC、持有最新状态、管理 OAuth loopback callback 与加密凭据、向 Worker 推配置 |
@@ -528,10 +528,10 @@ Agent Core 仍不知道“动态工具来自 MCP”；未来浏览器、插件�
 
 > **项目实现位置**
 >
-> - 运行参数：[`packages/agent-core/src/types.ts`](../../packages/agent-core/src/types.ts)
+> - 运行参数：[`packages/agent/src/types.ts`](../../packages/agent/src/types.ts)
 > - 合并和刷新：`currentTools` / `refreshTools`
-> - 模型迭代：[`packages/agent-core/src/run-agent-turn.ts`](../../packages/agent-core/src/run-agent-turn.ts)
-> - 动态工具回归测试：[`packages/agent-core/test/agent.test.ts`](../../packages/agent-core/test/agent.test.ts)
+> - 模型迭代：[`packages/agent/src/run-agent-turn.ts`](../../packages/agent/src/run-agent-turn.ts)
+> - 动态工具回归测试：[`packages/agent/test/agent.test.ts`](../../packages/agent/test/agent.test.ts)
 
 ## 14. MCP Tool Call 如何执行和回填
 
@@ -563,8 +563,8 @@ Agent Core 仍不知道“动态工具来自 MCP”；未来浏览器、插件�
 >
 > - Tool 执行适配：`createToolEntry`
 > - Content 归一化：`mcpContentResult`
-> - 通用执行和异常处理：[`executeToolCall`](../../packages/agent-core/src/tool-execution.ts)
-> - 消息提交：[`createToolMessage`](../../packages/agent-core/src/messages.ts)
+> - 通用执行和异常处理：[`executeToolCall`](../../packages/agent/src/tool-execution.ts)
+> - 消息提交：[`createToolMessage`](../../packages/agent/src/messages.ts)
 
 ## 15. MCP 权限和安全边界
 
@@ -821,7 +821,7 @@ name: code-reviewer
 > - 元数据 catalog：`createSkillTool` 中的 `catalog`
 > - `load_skill` JSON Schema：`createSkillTool`
 > - 全文返回：`Tool.execute`
-> - 上下文回收：[`packages/agent-core/src/context-manager.ts`](../../packages/agent-core/src/context-manager.ts)
+> - 上下文回收：[`packages/agent/src/context-manager.ts`](../../packages/agent/src/context-manager.ts)
 > - JSONL 提交：[`apps/desktop/src/worker/worker.ts`](../../apps/desktop/src/worker/worker.ts)
 
 ## 21. MCP 与 Skills 如何共用 Agent Tool 循环
@@ -860,8 +860,8 @@ MCP Tool ───────┘
 > **项目实现位置**
 >
 > - 工具组合：Worker `startTurn`
-> - Agent 循环：[`packages/agent-core/src/run-agent-turn.ts`](../../packages/agent-core/src/run-agent-turn.ts)
-> - 工具执行：[`packages/agent-core/src/tool-execution.ts`](../../packages/agent-core/src/tool-execution.ts)
+> - Agent 循环：[`packages/agent/src/run-agent-turn.ts`](../../packages/agent/src/run-agent-turn.ts)
+> - 工具执行：[`packages/agent/src/tool-execution.ts`](../../packages/agent/src/tool-execution.ts)
 > - Provider 映射：[`packages/providers/src/chat-completions-request.ts`](../../packages/providers/src/chat-completions-request.ts)
 
 ## 22. 错误处理与恢复
@@ -898,7 +898,7 @@ MCP Tool ───────┘
 > **项目实现位置**
 >
 > - Server 错误隔离：`McpManager.configure`
-> - Tool 异常归一化：[`executeKnownTool`](../../packages/agent-core/src/tool-execution.ts)
+> - Tool 异常归一化：[`executeKnownTool`](../../packages/agent/src/tool-execution.ts)
 > - Worker 错误事件：[`apps/desktop/src/worker/worker.ts`](../../apps/desktop/src/worker/worker.ts)
 > - Worker 监督：[`startWorker`](../../apps/desktop/src/main/main.ts)
 
@@ -966,7 +966,7 @@ Provider API Key 与 MCP OAuth 凭据都使用 Electron `safeStorage`；手写�
 > **项目实现位置**
 >
 > - 核心约束测试：[`packages/extensions/test/extensions.test.ts`](../../packages/extensions/test/extensions.test.ts)
-> - 动态工具测试：[`packages/agent-core/test/agent.test.ts`](../../packages/agent-core/test/agent.test.ts)
+> - 动态工具测试：[`packages/agent/test/agent.test.ts`](../../packages/agent/test/agent.test.ts)
 > - Schema 测试：[`packages/contracts/test/contracts.test.ts`](../../packages/contracts/test/contracts.test.ts)
 > - 配置迁移测试：[`packages/storage/test/session.test.ts`](../../packages/storage/test/session.test.ts)
 
@@ -997,7 +997,7 @@ pnpm exec vitest run packages/extensions/test/extensions.test.ts
 ### 25.2 Agent Core 动态工具测试
 
 ```bash
-pnpm exec vitest run packages/agent-core/test/agent.test.ts
+pnpm exec vitest run packages/agent/test/agent.test.ts
 ```
 
 其中动态工具测试验证搜索调用后下一次 ModelRequest 出现新 MCP ToolDefinition；无进展测试同时覆盖完全相同调用、不同参数返回相同只读内容，以及恢复窗口耗尽后 ToolDefinition 为空的强制最终回答。
@@ -1097,9 +1097,9 @@ Production package 可以验证官方 MCP SDK 已正确进入 Worker bundle，�
 | Skill 发现和按需工具 | [`packages/extensions/src/skills.ts`](../../packages/extensions/src/skills.ts) |
 | Skill 非交互安装 | [`packages/extensions/src/skill-installer.ts`](../../packages/extensions/src/skill-installer.ts) |
 | Extensions 公共导出 | [`packages/extensions/src/index.ts`](../../packages/extensions/src/index.ts) |
-| 动态工具运行参数 | [`packages/agent-core/src/types.ts`](../../packages/agent-core/src/types.ts) |
-| 动态工具刷新和 Agent 循环 | [`packages/agent-core/src/run-agent-turn.ts`](../../packages/agent-core/src/run-agent-turn.ts) |
-| 工具执行和审批回填 | [`packages/agent-core/src/tool-execution.ts`](../../packages/agent-core/src/tool-execution.ts) |
+| 动态工具运行参数 | [`packages/agent/src/types.ts`](../../packages/agent/src/types.ts) |
+| 动态工具刷新和 Agent 循环 | [`packages/agent/src/run-agent-turn.ts`](../../packages/agent/src/run-agent-turn.ts) |
+| 工具执行和审批回填 | [`packages/agent/src/tool-execution.ts`](../../packages/agent/src/tool-execution.ts) |
 | Worker 扩展组合 | [`apps/desktop/src/worker/worker.ts`](../../apps/desktop/src/worker/worker.ts) |
 | Main 配置和状态 IPC | [`apps/desktop/src/main/main.ts`](../../apps/desktop/src/main/main.ts) |
 | Preload 白名单 API | [`apps/desktop/src/preload/preload.ts`](../../apps/desktop/src/preload/preload.ts) |
@@ -1107,7 +1107,7 @@ Production package 可以验证官方 MCP SDK 已正确进入 Worker bundle，�
 | 扩展 UI 样式 | [`apps/desktop/src/renderer/styles.css`](../../apps/desktop/src/renderer/styles.css) |
 | 配置持久化和迁移 | [`packages/storage/src/index.ts`](../../packages/storage/src/index.ts) |
 | Extensions 单元测试 | [`packages/extensions/test/extensions.test.ts`](../../packages/extensions/test/extensions.test.ts) |
-| Agent 动态工具测试 | [`packages/agent-core/test/agent.test.ts`](../../packages/agent-core/test/agent.test.ts) |
+| Agent 动态工具测试 | [`packages/agent/test/agent.test.ts`](../../packages/agent/test/agent.test.ts) |
 
 ## 29. 最后总结
 
