@@ -34,12 +34,12 @@ function assistant(id: string, text: string, calls: Array<{ id: string; name: st
   };
 }
 
-function tool(id: string, callId: string, ok: boolean, content: string): Message {
+function tool(id: string, callId: string, ok: boolean, content: string, code?: string): Message {
   return {
     id,
     role: 'tool',
     createdAt: at,
-    content: [{ type: 'tool_result', result: { callId, ok, content } }]
+    content: [{ type: 'tool_result', result: { callId, ok, content, ...(code ? { code } : {}) } }]
   };
 }
 
@@ -111,6 +111,7 @@ describe('conversation snapshot', () => {
       { kind: 'user', text: '第一问' },
       { kind: 'user', text: '第二问' }
     ]);
+    expect(snapshot.turns.map((turn) => turn.startedAt)).toEqual([at, at]);
     expect(snapshot.records.filter((record) => record.turn === 2).map((record) => record.kind)).toEqual(['user', 'assistant']);
   });
 
@@ -123,6 +124,21 @@ describe('conversation snapshot', () => {
       ]
     });
     expect(snapshot.nodes[1]).toMatchObject({ kind: 'tool', state: 'stopped', summary: 'pnpm test' });
+  });
+
+  it('renders no-progress control results as warnings instead of tool failures', () => {
+    const snapshot = buildConversationSnapshot({
+      messages: [
+        user('u1', '搜索定义'),
+        assistant('a1', '', [{ id: 'c1', name: 'grep', input: { query: 'Entry', path: 'src' } }]),
+        tool('t1', 'c1', false, '[No progress: duplicate observation.]', 'no_progress')
+      ]
+    });
+
+    expect(snapshot.nodes[1]).toMatchObject({
+      kind: 'tool', state: 'warning', summary: 'Entry', errorSummary: '[No progress: duplicate observation.]'
+    });
+    expect(snapshot.records[1]).toMatchObject({ state: 'warning', summary: 'Entry' });
   });
 });
 

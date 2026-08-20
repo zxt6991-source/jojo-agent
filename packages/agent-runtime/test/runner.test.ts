@@ -237,6 +237,33 @@ describe('runtime runner', () => {
     expect(result.messages.some((message) => message.role === 'tool')).toBe(true);
   });
 
+  it('does not enter no-progress recovery for repeated polling calls', async () => {
+    const execute = vi.fn(echoTool.execute);
+    const pollingTool: Tool = { ...echoTool, repeatPolicy: 'polling', execute };
+    const provider = new ScriptedProvider([
+      ...Array.from({ length: 3 }, (_, index) => [
+        { type: 'tool_call_completed' as const, call: { id: `wait-${index}`, name: 'echo', input: { id: 'agent-1' } } },
+        { type: 'response_completed' as const, stopReason: 'tool_calls' }
+      ]),
+      [
+        { type: 'text_delta', text: 'both sub-agents completed' },
+        { type: 'response_completed', stopReason: 'stop' }
+      ]
+    ]);
+
+    const result = await runAgentTurn(options(provider, {
+      operationId: 'operation-polling',
+      tools: [pollingTool]
+    }));
+    const noProgressResults = result.messages
+      .flatMap((message) => message.content)
+      .filter((block) => block.type === 'tool_result' && block.result.code === 'no_progress');
+
+    expect(result.stopReason).toBe('stop');
+    expect(execute).toHaveBeenCalledTimes(3);
+    expect(noProgressResults).toHaveLength(0);
+  });
+
   it('keeps max-token continuation state across model requests', async () => {
     const events: AgentEvent[] = [];
     const provider = new ScriptedProvider([

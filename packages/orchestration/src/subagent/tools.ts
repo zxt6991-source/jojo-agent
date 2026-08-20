@@ -110,6 +110,7 @@ export function createSubAgentTools(manager: SubAgentManager, options: SubAgentT
     },
     {
       replay: 'safe',
+      repeatPolicy: 'polling',
       definition: {
         name: 'sub_agent_wait',
         description: 'Wait for several background sub-agents together, or return their current states when the wait timeout expires.',
@@ -137,6 +138,7 @@ export function createSubAgentTools(manager: SubAgentManager, options: SubAgentT
     },
     {
       replay: 'safe',
+      repeatPolicy: 'polling',
       definition: {
         name: 'sub_agent_status',
         description: 'Get the current state and final result of one background sub-agent.',

@@ -21,6 +21,7 @@ function DisclosureRow({
   summary,
   expandable,
   error,
+  warning,
   running,
   children
 }: {
@@ -29,12 +30,13 @@ function DisclosureRow({
   summary: string;
   expandable: boolean;
   error?: boolean;
+  warning?: boolean;
   running?: boolean;
   children?: React.ReactNode;
 }) {
   const [open, setOpen] = useState(false);
   const expanded = expandable && open;
-  return <div className={`disclosure ${running ? 'running' : ''} ${error ? 'error' : ''}`}>
+  return <div className={`disclosure ${running ? 'running' : ''} ${warning ? 'warning' : ''} ${error ? 'error' : ''}`}>
     <button
       type="button"
       className="disclosure-row"
@@ -46,7 +48,7 @@ function DisclosureRow({
       <span className="disclosure-title">{title}</span>
       {summary && <>
         <span className="disclosure-sep" aria-hidden="true" />
-        <span className={`disclosure-summary ${error ? 'error' : ''}`}>{summary}</span>
+        <span className={`disclosure-summary ${warning ? 'warning' : ''} ${error ? 'error' : ''}`}>{summary}</span>
       </>}
       {expandable && <span className="disclosure-chevron" aria-hidden="true">{expanded ? '⌄' : '›'}</span>}
     </button>
@@ -68,12 +70,13 @@ function ToolRow({ node, onInspect }: { node: ToolNode; onInspect?: (id: string)
     summary={node.summary}
     expandable={expandable}
     error={node.state === 'error'}
+    warning={node.state === 'warning'}
     running={node.state === 'running'}
   >
     <div className="tool-io">
       {node.body && <div className="tool-io-section"><span>IN</span><pre>{node.body}</pre></div>}
       {node.body && node.output && <span className="tool-io-divider" aria-hidden="true" />}
-      {node.output && <div className="tool-io-section"><span>OUT</span><pre className={node.state === 'error' ? 'error' : ''}>{node.output}</pre></div>}
+      {node.output && <div className="tool-io-section"><span>OUT</span><pre className={node.state === 'error' ? 'error' : node.state === 'warning' ? 'warning' : ''}>{node.output}</pre></div>}
       {node.images.length > 0 && <div className="rich-images tool-images">{node.images.map((image, index) => <img key={`${node.id}-${index}`} src={`data:${image.mimeType};base64,${image.data}`} alt={image.altText ?? '工具返回的图片'} />)}</div>}
     </div>
     {onInspect && <button type="button" className="tool-inspect" onClick={(event) => { event.stopPropagation(); onInspect(node.id); }}>在轨迹中查看</button>}
@@ -136,16 +139,21 @@ export function ChatTranscript({
   snapshot,
   running,
   turnStartedAt,
-  onInspect
+  onInspect,
+  renderAfterTurn
 }: {
   snapshot: ConversationSnapshot;
   running: boolean;
   turnStartedAt: number | null;
   onInspect?: (id: string) => void;
+  renderAfterTurn?: (turn: ConversationSnapshot['turns'][number]) => React.ReactNode;
 }) {
   const waiting = running && !hasLiveOutput(snapshot);
   return <div className="chat-transcript">
-    {snapshot.nodes.map((node) => <ChatNodeView key={node.id} node={node} {...(onInspect ? { onInspect } : {})} />)}
+    {snapshot.turns.map((turn) => <React.Fragment key={turn.id}>
+      {turn.nodes.map((node) => <ChatNodeView key={node.id} node={node} {...(onInspect ? { onInspect } : {})} />)}
+      {renderAfterTurn?.(turn)}
+    </React.Fragment>)}
     {waiting && <TurnStatus startedAt={turnStartedAt} />}
   </div>;
 }
@@ -197,7 +205,7 @@ export function TrajectoryView({
             <span className="trajectory-index">#{record.index}</span>
             <span className={`trajectory-tag ${record.kind}`}>{KIND_LABEL[record.kind]}</span>
             <span className="trajectory-text">{record.kind === 'tool' ? `${record.title} · ${record.summary}` : record.summary}</span>
-            {record.state && <span className={`trajectory-state ${record.state}`}>{record.state === 'ok' ? '完成' : record.state === 'error' ? '失败' : record.state === 'running' ? '进行中' : '中断'}</span>}
+            {record.state && <span className={`trajectory-state ${record.state}`}>{record.state === 'ok' ? '完成' : record.state === 'warning' ? '无进展' : record.state === 'error' ? '失败' : record.state === 'running' ? '进行中' : '中断'}</span>}
           </button>;
         })}
       </section>)}
@@ -213,7 +221,7 @@ export function TrajectoryView({
         : <div className="tool-io">
           {selected.body && <div className="tool-io-section"><span>IN</span><pre>{selected.body}</pre></div>}
           {selected.body && selected.output && <span className="tool-io-divider" aria-hidden="true" />}
-          {selected.output && <div className="tool-io-section"><span>OUT</span><pre className={selected.state === 'error' ? 'error' : ''}>{selected.output}</pre></div>}
+          {selected.output && <div className="tool-io-section"><span>OUT</span><pre className={selected.state === 'error' ? 'error' : selected.state === 'warning' ? 'warning' : ''}>{selected.output}</pre></div>}
           {!selected.body && !selected.output && <p className="trajectory-empty">没有可显示的输入或输出。</p>}
         </div>}
     </aside>}

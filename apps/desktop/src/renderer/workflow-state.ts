@@ -1,4 +1,5 @@
 import type { WorkflowRunSnapshot, WorkflowRunState, WorkflowStepState } from '@desktop-agent/contracts';
+import type { ConversationTurn } from './conversation';
 
 export function mergeWorkflowSnapshot(
   workflows: WorkflowRunSnapshot[],
@@ -14,6 +15,31 @@ export function mergeWorkflowSnapshot(
 
 export function workflowsForSession(workflows: WorkflowRunSnapshot[], sessionId: string | null): WorkflowRunSnapshot[] {
   return sessionId ? workflows.filter((workflow) => workflow.sessionId === sessionId) : [];
+}
+
+export function workflowsByConversationTurn(
+  workflows: WorkflowRunSnapshot[],
+  turns: ConversationTurn[]
+): Map<string, WorkflowRunSnapshot[]> {
+  const grouped = new Map<string, WorkflowRunSnapshot[]>();
+  const datedTurns = turns.flatMap((turn) => {
+    if (!turn.startedAt) return [];
+    const timestamp = Date.parse(turn.startedAt);
+    return Number.isFinite(timestamp) ? [{ turn, timestamp }] : [];
+  });
+  for (const workflow of workflows) {
+    const createdAt = Date.parse(workflow.createdAt);
+    let owner = datedTurns[0]?.turn;
+    for (const candidate of datedTurns) {
+      if (candidate.timestamp > createdAt) break;
+      owner = candidate.turn;
+    }
+    if (!owner) continue;
+    const current = grouped.get(owner.id) ?? [];
+    current.push(workflow);
+    grouped.set(owner.id, current);
+  }
+  return grouped;
 }
 
 export function workflowStateLabel(state: WorkflowRunState): string {

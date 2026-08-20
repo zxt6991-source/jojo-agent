@@ -160,6 +160,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .disclosure-sep { width: 2px; height: 2px; flex: none; margin: 0 8px; border-radius: 1px; background: #b4b7bd; }
 .disclosure-summary { min-width: 0; flex: 1 1 auto; overflow: hidden; color: #8a8e96; font-size: 14px; line-height: 24px; white-space: nowrap; text-overflow: ellipsis; }
 .disclosure-summary.error, .disclosure.error .disclosure-title { color: #c85b55; }
+.disclosure-summary.warning, .disclosure.warning .disclosure-title { color: #a97818; }
 .disclosure-chevron { flex: 0 0 16px; margin-left: 8px; color: #b0b3b9; font-size: 14px; text-align: center; }
 .disclosure-body { margin: 4px 0 8px 26px; }
 .disclosure.running .disclosure-row { position: relative; overflow: hidden; }
@@ -171,6 +172,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .tool-io-section > span { position: sticky; top: 0; color: #9a9da3; font-size: 10px; font-weight: 650; letter-spacing: .04em; }
 .tool-io-section pre { margin: 0; padding: 0; overflow: visible; border: 0; border-radius: 0; background: transparent; color: #3d4046; font-family: "SFMono-Regular", "Cascadia Code", Consolas, monospace; font-size: 12px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
 .tool-io-section pre.error { color: #b2464b; }
+.tool-io-section pre.warning { color: #8b681d; }
 .tool-io-divider { display: block; height: 1px; background: #e7e7e9; }
 .tool-inspect { display: inline-flex; margin: 8px 0 2px; padding: 3px 9px; border: 1px solid #e1e2e4; border-radius: 999px; background: #ffffff; color: #6f737b; font-size: 11px; }
 .tool-inspect:hover { background: #f4f4f5; color: #303238; }
@@ -193,6 +195,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .trajectory-state { color: #8a8e96; font-size: 11px; white-space: nowrap; }
 .trajectory-state.ok { color: #71bf91; }
 .trajectory-state.error { color: #e18d91; }
+.trajectory-state.warning { color: #c69a3a; }
 .trajectory-state.running { color: #d5b86a; }
 .trajectory-empty { padding: 28px 8px; color: #9a9da3; font-size: 13px; text-align: center; }
 .trajectory-inspect { min-height: 0; overflow: auto; padding: 14px 4px 8px; border-top: 1px solid #e7e7e9; }

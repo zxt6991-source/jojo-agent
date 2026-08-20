@@ -243,6 +243,8 @@ describe('workflow tools', () => {
     expect(tools.map((tool) => tool.definition.name)).toEqual([
       'workflow_start', 'workflow_wait', 'workflow_status', 'workflow_cancel', 'workflow_resume', 'workflow_list'
     ]);
+    expect(tools.find((tool) => tool.definition.name === 'workflow_wait')?.repeatPolicy).toBe('polling');
+    expect(tools.find((tool) => tool.definition.name === 'workflow_status')?.repeatPolicy).toBe('polling');
     const startSchema = JSON.stringify(tools[0]!.definition.inputSchema);
     expect(startSchema).toContain('"enum":["tool"]');
     expect(startSchema).toContain('"enum":["foreach"]');

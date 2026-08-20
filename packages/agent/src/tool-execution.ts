@@ -37,7 +37,8 @@ function canonicalJson(value: unknown): string {
   return serialized === undefined ? String(value) : serialized;
 }
 
-function repeatedCallResult(call: ToolCall, state: ToolExecutionState): ToolResult | null {
+function repeatedCallResult(call: ToolCall, tool: Tool, state: ToolExecutionState): ToolResult | null {
+  if (tool.repeatPolicy === 'polling') return null;
   const signature = `${call.name}:${canonicalJson(call.input)}`;
   const count = (state.toolCallCounts.get(signature) ?? 0) + 1;
   state.toolCallCounts.set(signature, count);
@@ -138,7 +139,7 @@ export async function executeToolCall(
     result = failureResult(call, `Unknown tool: ${call.name}`, 'unknown_tool');
   } else {
     state.executedCallIds.add(call.id);
-    result = repeatedCallResult(call, state)
+    result = repeatedCallResult(call, tool, state)
       ?? repeatedObservationResult(call, await executeKnownTool(call, tool, options), state);
   }
 
@@ -163,7 +164,7 @@ export async function executeApprovedToolCall(
     result = failureResult(call, `Unknown tool: ${call.name}`, 'unknown_tool');
   } else {
     state.executedCallIds.add(call.id);
-    result = repeatedCallResult(call, state)
+    result = repeatedCallResult(call, tool, state)
       ?? repeatedObservationResult(call, await executeApprovedTool(call, tool, options), state);
   }
 

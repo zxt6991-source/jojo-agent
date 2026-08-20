@@ -2946,6 +2946,27 @@ no-progress recovery
 
 这部分行为可以保留。
 
+### ✅ 100.1 轮询工具不触发相同调用误判
+
+异步编排工具在后台任务尚未完成时，允许使用相同参数继续轮询：
+
+```text
+sub_agent_wait
+sub_agent_status
+workflow_wait
+workflow_status
+```
+
+通过通用的 `Tool.repeatPolicy = 'polling'` 声明轮询语义；普通工具仍采用 bounded 默认策略，在第三次完全相同调用时进入 `no_progress`。轮询仍受 Operation 的 `maxIterations` 约束。
+
+### ✅ 100.2 单会话重复提交与 no-progress 展示
+
+Desktop 使用同步发送锁和 Worker 任务注册器共同保证同一 Session 只能启动一个前台 Turn；重复启动事件会被幂等忽略，不再用 `turn.failed` 错误终止仍在运行的 Turn。`no_progress` 作为 Harness 控制信号在 UI 中显示为黄色“无进展”，不再显示成红色工具失败。
+
+### ✅ 100.3 Workflow 卡片归属原始对话轮次
+
+Desktop 根据用户消息与 Workflow 的 `createdAt` 将 Workflow 稳定归入创建它的 Conversation Turn，并在该轮末尾渲染。后续新提问会创建新 Turn，历史 Workflow 不再被统一追加到最新对话底部。
+
 但状态应进入 Runtime：
 
 ```ts

@@ -24,5 +24,11 @@ export interface Tool {
    * `never`, the conservative default.
    */
   replay?: 'safe' | 'never';
+  /**
+   * Controls duplicate-call protection within one agent operation. Polling
+   * tools may legitimately use identical input while waiting for background
+   * work to change state; all other tools keep the bounded default.
+   */
+  repeatPolicy?: 'bounded' | 'polling';
   execute(input: unknown, context: ToolContext): Promise<ToolResult>;
 }

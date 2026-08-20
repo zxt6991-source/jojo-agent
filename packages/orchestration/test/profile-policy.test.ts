@@ -80,6 +80,8 @@ describe('Agent Tool Policy', () => {
       }
     }, new AgentExecutionScheduler(1), () => undefined);
     const tools = createSubAgentTools(manager, { providerId: 'provider', model: 'default-model' });
+    expect(tools.find((tool) => tool.definition.name === 'sub_agent_wait')?.repeatPolicy).toBe('polling');
+    expect(tools.find((tool) => tool.definition.name === 'sub_agent_status')?.repeatPolicy).toBe('polling');
     const context: ToolContext = {
       sessionId: 'session', workingDirectory: process.cwd(), signal: new AbortController().signal,
       approved: true, onProgress: () => undefined

@@ -37,6 +37,7 @@ import { JsonlSessionStore, JsonlWorkflowStore, SqliteAgentRuntimeStore } from '
 import { createDefaultToolRuntime, redactSensitiveEnvironmentAssignments, TerminalTool } from '@desktop-agent/tools-node';
 import { BrowserPermissionGate, BrowserToolBridge } from './browser-tools';
 import { createDesktopLeafAgentRunner, createDesktopWorkflowToolRuntime } from './orchestration-runtime';
+import { TurnTaskRegistry } from './turn-task-registry';
 
 type ParentPort = { on(event: 'message', listener: (event: { data: WorkerCommand }) => void): void; postMessage(message: WorkerMessage): void };
 const parentPort = (process as typeof process & { parentPort?: ParentPort }).parentPort;
@@ -48,7 +49,7 @@ const dataDirectory: string = configuredDataDirectory;
 const store = new JsonlSessionStore(path.join(dataDirectory, 'sessions'));
 const agentRuntimeStore = new SqliteAgentRuntimeStore(path.join(dataDirectory, 'runtime', 'agent-runtime.sqlite'));
 const controllers = new Map<string, AbortController>();
-const turnTasks = new Map<string, Promise<void>>();
+const turnTasks = new TurnTaskRegistry();
 const approvals = new Map<string, { resolve: (allowed: boolean) => void; sessionId: string }>();
 let runtime: { settings: ProviderSettings; apiKeys: Record<string, string> } | null = null;
 let skillStatuses: SkillStatus[] = [];
@@ -355,11 +356,9 @@ async function startTurn(sessionId: string, text: string, images: ImageContentBl
 }
 
 function launchTurn(sessionId: string, text: string, images: ImageContentBlock[], providerId: string, model: string): void {
-  const task = startTurn(sessionId, text, images, providerId, model);
-  turnTasks.set(sessionId, task);
-  void task.finally(() => {
-    if (turnTasks.get(sessionId) === task) turnTasks.delete(sessionId);
-  });
+  // A duplicate renderer event must not emit turn.failed for the active turn.
+  // The first task remains authoritative until it settles.
+  turnTasks.launch(sessionId, () => startTurn(sessionId, text, images, providerId, model));
 }
 
 async function stopSession(sessionId: string): Promise<void> {
@@ -367,7 +366,7 @@ async function stopSession(sessionId: string): Promise<void> {
   for (const approval of approvals.values()) {
     if (approval.sessionId === sessionId) approval.resolve(false);
   }
-  await (turnTasks.get(sessionId) ?? Promise.resolve());
+  await turnTasks.wait(sessionId);
   await Promise.all([
     subAgentManager.quiesceSession(sessionId),
     workflowManager.quiesceSession(sessionId)

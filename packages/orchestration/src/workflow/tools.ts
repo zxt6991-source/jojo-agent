@@ -338,6 +338,7 @@ const definitionSchema = {
     },
     {
       replay: 'safe',
+      repeatPolicy: 'polling',
       definition: {
         name: 'workflow_wait',
         description: 'Wait for a workflow to finish, or return its current snapshot when the wait timeout expires.',
@@ -360,6 +361,7 @@ const definitionSchema = {
     },
     {
       replay: 'safe',
+      repeatPolicy: 'polling',
       definition: {
         name: 'workflow_status',
         description: 'Get the latest workflow and step states, outputs, errors, and usage.',

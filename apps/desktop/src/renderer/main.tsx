@@ -16,7 +16,7 @@ import { browserDomainIssue, parseBrowserDomainList } from './browser-settings';
 import { ChatTranscript, ConversationViewTabs, Markdown, TrajectoryView } from './ConversationViews';
 import { Sidebar } from './Sidebar';
 import { WorkflowCard } from './WorkflowCard';
-import { mergeWorkflowSnapshot, workflowsForSession } from './workflow-state';
+import { mergeWorkflowSnapshot, workflowsByConversationTurn, workflowsForSession } from './workflow-state';
 import './styles.css';
 
 type DiffLine = { type: 'addition' | 'deletion' | 'context' | 'hunk' | 'meta'; oldLine?: number; newLine?: number; text: string };
@@ -427,7 +427,7 @@ function App() {
   const [inspectedId, setInspectedId] = useState<string | null>(null);
   const [turnStartedAt, setTurnStartedAt] = useState<number | null>(null);
   const [approval, setApproval] = useState<ApprovalRequest | null>(null);
-  const [running, setRunning] = useState(false);
+  const runningRef = useRef(false);
   const [runningSessionId, setRunningSessionId] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -575,7 +575,7 @@ function App() {
     });
     const offEvents = window.desktopAgent.onAgentEvent((event: AgentEvent) => {
       if (event.type === 'turn.started') {
-        setRunning(true); setRunningSessionId(event.sessionId); setError(''); setLiveSteps(emptyLiveSteps()); setTurnStartedAt(Date.now());
+        runningRef.current = true; setRunningSessionId(event.sessionId); setError(''); setLiveSteps(emptyLiveSteps()); setTurnStartedAt(Date.now());
         setUsage({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
         setContextUsage(null);
       }
@@ -588,8 +588,8 @@ function App() {
         cacheRead: current.cacheRead + (event.cacheReadInputTokens ?? 0), cacheWrite: current.cacheWrite + (event.cacheWriteInputTokens ?? 0)
       }));
       else if (event.type === 'context.updated') setContextUsage({ estimated: event.estimatedTokens, window: event.contextWindowTokens, compacted: event.compactedMessages });
-      else if (event.type === 'turn.failed') { setError(event.message); setRunning(false); setRunningSessionId(null); setTurnStartedAt(null); setApproval(null); void reloadActive(); }
-      else if (event.type === 'turn.completed' || event.type === 'turn.cancelled') { setRunning(false); setRunningSessionId(null); setTurnStartedAt(null); setApproval(null); void reloadActive(); }
+      else if (event.type === 'turn.failed') { setError(event.message); runningRef.current = false; setRunningSessionId(null); setTurnStartedAt(null); setApproval(null); void reloadActive(); }
+      else if (event.type === 'turn.completed' || event.type === 'turn.cancelled') { runningRef.current = false; setRunningSessionId(null); setTurnStartedAt(null); setApproval(null); void reloadActive(); }
     });
     return () => { offSessions(); offExtensions(); offSecret(); offDock(); offOrchestration(); offEvents(); };
   }, []);
@@ -713,7 +713,7 @@ function App() {
     if (wasActive) {
       activeIdRef.current = null;
       setActiveId(null);
-      setRunning(false);
+      runningRef.current = false;
       setRunningSessionId(null);
       setApproval(null);
       setMessages([]);
@@ -737,14 +737,15 @@ function App() {
   const send = async () => {
     const text = draft.trim();
     const images = attachments;
-    if ((!text && images.length === 0) || !activeId || running) return;
-    setDraft(''); setAttachments([]); setError(''); setRunning(true); setRunningSessionId(activeId); setLiveSteps(emptyLiveSteps()); setTurnStartedAt(Date.now()); setUsage({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }); setContextUsage(null); atBottomRef.current = true; setAtBottom(true);
+    if ((!text && images.length === 0) || !activeId || runningRef.current) return;
+    runningRef.current = true;
+    setDraft(''); setAttachments([]); setError(''); setRunningSessionId(activeId); setLiveSteps(emptyLiveSteps()); setTurnStartedAt(Date.now()); setUsage({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }); setContextUsage(null); atBottomRef.current = true; setAtBottom(true);
     setMessages((items) => [...items, { id: `pending-${Date.now()}`, role: 'user', createdAt: new Date().toISOString(), content: [...(text ? [{ type: 'text' as const, text }] : []), ...images] }]);
     try {
       turnBaselineRef.current = await loadWorkspaceChanges(activeId);
       await window.desktopAgent.startTurn({ sessionId: activeId, text, images, providerId: settings.activeProviderId, model: selectedModel });
     }
-    catch (cause) { setDraft(text); setAttachments(images); setRunning(false); setRunningSessionId(null); setTurnStartedAt(null); setLiveSteps([]); setError(cause instanceof Error ? cause.message : String(cause)); }
+    catch (cause) { setDraft(text); setAttachments(images); runningRef.current = false; setRunningSessionId(null); setTurnStartedAt(null); setLiveSteps([]); setError(cause instanceof Error ? cause.message : String(cause)); }
   };
 
   const active = sessions.find((session) => session.id === activeId);
@@ -765,6 +766,10 @@ function App() {
     running: sessionBusy,
     ...(active?.workingDirectory ? { workingDirectory: active.workingDirectory } : {})
   }), [messages, liveSteps, sessionBusy, active?.workingDirectory]);
+  const workflowsByTurn = useMemo(
+    () => workflowsByConversationTurn(visibleWorkflows, snapshot.turns),
+    [visibleWorkflows, snapshot.turns]
+  );
 
   useLayoutEffect(() => {
     const el = conversationRef.current;
@@ -867,20 +872,25 @@ function App() {
         <div className="conversation" ref={conversationRef} onScroll={onConversationScroll} role="region" aria-label="对话记录">
           {snapshot.nodes.length === 0 && !sessionBusy && conversationView === 'chat' && <div className="empty"><div className="empty-icon">⌁</div><h2>从本地项目开始</h2><p>可以让我阅读文件、列出目录，或在你批准后执行命令。</p></div>}
           {conversationView === 'chat'
-            ? <ChatTranscript snapshot={snapshot} running={sessionBusy} turnStartedAt={turnStartedAt} onInspect={inspectRecord} />
+            ? <ChatTranscript
+              snapshot={snapshot}
+              running={sessionBusy}
+              turnStartedAt={turnStartedAt}
+              onInspect={inspectRecord}
+              renderAfterTurn={(turn) => workflowsByTurn.get(turn.id)?.map((workflow) => <WorkflowCard
+                key={workflow.id}
+                workflow={workflow}
+                onCancel={async (item) => {
+                  try { await window.desktopAgent.cancelWorkflow({ sessionId: item.sessionId, workflowId: item.id }); }
+                  catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+                }}
+                onResume={async (item) => {
+                  try { await window.desktopAgent.resumeWorkflow({ sessionId: item.sessionId, workflowId: item.id }); }
+                  catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+                }}
+              />)}
+            />
             : <TrajectoryView snapshot={snapshot} selectedId={inspectedId} onSelect={setInspectedId} />}
-          {conversationView === 'chat' && visibleWorkflows.map((workflow) => <WorkflowCard
-            key={workflow.id}
-            workflow={workflow}
-            onCancel={async (item) => {
-              try { await window.desktopAgent.cancelWorkflow({ sessionId: item.sessionId, workflowId: item.id }); }
-              catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
-            }}
-            onResume={async (item) => {
-              try { await window.desktopAgent.resumeWorkflow({ sessionId: item.sessionId, workflowId: item.id }); }
-              catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
-            }}
-          />)}
           {error && <div className="error-banner">{error}</div>}
           {workspaceChangesError && <div className="changes-error">无法读取文件修改：{workspaceChangesError}</div>}
           {!sessionBusy && messages.length > 0 && workspaceChanges && workspaceChanges.files.length > 0 && <WorkspaceChangesCard changes={workspaceChanges} onReview={openReview} />}

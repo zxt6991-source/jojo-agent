@@ -152,6 +152,37 @@ describe('runAgentTurn', () => {
     expect(noProgressResult?.type === 'tool_result' && noProgressResult.result.content).toContain('already run twice');
   });
 
+  it('allows identical polling calls while background work is still changing state', async () => {
+    let poll = 0;
+    const execute = vi.fn(async () => ({
+      callId: '', ok: true, content: JSON.stringify({ completed: ++poll >= 3 })
+    }));
+    const pollingTool: Tool = {
+      definition: { name: 'background_wait', description: 'wait', inputSchema: { type: 'object' } },
+      repeatPolicy: 'polling',
+      execute
+    };
+    const provider = new ScriptedProvider([
+      ...Array.from({ length: 3 }, (_, index) => [
+        { type: 'tool_call_completed' as const, call: { id: `poll-${index}`, name: 'background_wait', input: { id: 'job-1' } } },
+        { type: 'response_completed' as const, stopReason: 'tool_calls' }
+      ]),
+      [
+        { type: 'text_delta', text: 'The background job completed.' },
+        { type: 'response_completed', stopReason: 'stop' }
+      ]
+    ]);
+
+    const result = await runAgentTurn(createOptions(provider, { tools: [pollingTool] }));
+    const noProgressResults = result.messages
+      .flatMap((message) => message.content)
+      .filter((block) => block.type === 'tool_result' && block.result.code === 'no_progress');
+
+    expect(result.stopReason).toBe('stop');
+    expect(execute).toHaveBeenCalledTimes(3);
+    expect(noProgressResults).toHaveLength(0);
+  });
+
   it('detects repeated read-only results across different searches and forces a final response', async () => {
     let step = 0;
     const seenTools: string[][] = [];

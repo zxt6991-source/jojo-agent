@@ -1,7 +1,7 @@
 import type { AgentEvent, ImageContentBlock, Message, ToolCall, ToolResult } from '@desktop-agent/contracts';
 
 export type ConversationViewMode = 'chat' | 'trajectory';
-export type ToolRowState = 'running' | 'ok' | 'error' | 'stopped';
+export type ToolRowState = 'running' | 'ok' | 'warning' | 'error' | 'stopped';
 
 export type LiveTool = {
   id: string;
@@ -16,7 +16,7 @@ export type LiveStep = {
   tools: LiveTool[];
 };
 
-export type UserNode = { kind: 'user'; id: string; text: string; images: ImageContentBlock[] };
+export type UserNode = { kind: 'user'; id: string; createdAt: string; text: string; images: ImageContentBlock[] };
 export type AssistantNode = { kind: 'assistant'; id: string; text: string; streaming: boolean };
 export type ToolNode = {
   kind: 'tool';
@@ -40,6 +40,7 @@ export type ConversationNode = UserNode | AssistantNode | ToolNode | CompactionN
 export type ConversationTurn = {
   id: string;
   index: number;
+  startedAt?: string;
   nodes: ConversationNode[];
 };
 
@@ -228,7 +229,7 @@ export function toolBody(name: string, input: unknown): string | null {
 }
 
 function toolState(result: ToolResult | undefined, running: boolean): ToolRowState {
-  if (result) return result.ok ? 'ok' : 'error';
+  if (result) return result.ok ? 'ok' : result.code === 'no_progress' ? 'warning' : 'error';
   return running ? 'running' : 'stopped';
 }
 
@@ -322,7 +323,7 @@ function foldMessages(messages: Message[], workingDirectory: string | undefined)
           nodes.push({ kind: 'system', id: message.id, title: systemTitle(text), text });
         }
       } else {
-        nodes.push({ kind: 'user', id: message.id, text, images: messageImages(message) });
+        nodes.push({ kind: 'user', id: message.id, createdAt: message.createdAt, text, images: messageImages(message) });
       }
       continue;
     }
@@ -403,15 +404,20 @@ function appendLiveSteps(
 export function groupTurns(nodes: ConversationNode[]): ConversationTurn[] {
   const turns: ConversationTurn[] = [];
   let current: ConversationTurn | undefined;
-  const openTurn = (id: string): ConversationTurn => {
-    const turn = { id, index: turns.length + 1, nodes: [] as ConversationNode[] };
+  const openTurn = (id: string, startedAt?: string): ConversationTurn => {
+    const turn: ConversationTurn = {
+      id,
+      index: turns.length + 1,
+      ...(startedAt ? { startedAt } : {}),
+      nodes: []
+    };
     turns.push(turn);
     return turn;
   };
 
   for (const node of nodes) {
     if (node.kind === 'user') {
-      current = openTurn(node.id);
+      current = openTurn(node.id, node.createdAt);
       current.nodes.push(node);
       continue;
     }
