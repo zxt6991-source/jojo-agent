@@ -2969,7 +2969,7 @@ Desktop 根据用户消息与 Workflow 的 `createdAt` 将 Workflow 稳定归入
 
 ### ✅ 100.4 Electron Node 构建与 SQLite 导出边界
 
-Electron main、preload 与 worker 共享 Node Vite 配置，统一将 `node:*` 和 `electron` 保留为运行时 external，避免 `node:sqlite` 被转换为 `__vite-browser-external__`。SQLite Runtime Store 通过 `@desktop-agent/storage/sqlite-runtime-store` 子路径导出，普通 Storage 入口不再隐式携带 SQLite 实现。
+Electron main、preload 与 worker 共享 Node Vite 配置，使用可与 Forge 默认配置安全合并的 external 正则数组，统一将 `node:*` 和 `electron` 保留为运行时 external，避免 Node 22 下 `node:sqlite` 被转换为 `__vite-browser-external__`。SQLite Runtime Store 通过 `@desktop-agent/storage/sqlite-runtime-store` 子路径导出，普通 Storage 入口不再隐式携带 SQLite 实现。
 
 但状态应进入 Runtime：
 
