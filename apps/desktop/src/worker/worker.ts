@@ -4,7 +4,7 @@ import { resumeAgentTurn, runAgentTurn } from '@desktop-agent/agent-runtime';
 import {
   DEFAULT_BROWSER_SETTINGS,
   isPlaceholderSessionTitle, sessionTitleFromPrompt,
-  type AgentEvent, type ApprovalRequest, type ImageContentBlock, type Message, type ModelSelection, type ProviderSettings, type SkillStatus, type WorkerCommand, type WorkerMessage
+  type AgentEvent, type ApprovalRequest, type HookRuntime, type ImageContentBlock, type Message, type ModelSelection, type ProviderSettings, type SkillStatus, type WorkerCommand, type WorkerMessage
 } from '@desktop-agent/contracts';
 import {
   createInstallSkillTool,
@@ -17,6 +17,7 @@ import {
   userSkillDirectories
 } from '@desktop-agent/extensions';
 import { createProvider } from '@desktop-agent/providers';
+import { FileHookTrustStore, loadHookRuntime } from '@desktop-agent/hooks';
 import {
   AgentExecutionScheduler,
   createBuiltinAgentProfileRegistry,
@@ -33,7 +34,7 @@ import {
   WorkflowEngine,
   WorkflowManager
 } from '@desktop-agent/orchestration';
-import { JsonlSessionStore, JsonlWorkflowStore } from '@desktop-agent/storage';
+import { JsonlSessionStore, JsonlWorkflowStore, SqliteHookInvocationStore } from '@desktop-agent/storage';
 import { SqliteAgentRuntimeStore } from '@desktop-agent/storage/sqlite-runtime-store';
 import { createDefaultToolRuntime, redactSensitiveEnvironmentAssignments, TerminalTool } from '@desktop-agent/tools-node';
 import { BrowserPermissionGate, BrowserToolBridge } from './browser-tools';
@@ -49,9 +50,12 @@ if (!configuredDataDirectory) throw new Error('DESKTOP_AGENT_DATA_DIR is require
 const dataDirectory: string = configuredDataDirectory;
 const store = new JsonlSessionStore(path.join(dataDirectory, 'sessions'));
 const agentRuntimeStore = new SqliteAgentRuntimeStore(path.join(dataDirectory, 'runtime', 'agent-runtime.sqlite'));
+const hookInvocationStore = new SqliteHookInvocationStore(path.join(dataDirectory, 'runtime', 'hooks.sqlite'));
+const hookTrustStore = new FileHookTrustStore(path.join(os.homedir(), '.jojo', 'hooks-trust.json'));
 const controllers = new Map<string, AbortController>();
 const turnTasks = new TurnTaskRegistry();
 const approvals = new Map<string, { resolve: (allowed: boolean) => void; sessionId: string }>();
+const sessionHookRuntimes = new Map<string, HookRuntime>();
 let runtime: { settings: ProviderSettings; apiKeys: Record<string, string> } | null = null;
 let skillStatuses: SkillStatus[] = [];
 let extensionReady: Promise<void> = Promise.resolve();
@@ -89,13 +93,28 @@ const leafAgentRunner = createDesktopLeafAgentRunner({
   },
   trashDirectory: path.join(dataDirectory, 'trash'),
   profileRegistry,
-  runtimeStore: agentRuntimeStore
+  runtimeStore: agentRuntimeStore,
+  resolveHooks: async ({ sessionId, workingDirectory, signal, onEvent }) => sessionHookRuntimes.get(sessionId)
+    ?? (await loadHookRuntime({ workingDirectory, invocationStore: hookInvocationStore, trustStore: hookTrustStore, signal, emit: onEvent })).runtime
 });
 const subAgentManager = new SubAgentManager(
   leafAgentRunner,
   executionScheduler,
   (event) => post({ type: 'orchestration.event', event }),
-  { profileRegistry, isolation: isolationManager, resourceGroups, providers: providerSemaphore }
+  {
+    profileRegistry,
+    isolation: isolationManager,
+    resourceGroups,
+    providers: providerSemaphore,
+    resolveHooks: async ({ sessionId, workingDirectory, signal }) => sessionHookRuntimes.get(sessionId)
+      ?? (await loadHookRuntime({
+        workingDirectory,
+        invocationStore: hookInvocationStore,
+        trustStore: hookTrustStore,
+        signal,
+        emit: (event) => post({ type: 'agent.event', event })
+      })).runtime
+  }
 );
 const workflowManager = new WorkflowManager(
   new WorkflowEngine(leafAgentRunner, executionScheduler, {
@@ -257,6 +276,59 @@ async function startTurn(sessionId: string, text: string, images: ImageContentBl
     };
     controller = new AbortController();
     controllers.set(sessionId, controller);
+    const emitAgentEvent = (event: AgentEvent) => {
+      if (event.type === 'turn.failed') failureEmitted = true;
+      post({ type: 'agent.event', event });
+    };
+    let loadedHooks = await loadHookRuntime({
+      workingDirectory: session.workingDirectory,
+      invocationStore: hookInvocationStore,
+      trustStore: hookTrustStore,
+      signal: controller.signal,
+      emit: emitAgentEvent
+    });
+    const untrustedProject = loadedHooks.statuses.find((status) => status.source === 'project' && status.state === 'untrusted');
+    if (untrustedProject?.fingerprint) {
+      const request: ApprovalRequest = {
+        requestId: `hook-trust-${crypto.randomUUID()}`,
+        sessionId,
+        call: {
+          id: `hook-trust-${crypto.randomUUID()}`,
+          name: 'trust_project_hooks',
+          input: {
+            configPath: untrustedProject.path,
+            fingerprint: untrustedProject.fingerprint,
+            commands: untrustedProject.commands ?? []
+          }
+        },
+        reason: '信任此版本的项目 Hooks（配置变化后将重新询问）'
+      };
+      emitAgentEvent({ type: 'approval.required', request });
+      const allowed = await waitForApproval(request, controller.signal);
+      if (allowed) {
+        await hookTrustStore.trust(untrustedProject.path, untrustedProject.fingerprint);
+        loadedHooks = await loadHookRuntime({
+          workingDirectory: session.workingDirectory,
+          invocationStore: hookInvocationStore,
+          trustStore: hookTrustStore,
+          signal: controller.signal,
+          emit: emitAgentEvent
+        });
+      } else if (!controller.signal.aborted) {
+        await hookTrustStore.disable(untrustedProject.path);
+        loadedHooks = await loadHookRuntime({
+          workingDirectory: session.workingDirectory,
+          invocationStore: hookInvocationStore,
+          trustStore: hookTrustStore,
+          signal: controller.signal,
+          emit: emitAgentEvent
+        });
+      }
+    }
+    sessionHookRuntimes.set(sessionId, loadedHooks.runtime);
+    for (const status of loadedHooks.statuses) {
+      if (status.state === 'invalid') console.warn(`Hook config is invalid: ${status.path}: ${status.error ?? 'unknown error'}`);
+    }
     await maybeGenerateTitle(sessionId, session.workingDirectory, session.title, history, text, controller.signal);
     const toolRuntime = createDefaultToolRuntime({ trashDirectory: path.join(dataDirectory, 'trash') });
     const skillDirectories: SkillDirectory[] = [
@@ -299,6 +371,8 @@ async function startTurn(sessionId: string, text: string, images: ImageContentBl
       sessionId, workingDirectory: session.workingDirectory, model,
       providerId,
       runtimeStore: agentRuntimeStore,
+      hooks: loadedHooks.runtime,
+      hookMeta: { transport: 'desktop' as const, agent: { kind: 'main' as const } },
       provider: createProvider(providerConfig, apiKey),
       tools: [...toolRuntime.tools, ...browserBridge.tools(), ...orchestrationTools],
       instructions,
@@ -319,10 +393,7 @@ async function startTurn(sessionId: string, text: string, images: ImageContentBl
         signal,
         1_024
       ),
-      emit: (event: AgentEvent) => {
-        if (event.type === 'turn.failed') failureEmitted = true;
-        post({ type: 'agent.event', event });
-      },
+      emit: emitAgentEvent,
       approve: waitForApproval,
       commitMessage: commitRuntimeMessage
     };
@@ -372,6 +443,7 @@ async function stopSession(sessionId: string): Promise<void> {
     subAgentManager.quiesceSession(sessionId),
     workflowManager.quiesceSession(sessionId)
   ]);
+  sessionHookRuntimes.delete(sessionId);
 }
 
 parentPort.on('message', (event) => {
@@ -433,6 +505,9 @@ parentPort.on('message', (event) => {
       .catch((error) => postOAuthError(command.requestId, error));
   } else if (command.type === 'browser.result') {
     browserBridge.resolve(command.requestId, command.result, command.error);
+  } else if (command.type === 'hooks.invalidate') {
+    sessionHookRuntimes.clear();
+    post({ type: 'hooks.invalidated', requestId: command.requestId, ok: true });
   }
 });
 

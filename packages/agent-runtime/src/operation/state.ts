@@ -37,7 +37,7 @@ export type ModelPendingState = RunningState & {
   attempt: number;
 };
 
-export type ToolPermissionState = 'not_required' | 'pending' | 'approved' | 'denied';
+export type ToolPermissionState = 'not_required' | 'pending' | 'approved' | 'hook_approved' | 'denied';
 export type ToolEffectStatus = 'planned' | 'effect_pending' | 'completed' | 'interrupted';
 
 export type ToolCallExecutionState = {

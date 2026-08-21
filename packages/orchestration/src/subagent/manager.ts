@@ -4,6 +4,8 @@ import type {
   SubAgentRound,
   SubAgentSnapshot,
   SubAgentState,
+  HookRuntime,
+  SubagentStopPayload,
   UsageTotals
 } from '@desktop-agent/contracts';
 import { abortError } from '../abort.js';
@@ -30,6 +32,7 @@ type LiveSubAgent = {
   done: Promise<void>;
   resolveDone: () => void;
   settled: boolean;
+  hooks: HookRuntime | undefined;
 };
 
 export type SubAgentManagerOptions = {
@@ -39,6 +42,7 @@ export type SubAgentManagerOptions = {
   isolation?: IsolationManager;
   resourceGroups?: ResourceGroupLimiter;
   providers?: ProviderSemaphore;
+  resolveHooks?: (input: { sessionId: string; workingDirectory: string; signal: AbortSignal }) => Promise<HookRuntime>;
 };
 
 function copySnapshot(snapshot: SubAgentSnapshot): SubAgentSnapshot {
@@ -77,6 +81,7 @@ export class SubAgentManager {
   private readonly isolation: IsolationManager | undefined;
   private readonly resourceGroups: ResourceGroupLimiter;
   private readonly providers: ProviderSemaphore;
+  private readonly resolveHooks: SubAgentManagerOptions['resolveHooks'];
 
   constructor(
     private readonly runner: LeafAgentRunner,
@@ -90,6 +95,7 @@ export class SubAgentManager {
     this.isolation = options.isolation;
     this.resourceGroups = options.resourceGroups ?? new ResourceGroupLimiter();
     this.providers = options.providers ?? new ProviderSemaphore();
+    this.resolveHooks = options.resolveHooks;
   }
 
   start(request: SubAgentStartRequest): SubAgentSnapshot {
@@ -144,7 +150,8 @@ export class SubAgentManager {
       isolationContext: undefined,
       done,
       resolveDone,
-      settled: false
+      settled: false,
+      hooks: undefined
     };
     this.agents.set(id, live);
     this.notify(live);
@@ -194,6 +201,7 @@ export class SubAgentManager {
       void this.closeContinuation(live);
       void this.settleIsolation(live);
       this.notify(live);
+      void this.dispatchSubagentStop(live);
       return copySnapshot(live.snapshot);
     }
     live.controller?.abort();
@@ -242,6 +250,7 @@ export class SubAgentManager {
     live.snapshot = { ...live.snapshot, state: 'closed', finishedAt: new Date().toISOString() };
     await this.settleIsolation(live);
     this.notify(live);
+    await this.dispatchSubagentStop(live);
     return copySnapshot(live.snapshot);
   }
 
@@ -306,6 +315,13 @@ export class SubAgentManager {
           });
         }
       }
+      if (!live.hooks && this.resolveHooks) {
+        live.hooks = await this.resolveHooks({
+          sessionId: request.sessionId,
+          workingDirectory: live.isolationContext?.workingDirectory ?? request.workingDirectory,
+          signal: controller.signal
+        });
+      }
       const handleEvent: Parameters<LeafAgentRunner['run']>[2] = (event) => {
         if (event.type !== 'usage' || live.settled) return;
         accrueUsage(live.snapshot.usage, event);
@@ -327,6 +343,7 @@ export class SubAgentManager {
             timeoutMs: request.timeoutMs,
             continuable: true,
             runtimeLane: { name: `agent:${live.snapshot.id}`, parentLane: 'main' },
+            ...(live.hooks ? { hooks: live.hooks } : {}),
             ...(request.tools ? { tools: request.tools } : {}),
             ...(request.readOnly !== undefined ? { readOnly: request.readOnly } : {}),
             ...(request.outputSchema ? { outputSchema: request.outputSchema } : {})
@@ -420,7 +437,34 @@ export class SubAgentManager {
     };
     live.controller = undefined;
     this.notify(live);
-    live.resolveDone();
+    if (state === 'idle') live.resolveDone();
+    else void this.dispatchSubagentStop(live).finally(live.resolveDone);
+  }
+
+  private async dispatchSubagentStop(live: LiveSubAgent): Promise<void> {
+    if (!live.hooks?.configured('SubagentStop')) return;
+    const state = live.snapshot.state === 'cancelled' ? 'cancelled'
+      : live.snapshot.state === 'completed' || live.snapshot.state === 'closed' ? 'completed'
+        : 'failed';
+    const payload: SubagentStopPayload = {
+      schemaVersion: 1,
+      eventId: `hookevt_${crypto.randomUUID()}`,
+      event: 'SubagentStop',
+      timestamp: new Date().toISOString(),
+      sessionId: live.snapshot.sessionId,
+      operationId: `subagent:${live.snapshot.id}`,
+      lane: `agent:${live.snapshot.id}`,
+      agent: { kind: 'subagent', id: live.snapshot.id, profile: live.snapshot.profile },
+      workingDirectory: live.isolationContext?.workingDirectory ?? live.request.workingDirectory,
+      provider: { id: live.request.providerId, model: live.snapshot.model },
+      transport: 'desktop',
+      subagentId: live.snapshot.id,
+      profile: live.snapshot.profile,
+      state,
+      ...(live.snapshot.result ? { result: live.snapshot.result } : {})
+    };
+    try { await live.hooks.dispatch('SubagentStop', payload); }
+    catch { /* Hook failure is isolated from sub-agent settlement. */ }
   }
 
   private updateCurrentRound(rounds: SubAgentRound[], update: Partial<SubAgentRound>): SubAgentRound[] {

@@ -35,7 +35,10 @@ Worker 为每轮创建 `AbortController`，并向 `runAgentTurn` 注入：
 - `createDefaultTools()`；
 - `DefaultPermissionGate`；
 - JSONL 消息追加回调；
-- 审批等待器和事件转发器。
+- 审批等待器和事件转发器；
+- `loadHookRuntime()` 得到的 `HookRuntime`（项目 Hooks 需信任；设置页 Reload 只影响后续 Turn）。
+
+Hooks 的引擎、配置和信任在 [`packages/hooks`](./hooks.md)，本应用只做加载、IPC 与设置页。
 
 `controllers` 以会话 ID 管理取消信号，`approvals` 以请求 ID 管理待决授权。取消会话时，同时中止模型/工具并把尚未处理的审批解析为拒绝。
 

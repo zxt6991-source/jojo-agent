@@ -1,4 +1,23 @@
-import type { Message, Tool, ToolCall, ToolDefinition, ToolResult } from '@desktop-agent/contracts';
+import {
+  NoopHookRuntime,
+  type HookEnvelope,
+  type HookInjectionResult,
+  type HookPayloadMap,
+  type HookRuntime,
+  type HookTransport,
+  type InjectingHookEvent,
+  type Message,
+  type PostToolUsePayload,
+  type PreToolUseHookResult,
+  type PreToolUsePayload,
+  type SessionStartPayload,
+  type StopPayload,
+  type Tool,
+  type ToolCall,
+  type ToolDefinition,
+  type ToolResult,
+  type UserPromptSubmitPayload
+} from '@desktop-agent/contracts';
 import {
   AgentError,
   appendMessage,
@@ -46,6 +65,12 @@ export type RuntimeAgentRunOptions = CoreAgentRunOptions & {
   parentLane?: string;
   operationId?: string;
   sessionMetadata?: Record<string, JsonValue>;
+  hooks?: HookRuntime;
+  hookMeta?: {
+    transport?: HookTransport;
+    agent?: HookEnvelope['agent'];
+    workflow?: HookEnvelope['workflow'];
+  };
 };
 
 export type ResumeAgentRunOptions = Omit<RuntimeAgentRunOptions, 'userText' | 'runtimeStore' | 'operationId'> & {
@@ -57,6 +82,24 @@ const DEFAULT_MAX_ITERATIONS = 12;
 const DEFAULT_CONTEXT_WINDOW_TOKENS = 128_000;
 const DEFAULT_MAX_OUTPUT_TOKENS = 8_192;
 const MAX_OUTPUT_CONTINUATIONS = 2;
+const sessionStartsInProcess = new WeakMap<AgentRuntimeStore, Set<string>>();
+
+function claimSessionStart(store: AgentRuntimeStore, sessionId: string): boolean {
+  const started = sessionStartsInProcess.get(store) ?? new Set<string>();
+  if (started.has(sessionId)) return false;
+  started.add(sessionId);
+  sessionStartsInProcess.set(store, started);
+  return true;
+}
+
+function hookContextEntryId(operationId: string, event: InjectingHookEvent, subjectId: string): string {
+  return `hookctx:${operationId}:${event}:${subjectId}`;
+}
+
+function toolResultFromMessage(message: Message, callId: string): ToolResult | undefined {
+  const block = message.content.find((item) => item.type === 'tool_result' && item.result.callId === callId);
+  return block?.type === 'tool_result' ? block.result : undefined;
+}
 
 type RunnerData = ToolExecutionState & {
   messages: Message[];
@@ -64,6 +107,52 @@ type RunnerData = ToolExecutionState & {
 };
 
 const defaultContextBuilder = new DefaultContextBuilder();
+
+function hookEnvelope(
+  options: RuntimeAgentRunOptions,
+  state: OperationState,
+  event: HookEnvelope['event']
+): HookEnvelope {
+  return {
+    schemaVersion: 1,
+    eventId: `hookevt_${crypto.randomUUID()}`,
+    event,
+    timestamp: new Date().toISOString(),
+    sessionId: options.sessionId,
+    operationId: state.operationId,
+    lane: state.lane,
+    agent: options.hookMeta?.agent ?? { kind: 'main' },
+    ...(options.hookMeta?.workflow ? { workflow: options.hookMeta.workflow } : {}),
+    workingDirectory: options.workingDirectory,
+    provider: { id: options.providerId ?? 'compatibility', model: options.model },
+    transport: options.hookMeta?.transport ?? 'unknown'
+  };
+}
+
+function finalAssistantText(messages: Message[]): string | undefined {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.role !== 'assistant') continue;
+    const text = message.content.flatMap((block) => block.type === 'text' ? [block.text] : []).join('').trim();
+    if (text) return text;
+  }
+  return undefined;
+}
+
+function usedToolNames(messages: Message[]): string[] {
+  return [...new Set(messages.flatMap((message) => message.content.flatMap(
+    (block) => block.type === 'tool_call' ? [block.call.name] : []
+  )))];
+}
+
+function latestUserText(messages: Message[]): string {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.role !== 'user' || message.metadata?.internal) continue;
+    return message.content.flatMap((block) => block.type === 'text' ? [block.text] : []).join('');
+  }
+  return '';
+}
 
 function currentTools(options: RuntimeAgentRunOptions): Tool[] {
   const contextWindowTokens = options.contextWindowTokens ?? DEFAULT_CONTEXT_WINDOW_TOKENS;
@@ -160,6 +249,60 @@ async function appendDurableMessage(
   await saveLaneLeaf(store, options.sessionId, state.lane, message.id, state.operationId);
 }
 
+async function appendHookContext(
+  options: RuntimeAgentRunOptions,
+  store: AgentRuntimeStore,
+  state: OperationState,
+  event: InjectingHookEvent,
+  result: HookInjectionResult,
+  subjectId: string
+): Promise<void> {
+  const text = result.additionalContext.trim();
+  if (!text) return;
+  const id = hookContextEntryId(state.operationId, event, subjectId);
+  if (await store.getEntry(id)) return;
+  const lane = await store.getLane(options.sessionId, state.lane);
+  if (!lane) throw new AgentError('operation_corrupted', `Lane not found: ${state.lane}`);
+  await store.appendEntry({
+    id,
+    sessionId: options.sessionId,
+    parentId: lane.leafId,
+    type: 'hook_context',
+    event,
+    hookIds: result.hookIds ?? [],
+    text,
+    subjectId
+  });
+  await saveLaneLeaf(store, options.sessionId, state.lane, id, state.operationId);
+}
+
+async function safeInject<E extends InjectingHookEvent>(
+  hooks: HookRuntime,
+  event: E,
+  payload: HookPayloadMap[E]
+): Promise<HookInjectionResult> {
+  try { return await hooks.inject(event, payload); }
+  catch { return { additionalContext: '' }; }
+}
+
+async function injectHookContextIfNeeded<E extends InjectingHookEvent>(
+  options: RuntimeAgentRunOptions,
+  store: AgentRuntimeStore,
+  state: OperationState,
+  hooks: HookRuntime,
+  event: E,
+  payload: HookPayloadMap[E],
+  subjectId: string
+): Promise<void> {
+  if (await store.getEntry(hookContextEntryId(state.operationId, event, subjectId))) return;
+  await appendHookContext(options, store, state, event, await safeInject(hooks, event, payload), subjectId);
+}
+
+async function safePreToolUse(hooks: HookRuntime, payload: PreToolUsePayload): Promise<PreToolUseHookResult> {
+  try { return await hooks.preToolUse(payload); }
+  catch { return { decision: 'neutral' }; }
+}
+
 async function bootstrapHistory(
   store: AgentRuntimeStore,
   sessionId: string,
@@ -214,7 +357,9 @@ function failedState(state: OperationState, error: unknown): OperationState {
 async function executeAgentTurn(options: RuntimeAgentRunOptions, resuming: boolean): Promise<AgentRunResult> {
   const data = createRunnerData(options);
   const runtimeStore = options.runtimeStore ?? new MemoryAgentRuntimeStore();
+  const hooks = options.hooks ?? NoopHookRuntime.instance;
   const operationId = options.operationId ?? crypto.randomUUID();
+  const sessionExisted = Boolean(await runtimeStore.getSession(options.sessionId));
   let laneName = options.lane ?? 'main';
   let maxIterations = options.maxIterations ?? DEFAULT_MAX_ITERATIONS;
   let state: OperationState;
@@ -297,8 +442,24 @@ async function executeAgentTurn(options: RuntimeAgentRunOptions, resuming: boole
   };
 
   options.emit({ type: 'turn.started', sessionId: options.sessionId, turnId: operationId });
+  const startedTerminal = isTerminalState(state);
 
   try {
+    if (!startedTerminal && claimSessionStart(runtimeStore, options.sessionId) && hooks.configured('SessionStart')) {
+      const payload: SessionStartPayload = {
+        ...hookEnvelope(options, state, 'SessionStart'),
+        event: 'SessionStart',
+        source: resuming ? 'resume' : sessionExisted ? 'startup' : 'new'
+      };
+      await appendHookContext(
+        options,
+        runtimeStore,
+        state,
+        'SessionStart',
+        await safeInject(hooks, 'SessionStart', payload),
+        'session'
+      );
+    }
     if (!resuming) {
       await appendDurableMessage(
         options,
@@ -306,6 +467,22 @@ async function executeAgentTurn(options: RuntimeAgentRunOptions, resuming: boole
         runtimeStore,
         state,
         createUserMessage(options.userText, options.userImages)
+      );
+    }
+    if (!startedTerminal && hooks.configured('UserPromptSubmit')) {
+      const payload: UserPromptSubmitPayload = {
+        ...hookEnvelope(options, state, 'UserPromptSubmit'),
+        event: 'UserPromptSubmit',
+        userInput: resuming ? latestUserText(data.messages) : options.userText
+      };
+      await injectHookContextIfNeeded(
+        options,
+        runtimeStore,
+        state,
+        hooks,
+        'UserPromptSubmit',
+        payload,
+        'prompt'
       );
     }
 
@@ -353,6 +530,19 @@ async function executeAgentTurn(options: RuntimeAgentRunOptions, resuming: boole
           contextWindowTokens,
           maxOutputTokens,
           ...(options.summarize ? { summarize: options.summarize } : {}),
+          ...(hooks.configured('PreCompact') ? {
+            beforeCompact: async (info: { estimatedTokens: number; messageCount: number }) => {
+              const envelope = hookEnvelope(options, state, 'PreCompact');
+              try {
+                await hooks.dispatch('PreCompact', {
+                  ...envelope,
+                  eventId: `hookevt:${state.operationId}:PreCompact:${'iteration' in state ? state.iteration : 0}`,
+                  event: 'PreCompact',
+                  ...info
+                });
+              } catch { /* Hook failures do not prevent compaction. */ }
+            }
+          } : {}),
           signal: options.signal
         });
         options.emit({
@@ -462,6 +652,29 @@ async function executeAgentTurn(options: RuntimeAgentRunOptions, resuming: boole
         const call = toolCall(state, action.callId);
         const callState = state.calls[state.currentIndex]!;
         if (!callState.approvalRequest) {
+          const hookDecision = hooks.configured('PreToolUse')
+            ? await safePreToolUse(hooks, {
+                ...hookEnvelope(options, state, 'PreToolUse'),
+                event: 'PreToolUse',
+                toolCallId: call.id,
+                toolName: call.name,
+                toolInput: call.input
+              })
+            : { decision: 'neutral' as const };
+          if (hookDecision.decision === 'block') {
+            const result: ToolResult = {
+              callId: call.id,
+              ok: false,
+              code: 'hook_blocked',
+              content: hookDecision.reason
+            };
+            await appendDurableMessage(
+              options, data, runtimeStore, state, createToolMessage(result, callState.resultEntryId)
+            );
+            options.emit({ type: 'tool.finished', id: call.id, result });
+            state = await transition(settleToolWithoutEffect(state, call.id, result));
+            continue;
+          }
           const decision = await options.permissionGate.check(call, {
             sessionId: options.sessionId,
             workingDirectory: options.workingDirectory
@@ -482,6 +695,10 @@ async function executeAgentTurn(options: RuntimeAgentRunOptions, resuming: boole
             );
             options.emit({ type: 'tool.finished', id: call.id, result });
             state = await transition(settleToolWithoutEffect(state, call.id, result));
+            continue;
+          }
+          if (hookDecision.decision === 'approve' && hookDecision.canSkipApproval) {
+            state = await transition(resolveToolPermission(state, call.id, 'hook_approved', decision.request));
             continue;
           }
           state = await transition(resolveToolPermission(state, call.id, 'pending', decision.request));
@@ -511,9 +728,34 @@ async function executeAgentTurn(options: RuntimeAgentRunOptions, resuming: boole
 
       if (action.type === 'execute_tool') {
         const call = toolCall(state, action.callId);
-        const result = await executeApprovedToolCall(call, data, options);
         const resultEntryId = state.calls[state.currentIndex]!.resultEntryId;
-        await appendDurableMessage(options, data, runtimeStore, state, createToolMessage(result, resultEntryId));
+        const existing = await runtimeStore.getEntry(resultEntryId);
+        const existingResult = existing?.type === 'message'
+          ? toolResultFromMessage(existing.message, call.id)
+          : undefined;
+        const result = existingResult ?? await executeApprovedToolCall(call, data, options);
+        if (!existingResult || !data.messages.some((message) => message.id === resultEntryId)) {
+          await appendDurableMessage(options, data, runtimeStore, state, createToolMessage(result, resultEntryId));
+        }
+        if (hooks.configured('PostToolUse')) {
+          const payload: PostToolUsePayload = {
+            ...hookEnvelope(options, state, 'PostToolUse'),
+            event: 'PostToolUse',
+            toolCallId: call.id,
+            toolName: call.name,
+            toolInput: call.input,
+            toolResult: result
+          };
+          await injectHookContextIfNeeded(
+            options,
+            runtimeStore,
+            state,
+            hooks,
+            'PostToolUse',
+            payload,
+            call.id
+          );
+        }
         let settled = settleToolEffect(state, call.id, result);
         if (result.code === 'no_progress') settled = { ...settled, noProgressDetected: true };
         state = await transition(settled);
@@ -566,6 +808,22 @@ async function executeAgentTurn(options: RuntimeAgentRunOptions, resuming: boole
       message: errorMessage(error)
     });
     throw error;
+  } finally {
+    if (!startedTerminal && isTerminalState(state) && hooks.configured('Stop')) {
+      const text = finalAssistantText(data.messages);
+      const payload: StopPayload = {
+        ...hookEnvelope(options, state, 'Stop'),
+        event: 'Stop',
+        stopReason: state.phase === 'completed' ? state.stopReason
+          : state.phase === 'aborted' ? state.reason
+            : state.error.code === 'max_iterations' ? 'max_iterations' : 'failed',
+        ...(text ? { finalText: text } : {}),
+        ...(state.phase === 'failed' ? { error: state.error } : {}),
+        toolsUsed: usedToolNames(data.messages)
+      };
+      try { await hooks.dispatch('Stop', payload); }
+      catch { /* Hook failures never replace the turn outcome. */ }
+    }
   }
 }
 

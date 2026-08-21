@@ -1,7 +1,7 @@
 # Jojo Agent 当前功能与上手指南
 
-> 文档状态：2026-08-18
-> 当前版本：0.1.0（MVP + Coding Agent Phase 1 + Phase 3 MCP/Skills + Phase 4 Browser/Rich Content + Phase 5 Sub-Agent/Workflow）
+> 文档状态：2026-08-22
+> 当前版本：0.1.0（MVP + Coding Agent Phase 1 + Phase 3 MCP/Skills + Phase 4 Browser/Rich Content + Phase 5 Sub-Agent/Workflow + Hooks）
 > 说明：本文以当前仓库代码为准，只描述已经实现的能力。路线图中的规划不等于可用功能。Sub-Agent / Workflow 设计见 [`subagent-workflow-unified-design-roadmap.md`](./subagent-workflow-unified-design-roadmap.md)。
 
 ## 1. 先用一分钟认识项目
@@ -19,6 +19,7 @@ Jojo Agent 是一个本地优先的 Electron 桌面 AI Agent。它把一次 AI �
 - 在受控浏览器中操作需要登录或交互的网页，并把图片交给视觉模型分析；
 - 用只读 Sub-Agent 并行探索或评审代码；
 - 启动内置或自定义 Saved Workflow，在对话中查看依赖图、时间线和步骤结果；
+- 用 `~/.jojo/hooks.yml` 或项目 `.jojo/hooks.yml` 在生命周期点注入上下文、拦截工具或做收尾动作；
 - 让可写 `general` Agent 在独立 Git Worktree 中改代码，主工作区不自动 Merge。
 
 它现在可以完成范围明确的小型代码任务，并可通过 MCP、本地 Skills、受控浏览器、Sub-Agent 和 Workflow 扩展能力，但仍不是完整的自主编程 Agent：没有专用 Git 提交工具、可视化 Workflow 编辑器或窗口级 Playwright。
@@ -199,6 +200,10 @@ Worker 与界面进程分离，因此 Agent 运行异常不必直接获得 Rende
 ```
 
 自动化测试用 Fake / Scripted runner，不打真实 LLM：`pnpm test`。窗口级 Playwright 尚未接入。
+
+### 5.5 Hooks
+
+可在用户或项目目录放置 `hooks.yml`，在会话开始、提交提问、工具前后、回合结束等时机跑本地命令。设置 → Hooks 可查看加载/信任状态，打开配置、重新加载、信任或禁用项目 Hooks。项目配置默认不可信，改文件后需重新信任；禁用后不会每轮再询问。实现说明见 [`technical-implementation/hooks.md`](./technical-implementation/hooks.md)。
 
 ## 6. 十个内置工具
 
@@ -416,6 +421,10 @@ MCP 的 `env` 和静态 HTTP `headers` 位于当前用户可读的普通配置�
 
 DeepSeek Chat Completions 当前只接受字符串 Message Content。使用 `api.deepseek.com` 时，应用会把图片和浏览器截图替换为明确的文本占位，让模型继续使用 `browser_read` 的页面结构，但会要求模型声明没有实际查看截图。其他兼容 Provider 若明确拒绝 `image_url`，应用也会自动进行一次纯文本重试。若任务需要描述颜色、布局或图片内容，必须改用真正支持视觉输入的 Provider 和模型。
 
+### 8.5 Hooks
+
+Hooks 是本地 `hooks.yml` 驱动的生命周期脚本，由 `@desktop-agent/hooks` 加载，经 `HookRuntime` 端口进入 Agent Runtime。用户配置始终尝试加载；项目配置需在设置页或回合审批中信任当前文件 fingerprint。命令通过 stdin 接收 JSON payload，可注入上下文、拦截 `PreToolUse`，或在 Stop 时做副作用。项目 Hook 不能 `canApprove`，也不能绕过 Permission Gate 的硬拒绝。详细模块说明见 [`technical-implementation/hooks.md`](./technical-implementation/hooks.md)。
+
 ## 9. 会话、配置和密钥保存在哪里
 
 所有数据都放在 Electron 的 `app.getPath('userData')` 目录中，实际根路径随操作系统和应用名称变化。目录内部结构为：
@@ -433,6 +442,9 @@ userData/
 ├── browser-recordings/
 │   └── <id>.yaml               # 持久化浏览器工作流
 ├── skills/                     # 全局安装的本地 SKILL.md 目录
+├── runtime/
+│   ├── agent-runtime.sqlite    # Durable Operation / Lane
+│   └── hooks.sqlite            # Hook invocation 去重与异步恢复
 └── trash/
     └── <session-id>/<entry>/   # 文件工具覆盖/删除前的副本与恢复元数据
 ```
@@ -448,9 +460,17 @@ userData/
 
 普通配置通过临时文件替换，并在覆盖前保留 `.bak`。API Key 与普通配置分开保存，Renderer、`config.json` 和会话 JSONL 都不持久化明文密钥。设置中的 API Key 留空表示保留原密钥，当前界面没有单独的“清除密钥”操作。
 
+Hooks 配置不在 `userData` 里，而在用户主目录和当前工作区：
+
+```text
+~/.jojo/hooks.yml              # 用户 Hooks
+~/.jojo/hooks-trust.json       # 项目 Hooks 的 fingerprint 信任 / 禁用
+<workspace>/.jojo/hooks.yml    # 项目 Hooks（默认不可信）
+```
+
 ## 10. 进程和包的职责
 
-项目使用 pnpm workspace，包含一个桌面应用和八个共享包：
+项目使用 pnpm workspace，包含一个桌面应用和九个共享包：
 
 | 模块 | 当前职责 | 新手何时需要看 |
 |---|---|---|
@@ -463,13 +483,14 @@ userData/
 | `packages/tools-node` | 文件、目录、公开网页检索、终端工具和权限 Gate | 新增工具或修改审批策略时 |
 | `packages/storage` | SQLite Agent Runtime、JSONL 会话 / Workflow Journal 和普通配置存储 | 修改持久化格式时 |
 | `packages/extensions` | MCP stdio/HTTP 客户端、延迟工具发现和 Skills | 修改外部扩展机制时 |
+| `packages/hooks` | `hooks.yml` 加载、信任、Shell Hook Engine | 修改生命周期 Hook 或项目信任时 |
 
 四类运行时职责：
 
 - Renderer：显示会话、对话节点流、轨迹、审批、设置、Diff 和 WorkflowCard；
 - Preload：通过 `contextBridge` 只暴露白名单业务 API；
 - Main：管理窗口、IPC、目录选择、安全存储、Git Diff 和 Worker 生命周期；
-- Worker：运行 Provider、Agent Runtime、Orchestration、工具、权限判断和会话写入。
+- Worker：运行 Provider、Agent Runtime、Orchestration、Hooks、工具、权限判断和会话写入。
 
 ## 11. 想修改某个功能，从哪里开始
 
@@ -494,6 +515,8 @@ userData/
 | 修改底层 SSE 解码 | `packages/providers/src/sse.ts` |
 | 新增工具或调整权限 | `packages/tools-node/src/index.ts` |
 | 修改 MCP 或 Skills | `packages/extensions/src/index.ts` |
+| 修改 Hooks 引擎、配置加载或信任 | `packages/hooks/src/index.ts` |
+| 修改 Hooks 设置页 | `apps/desktop/src/renderer/HooksSettings.tsx` |
 | 修改会话或配置格式 | `packages/storage/src/index.ts` |
 | 修改 Electron 打包和安全 Fuses | `apps/desktop/forge.config.ts` |
 
@@ -555,6 +578,7 @@ pnpm test
 - `pipeline` / `human` / HTTP Workflow Step；
 - 窗口级 Playwright 与真实模型集成测试；
 - 长期记忆和向量数据库；
+- TypeScript Hook 插件加载器、独立 `hook_jobs` 队列、Trajectory 中的 Hook 卡片；
 - 定时任务与后台自动化；
 - 自动更新；
 - 云端账号、同步和协作；

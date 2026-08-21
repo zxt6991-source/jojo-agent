@@ -97,7 +97,7 @@ export function prepareToolEffect(state: ToolsState, callId: string): ToolsState
   return replaceCurrentCall(state, (call) => {
     if (call.callId !== callId) throw new OperationInvariantError(`Unexpected tool call: ${callId}`);
     if (call.status !== 'planned') throw new OperationInvariantError(`Tool ${callId} is not planned.`);
-    if (call.permission !== 'approved' && call.permission !== 'not_required') {
+    if (call.permission !== 'approved' && call.permission !== 'hook_approved' && call.permission !== 'not_required') {
       throw new OperationInvariantError(`Tool ${callId} does not have permission.`);
     }
     return { ...call, status: 'effect_pending' };
@@ -107,7 +107,7 @@ export function prepareToolEffect(state: ToolsState, callId: string): ToolsState
 export function resolveToolPermission(
   state: ToolsState,
   callId: string,
-  permission: 'not_required' | 'pending' | 'approved',
+  permission: 'not_required' | 'pending' | 'approved' | 'hook_approved',
   approvalRequest?: ApprovalRequest
 ): ToolsState {
   return replaceCurrentCall(state, (call) => {

@@ -20,6 +20,10 @@ Storage 提供 Agent Runtime、本地会话、Workflow Journal 与普通 Provide
 
 `JsonlAgentRuntimeStore` 暂时保留作为兼容适配器和迁移参照，不再是 Desktop composition root。
 
+## 2.1 Hook Invocation Store
+
+`SqliteHookInvocationStore` 持久化 Hook 执行记录，数据库位于 Electron `userData/runtime/hooks.sqlite`。它实现 `HookInvocationStore`，供 `packages/hooks` 的 `DefaultHookRuntime` 去重和恢复异步副作用。表结构、lease 与事件语义见 [Hooks 技术实现方案](./hooks.md)。内存实现留在 `packages/hooks`，不经过本包。
+
 ## 3. 会话存储
 
 `JsonlSessionStore` 为每个会话维护一个 `<sessionId>.jsonl` 文件。Session ID 只允许字母、数字、下划线和连字符，避免文件名注入。

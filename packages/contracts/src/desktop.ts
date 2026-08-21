@@ -10,6 +10,7 @@ import type { ExtensionSettings, ExtensionStatus, SkillDetail, SkillOperationRes
 import { ImageContentBlockSchema } from './messages';
 import type { ImageContentBlock, ToolResult } from './messages';
 import { BROWSER_RECORDING_PARAM_NAME_PATTERN, BrowserRecordingIdSchema } from './browser-recording';
+import type { HookSettingsSnapshot } from './hooks';
 
 export const MAX_IMAGE_ATTACHMENTS = 4;
 export const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
@@ -158,6 +159,18 @@ export const ImportSkillInputSchema = z.object({
   replacePath: z.string().trim().min(1).max(4_096).optional()
 });
 export const GetExtensionStatusInputSchema = z.object({ workingDirectory: z.string().trim().min(1).max(4_096).optional() });
+export const GetHookStatusInputSchema = z.object({ workingDirectory: z.string().trim().min(1).max(4_096).optional() });
+export const HookProjectActionInputSchema = z.object({
+  workingDirectory: z.string().trim().min(1).max(4_096)
+});
+export const OpenHookConfigInputSchema = z.object({
+  source: z.enum(['user', 'project']),
+  workingDirectory: z.string().trim().min(1).max(4_096).optional()
+}).superRefine((input, context) => {
+  if (input.source === 'project' && !input.workingDirectory) {
+    context.addIssue({ code: 'custom', message: 'Project hooks require a working directory.' });
+  }
+});
 
 export const SaveSettingsInputSchema = z.object({
   activeProviderId: z.string().min(1),
@@ -247,6 +260,11 @@ export type DesktopApi = {
   connectMcpOAuth(input: z.input<typeof McpServerIdInputSchema>): Promise<void>;
   disconnectMcpOAuth(input: z.input<typeof McpServerIdInputSchema>): Promise<void>;
   reconnectMcp(input: z.input<typeof McpServerIdInputSchema>): Promise<void>;
+  getHookStatus(input?: z.input<typeof GetHookStatusInputSchema>): Promise<HookSettingsSnapshot>;
+  reloadHooks(input?: z.input<typeof GetHookStatusInputSchema>): Promise<HookSettingsSnapshot>;
+  trustProjectHooks(input: z.input<typeof HookProjectActionInputSchema>): Promise<HookSettingsSnapshot>;
+  disableProjectHooks(input: z.input<typeof HookProjectActionInputSchema>): Promise<HookSettingsSnapshot>;
+  openHookConfig(input: z.input<typeof OpenHookConfigInputSchema>): Promise<void>;
   onAgentEvent(listener: (event: AgentEvent) => void): () => void;
   onOrchestrationEvent(listener: (event: OrchestrationEvent) => void): () => void;
   onSessionsChanged(listener: () => void): () => void;
@@ -267,7 +285,8 @@ export type WorkerCommand =
   | { type: 'mcp.oauth.callback'; requestId: string; serverId: string; callbackParams: string }
   | { type: 'mcp.oauth.disconnect'; requestId: string; serverId: string }
   | { type: 'mcp.reconnect'; requestId: string; serverId: string }
-  | { type: 'browser.result'; requestId: string; result?: ToolResult; error?: string };
+  | { type: 'browser.result'; requestId: string; result?: ToolResult; error?: string }
+  | { type: 'hooks.invalidate'; requestId: string };
 
 export type WorkerMessage =
   | { type: 'ready' }
@@ -281,6 +300,7 @@ export type WorkerMessage =
   | { type: 'mcp.oauth.credentials'; serverId: string; credentials: unknown }
   | { type: 'mcp.oauth.result'; requestId: string; ok: boolean; error?: string }
   | { type: 'browser.request'; requestId: string; sessionId: string; action: BrowserAction; approved: boolean }
+  | { type: 'hooks.invalidated'; requestId: string; ok: boolean; error?: string }
   | { type: 'worker.error'; message: string };
 
 export const IPC = {
@@ -318,6 +338,11 @@ export const IPC = {
   connectMcpOAuth: 'extensions:mcp-oauth-connect',
   disconnectMcpOAuth: 'extensions:mcp-oauth-disconnect',
   reconnectMcp: 'extensions:mcp-reconnect',
+  getHookStatus: 'hooks:status',
+  reloadHooks: 'hooks:reload',
+  trustProjectHooks: 'hooks:trust',
+  disableProjectHooks: 'hooks:disable',
+  openHookConfig: 'hooks:open-config',
   agentEvent: 'agent:event',
   orchestrationEvent: 'orchestration:event',
   sessionsChanged: 'sessions:changed',

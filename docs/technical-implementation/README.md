@@ -1,6 +1,6 @@
 # 各 Workspace 技术实现方案
 
-> 文档状态：2026-08-18
+> 文档状态：2026-08-22
 > 适用版本：0.1.0
 
 本文档集说明 pnpm monorepo 中每个应用或包的技术实现。文中的“当前实现”均以仓库代码为准；“演进方案”是后续扩展建议，不代表已经可用。
@@ -20,6 +20,7 @@
 | `packages/tools-node` | `@desktop-agent/tools-node` | 本地文件、目录、公开网页检索、终端工具及权限 Gate | [Tools Node](./tools-node.md) |
 | `packages/storage` | `@desktop-agent/storage` | SQLite Runtime、JSONL 会话 / Workflow Journal 与 JSON 配置持久化 | [Storage](./storage.md) |
 | `packages/extensions` | `@desktop-agent/extensions` | MCP 客户端、动态工具目录与本地 Skills | [MCP 与 Skills](./extensions.md) |
+| `packages/hooks` | `@desktop-agent/hooks` | 生命周期 Hook Engine、hooks.yml 加载与项目信任 | [Hooks](./hooks.md) |
 | Phase 4 横切能力 | Desktop + Contracts + Provider | CDP 受控浏览器、下载、图片消息与视觉请求 | [浏览器与富内容](./browser-rich-content.md) |
 
 根目录只承担 workspace、TypeScript、ESLint、Vitest 与构建脚本编排，不发布独立运行时包。
@@ -36,21 +37,23 @@ flowchart LR
     D --> S["storage"]
     D --> O["orchestration"]
     D --> E["extensions"]
+    D --> H["hooks"]
     A --> C
     O --> C
     P --> C
     T --> C
     S --> C
     E --> C
+    H --> C
 ```
 
-`contracts` 是所有模块共享的稳定边界。`agent` 只提供平台无关的执行原语；`agent-runtime` 在其上实现 Durable Operation 和 Lane，但不直接依赖 Electron、具体 Provider、工具或存储实现；`apps/desktop` 在 Worker 中完成依赖注入。
+`contracts` 是所有模块共享的稳定边界。`agent` 只提供平台无关的执行原语；`agent-runtime` 在其上实现 Durable Operation 和 Lane，但不直接依赖 Electron、具体 Provider、工具、存储或 Hook Engine；`apps/desktop` 在 Worker 中完成依赖注入，其中 Hooks 只通过 `contracts` 的 `HookRuntime` 端口进入 Runtime。
 
 ## 一次对话的端到端链路
 
 1. Renderer 通过 Preload 暴露的 `DesktopApi` 发起 `startTurn`。
 2. Main 校验 IPC 来源和输入，把命令发送给 Utility Process Worker。
-3. Worker 从 Storage 读取会话，将 Provider、Tools、Permission Gate、Orchestration 和 Runtime Store 注入 Agent Runtime。
+3. Worker 从 Storage 读取会话，将 Provider、Tools、Permission Gate、Orchestration、Hooks 和 Runtime Store 注入 Agent Runtime。
 4. Agent Runtime 持久化状态迁移并流式消费 Provider 事件；遇到 Tool Call 时先记录 effect intent，再经过 Permission Gate 执行或等待批准。
 5. 用户消息、助手消息和工具结果逐条追加到 JSONL；Agent 事件经 Main 转发给 Renderer。
 6. Renderer 把消息折叠为对话 / 轨迹视图，展示增量文本、工具行、审批对话框，并在一轮结束后读取 Git 工作区变更。

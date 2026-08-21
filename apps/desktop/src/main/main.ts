@@ -1,16 +1,18 @@
 import { app, BrowserWindow, dialog, ipcMain, nativeImage, safeStorage, shell, utilityProcess, type IpcMainInvokeEvent, type UtilityProcess } from 'electron';
 import { createServer, type Server } from 'node:http';
 import { access, cp, mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  ApprovalInputSchema, BrowserDockActionSchema, BrowserDockLayoutSchema, CreateSessionInputSchema, CreateSkillInputSchema, GetExtensionStatusInputSchema, ImportSkillInputSchema, IPC, ListModelsInputSchema, MAX_IMAGE_ATTACHMENTS, MAX_IMAGE_BYTES, McpServerIdInputSchema, RenameSessionInputSchema, SaveExtensionSettingsInputSchema, SaveSettingsInputSchema,
+  ApprovalInputSchema, BrowserDockActionSchema, BrowserDockLayoutSchema, CreateSessionInputSchema, CreateSkillInputSchema, GetExtensionStatusInputSchema, GetHookStatusInputSchema, HookProjectActionInputSchema, ImportSkillInputSchema, IPC, ListModelsInputSchema, MAX_IMAGE_ATTACHMENTS, MAX_IMAGE_BYTES, McpServerIdInputSchema, OpenHookConfigInputSchema, RenameSessionInputSchema, SaveExtensionSettingsInputSchema, SaveSettingsInputSchema,
   SessionIdInputSchema, SkillPathInputSchema, StartTurnInputSchema, UpdateSkillInputSchema, WorkflowRunActionInputSchema,
   type ExtensionStatus, type ProviderSettings, type WorkerCommand, type WorkerMessage, type WorkflowRunSnapshot
 } from '@desktop-agent/contracts';
 import { z } from 'zod';
 import { createProvider } from '@desktop-agent/providers';
 import { createSkillSource, discoverSkills, parseSkillSource, skillId, userSkillDirectories, type SkillDirectory } from '@desktop-agent/extensions';
+import { EMPTY_HOOK_CONFIG, FileHookTrustStore, loadHookSettings } from '@desktop-agent/hooks';
 import { JsonConfigStore, JsonlSessionStore } from '@desktop-agent/storage';
 import { collectWorkspaceChanges } from './workspace-changes';
 import { BrowserRuntime } from './browser-runtime';
@@ -245,6 +247,37 @@ async function pathExists(filePath: string): Promise<boolean> {
   catch { return false; }
 }
 
+const hookTrustStore = new FileHookTrustStore(path.join(os.homedir(), '.jojo', 'hooks-trust.json'));
+
+function userHookConfigPath(): string {
+  return path.join(os.homedir(), '.jojo', 'hooks.yml');
+}
+
+function projectHookConfigPath(workingDirectory: string): string {
+  return path.join(workingDirectory, '.jojo', 'hooks.yml');
+}
+
+async function readHookSnapshot(workingDirectory?: string) {
+  return loadHookSettings({
+    workingDirectory: workingDirectory ?? os.homedir(),
+    includeProject: Boolean(workingDirectory),
+    trustStore: hookTrustStore
+  });
+}
+
+async function invalidateHookRuntimes(): Promise<void> {
+  if (!worker) return;
+  const requestId = crypto.randomUUID();
+  const completion = waitForWorker(requestId);
+  worker.postMessage({ type: 'hooks.invalidate', requestId } satisfies WorkerCommand);
+  await completion;
+}
+
+async function refreshHookSnapshot(workingDirectory?: string) {
+  await invalidateHookRuntimes();
+  return readHookSnapshot(workingDirectory);
+}
+
 async function replaceSkillDirectory(sourceRoot: string, destinationRoot: string): Promise<void> {
   if (path.resolve(sourceRoot) === path.resolve(destinationRoot)) throw new Error('导入源与目标 Skill 目录相同。');
   const parent = path.dirname(destinationRoot);
@@ -331,6 +364,9 @@ function startWorker(): void {
       } satisfies WorkerCommand));
     }
     else if (message.type === 'worker.error') sendToRenderer(IPC.agentEvent, { type: 'turn.failed', code: 'worker_error', message: message.message });
+    else if (message.type === 'hooks.invalidated') {
+      finishWorkerRequest(message.requestId, message.ok ? undefined : new Error(message.error ?? 'Hook runtime reload failed.'));
+    }
   });
   worker.on('exit', (code) => {
     for (const requestId of workerRequests.keys()) {
@@ -617,6 +653,46 @@ function registerIpc(): void {
     const completion = waitForWorker(requestId);
     worker.postMessage({ type: 'mcp.reconnect', requestId, serverId } satisfies WorkerCommand);
     await completion;
+  });
+  ipcMain.handle(IPC.getHookStatus, async (event, raw) => {
+    assertTrusted(event);
+    const input = GetHookStatusInputSchema.parse(raw ?? {});
+    return readHookSnapshot(input.workingDirectory);
+  });
+  ipcMain.handle(IPC.reloadHooks, async (event, raw) => {
+    assertTrusted(event);
+    const input = GetHookStatusInputSchema.parse(raw ?? {});
+    return refreshHookSnapshot(input.workingDirectory);
+  });
+  ipcMain.handle(IPC.trustProjectHooks, async (event, raw) => {
+    assertTrusted(event);
+    const { workingDirectory } = HookProjectActionInputSchema.parse(raw);
+    const snapshot = await readHookSnapshot(workingDirectory);
+    const project = snapshot.project;
+    if (!project?.fingerprint) throw new Error('当前项目没有可信任的 Hooks 配置。');
+    if (project.state === 'invalid') throw new Error(project.error ?? '项目 Hooks 配置无效。');
+    await hookTrustStore.trust(project.path, project.fingerprint);
+    return refreshHookSnapshot(workingDirectory);
+  });
+  ipcMain.handle(IPC.disableProjectHooks, async (event, raw) => {
+    assertTrusted(event);
+    const { workingDirectory } = HookProjectActionInputSchema.parse(raw);
+    const snapshot = await readHookSnapshot(workingDirectory);
+    const project = snapshot.project;
+    if (!project || project.state === 'missing') throw new Error('当前项目尚未配置 Hooks。');
+    await hookTrustStore.disable(project.path);
+    return refreshHookSnapshot(workingDirectory);
+  });
+  ipcMain.handle(IPC.openHookConfig, async (event, raw) => {
+    assertTrusted(event);
+    const input = OpenHookConfigInputSchema.parse(raw);
+    const file = input.source === 'user'
+      ? userHookConfigPath()
+      : projectHookConfigPath(input.workingDirectory!);
+    await mkdir(path.dirname(file), { recursive: true });
+    if (!(await pathExists(file))) await writeFile(file, EMPTY_HOOK_CONFIG, { encoding: 'utf8', flag: 'wx' });
+    const error = await shell.openPath(file);
+    if (error) throw new Error(error);
   });
 }
 

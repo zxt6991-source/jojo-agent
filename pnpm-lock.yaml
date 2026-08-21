@@ -44,6 +44,9 @@ importers:
       '@desktop-agent/extensions':
         specifier: workspace:*
         version: link:../../packages/extensions
+      '@desktop-agent/hooks':
+        specifier: workspace:*
+        version: link:../../packages/hooks
       '@desktop-agent/orchestration':
         specifier: workspace:*
         version: link:../../packages/orchestration
@@ -144,6 +147,18 @@ importers:
       '@modelcontextprotocol/client':
         specifier: 2.0.0
         version: 2.0.0
+      yaml:
+        specifier: ^2.9.0
+        version: 2.9.0
+      zod:
+        specifier: ^4.1.13
+        version: 4.4.3
+
+  packages/hooks:
+    dependencies:
+      '@desktop-agent/contracts':
+        specifier: workspace:*
+        version: link:../contracts
       yaml:
         specifier: ^2.9.0
         version: 2.9.0

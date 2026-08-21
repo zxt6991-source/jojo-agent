@@ -1,4 +1,5 @@
 import type { ToolCall, ToolResult } from './messages';
+import type { HookErrorCode, HookEventName } from './hooks';
 
 export type ApprovalRequest = {
   requestId: string;
@@ -48,4 +49,10 @@ export type AgentEvent =
   | { type: 'output.continuing'; attempt: number }
   | { type: 'turn.completed'; stopReason: string }
   | { type: 'turn.cancelled' }
-  | { type: 'turn.failed'; code: string; message: string };
+  | { type: 'turn.failed'; code: string; message: string }
+  | { type: 'hook.started'; eventId: string; hookId: string; hookEvent: HookEventName }
+  | {
+      type: 'hook.finished'; eventId: string; hookId: string; durationMs: number;
+      outcome: 'neutral' | 'approve' | 'block' | 'injected' | 'side_effect';
+    }
+  | { type: 'hook.failed'; eventId: string; hookId: string; code: HookErrorCode; message: string };

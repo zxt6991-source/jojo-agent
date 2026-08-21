@@ -1,6 +1,6 @@
 import { AgentError } from '@desktop-agent/agent';
 import { runAgentTurn, type AgentRuntimeStore } from '@desktop-agent/agent-runtime';
-import type { Message, ModelProvider, ProviderConfig } from '@desktop-agent/contracts';
+import type { AgentEvent, HookRuntime, Message, ModelProvider, ProviderConfig } from '@desktop-agent/contracts';
 import {
   accrueUsage,
   type AgentProfileRegistry,
@@ -28,6 +28,12 @@ export type DesktopLeafAgentRunnerOptions = {
   profileRegistry?: AgentProfileRegistry;
   runtimeStore?: AgentRuntimeStore;
   createModelProvider?: (input: { runtime: ProviderRuntime; request: LeafAgentRunRequest }) => ModelProvider;
+  resolveHooks?: (input: {
+    sessionId: string;
+    workingDirectory: string;
+    signal: AbortSignal;
+    onEvent: (event: AgentEvent) => void;
+  }) => Promise<HookRuntime>;
 };
 
 function finalAssistantText(messages: Message[]): string {
@@ -82,6 +88,12 @@ export function createDesktopLeafAgentRunner(options: DesktopLeafAgentRunnerOpti
       const allowedTools = new Set(policy.allowedTools);
       const tools = toolRuntime.tools.filter((tool) => allowedTools.has(tool.definition.name));
       const usage = emptyUsage();
+      const hooks = request.hooks ?? await options.resolveHooks?.({
+        sessionId: request.sessionId,
+        workingDirectory: request.workingDirectory,
+        signal,
+        onEvent
+      });
       let result: Awaited<ReturnType<typeof runAgentTurn>>;
       try {
         const runtimeLane = request.runtimeLane && options.runtimeStore
@@ -99,6 +111,17 @@ export function createDesktopLeafAgentRunner(options: DesktopLeafAgentRunnerOpti
           history,
           userText: task,
           ...runtimeLane,
+          ...(hooks ? {
+            hooks,
+            hookMeta: {
+              transport: 'desktop' as const,
+              agent: {
+                kind: request.runtimeLane?.name.startsWith('workflow:') ? 'workflow' as const : 'subagent' as const,
+                id: request.id,
+                profile: request.profile
+              }
+            }
+          } : {}),
           provider: options.createModelProvider
             ? options.createModelProvider({ runtime: providerRuntime, request })
             : createProvider(providerRuntime.config, providerRuntime.apiKey),

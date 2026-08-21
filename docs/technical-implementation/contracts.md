@@ -19,6 +19,7 @@ Contracts 是 monorepo 的协议内核，统一定义消息、工具、模型、
 | 模型抽象 | `ModelRequest`、`ModelEvent`、`ModelProvider` | 隔离具体模型协议 |
 | 工具抽象 | `ToolDefinition`、`ToolContext`、`Tool` | 统一工具声明和执行接口 |
 | 权限抽象 | `ApprovalRequest`、`PermissionDecision`、`PermissionGate` | 把策略判断与执行分离 |
+| Hooks | `HookRuntime`、`HookEnvelope`、`HookFileConfig` | 生命周期事件、注入/拦截结果与配置 |
 | Agent 事件 | `AgentEvent` | 驱动流式 UI 和运行状态 |
 | 持久化 | `SessionMeta`、`SessionRecord`、`ProviderSettings` | 约束磁盘数据格式 |
 | 桌面桥接 | `DesktopApi`、`WorkerCommand`、`WorkerMessage`、`IPC` | 约束 Renderer/Main/Worker 通信 |
@@ -31,6 +32,7 @@ Contracts 是 monorepo 的协议内核，统一定义消息、工具、模型、
 | `src/model.ts` | 模型请求、流事件与 Provider 端口 | `ModelRequest`、`ModelEvent`、`ModelProvider` |
 | `src/tools.ts` | 工具声明与执行端口 | `ToolDefinitionSchema`、`ToolContext`、`Tool` |
 | `src/agent.ts` | 权限决策与 Agent 对外事件 | `ApprovalRequest`、`PermissionDecision`、`PermissionGate`、`AgentEvent` |
+| `src/hooks.ts` | Hook 事件、端口、配置与设置页状态 | `HookRuntime`、`HookEnvelopeSchema`、`HookFileConfigSchema`、`HookConfigStatusSchema` |
 | `src/persistence.ts` | 会话记录和 Provider 配置 | `SessionMetaSchema`、`SessionRecordSchema`、`ProviderSettingsSchema` |
 | `src/workspace.ts` | Git 工作区变更快照 | `WorkspaceChangeSchema`、`WorkspaceChangesSchema` |
 | `src/desktop.ts` | IPC 输入、Preload API 和 Worker 协议 | 输入 Schema、`DesktopApi`、`WorkerCommand`、`WorkerMessage`、`IPC` |

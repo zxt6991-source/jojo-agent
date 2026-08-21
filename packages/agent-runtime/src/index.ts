@@ -20,6 +20,7 @@ export type {
   EntryBase,
   JsonPrimitive,
   JsonValue,
+  HookContextEntry,
   LaneState,
   MessageEntry,
   ModelChangeEntry,

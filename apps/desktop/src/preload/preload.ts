@@ -34,6 +34,11 @@ const api: DesktopApi = {
   connectMcpOAuth: (input) => ipcRenderer.invoke(IPC.connectMcpOAuth, input),
   disconnectMcpOAuth: (input) => ipcRenderer.invoke(IPC.disconnectMcpOAuth, input),
   reconnectMcp: (input) => ipcRenderer.invoke(IPC.reconnectMcp, input),
+  getHookStatus: (input) => ipcRenderer.invoke(IPC.getHookStatus, input),
+  reloadHooks: (input) => ipcRenderer.invoke(IPC.reloadHooks, input),
+  trustProjectHooks: (input) => ipcRenderer.invoke(IPC.trustProjectHooks, input),
+  disableProjectHooks: (input) => ipcRenderer.invoke(IPC.disableProjectHooks, input),
+  openHookConfig: (input) => ipcRenderer.invoke(IPC.openHookConfig, input),
   onAgentEvent: (listener) => {
     const handler = (_event: Electron.IpcRendererEvent, value: AgentEvent) => listener(value);
     ipcRenderer.on(IPC.agentEvent, handler);

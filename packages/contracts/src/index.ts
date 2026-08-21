@@ -2,6 +2,7 @@ export * from './agent';
 export * from './browser-recording';
 export * from './desktop';
 export * from './extensions';
+export * from './hooks';
 export * from './messages';
 export * from './model';
 export * from './orchestration';

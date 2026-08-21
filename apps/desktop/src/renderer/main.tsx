@@ -1,7 +1,7 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import type {
-  AgentEvent, ApprovalRequest, BrowserDockState, ExtensionSettings, ExtensionStatus, ImageContentBlock, Message, ProviderConfig, ProviderSettings, SessionMeta, SkillDetail, SkillStatus, WorkflowRunSnapshot, WorkspaceChanges
+  AgentEvent, ApprovalRequest, BrowserDockState, ExtensionSettings, ExtensionStatus, HookSettingsSnapshot, ImageContentBlock, Message, ProviderConfig, ProviderSettings, SessionMeta, SkillDetail, SkillStatus, WorkflowRunSnapshot, WorkspaceChanges
 } from '@desktop-agent/contracts';
 import { DEFAULT_BROWSER_SETTINGS, DEFAULT_PROVIDERS, DEFAULT_SESSION_TITLE } from '@desktop-agent/contracts';
 import {
@@ -13,6 +13,7 @@ import {
   type LiveStep
 } from './conversation';
 import { browserDomainIssue, parseBrowserDomainList } from './browser-settings';
+import { HooksSettingsPage, hookStatusErrorMessage } from './HooksSettings';
 import { ChatTranscript, ConversationViewTabs, Markdown, TrajectoryView } from './ConversationViews';
 import { Sidebar } from './Sidebar';
 import { WorkflowCard } from './WorkflowCard';
@@ -72,6 +73,7 @@ function approvalTitle(request: ApprovalRequest): string {
 }
 
 function approvalToolLabel(request: ApprovalRequest): string {
+  if (request.call.name === 'trust_project_hooks') return 'Hooks';
   if (request.call.name.startsWith('mcp__')) return 'MCP';
   if (request.call.name.startsWith('browser_')) return '浏览器';
   if (request.call.name === 'terminal') return '终端';
@@ -81,6 +83,7 @@ function approvalToolLabel(request: ApprovalRequest): string {
 }
 
 function approvalQuestion(request: ApprovalRequest): string {
+  if (request.call.name === 'trust_project_hooks') return '是否信任此版本的项目 Hooks？';
   if (request.call.name.startsWith('browser_')) return '是否允许执行此浏览器操作？';
   if (request.call.name === 'terminal') return '是否允许运行此本地命令？';
   if (request.call.name === 'read_file') return '是否允许读取工作区外的文件？';
@@ -431,7 +434,7 @@ function App() {
   const [runningSessionId, setRunningSessionId] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [settingsSection, setSettingsSection] = useState<'models' | 'browser' | 'mcp' | 'skills'>('models');
+  const [settingsSection, setSettingsSection] = useState<'models' | 'browser' | 'mcp' | 'skills' | 'hooks'>('models');
   const [settings, setSettings] = useState<ProviderSettings>(defaultSettings);
   const [settingsDraft, setSettingsDraft] = useState<ProviderSettings>(defaultSettings);
   const [selectedModel, setSelectedModel] = useState(providerById(defaultSettings, defaultSettings.activeProviderId).model);
@@ -448,6 +451,9 @@ function App() {
   const [skillDirectories, setSkillDirectories] = useState('');
   const [browserDomains, setBrowserDomains] = useState('');
   const [extensionError, setExtensionError] = useState('');
+  const [hookStatus, setHookStatus] = useState<HookSettingsSnapshot | null>(null);
+  const [hookError, setHookError] = useState('');
+  const [hookBusy, setHookBusy] = useState(false);
   const [browserSecret, setBrowserSecret] = useState<{ requestId: string; name: string; description?: string } | null>(null);
   const [browserSecretValue, setBrowserSecretValue] = useState('');
   const [extensionSearch, setExtensionSearch] = useState('');
@@ -490,6 +496,24 @@ function App() {
     const next = await window.desktopAgent.getExtensionStatus(workingDirectory ? { workingDirectory } : undefined);
     setExtensionStatus(next);
     return next;
+  };
+
+  const hookDirectoryInput = () => {
+    const workingDirectory = activeIdRef.current ? sessionDirectoriesRef.current.get(activeIdRef.current) : undefined;
+    return workingDirectory ? { workingDirectory } : undefined;
+  };
+
+  const runHookAction = async (action: () => Promise<HookSettingsSnapshot | void>) => {
+    setHookBusy(true);
+    setHookError('');
+    try {
+      const next = await action();
+      setHookStatus(next ?? await window.desktopAgent.getHookStatus(hookDirectoryInput()));
+    } catch (cause) {
+      setHookError(hookStatusErrorMessage(cause));
+    } finally {
+      setHookBusy(false);
+    }
   };
 
   const saveExtensionDraft = async (): Promise<ExtensionSettings> => {
@@ -593,6 +617,18 @@ function App() {
     });
     return () => { offSessions(); offExtensions(); offSecret(); offDock(); offOrchestration(); offEvents(); };
   }, []);
+
+  useEffect(() => {
+    if (!settingsOpen || settingsSection !== 'hooks') return;
+    let cancelled = false;
+    setHookBusy(true);
+    setHookError('');
+    void window.desktopAgent.getHookStatus(hookDirectoryInput())
+      .then((next) => { if (!cancelled) setHookStatus(next); })
+      .catch((cause) => { if (!cancelled) setHookError(hookStatusErrorMessage(cause)); })
+      .finally(() => { if (!cancelled) setHookBusy(false); });
+    return () => { cancelled = true; };
+  }, [settingsOpen, settingsSection, activeId]);
 
   useEffect(() => {
     const refreshVisibleChanges = () => {
@@ -930,8 +966,8 @@ function App() {
       <h2 id="approval-title">{approvalQuestion(approval)}</h2>
       {approval.preview ? <ApprovalDiff request={approval} /> : <pre className="approval-command">{approvalSummary(approval)}</pre>}
       <div className="approval-actions">
-        <button className="approval-reject" onClick={() => { void window.desktopAgent.resolveApproval({ requestId: approval.requestId, allow: false }); setApproval(null); }}><span>拒绝</span><kbd>Esc</kbd></button>
-        <button className="approval-allow" onClick={() => { void window.desktopAgent.resolveApproval({ requestId: approval.requestId, allow: true }); setApproval(null); }}><span>允许一次</span><kbd>↵</kbd></button>
+        <button className="approval-reject" onClick={() => { void window.desktopAgent.resolveApproval({ requestId: approval.requestId, allow: false }); setApproval(null); }}><span>{approval.call.name === 'trust_project_hooks' ? '禁用项目 Hooks' : '拒绝'}</span><kbd>Esc</kbd></button>
+        <button className="approval-allow" onClick={() => { void window.desktopAgent.resolveApproval({ requestId: approval.requestId, allow: true }); setApproval(null); }}><span>{approval.call.name === 'trust_project_hooks' ? '信任此版本' : '允许一次'}</span><kbd>↵</kbd></button>
       </div>
     </div></div>}
     {browserSecret && <div className="modal-backdrop"><form className="modal browser-secret-modal" role="dialog" aria-modal="true" aria-labelledby="browser-secret-title" onSubmit={(event) => {
@@ -964,10 +1000,11 @@ function App() {
           <button type="button" className={settingsSection === 'browser' ? 'active' : ''} onClick={() => { setSettingsSection('browser'); setExtensionEditorOpen(false); }}><span aria-hidden="true">◎</span> 浏览器</button>
           <button type="button" className={settingsSection === 'skills' ? 'active' : ''} onClick={() => { setSettingsSection('skills'); setExtensionSearch(''); setExtensionEditorOpen(false); }}><span aria-hidden="true">⬡</span> 技能</button>
           <button type="button" className={settingsSection === 'mcp' ? 'active' : ''} onClick={() => { setSettingsSection('mcp'); setExtensionSearch(''); setExtensionEditorOpen(false); }}><span aria-hidden="true">⌘</span> MCP 服务</button>
+          <button type="button" className={settingsSection === 'hooks' ? 'active' : ''} onClick={() => { setSettingsSection('hooks'); setExtensionEditorOpen(false); }}><span aria-hidden="true">⌥</span> Hooks</button>
         </nav>
       </aside>
       <main className="settings-main">
-        <header className="settings-topbar"><strong>{settingsSection === 'models' ? '模型' : settingsSection === 'browser' ? '浏览器' : settingsSection === 'skills' ? '技能' : 'MCP 服务'}</strong></header>
+        <header className="settings-topbar"><strong>{settingsSection === 'models' ? '模型' : settingsSection === 'browser' ? '浏览器' : settingsSection === 'skills' ? '技能' : settingsSection === 'hooks' ? 'Hooks' : 'MCP 服务'}</strong></header>
         <div className="settings-page-body">
     {settingsSection === 'models' && <form className="settings-content model-settings-page" aria-labelledby="settings-title" onSubmit={async (event) => {
       event.preventDefault();
@@ -1041,6 +1078,29 @@ function App() {
         setExtensionError('');
         try { await saveExtensionDraft(); }
         catch (cause) { setExtensionError(cause instanceof Error ? cause.message : String(cause)); }
+      }}
+    />}
+    {settingsSection === 'hooks' && <HooksSettingsPage
+      workingDirectory={active?.workingDirectory}
+      snapshot={hookStatus}
+      error={hookError}
+      busy={hookBusy}
+      onReload={() => { void runHookAction(() => window.desktopAgent.reloadHooks(hookDirectoryInput())); }}
+      onOpenConfig={(source) => {
+        void runHookAction(async () => {
+          await window.desktopAgent.openHookConfig({ source, ...(source === 'project' ? hookDirectoryInput() : {}) });
+          return window.desktopAgent.getHookStatus(hookDirectoryInput());
+        });
+      }}
+      onTrust={() => {
+        const input = hookDirectoryInput();
+        if (!input) return;
+        void runHookAction(() => window.desktopAgent.trustProjectHooks(input));
+      }}
+      onDisable={() => {
+        const input = hookDirectoryInput();
+        if (!input) return;
+        void runHookAction(() => window.desktopAgent.disableProjectHooks(input));
       }}
     />}
     {(settingsSection === 'mcp' || settingsSection === 'skills') && <form className={`settings-content extensions-settings-page ${extensionEditorOpen && settingsSection === 'mcp' ? 'mcp-editor-visible' : ''}`} aria-labelledby="extensions-title" onSubmit={async (event) => {

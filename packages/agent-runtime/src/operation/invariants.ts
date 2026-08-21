@@ -23,13 +23,13 @@ function assertToolsState(state: ToolsState): void {
     if (call.status !== 'completed' && call.result) {
       throw new OperationInvariantError(`Unsettled tool ${call.callId} already has a result.`);
     }
-    if (call.status === 'effect_pending' && call.permission !== 'approved' && call.permission !== 'not_required') {
+    if (call.status === 'effect_pending' && call.permission !== 'approved' && call.permission !== 'hook_approved' && call.permission !== 'not_required') {
       throw new OperationInvariantError(`Tool ${call.callId} has an effect pending without permission.`);
     }
     if (call.permission === 'denied' && call.status !== 'completed') {
       throw new OperationInvariantError(`Denied tool ${call.callId} is not settled.`);
     }
-    if (call.approvalRequest && call.permission !== 'pending' && call.permission !== 'approved' && call.permission !== 'denied') {
+    if (call.approvalRequest && call.permission !== 'pending' && call.permission !== 'approved' && call.permission !== 'hook_approved' && call.permission !== 'denied') {
       throw new OperationInvariantError(`Tool ${call.callId} has an approval request in an invalid permission state.`);
     }
   }

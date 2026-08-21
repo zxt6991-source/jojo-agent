@@ -1,0 +1,16 @@
+export { EMPTY_HOOK_CONFIG, parseHookConfig, parseHookDuration } from './config.js';
+export { hookSettingsSnapshot, loadHookRuntime, loadHookSettings } from './config-loader.js';
+export type { HookConfigStatus, LoadHookRuntimeOptions } from './config-loader.js';
+export { DefaultHookRuntime } from './engine.js';
+export type { DefaultHookRuntimeOptions } from './engine.js';
+export { HookExecutionError } from './errors.js';
+export { sanitizedHookEnvironment, resolveConfiguredEnvironment } from './environment.js';
+export { MemoryHookInvocationStore } from './invocation-store.js';
+export { compileHookMatcher, hookMatches } from './matcher.js';
+export { parseInjectionOutput, parsePreToolOutput } from './output-parser.js';
+export { HookRegistry } from './registry.js';
+export type { Disposable, RegisteredHook, RegisterHookOptions } from './registry.js';
+export { ShellHookRunner } from './shell-runner.js';
+export type { ShellHookRequest, ShellHookResult } from './shell-runner.js';
+export { FileHookTrustStore, hookConfigFingerprint } from './trust.js';
+export type { HookTrustRecord, HookTrustStore } from './trust.js';

@@ -1,4 +1,4 @@
-import type { Message } from '@desktop-agent/contracts';
+import type { InjectingHookEvent, Message } from '@desktop-agent/contracts';
 import type { UsageRecord } from '../usage/types.js';
 
 export type JsonPrimitive = string | number | boolean | null;
@@ -53,12 +53,21 @@ export type CustomEntry = EntryBase & {
   payload: JsonValue;
 };
 
+export type HookContextEntry = EntryBase & {
+  type: 'hook_context';
+  event: InjectingHookEvent;
+  hookIds: string[];
+  text: string;
+  subjectId?: string;
+};
+
 export type SessionEntry =
   | MessageEntry
   | CompactionEntry
   | BranchSummaryEntry
   | ModelChangeEntry
   | ActiveToolsChangeEntry
+  | HookContextEntry
   | CustomEntry;
 
 export type AppendEntryInput = SessionEntry extends infer Entry

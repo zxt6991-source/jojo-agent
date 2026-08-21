@@ -18,7 +18,8 @@
 - 后台 Sub-Agent：Profile（`explore` / `general` / `code-review` / `synthesize`，可叠加 user/project）、Tool Policy、Continue / Send / Close、Structured Output；
 - Workflow DAG：依赖与并发、Timeout / Cancel、Retry、Typed Inputs、Tool Step、foreach / condition / 嵌套 Saved Workflow、Budget、资源组与 Provider 限流、JSONL Journal / Resume；
 - 可写 Agent 强制 Git Worktree 隔离，Branch / Diff 可审查，默认不自动 Merge；
-- WorkflowCard：步骤列表、依赖图、时间线、Usage、预算、错误码、结构化输出与 Isolation Diff。
+- WorkflowCard：步骤列表、依赖图、时间线、Usage、预算、错误码、结构化输出与 Isolation Diff；
+- 生命周期 Hooks：用户 `~/.jojo/hooks.yml`、项目 `.jojo/hooks.yml`（fingerprint 信任 / 可禁用）、设置页状态与 Reload。
 
 尚未实现：可视化 Workflow 编辑器、窗口级 Playwright、pipeline / human / HTTP Step、长期记忆、专用 Git 提交工具、自动更新与云同步。
 
@@ -101,6 +102,7 @@ packages/providers/       模型协议适配
 packages/tools-node/      文件、目录、终端与权限 Gate
 packages/storage/         SQLite Runtime、JSONL Session / Workflow Journal 与普通配置
 packages/extensions/      MCP 客户端、延迟工具目录与 Skills 发现
+packages/hooks/           生命周期 Hook Engine、hooks.yml 加载与项目信任
 ```
 
 各 Workspace 的职责与安全边界见 [`docs/technical-implementation/`](./docs/technical-implementation/README.md)。
@@ -112,6 +114,7 @@ packages/extensions/      MCP 客户端、延迟工具目录与 Skills 发现
 - Agent Core：工具循环、动态工具刷新、重复 Tool Call、拒绝后继续；
 - Orchestration：Sub-Agent 生命周期、Profile / Tool Policy、Workflow DAG、Worktree 隔离、Budget、依赖图 UI；
 - Extensions：Skill 发现 / 按需加载、MCP 连接状态和大工具集延迟激活；
+- Hooks：配置校验、项目信任 / Disable、Shell 超时与输出上限、Runtime 恢复语义；
 - Tools：大文件截断、项目检索、修改 Diff、读后写冲突、精确编辑、回收站、符号链接逃逸和目录外审批；
 - Storage：SQLite Runtime conformance / crash resume、JSONL 损坏尾恢复、单会话运行锁、Workflow Journal Resume；
 - Browser / 富内容：域名与 URL 校验、下载文件名净化、浏览器权限 Gate、视觉消息序列化；

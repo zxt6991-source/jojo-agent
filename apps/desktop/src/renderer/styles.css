@@ -468,6 +468,16 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .browser-settings-page.is-disabled .browser-domain-card { opacity: .72; }
 .browser-status-pill { flex: 0 0 auto; margin-top: 8px; padding: 5px 10px; border-radius: 999px; background: #f1f1f2; color: #6b6f76; font-size: 11px; font-weight: 620; }
 .browser-status-pill.on { background: #e8f2fe; color: #2f6fbd; }
+.hook-status-pill.ask { background: #fff4e4; color: #9a6b24; }
+.hook-status-pill.off { background: #f1f1f2; color: #6b6f76; }
+.hook-status-pill.failed { background: #fff1f1; color: #b2464b; }
+.hooks-settings-page .settings-heading button { min-height: 38px; padding: 0 15px; border: 1px solid #d7d8dc; border-radius: 9px; font-size: 12px; font-weight: 600; }
+.hook-source-body { padding: 16px 24px 18px; background: #ffffff; }
+.hook-config-path { display: block; overflow: hidden; padding: 10px 12px; border-radius: 10px; background: #f4f4f5; color: #3a3d44; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.hook-source-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+.hook-source-actions button { min-height: 36px; padding: 0 13px; border: 1px solid #d7d8dc; border-radius: 9px; background: #fff; font-size: 12px; font-weight: 600; }
+.hook-source-actions button:disabled { opacity: .45; }
+.hooks-settings-page .settings-error { margin: 16px 0 0; }
 .browser-toggle-row { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 20px 24px; background: #ffffff; }
 .browser-toggle-copy { min-width: 0; }
 .browser-toggle-copy strong, .browser-toggle-copy span { display: block; }

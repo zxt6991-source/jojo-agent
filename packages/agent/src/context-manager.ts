@@ -11,6 +11,7 @@ export type ContextPreparationOptions = {
   contextWindowTokens: number;
   maxOutputTokens: number;
   summarize?: (source: string, signal: AbortSignal) => Promise<string>;
+  beforeCompact?: (info: { estimatedTokens: number; messageCount: number }) => Promise<void>;
   signal: AbortSignal;
 };
 
@@ -147,6 +148,8 @@ export async function prepareModelContext(options: ContextPreparationOptions): P
   if (compacted.length === 0) {
     return { messages: reclaimed.messages, estimatedTokens, compactedMessages: 0, reclaimedToolCharacters: reclaimed.reclaimed };
   }
+
+  await options.beforeCompact?.({ estimatedTokens: tokensBefore, messageCount: compacted.length });
 
   const source = sourceForSummary(compacted);
   let summary: string;

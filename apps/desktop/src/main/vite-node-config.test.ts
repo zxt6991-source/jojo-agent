@@ -22,4 +22,12 @@ describe('Electron Node Vite config', () => {
       ? entry === 'node:sqlite'
       : entry.test('node:sqlite'))).toBe(true);
   });
+
+  it('resolves the hooks workspace package without requiring a stale node_modules link', () => {
+    const alias = electronNodeConfig.resolve?.alias;
+    expect(alias).toMatchObject({
+      '@desktop-agent/contracts': expect.stringContaining('/packages/contracts/src/index.ts'),
+      '@desktop-agent/hooks': expect.stringContaining('/packages/hooks/src/index.ts')
+    });
+  });
 });

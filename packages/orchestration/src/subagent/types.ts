@@ -1,4 +1,4 @@
-import type { AgentEvent, IsolationConfig, SubAgentProfile, UsageTotals, WorkflowResourceGroup } from '@desktop-agent/contracts';
+import type { AgentEvent, HookRuntime, IsolationConfig, SubAgentProfile, UsageTotals, WorkflowResourceGroup } from '@desktop-agent/contracts';
 import type { AgentToolPolicy } from './tool-policy.js';
 
 export type LeafAgentRunRequest = {
@@ -20,6 +20,7 @@ export type LeafAgentRunRequest = {
     name: string;
     parentLane?: string;
   };
+  hooks?: HookRuntime;
 };
 
 export type LeafAgentRunResult = {

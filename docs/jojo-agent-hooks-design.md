@@ -2,12 +2,17 @@
 
 > 文档版本：v0.1  
 > 日期：2026-08-20  
+> 实现核对：2026-08-21  
 > 目标仓库：`zxt6991-source/jojo-agent`  
 > 参考实现：
 > - `open-octo/octo-agent`
 > - `earendil-works/pi`
 >
 > 本文以 2026-08-20 各仓库 `main` 分支当前实现为基础，目标不是复制任一项目，而是结合 Jojo 已有的 Durable Agent Runtime、Lane、Workflow、Permission Gate、MCP/Skills 与 Electron Worker 架构，设计一套可长期演进为通用 Agent Runtime 的 Hooks 基础设施。
+>
+> 章节标题或清单项后的 ✅ 表示该设计已在当前工作区落地。未标 ✅ 的仍是缺口、只完成一部分，或文档明确后置。
+>
+> 当前 `packages/hooks` 的模块职责、加载/信任语义和 Desktop 装配，见 [`technical-implementation/hooks.md`](./technical-implementation/hooks.md)。
 
 ---
 
@@ -44,13 +49,13 @@ Jojo 的 Hooks 建议采用 **“稳定生命周期 Hook + 强类型进程内 Ho
 首版对外稳定 Hook 事件建议保持和 Octo/Claude Code 接近：
 
 ```text
-SessionStart
-UserPromptSubmit
-PreToolUse
-PostToolUse
-Stop
-SubagentStop
-PreCompact
+SessionStart ✅
+UserPromptSubmit ✅
+PreToolUse ✅
+PostToolUse ✅
+Stop ✅
+SubagentStop ✅
+PreCompact ✅
 ```
 
 同时保留 Pi 风格的 **强类型内部扩展接口**，后续逐步增加：
@@ -66,9 +71,9 @@ SessionShutdown
 
 最重要的三个设计原则：
 
-1. **Hook 必须进入 `agent-runtime` 的执行链，而不是只挂在 Electron Worker 或 UI 外层。**
-2. **Hook 不允许绕过 Jojo 的硬安全边界。** 即使 Hook 返回 `approve`，也不能覆盖现有 Permission Gate 的 `deny`。
-3. **Hook 必须服从 Durable Runtime。** 崩溃恢复时不得无条件重复执行外部副作用 Hook。
+1. ✅ **Hook 必须进入 `agent-runtime` 的执行链，而不是只挂在 Electron Worker 或 UI 外层。**
+2. ✅ **Hook 不允许绕过 Jojo 的硬安全边界。** 即使 Hook 返回 `approve`，也不能覆盖现有 Permission Gate 的 `deny`。
+3. ✅ **Hook 必须服从 Durable Runtime。** 崩溃恢复时不得无条件重复执行外部副作用 Hook。（invocation 去重已落地；独立 `hook_jobs` 队列未建）
 
 ---
 
@@ -455,7 +460,7 @@ system prompt
 
 # 4. 哪些设计不应该直接复制
 
-## 4.1 不复制 Octo 的 “approve 完全跳过 Permission Engine”
+## 4.1 不复制 Octo 的 “approve 完全跳过 Permission Engine” ✅
 
 Octo 的 `PreToolUse approve` 可以直接跳过正常权限引擎。
 
@@ -523,7 +528,7 @@ PreToolUse hook
 
 ---
 
-## 4.2 不复制 Pi 的 “原地修改 tool input 且不重新验证”
+## 4.2 不复制 Pi 的 “原地修改 tool input 且不重新验证” ✅
 
 Pi 的 `tool_call` 允许 Handler 原地修改：
 
@@ -570,7 +575,7 @@ V1.1 再增加安全的 Input Transform。
 
 ---
 
-## 4.3 首版不直接加载任意 TypeScript Extension
+## 4.3 首版不直接加载任意 TypeScript Extension ✅
 
 Pi 的：
 
@@ -607,7 +612,7 @@ Phase 4
 
 # 5. Jojo Hooks 总体架构
 
-## 5.1 Package 划分
+## 5.1 Package 划分 ✅
 
 推荐新增独立包：
 
@@ -676,40 +681,40 @@ contracts
 
 ---
 
-## 5.2 目录建议
+## 5.2 目录建议（主体已落地；`dispatcher.ts` / `async-queue.ts` 未单独建）
 
 ```text
 packages/hooks/
-├── package.json
+├── package.json              ✅
 ├── src/
-│   ├── index.ts
-│   ├── engine.ts
-│   ├── registry.ts
-│   ├── dispatcher.ts
-│   ├── matcher.ts
-│   ├── shell-runner.ts
-│   ├── config.ts
-│   ├── config-loader.ts
-│   ├── trust.ts
-│   ├── output-parser.ts
-│   ├── environment.ts
-│   ├── invocation-store.ts
-│   ├── async-queue.ts
-│   └── errors.ts
+│   ├── index.ts              ✅
+│   ├── engine.ts             ✅
+│   ├── registry.ts           ✅
+│   ├── dispatcher.ts         # 未单独建，dispatch 在 engine.ts
+│   ├── matcher.ts            ✅
+│   ├── shell-runner.ts       ✅
+│   ├── config.ts             ✅
+│   ├── config-loader.ts      ✅
+│   ├── trust.ts              ✅
+│   ├── output-parser.ts      ✅
+│   ├── environment.ts        ✅
+│   ├── invocation-store.ts   ✅
+│   ├── async-queue.ts        # 未建；async 走 invocation store
+│   └── errors.ts             ✅
 └── test/
-    ├── engine.test.ts
-    ├── matcher.test.ts
-    ├── shell-runner.test.ts
-    ├── config.test.ts
-    ├── trust.test.ts
-    ├── durable-resume.test.ts
-    └── permission-integration.test.ts
+    ├── engine.test.ts        ✅
+    ├── matcher.test.ts       # 覆盖并入 engine / config-trust
+    ├── shell-runner.test.ts  ✅
+    ├── config.test.ts        # 并入 config-trust.test.ts
+    ├── trust.test.ts         # 并入 config-trust.test.ts
+    ├── durable-resume.test.ts # engine 有部分，Runner 级仍缺
+    └── permission-integration.test.ts # 见 agent-runtime/test/hooks.test.ts ✅
 ```
 
 Contracts：
 
 ```text
-packages/contracts/src/hooks.ts
+packages/contracts/src/hooks.ts ✅
 ```
 
 负责：
@@ -725,7 +730,7 @@ Hook Agent Event
 
 ---
 
-# 6. Hook Runtime Port
+# 6. Hook Runtime Port ✅
 
 `agent-runtime` 不应知道 YAML、Shell、Electron UI。
 
@@ -787,11 +792,11 @@ if (hooks) ...
 
 ---
 
-# 7. V1 Event Model
+# 7. V1 Event Model ✅
 
 ## 7.1 对外稳定事件
 
-### `SessionStart`
+### `SessionStart` ✅
 
 触发：
 
@@ -828,7 +833,7 @@ Project bootstrap
 
 ---
 
-## 7.2 `UserPromptSubmit`
+## 7.2 `UserPromptSubmit` ✅
 
 触发：
 
@@ -862,7 +867,7 @@ Hook 返回内容应该保存为单独的 Model-only Context Entry。
 
 ---
 
-## 7.3 `PreToolUse`
+## 7.3 `PreToolUse` ✅
 
 触发：
 
@@ -904,7 +909,7 @@ V1：
 
 ---
 
-## 7.4 `PostToolUse`
+## 7.4 `PostToolUse` ✅
 
 触发：
 
@@ -947,7 +952,7 @@ V1 不允许 Shell Hook：
 
 ---
 
-## 7.5 `Stop`
+## 7.5 `Stop` ✅
 
 每个 Agent Operation 最终结束时触发：
 
@@ -985,7 +990,7 @@ Usage statistics
 
 ---
 
-## 7.6 `SubagentStop`
+## 7.6 `SubagentStop` ✅
 
 由 `SubAgentManager` 在子 Agent 完成后触发。
 
@@ -1001,7 +1006,7 @@ type SubagentStopPayload = HookEnvelope & {
 
 ---
 
-## 7.7 `PreCompact`
+## 7.7 `PreCompact` ✅
 
 触发：
 
@@ -1037,7 +1042,7 @@ custom summary
 
 ---
 
-# 8. Common Hook Envelope
+# 8. Common Hook Envelope ✅
 
 所有事件使用统一 Envelope。
 
@@ -1151,7 +1156,7 @@ Runtime 没记住 Hook 已执行
 
 ---
 
-## 9.2 Hook Invocation Key
+## 9.2 Hook Invocation Key ✅
 
 每次 Hook 调用必须有稳定 ID。
 
@@ -1177,7 +1182,7 @@ op_123:PostToolUse:call_789:project.audit
 
 ---
 
-## 9.3 Hook Invocation Store
+## 9.3 Hook Invocation Store ✅
 
 建议新增：
 
@@ -1245,7 +1250,7 @@ MemoryHookInvocationStore
 
 ---
 
-## 9.4 Sync Hook Resume
+## 9.4 Sync Hook Resume ✅
 
 如果 Invocation：
 
@@ -1272,7 +1277,7 @@ PostToolUse
 
 ---
 
-## 9.5 Async Hook Job
+## 9.5 Async Hook Job（简化版已有，无独立 `hook_jobs` 表）
 
 Side Effect Hook：
 
@@ -1330,7 +1335,7 @@ running + lease expired
 
 ---
 
-# 10. Context Injection 不应污染用户原始消息
+# 10. Context Injection 不应污染用户原始消息 ✅
 
 Octo 会把 Additional Context 拼接到 User Message。
 
@@ -1422,7 +1427,7 @@ UI 不污染
 
 ---
 
-# 11. PreToolUse 与 Permission Gate 的正确顺序
+# 11. PreToolUse 与 Permission Gate 的正确顺序 ✅
 
 Jojo 当前 Runtime：
 
@@ -1505,7 +1510,7 @@ deny
 
 ---
 
-# 12. Hook Approve Capability
+# 12. Hook Approve Capability ✅
 
 为了避免项目 Hook 自动放行所有危险操作：
 
@@ -1564,9 +1569,9 @@ MVP 如果不想增加 UI 复杂度：
 
 ---
 
-# 13. Shell Hook Protocol
+# 13. Shell Hook Protocol ✅
 
-## 13.1 stdin
+## 13.1 stdin ✅
 
 统一 JSON：
 
@@ -1605,7 +1610,7 @@ MVP 如果不想增加 UI 复杂度：
 
 ---
 
-## 13.2 Context Injection stdout
+## 13.2 Context Injection stdout ✅
 
 推荐：
 
@@ -1629,7 +1634,7 @@ no injection
 
 ---
 
-## 13.3 PreToolUse stdout
+## 13.3 PreToolUse stdout ✅
 
 ```json
 {
@@ -1662,7 +1667,7 @@ exit code 2 => block
 
 ---
 
-## 13.4 Error
+## 13.4 Error ✅
 
 默认：
 
@@ -1696,11 +1701,11 @@ onError: block
 
 ---
 
-# 14. Shell Runner 安全设计
+# 14. Shell Runner 安全设计 ✅
 
 Hook 本身等于执行代码，因此不能照普通 Tool 处理。
 
-## 14.1 Timeout
+## 14.1 Timeout ✅
 
 默认：
 
@@ -1722,7 +1727,7 @@ timeout: 5s
 
 ---
 
-## 14.2 stdout/stderr 限制
+## 14.2 stdout/stderr 限制 ✅
 
 推荐：
 
@@ -1750,7 +1755,7 @@ Context 爆炸
 
 ---
 
-## 14.3 Environment Sanitization
+## 14.3 Environment Sanitization ✅
 
 不要直接将 Electron Worker 的全部环境传给 Hook。
 
@@ -1782,7 +1787,7 @@ env:
 
 ---
 
-## 14.4 cwd
+## 14.4 cwd ✅
 
 User Hook：
 
@@ -1800,7 +1805,7 @@ cwd = project hook 所属 workspace
 
 ---
 
-## 14.5 Process Group
+## 14.5 Process Group ✅
 
 超时 / cancel 时：
 
@@ -1822,7 +1827,7 @@ node/python child process
 
 ---
 
-# 15. Config 文件
+# 15. Config 文件 ✅
 
 推荐：
 
@@ -1842,7 +1847,7 @@ Jojo 本身已经使用：
 
 ---
 
-## 15.1 Schema
+## 15.1 Schema ✅
 
 ```yaml
 version: 1
@@ -1879,7 +1884,7 @@ hooks:
 
 ---
 
-## 15.2 Hook Config Type
+## 15.2 Hook Config Type ✅
 
 ```ts
 const HookSpecSchema = z.object({
@@ -1909,7 +1914,7 @@ const HookSpecSchema = z.object({
 
 ---
 
-# 16. Config Layer 与排序
+# 16. Config Layer 与排序 ✅
 
 建议：
 
@@ -1953,7 +1958,7 @@ priority: 1000
 
 ---
 
-## 16.1 Decision Aggregation
+## 16.1 Decision Aggregation ✅
 
 ### Block
 
@@ -1999,7 +2004,7 @@ Hook B => block
 
 ---
 
-# 17. Project Hook Trust
+# 17. Project Hook Trust（Fingerprint / 默认不可信 ✅；设置页 Trust / Disable ✅）
 
 ## 17.1 风险
 
@@ -2020,7 +2025,7 @@ UNTRUSTED
 
 ---
 
-## 17.2 Fingerprint
+## 17.2 Fingerprint ✅
 
 ```ts
 SHA256(fileContent)
@@ -2061,7 +2066,7 @@ fingerprint mismatch
 
 ---
 
-## 17.3 Trust Dialog
+## 17.3 Trust Dialog（Desktop 复用工具审批 + 设置页 Trust / Disable 持久化 ✅）
 
 UI 至少展示：
 
@@ -2102,7 +2107,7 @@ Disable
 
 ---
 
-# 18. In-Process Hook API
+# 18. In-Process Hook API ✅
 
 Shell Hook 解决：
 
@@ -2133,7 +2138,7 @@ spawn node/python process
 
 ---
 
-## 18.1 API
+## 18.1 API ✅
 
 ```ts
 export interface HookRegistry {
@@ -2168,7 +2173,7 @@ registry.on(
 
 ---
 
-## 18.2 Context
+## 18.2 Context（无 `runtime.getContextUsage()`）
 
 ```ts
 export type HookContext = {
@@ -2267,7 +2272,7 @@ ExtensionAPI
 
 ---
 
-# 20. Agent Runtime 接入点
+# 20. Agent Runtime 接入点 ✅
 
 当前：
 
@@ -2279,7 +2284,7 @@ packages/agent-runtime/src/harness/runner.ts
 
 ---
 
-## 20.1 Runtime Options
+## 20.1 Runtime Options ✅
 
 新增：
 
@@ -2317,7 +2322,7 @@ const hooks =
 
 ---
 
-# 21. SessionStart / UserPromptSubmit 接入
+# 21. SessionStart / UserPromptSubmit 接入 ✅
 
 当前 Runner 创建 Operation 后会：
 
@@ -2359,7 +2364,7 @@ UserPromptSubmit
 
 ---
 
-# 22. Context Build 接入
+# 22. Context Build 接入 ✅
 
 当前：
 
@@ -2395,7 +2400,7 @@ HookContextEntry
 
 ---
 
-# 23. PreCompact 接入
+# 23. PreCompact 接入 ✅
 
 当前：
 
@@ -2446,7 +2451,7 @@ prepareModelContext({
 
 ---
 
-# 24. PreToolUse 接入
+# 24. PreToolUse 接入 ✅
 
 当前 Runtime 在：
 
@@ -2512,7 +2517,7 @@ hook_approved
 
 ---
 
-# 25. PostToolUse 接入
+# 25. PostToolUse 接入 ✅
 
 当前：
 
@@ -2580,7 +2585,7 @@ Hook Invocation 可 resume
 
 ---
 
-# 26. Stop 接入
+# 26. Stop 接入 ✅
 
 Stop 必须：
 
@@ -2622,7 +2627,7 @@ cancelled => cancelled
 
 ---
 
-# 27. Sub-Agent / Workflow 接入
+# 27. Sub-Agent / Workflow 接入（Sub-Agent ✅；Workflow envelope 不完整）
 
 Jojo 当前 Leaf Agent：
 
@@ -2651,7 +2656,7 @@ hookMeta.agent.kind
 
 ---
 
-## 27.1 Sub-Agent
+## 27.1 Sub-Agent ✅
 
 ```ts
 {
@@ -2694,7 +2699,7 @@ SubagentStop
 
 ---
 
-## 27.2 Workflow
+## 27.2 Workflow（`agent.kind=workflow` 已设；`workflow.runId/stepId` 未填）
 
 ```ts
 {
@@ -2723,7 +2728,7 @@ WorkflowStop
 
 ---
 
-# 28. Hook AgentEvent / 可观测性
+# 28. Hook AgentEvent / 可观测性（事件已 emit；Renderer 无卡片 / 设置页）
 
 建议增加：
 
@@ -2770,7 +2775,7 @@ Hook Trace
 
 ---
 
-# 29. Hook Error Model
+# 29. Hook Error Model ✅
 
 统一错误码：
 
@@ -2820,7 +2825,7 @@ PreToolUse
 
 ---
 
-# 30. Hook Output 的 Prompt Injection 风险
+# 30. Hook Output 的 Prompt Injection 风险 ✅
 
 Hook 的 Additional Context 可能来自：
 
@@ -2859,7 +2864,7 @@ Hook stdout
 
 ---
 
-# 31. Matcher
+# 31. Matcher ✅
 
 V1：
 
@@ -3013,7 +3018,7 @@ JSONL
 
 ---
 
-# 35. 建议新增 Contracts
+# 35. 建议新增 Contracts ✅
 
 ```text
 packages/contracts/src/hooks.ts
@@ -3051,7 +3056,7 @@ export * from './hooks.js';
 
 ---
 
-# 36. 建议新增 Hook Runtime 实现
+# 36. 建议新增 Hook Runtime 实现 ✅
 
 ```text
 packages/hooks/src/engine.ts
@@ -3098,7 +3103,7 @@ export class DefaultHookRuntime
 
 ---
 
-# 37. Hook Registry 数据结构
+# 37. Hook Registry 数据结构 ✅
 
 ```ts
 type RegisteredHook<E extends HookEventName> = {
@@ -3146,7 +3151,7 @@ snapshot
 
 ---
 
-# 38. Hook Config Loader
+# 38. Hook Config Loader ✅
 
 ```text
 packages/hooks/src/config-loader.ts
@@ -3184,7 +3189,7 @@ Project config invalid
 
 ---
 
-# 39. Hook Trust Store 与 Desktop
+# 39. Hook Trust Store 与 Desktop（Trust Store ✅；无独立 `HookTrustResolver` / CLI / Server adapter）
 
 建议 Hook Trust Store 不放在：
 
@@ -3246,12 +3251,12 @@ operator config / strict mode
 
 # 40. Async Hook Queue
 
-## Phase 1
+## Phase 1 ✅
 
 只支持：
 
 ```text
-sync hooks
+sync hooks ✅
 ```
 
 优点：
@@ -3260,7 +3265,7 @@ sync hooks
 先把语义做正确
 ```
 
-## Phase 2
+## Phase 2 ✅（简化版：invocation store + defer，无独立 `hook_jobs`）
 
 增加：
 
@@ -3271,8 +3276,8 @@ async: true
 允许事件：
 
 ```text
-Stop
-SubagentStop
+Stop ✅
+SubagentStop ✅
 ```
 
 后续可扩展 side-effect-only PostToolUse。
@@ -3355,7 +3360,7 @@ crash recovery
 
 ---
 
-# 42. Exactly Once 不现实，目标是 At-Least-Once + Idempotency
+# 42. Exactly Once 不现实，目标是 At-Least-Once + Idempotency（payload 带 eventId / invocationId ✅；独立 job lease 未建）
 
 对外部 Shell Side Effect：
 
@@ -3395,7 +3400,7 @@ op_123:Stop:operation:notify
 
 ---
 
-# 43. 与现有 Permission Gate 的关系
+# 43. 与现有 Permission Gate 的关系 ✅
 
 当前：
 
@@ -3435,7 +3440,7 @@ Human Approval
 
 ---
 
-# 44. 与 MCP 的关系
+# 44. 与 MCP 的关系 ✅
 
 MCP Tool：
 
@@ -3475,7 +3480,7 @@ SubAgent Tool
 
 ---
 
-# 45. 与 Browser 的关系
+# 45. 与 Browser 的关系 ✅
 
 例如：
 
@@ -3502,7 +3507,7 @@ PreToolUse:
 
 ---
 
-# 46. 与 Workflow 的关系
+# 46. 与 Workflow 的关系 ✅（Agent step 走 Runtime 因而自动生效；控制步不触发，符合 V1）
 
 Workflow Tool Step：
 
@@ -3676,7 +3681,7 @@ Authorization Header
 
 # 51. UI 规划
 
-## Phase 1
+## Phase 1 ✅
 
 先不做复杂 UI。
 
@@ -3737,7 +3742,7 @@ Hook
 
 ---
 
-# 52. Reload
+# 52. Reload（设置页 Reload 会换 snapshot；当前 turn 仍用启动时 runtime ✅）
 
 Hooks 配置应该支持：
 
@@ -3780,7 +3785,7 @@ Project hooks.yml 内容改变：
 
 ---
 
-# 53. Hook Recursion
+# 53. Hook Recursion（已设置 `JOJO_HOOK_ACTIVE`；加载端尚未检测该变量）
 
 如果 Hook command 自己启动：
 
@@ -3815,7 +3820,7 @@ JOJO_HOOK_ACTIVE=1
 
 ---
 
-# 54. Secret Redaction
+# 54. Secret Redaction（Hook 环境消毒 ✅；无 `redactForAudit` / payload redaction）
 
 AgentEvent / Hook Trace 不应该记录：
 
@@ -3856,16 +3861,16 @@ MCP auth-related args
 
 # 55. 测试方案
 
-## 55.1 Config
+## 55.1 Config ✅
 
 ```text
-hooks.yml parse
+hooks.yml parse ✅
 unknown event
-invalid matcher
-invalid timeout
+invalid matcher ✅
+invalid timeout ✅
 duplicate id
-async invalid event
-canApprove invalid source
+async invalid event ✅
+canApprove invalid source ✅
 ```
 
 ---
@@ -3875,34 +3880,34 @@ canApprove invalid source
 ```text
 plain stdout
 JSON stdout
-exit 2
+exit 2 ✅
 exit 1
-timeout
+timeout ✅
 cancel
 stderr tail
 stdout limit
 workingDirectory
-env sanitization
+env sanitization ✅
 process-group kill
 ```
 
 ---
 
-## 55.3 Decision
+## 55.3 Decision ✅
 
 ```text
 neutral + neutral => neutral
 
 approve + neutral => approve
 
-approve + block => block
+approve + block => block ✅
 
-block => short-circuit
+block => short-circuit ✅
 ```
 
 ---
 
-## 55.4 Permission Integration
+## 55.4 Permission Integration ✅
 
 必须测试：
 
@@ -3912,7 +3917,7 @@ hook approve
 PermissionGate deny
 =
 deny
-```
+``` ✅
 
 这是关键安全测试。
 
@@ -3926,7 +3931,7 @@ PermissionGate ask
 trusted canApprove
 =
 allow
-```
+``` ✅
 
 以及：
 
@@ -3936,11 +3941,11 @@ project hook approve
 canApprove false
 =
 仍然 ask
-```
+```（engine 层已覆盖 `canSkipApproval`；Runner 无单独用例）
 
 ---
 
-# 56. Runtime Integration Tests
+# 56. Runtime Integration Tests ✅
 
 Fake Hook Runtime：
 
@@ -3953,7 +3958,7 @@ class ScriptedHookRuntime
 
 测试：
 
-### Case 1
+### Case 1 ✅
 
 ```text
 UserPromptSubmit
@@ -3963,7 +3968,7 @@ additional context
 provider 收到 context
 ```
 
-### Case 2
+### Case 2 ✅
 
 ```text
 PreToolUse block
@@ -3973,7 +3978,7 @@ Tool.execute 未调用
 模型收到 hook_blocked
 ```
 
-### Case 3
+### Case 3 ✅
 
 ```text
 Tool execute
@@ -3983,7 +3988,7 @@ PostToolUse
 下一 Model Step 可看到 Hook Context
 ```
 
-### Case 4
+### Case 4 ✅
 
 ```text
 cancel
@@ -3991,7 +3996,7 @@ cancel
 Stop once
 ```
 
-### Case 5
+### Case 5 ✅
 
 ```text
 failure
@@ -4005,7 +4010,7 @@ Stop once
 
 这是必须单独做的一组。
 
-## 57.1 PreToolUse
+## 57.1 PreToolUse ✅
 
 ```text
 Hook completed
@@ -4021,7 +4026,7 @@ Hook 不再次启动
 
 ---
 
-## 57.2 PostToolUse
+## 57.2 PostToolUse ✅
 
 ```text
 Tool Result durable
@@ -4039,7 +4044,7 @@ resume
 
 ---
 
-## 57.3 Stop
+## 57.3 Stop ✅
 
 ```text
 Operation completed
@@ -4055,7 +4060,7 @@ job eventually executed
 
 ---
 
-# 58. Sub-Agent Tests
+# 58. Sub-Agent Tests ✅
 
 ```text
 main hook runtime
@@ -4082,7 +4087,7 @@ SubagentStop
 
 ---
 
-# 59. Project Trust E2E
+# 59. Project Trust E2E ✅（`config-trust.test.ts` 覆盖 fingerprint；无 Desktop UI E2E）
 
 测试：
 
@@ -4158,32 +4163,32 @@ file change
 
 # 61. 开发阶段
 
-## Phase 0：Contracts 与 Port
+## Phase 0：Contracts 与 Port ✅
 
 目标：
 
 ```text
-Hook 类型稳定
-Runtime 可以注入 Noop Hook
+Hook 类型稳定 ✅
+Runtime 可以注入 Noop Hook ✅
 ```
 
 工作：
 
 ```text
-packages/contracts/src/hooks.ts
+packages/contracts/src/hooks.ts ✅
 
-HookEvent
-Payload
-Result
-HookRuntime
+HookEvent ✅
+Payload ✅
+Result ✅
+HookRuntime ✅
 
-NoopHookRuntime
+NoopHookRuntime ✅
 ```
 
 Runner：
 
 ```text
-增加 hooks 参数
+增加 hooks 参数 ✅
 ```
 
 暂时没有 Shell Config。
@@ -4196,25 +4201,25 @@ Runner：
 
 ---
 
-## Phase 1：In-Process Hook Kernel
+## Phase 1：In-Process Hook Kernel ✅
 
 实现：
 
 ```text
-HookRegistry
-HookEngine
-Hook matcher
-Hook result aggregation
+HookRegistry ✅
+HookEngine ✅
+Hook matcher ✅
+Hook result aggregation ✅
 ```
 
 接入：
 
 ```text
-UserPromptSubmit
-PreToolUse
-PostToolUse
-Stop
-SubagentStop
+UserPromptSubmit ✅
+PreToolUse ✅
+PostToolUse ✅
+Stop ✅
+SubagentStop ✅
 ```
 
 先用 Fake/Builtin Hook 测通。
@@ -4222,9 +4227,9 @@ SubagentStop
 验收：
 
 ```text
-Hook 可以阻断 Tool
-Hook 可以注入 Context
-Hook failure 不破坏 Agent
+Hook 可以阻断 Tool ✅
+Hook 可以注入 Context ✅
+Hook failure 不破坏 Agent ✅
 ```
 
 ---
@@ -4234,20 +4239,20 @@ Hook failure 不破坏 Agent
 实现：
 
 ```text
-~/.jojo/hooks.yml
-.jojo/hooks.yml
+~/.jojo/hooks.yml ✅
+.jojo/hooks.yml ✅
 
-ShellRunner
-Timeout
-Output parser
-Matcher
-Project fingerprint trust
+ShellRunner ✅
+Timeout ✅
+Output parser ✅
+Matcher ✅
+Project fingerprint trust ✅
 ```
 
 Desktop：
 
 ```text
-Trust dialog
+Trust dialog ✅
 Reload
 Status
 ```
@@ -4255,8 +4260,8 @@ Status
 验收：
 
 ```text
-用户可以不改代码配置 Hooks
-恶意 Project Hook 默认不执行
+用户可以不改代码配置 Hooks ✅
+恶意 Project Hook 默认不执行 ✅
 ```
 
 ---
@@ -4266,10 +4271,10 @@ Status
 实现：
 
 ```text
-HookInvocationStore
-SQLite table
-resume reuse
-async jobs
+HookInvocationStore ✅
+SQLite table ✅
+resume reuse ✅
+async jobs          # 简化版：invocation + defer，无 hook_jobs
 lease
 retry
 ```
@@ -4277,8 +4282,8 @@ retry
 接入：
 
 ```text
-Stop async
-SubagentStop async
+Stop async ✅
+SubagentStop async ✅
 ```
 
 验收：
@@ -4290,14 +4295,14 @@ Tool 不因 Hook 恢复被重复执行
 
 ---
 
-## Phase 4：PreCompact + Context Entry
+## Phase 4：PreCompact + Context Entry ✅
 
 实现：
 
 ```text
-HookContextEntry
-Context Projection
-PreCompact callback
+HookContextEntry ✅
+Context Projection ✅
+PreCompact callback ✅
 ```
 
 把 Additional Context 从：
@@ -4309,7 +4314,7 @@ PreCompact callback
 升级为：
 
 ```text
-Durable provenance entry
+Durable provenance entry ✅
 ```
 
 ---
@@ -4338,7 +4343,7 @@ registerCommand()
 
 # 62. 推荐 PR 拆分
 
-## PR 1
+## PR 1 ✅
 
 ```text
 feat(hooks): add hook contracts and noop runtime port
@@ -4355,7 +4360,7 @@ tests
 
 ---
 
-## PR 2
+## PR 2 ✅
 
 ```text
 feat(hooks): add typed in-process hook engine
@@ -4376,7 +4381,7 @@ Stop
 
 ---
 
-## PR 3
+## PR 3 ✅
 
 ```text
 feat(hooks): integrate hook decisions with permission gate
@@ -4390,7 +4395,7 @@ Hook approve cannot override deny
 
 ---
 
-## PR 4
+## PR 4 ✅
 
 ```text
 feat(hooks): add shell hooks and layered config
@@ -4407,7 +4412,7 @@ timeouts
 
 ---
 
-## PR 5
+## PR 5 ✅
 
 ```text
 feat(hooks): add project hook trust
@@ -4423,7 +4428,7 @@ desktop approval
 
 ---
 
-## PR 6
+## PR 6（invocation store / resume ✅；独立 async job 队列未建）
 
 ```text
 feat(hooks): make hook execution durable
@@ -4439,7 +4444,7 @@ resume
 
 ---
 
-## PR 7
+## PR 7 ✅
 
 ```text
 feat(hooks): add pre-compact and durable context injection
@@ -4451,29 +4456,29 @@ feat(hooks): add pre-compact and durable context injection
 
 第一阶段可以称为 Hooks MVP，需要满足：
 
-- [ ] 存在 `HookRuntime` Port；
-- [ ] 没有 Hook 时 Agent 行为与现有版本一致；
-- [ ] 支持 `UserPromptSubmit`；
-- [ ] 支持 `PreToolUse`；
-- [ ] 支持 `PostToolUse`；
-- [ ] 支持 `Stop`；
-- [ ] 支持 `SubagentStop`；
-- [ ] 支持用户 `~/.jojo/hooks.yml`；
-- [ ] 支持项目 `.jojo/hooks.yml`；
-- [ ] Project Hook 默认不可信；
-- [ ] Project Hook 修改后 Trust 自动失效；
-- [ ] Shell Hook 默认 5s timeout；
-- [ ] Shell Hook 最大 30s；
-- [ ] Hook stdout 有硬大小限制；
-- [ ] Hook Process cancel 后无残留子进程；
-- [ ] Hook 环境不包含 Provider Secret；
-- [ ] `exit 2` 可以 block Tool；
-- [ ] `approve` 不能覆盖 Permission `deny`；
-- [ ] Hook Error 默认不导致 Turn Failed；
-- [ ] Sub-Agent 使用相同 Hook Runtime；
-- [ ] Hook Payload 包含 Lane / Operation / Agent Kind；
-- [ ] Runtime Resume 不会无条件重复 PreToolUse；
-- [ ] 有对应 Unit / Integration / Resume Test。
+- [x] ✅ 存在 `HookRuntime` Port；
+- [x] ✅ 没有 Hook 时 Agent 行为与现有版本一致；
+- [x] ✅ 支持 `UserPromptSubmit`；
+- [x] ✅ 支持 `PreToolUse`；
+- [x] ✅ 支持 `PostToolUse`；
+- [x] ✅ 支持 `Stop`；
+- [x] ✅ 支持 `SubagentStop`；
+- [x] ✅ 支持用户 `~/.jojo/hooks.yml`；
+- [x] ✅ 支持项目 `.jojo/hooks.yml`；
+- [x] ✅ Project Hook 默认不可信；
+- [x] ✅ Project Hook 修改后 Trust 自动失效；
+- [x] ✅ Shell Hook 默认 5s timeout；
+- [x] ✅ Shell Hook 最大 30s；
+- [x] ✅ Hook stdout 有硬大小限制；
+- [x] ✅ Hook Process cancel 后无残留子进程；（已实现 process group kill，缺子进程残留测试）
+- [x] ✅ Hook 环境不包含 Provider Secret；
+- [x] ✅ `exit 2` 可以 block Tool；
+- [x] ✅ `approve` 不能覆盖 Permission `deny`；
+- [x] ✅ Hook Error 默认不导致 Turn Failed；
+- [x] ✅ Sub-Agent 使用相同 Hook Runtime；
+- [x] ✅ Hook Payload 包含 Lane / Operation / Agent Kind；
+- [x] ✅ Runtime Resume 不会无条件重复 PreToolUse；（engine + SQLite 去重已落地）
+- [x] ✅ 有对应 Unit / Integration / Resume Test。
 
 ---
 
@@ -4723,27 +4728,27 @@ apps/desktop/src/worker/
 如果从现在开始实际开发，建议严格按下面顺序：
 
 ```text
-1. contracts/hooks.ts
+1. contracts/hooks.ts ✅
         ↓
-2. HookRuntime + NoopHookRuntime
+2. HookRuntime + NoopHookRuntime ✅
         ↓
-3. packages/hooks Typed Engine
+3. packages/hooks Typed Engine ✅
         ↓
-4. PreToolUse 接到 agent-runtime
+4. PreToolUse 接到 agent-runtime ✅
         ↓
-5. Permission 集成测试
+5. Permission 集成测试 ✅
         ↓
-6. UserPromptSubmit / PostToolUse / Stop
+6. UserPromptSubmit / PostToolUse / Stop ✅
         ↓
-7. ShellRunner
+7. ShellRunner ✅
         ↓
-8. hooks.yml
+8. hooks.yml ✅
         ↓
-9. Project Trust
+9. Project Trust ✅
         ↓
-10. Durable Invocation / Async Queue
+10. Durable Invocation / Async Queue   # invocation ✅；独立 queue 未建
         ↓
-11. PreCompact
+11. PreCompact ✅
         ↓
 12. TypeScript Extension Bridge
 ```
