@@ -399,7 +399,7 @@ describe('agent runtime hook integration', () => {
     const failHooks = new ScriptedHooks(['Stop']);
     const store = new MemoryAgentRuntimeStore();
     const failing: ModelProvider = {
-      async *stream() { throw new Error('provider exploded'); }
+      stream() { throw new Error('provider exploded'); }
     };
     await expect(runAgentTurn(options(failing, failHooks, {
       runtimeStore: store, tools: [], operationId: 'operation-fail'
