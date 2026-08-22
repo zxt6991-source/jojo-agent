@@ -5,17 +5,19 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  ApprovalInputSchema, BrowserDockActionSchema, BrowserDockLayoutSchema, CreateSessionInputSchema, CreateSkillInputSchema, DeleteMemoryEntryInputSchema, GetExtensionStatusInputSchema, GetHookStatusInputSchema, GetMemoryStatusInputSchema, HookProjectActionInputSchema, ImportSkillInputSchema, IPC, ListModelsInputSchema, MAX_IMAGE_ATTACHMENTS, MAX_IMAGE_BYTES, McpServerIdInputSchema, OpenHookConfigInputSchema, RebuildMemoryIndexInputSchema, RenameSessionInputSchema, SaveExtensionSettingsInputSchema, SaveMemorySettingsInputSchema, SaveSettingsInputSchema,
+  ApprovalInputSchema, BrowserDockActionSchema, BrowserDockLayoutSchema, CreateSessionInputSchema, CreateSkillInputSchema, DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS, DEFAULT_MODEL_MAX_OUTPUT_TOKENS, DeleteMemoryEntryInputSchema, GetExtensionStatusInputSchema, GetHookStatusInputSchema, GetMemoryStatusInputSchema, HookProjectActionInputSchema, ImportSkillInputSchema, IPC, ListModelsInputSchema, MAX_IMAGE_ATTACHMENTS, MAX_IMAGE_BYTES, McpServerIdInputSchema, OpenHookConfigInputSchema, RebuildMemoryIndexInputSchema, RenameSessionInputSchema, SaveExtensionSettingsInputSchema, SaveMemorySettingsInputSchema, SaveSettingsInputSchema,
   SessionIdInputSchema, SkillPathInputSchema, StartTurnInputSchema, UpdateSkillInputSchema, WorkflowRunActionInputSchema,
-  type ExtensionStatus, type MemoryStatusSnapshot, type ProviderSettings, type WorkerCommand, type WorkerMessage, type WorkflowRunSnapshot
+  type ExtensionStatus, type MemoryStatusSnapshot, type ProviderSettings, type SessionCompactionRecord, type WorkerCommand, type WorkerMessage, type WorkflowRunSnapshot
 } from '@desktop-agent/contracts';
 import { z } from 'zod';
 import { createProvider } from '@desktop-agent/providers';
 import { createSkillSource, discoverSkills, parseSkillSource, skillId, userSkillDirectories, type SkillDirectory } from '@desktop-agent/extensions';
 import { EMPTY_HOOK_CONFIG, FileHookTrustStore, loadHookSettings } from '@desktop-agent/hooks';
 import { JsonConfigStore, JsonlSessionStore } from '@desktop-agent/storage';
+import { SqliteAgentRuntimeStore } from '@desktop-agent/storage/sqlite-runtime-store';
 import { createProjectIdentity } from '@desktop-agent/memory';
 import { collectWorkspaceChanges } from './workspace-changes';
+import { renderConversationTrajectoryMarkdown, trajectoryExportFilename } from './conversation-export';
 import { BrowserRuntime } from './browser-runtime';
 import { mapChromeCdpError, probeChromeCdp } from './browser-backends/chrome-cdp-client';
 
@@ -32,6 +34,7 @@ let browserRuntime: BrowserRuntime | null = null;
 let secretPath: string;
 let legacySecretPath: string;
 let mcpOAuthSecretPath: string;
+let runtimeDatabasePath: string;
 let extensionStatus: ExtensionStatus = { mcpServers: [], skills: [] };
 let visibleSkillPaths = new Map<string, ExtensionStatus['skills'][number]>();
 const oauthRequests = new Map<string, {
@@ -61,6 +64,22 @@ function assertTrusted(event: IpcMainInvokeEvent): void {
   const url = event.senderFrame?.url ?? '';
   if (!(url.startsWith('file://') || url.startsWith('http://localhost:') || url.startsWith('http://127.0.0.1:'))) {
     throw new Error('Untrusted IPC origin.');
+  }
+}
+
+async function loadSessionCompactions(sessionId: string): Promise<SessionCompactionRecord[]> {
+  const runtimeStore = new SqliteAgentRuntimeStore(runtimeDatabasePath);
+  try {
+    const lane = await runtimeStore.getLane(sessionId, 'main');
+    if (!lane) return [];
+    return (await runtimeStore.readPath(lane.leafId)).flatMap((entry) => entry.type === 'compaction' ? [{
+      id: entry.id,
+      createdAt: new Date(entry.createdAt).toISOString(),
+      summary: entry.summary,
+      tokensBefore: entry.tokensBefore
+    }] : []);
+  } finally {
+    runtimeStore.close();
   }
 }
 
@@ -435,6 +454,30 @@ function registerIpc(): void {
     assertTrusted(event); const { sessionId } = SessionIdInputSchema.parse({ sessionId: raw });
     return sessionStore.messages(sessionId);
   });
+  ipcMain.handle(IPC.loadSessionCompactions, async (event, raw) => {
+    assertTrusted(event); const { sessionId } = SessionIdInputSchema.parse({ sessionId: raw });
+    return loadSessionCompactions(sessionId);
+  });
+  ipcMain.handle(IPC.exportSessionTrajectory, async (event, raw) => {
+    assertTrusted(event); const { sessionId } = SessionIdInputSchema.parse({ sessionId: raw });
+    const loaded = await sessionStore.load(sessionId);
+    if (!loaded.meta) throw new Error('Session not found.');
+    const session = (await sessionStore.list()).find((item) => item.id === sessionId) ?? loaded.meta;
+    const selected = await dialog.showSaveDialog(mainWindow!, {
+      title: '导出会话轨迹',
+      defaultPath: path.join(app.getPath('downloads'), trajectoryExportFilename(session.title)),
+      buttonLabel: '导出',
+      filters: [{ name: 'Markdown', extensions: ['md'] }]
+    });
+    if (selected.canceled || !selected.filePath) return { canceled: true };
+    const content = renderConversationTrajectoryMarkdown({
+      session,
+      messages: loaded.messages,
+      compactions: await loadSessionCompactions(sessionId)
+    });
+    await writeFile(selected.filePath, content, { encoding: 'utf8', mode: 0o600 });
+    return { canceled: false, path: selected.filePath };
+  });
   ipcMain.handle(IPC.getWorkspaceChanges, async (event, raw) => {
     assertTrusted(event); const { sessionId } = SessionIdInputSchema.parse({ sessionId: raw });
     const session = await sessionStore.get(sessionId);
@@ -511,8 +554,8 @@ function registerIpc(): void {
     return createProvider({
       id: configured?.id ?? 'discovery', name: configured?.name ?? 'Provider', protocol: input.protocol,
       baseUrl: input.baseUrl, model: configured?.model ?? 'discovery', models: configured?.models ?? ['discovery'],
-      contextWindowTokens: configured?.contextWindowTokens ?? 128_000,
-      maxOutputTokens: configured?.maxOutputTokens ?? 8_192, hasApiKey: true
+      contextWindowTokens: configured?.contextWindowTokens ?? DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS,
+      maxOutputTokens: configured?.maxOutputTokens ?? DEFAULT_MODEL_MAX_OUTPUT_TOKENS, hasApiKey: true
     }, apiKey, 15_000).listModels();
   });
   ipcMain.handle(IPC.saveSettings, async (event, raw) => {
@@ -821,6 +864,7 @@ else {
     secretPath = path.join(dataDirectory, 'secrets', 'provider-keys.bin');
     legacySecretPath = path.join(dataDirectory, 'secrets', 'provider-key.bin');
     mcpOAuthSecretPath = path.join(dataDirectory, 'secrets', 'mcp-oauth.bin');
+    runtimeDatabasePath = path.join(dataDirectory, 'runtime', 'agent-runtime.sqlite');
     registerIpc(); startWorker(); createWindow();
   });
   app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });

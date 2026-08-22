@@ -6,6 +6,9 @@ export type ProgressState = {
   toolCallCounts: Record<string, number>;
   observationFingerprints: string[];
   recoveryStepsRemaining: number | null;
+  /** Current soft limit for a dynamically extended Agent Loop. Missing on legacy operations. */
+  iterationLimit?: number;
+  lastToolRoundMadeProgress?: boolean;
 };
 
 type OperationCursor = {
@@ -33,6 +36,7 @@ export type ModelPendingState = RunningState & {
     toolNames: string[];
     maxOutputTokens: number;
     finalResponseOnly: boolean;
+    finalResponseReason?: FinalResponseReason;
   };
   attempt: number;
 };
@@ -141,11 +145,12 @@ export type OperationState =
 
 export type TerminalOperationState = CompletedState | FailedState | AbortedState;
 
-export function emptyProgressState(): ProgressState {
+export function emptyProgressState(iterationLimit?: number): ProgressState {
   return {
     toolCallCounts: {},
     observationFingerprints: [],
-    recoveryStepsRemaining: null
+    recoveryStepsRemaining: null,
+    ...(iterationLimit === undefined ? {} : { iterationLimit })
   };
 }
 

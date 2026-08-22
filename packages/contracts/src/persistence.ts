@@ -5,6 +5,8 @@ import { DEFAULT_MEMORY_SETTINGS, MemorySettingsSchema, ProjectIdentitySchema } 
 
 export const DEFAULT_SESSION_TITLE = '新会话';
 export const SESSION_TITLE_MAX_LENGTH = 120;
+export const DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS = 128_000;
+export const DEFAULT_MODEL_MAX_OUTPUT_TOKENS = 8_192;
 
 export function projectNameFromDirectory(workingDirectory: string): string {
   return workingDirectory.split(/[\\/]/).filter(Boolean).pop() ?? workingDirectory;
@@ -67,7 +69,9 @@ export const DEFAULT_PROVIDERS: ProviderConfig[] = [
   {
     id: 'openai', name: 'OpenAI / 兼容服务', protocol: 'openai_chat_completions',
     baseUrl: 'https://api.openai.com/v1', model: 'gpt-5-mini', models: ['gpt-5-mini'],
-    contextWindowTokens: 128_000, maxOutputTokens: 8_192, hasApiKey: false
+    contextWindowTokens: DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS,
+    maxOutputTokens: DEFAULT_MODEL_MAX_OUTPUT_TOKENS,
+    hasApiKey: false
   }
 ];
 

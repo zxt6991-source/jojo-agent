@@ -50,6 +50,7 @@ export {
   planToolCalls,
   prepareToolEffect,
   resolveToolPermission,
+  setIterationLimit,
   settleToolWithoutEffect,
   settleToolEffect
 } from './operation/reducer.js';

@@ -78,6 +78,23 @@ describe('conversation snapshot', () => {
     expect(compactionBody('[Compacted conversation context]\nEarlier work on auth.\n[End compacted context]')).toBe('Earlier work on auth.');
   });
 
+  it('merges durable runtime compactions into their chronological stream position', () => {
+    const snapshot = buildConversationSnapshot({
+      messages: [
+        { ...user('u1', '第一问'), createdAt: '2026-08-15T02:00:00.000Z' },
+        { ...assistant('a1', '答一'), createdAt: '2026-08-15T02:01:00.000Z' },
+        { ...user('u2', '第二问'), createdAt: '2026-08-15T02:03:00.000Z' }
+      ],
+      compactions: [{
+        id: 'compact-1', createdAt: '2026-08-15T02:02:00.000Z',
+        summary: '保留第一问的约束。', tokensBefore: 14_000
+      }]
+    });
+
+    expect(snapshot.nodes.map((node) => node.kind)).toEqual(['user', 'assistant', 'compaction', 'user']);
+    expect(snapshot.nodes[2]).toMatchObject({ kind: 'compaction', summary: '保留第一问的约束。' });
+  });
+
   it('appends live steps without duplicating persisted tools', () => {
     const snapshot = buildConversationSnapshot({
       running: true,

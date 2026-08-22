@@ -20,11 +20,17 @@ function assertMutable(state: OperationState): void {
   }
 }
 
-export function createReadyState(operationId: string, lane = 'main'): ReadyState {
+export function createReadyState(operationId: string, lane = 'main', iterationLimit?: number): ReadyState {
   return {
     phase: 'ready', operationId, lane, iteration: 0, outputContinuations: 0,
-    progress: emptyProgressState()
+    progress: emptyProgressState(iterationLimit)
   };
+}
+
+export function setIterationLimit(state: ReadyState | CheckpointState, iterationLimit: number): ReadyState | CheckpointState {
+  const next = { ...state, progress: { ...state.progress, iterationLimit } };
+  assertOperationState(next);
+  return next;
 }
 
 export function beginModelRequest(
@@ -37,6 +43,7 @@ export function beginModelRequest(
     toolNames: string[];
     maxOutputTokens: number;
     finalResponseOnly: boolean;
+    finalResponseReason?: FinalResponseReason;
   }
 ): ModelPendingState {
   assertMutable(state);
@@ -49,7 +56,8 @@ export function beginModelRequest(
       model: input.model,
       toolNames: [...input.toolNames],
       maxOutputTokens: input.maxOutputTokens,
-      finalResponseOnly: input.finalResponseOnly
+      finalResponseOnly: input.finalResponseOnly,
+      ...(input.finalResponseReason ? { finalResponseReason: input.finalResponseReason } : {})
     },
     attempt: state.phase === 'model_pending' ? state.attempt + 1 : 1
   };
@@ -153,7 +161,15 @@ export function markToolInterrupted(state: ToolsState, callId: string): ToolsSta
 }
 
 function nextProgress(state: ToolsState): ProgressState {
-  const progress = { ...state.progress };
+  const nonProgressCodes = new Set([
+    'no_progress', 'permission_denied', 'user_denied', 'hook_blocked', 'cancelled'
+  ]);
+  const progress = {
+    ...state.progress,
+    lastToolRoundMadeProgress: state.calls.some((call) =>
+      Boolean(call.result) && !nonProgressCodes.has(call.result?.code ?? '')
+    )
+  };
   if (state.noProgressDetected && progress.recoveryStepsRemaining === null) {
     progress.recoveryStepsRemaining = 2;
   } else if (progress.recoveryStepsRemaining !== null) {
@@ -183,7 +199,8 @@ export function advanceTool(state: ToolsState): ToolsState | CheckpointState {
 
 export function continueOutput(
   state: ModelPendingState,
-  finalResponseOnly: boolean
+  finalResponseOnly: boolean,
+  finalResponseReason?: FinalResponseReason
 ): ReadyState | FinalResponseState {
   const shared = {
     operationId: state.operationId,
@@ -193,12 +210,12 @@ export function continueOutput(
     progress: state.progress
   };
   return finalResponseOnly
-    ? { phase: 'final_response', ...shared, reason: 'no_progress' }
+    ? { phase: 'final_response', ...shared, reason: finalResponseReason ?? 'no_progress' }
     : { phase: 'ready', ...shared };
 }
 
 export function enterFinalResponse(
-  state: CheckpointState,
+  state: ReadyState | CheckpointState,
   reason: FinalResponseReason
 ): FinalResponseState {
   return { ...state, phase: 'final_response', reason };

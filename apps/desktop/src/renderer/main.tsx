@@ -1,7 +1,7 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import type {
-  AgentEvent, ApprovalRequest, BrowserDockState, ExtensionSettings, ExtensionStatus, HookSettingsSnapshot, ImageContentBlock, MemorySettings, MemoryStatusSnapshot, Message, ProviderConfig, ProviderSettings, SessionMeta, SkillDetail, SkillStatus, WorkflowRunSnapshot, WorkspaceChanges
+  AgentEvent, ApprovalRequest, BrowserDockState, ExtensionSettings, ExtensionStatus, HookSettingsSnapshot, ImageContentBlock, MemorySettings, MemoryStatusSnapshot, Message, ProviderConfig, ProviderSettings, SessionCompactionRecord, SessionMeta, SkillDetail, SkillStatus, WorkflowRunSnapshot, WorkspaceChanges
 } from '@desktop-agent/contracts';
 import { DEFAULT_BROWSER_SETTINGS, DEFAULT_MEMORY_SETTINGS, DEFAULT_PROVIDERS, DEFAULT_SESSION_TITLE } from '@desktop-agent/contracts';
 import {
@@ -18,6 +18,7 @@ import { MemorySettingsPage } from './MemorySettings';
 import { ChatTranscript, ConversationViewTabs, Markdown, TrajectoryView } from './ConversationViews';
 import { Sidebar } from './Sidebar';
 import { WorkflowCard } from './WorkflowCard';
+import { filterVisibleSkills } from './skill-catalog';
 import { mergeWorkflowSnapshot, workflowsByConversationTurn, workflowsForSession } from './workflow-state';
 import './styles.css';
 
@@ -426,10 +427,12 @@ function App() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const activeIdRef = useRef<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
+  const [compactions, setCompactions] = useState<SessionCompactionRecord[]>([]);
   const [draft, setDraft] = useState('');
   const [attachments, setAttachments] = useState<ImageContentBlock[]>([]);
   const [liveSteps, setLiveSteps] = useState<LiveStep[]>([]);
   const [conversationView, setConversationView] = useState<ConversationViewMode>('chat');
+  const [trajectoryExportStatus, setTrajectoryExportStatus] = useState<'idle' | 'exporting' | 'done'>('idle');
   const [inspectedId, setInspectedId] = useState<string | null>(null);
   const [turnStartedAt, setTurnStartedAt] = useState<number | null>(null);
   const [approval, setApproval] = useState<ApprovalRequest | null>(null);
@@ -484,7 +487,18 @@ function App() {
   const [reviewPath, setReviewPath] = useState('');
   const [browserDock, setBrowserDock] = useState<BrowserDockState | null>(null);
   const [usage, setUsage] = useState({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
-  const [contextUsage, setContextUsage] = useState<{ estimated: number; window: number; compacted: number } | null>(null);
+  const [contextUsage, setContextUsage] = useState<{
+    estimated: number;
+    window: number;
+    compacted: number;
+    fixed: number;
+    target: number;
+    messageBudget: number;
+    overCapacity: boolean;
+    iteration: number;
+    maxIterations: number;
+    finalResponseOnly: boolean;
+  } | null>(null);
   const [workflows, setWorkflows] = useState<WorkflowRunSnapshot[]>([]);
   const conversationRef = useRef<HTMLDivElement>(null);
   const atBottomRef = useRef(true);
@@ -616,18 +630,22 @@ function App() {
   };
 
   const selectSession = async (id: string) => {
-    activeIdRef.current = id; turnBaselineRef.current = null; setActiveId(id); setError(''); setWorkspaceChangesError(''); setLiveSteps([]); setTurnStartedAt(null); setInspectedId(null); setReviewOpen(false); setWorkspaceChanges(null); setAttachments([]);
+    activeIdRef.current = id; turnBaselineRef.current = null; setActiveId(id); setError(''); setWorkspaceChangesError(''); setLiveSteps([]); setTurnStartedAt(null); setInspectedId(null); setReviewOpen(false); setWorkspaceChanges(null); setAttachments([]); setTrajectoryExportStatus('idle');
+    setMessages([]);
+    setCompactions([]);
     const directory = sessionDirectoriesRef.current.get(id);
     if (directory) setCollapsedProjects((items) => items.filter((path) => path !== directory));
     setUsage({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
     setContextUsage(null);
-    const [nextMessages, nextChanges, nextWorkflows] = await Promise.all([
+    const [nextMessages, nextCompactions, nextChanges, nextWorkflows] = await Promise.all([
       window.desktopAgent.loadMessages(id),
+      window.desktopAgent.loadSessionCompactions(id),
       loadWorkspaceChanges(id),
       window.desktopAgent.listWorkflowRuns(id)
     ]);
     if (activeIdRef.current !== id) return;
     setMessages(nextMessages);
+    setCompactions(nextCompactions);
     setWorkspaceChanges(nextChanges);
     setWorkflows((items) => [
       ...items.filter((workflow) => workflow.sessionId !== id),
@@ -672,7 +690,18 @@ function App() {
         input: current.input + (event.inputTokens ?? 0), output: current.output + (event.outputTokens ?? 0),
         cacheRead: current.cacheRead + (event.cacheReadInputTokens ?? 0), cacheWrite: current.cacheWrite + (event.cacheWriteInputTokens ?? 0)
       }));
-      else if (event.type === 'context.updated') setContextUsage({ estimated: event.estimatedTokens, window: event.contextWindowTokens, compacted: event.compactedMessages });
+      else if (event.type === 'context.updated') setContextUsage({
+        estimated: event.estimatedTokens,
+        window: event.contextWindowTokens,
+        compacted: event.compactedMessages,
+        fixed: event.fixedTokens ?? 0,
+        target: event.targetTokens ?? event.contextWindowTokens,
+        messageBudget: event.messageBudgetTokens ?? event.contextWindowTokens,
+        overCapacity: event.overCapacity === true,
+        iteration: event.iteration ?? 0,
+        maxIterations: event.maxIterations ?? 0,
+        finalResponseOnly: event.finalResponseOnly === true
+      });
       else if (event.type === 'turn.failed') { setError(event.message); runningRef.current = false; setRunningSessionId(null); setTurnStartedAt(null); setApproval(null); void reloadActive(); }
       else if (event.type === 'turn.completed' || event.type === 'turn.cancelled') { runningRef.current = false; setRunningSessionId(null); setTurnStartedAt(null); setApproval(null); void reloadActive(); }
     });
@@ -719,12 +748,14 @@ function App() {
   const reloadActive = async () => {
     const id = activeIdRef.current;
     if (id) {
-      const [nextMessages, nextChanges] = await Promise.all([
+      const [nextMessages, nextCompactions, nextChanges] = await Promise.all([
         window.desktopAgent.loadMessages(id),
+        window.desktopAgent.loadSessionCompactions(id),
         loadWorkspaceChanges(id)
       ]);
       if (activeIdRef.current === id) {
         setMessages(nextMessages);
+        setCompactions(nextCompactions);
         const visibleChanges = nextChanges && turnBaselineRef.current ? changesSince(turnBaselineRef.current, nextChanges) : nextChanges;
         setWorkspaceChanges(visibleChanges);
         setReviewPath((current) => visibleChanges?.files.some((file) => file.path === current) ? current : (visibleChanges?.files[0]?.path ?? ''));
@@ -819,6 +850,7 @@ function App() {
       setRunningSessionId(null);
       setApproval(null);
       setMessages([]);
+      setCompactions([]);
       setWorkspaceChanges(null);
       setReviewOpen(false);
       setLiveSteps([]);
@@ -841,7 +873,7 @@ function App() {
     const images = attachments;
     if ((!text && images.length === 0) || !activeId || runningRef.current) return;
     runningRef.current = true;
-    setDraft(''); setAttachments([]); setError(''); setRunningSessionId(activeId); setLiveSteps(emptyLiveSteps()); setTurnStartedAt(Date.now()); setUsage({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }); setContextUsage(null); atBottomRef.current = true; setAtBottom(true);
+    setDraft(''); setAttachments([]); setError(''); setRunningSessionId(activeId); setLiveSteps(emptyLiveSteps()); setTurnStartedAt(Date.now()); setUsage({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }); setContextUsage(null); setTrajectoryExportStatus('idle'); atBottomRef.current = true; setAtBottom(true);
     setMessages((items) => [...items, { id: `pending-${Date.now()}`, role: 'user', createdAt: new Date().toISOString(), content: [...(text ? [{ type: 'text' as const, text }] : []), ...images] }]);
     try {
       turnBaselineRef.current = await loadWorkspaceChanges(activeId);
@@ -862,12 +894,15 @@ function App() {
   const visibleDock = browserDock && activeId && browserDock.sessionId === activeId ? browserDock : null;
   const browsing = Boolean(visibleDock);
   const visibleWorkflows = useMemo(() => workflowsForSession(workflows, activeId), [workflows, activeId]);
+  const visibleSkills = useMemo(() => filterVisibleSkills(extensionStatus.skills), [extensionStatus.skills]);
+  const filteredVisibleSkills = useMemo(() => filterVisibleSkills(extensionStatus.skills, extensionSearch), [extensionStatus.skills, extensionSearch]);
   const snapshot = useMemo(() => buildConversationSnapshot({
     messages,
+    compactions,
     liveSteps: sessionBusy ? liveSteps : [],
     running: sessionBusy,
     ...(active?.workingDirectory ? { workingDirectory: active.workingDirectory } : {})
-  }), [messages, liveSteps, sessionBusy, active?.workingDirectory]);
+  }), [messages, compactions, liveSteps, sessionBusy, active?.workingDirectory]);
   const workflowsByTurn = useMemo(
     () => workflowsByConversationTurn(visibleWorkflows, snapshot.turns),
     [visibleWorkflows, snapshot.turns]
@@ -897,6 +932,19 @@ function App() {
     setAtBottom(false);
     setInspectedId(id);
     setConversationView('trajectory');
+  };
+
+  const exportTrajectory = async () => {
+    if (!activeId || sessionBusy || messages.length === 0 || trajectoryExportStatus === 'exporting') return;
+    setTrajectoryExportStatus('exporting');
+    setError('');
+    try {
+      const result = await window.desktopAgent.exportSessionTrajectory(activeId);
+      setTrajectoryExportStatus(result.canceled ? 'idle' : 'done');
+    } catch (cause) {
+      setTrajectoryExportStatus('idle');
+      setError(cause instanceof Error ? cause.message : String(cause));
+    }
   };
 
   const openReview = (path?: string) => {
@@ -969,7 +1017,16 @@ function App() {
       {active ? <>
         <header className="topbar">
           <div><h1>{active.title}</h1><div className="working-directory">{active.workingDirectory}</div></div>
-          <ConversationViewTabs mode={conversationView} onChange={setConversationView} />
+          <div className="topbar-actions">
+            <ConversationViewTabs mode={conversationView} onChange={setConversationView} />
+            <button
+              type="button"
+              className={`trajectory-export ${trajectoryExportStatus === 'done' ? 'done' : ''}`}
+              disabled={sessionBusy || messages.length === 0 || trajectoryExportStatus === 'exporting'}
+              title={sessionBusy ? '当前轮次结束后可导出完整轨迹' : '将当前会话的完整轨迹导出为 Markdown'}
+              onClick={() => void exportTrajectory()}
+            >{trajectoryExportStatus === 'exporting' ? '导出中…' : trajectoryExportStatus === 'done' ? '已导出' : '导出轨迹'}</button>
+          </div>
         </header>
         <div className={`workspace-content ${browsing ? 'browsing' : reviewOpen ? 'reviewing' : ''}`}>
         <div className="chat-pane">
@@ -1005,7 +1062,7 @@ function App() {
           <textarea value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="随心输入" rows={2}
             onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void send(); } }} />
           <div className="composer-toolbar">
-            <div className="composer-context"><span className="approval-status">⌁ 文件修改与 Terminal 需批准</span>{contextUsage && <span className="context-status" title={contextUsage.compacted ? `已压缩 ${contextUsage.compacted} 条历史消息` : '上下文估算'}>{Math.round(contextUsage.estimated / 1000)}k / {Math.round(contextUsage.window / 1000)}k</span>}{(usage.input > 0 || usage.output > 0) && <span className="context-status" title={`缓存读取 ${usage.cacheRead} · 缓存写入 ${usage.cacheWrite}`}>↑{usage.input} ↓{usage.output}</span>}</div>
+            <div className="composer-context"><span className="approval-status">⌁ 文件修改与 Terminal 需批准</span>{contextUsage && <span className={`context-status ${contextUsage.overCapacity ? 'over-capacity' : ''}`} title={contextUsage.overCapacity ? `固定指令与工具定义约 ${contextUsage.fixed} tokens，已超过可用目标 ${contextUsage.target} tokens。请提高上下文窗口或减少工具。` : contextUsage.compacted ? `已压缩 ${contextUsage.compacted} 条历史消息；消息预算 ${contextUsage.messageBudget} tokens` : `上下文估算；消息预算 ${contextUsage.messageBudget} tokens`}>{contextUsage.overCapacity ? '容量不足 · ' : ''}{Math.round(contextUsage.estimated / 1000)}k / {Math.round(contextUsage.window / 1000)}k{contextUsage.maxIterations > 0 ? ` · Loop ${contextUsage.iteration}/${contextUsage.maxIterations}${contextUsage.finalResponseOnly ? ' 收尾' : ''}` : ''}</span>}{(usage.input > 0 || usage.output > 0) && <span className="context-status" title={`缓存读取 ${usage.cacheRead} · 缓存写入 ${usage.cacheWrite}`}>↑{usage.input} ↓{usage.output}</span>}</div>
             <div className="composer-actions">
               <button className="attach" type="button" aria-label="添加图片" title="添加图片（最多 4 张，每张 10 MB）" disabled={sessionBusy || attachments.length >= 4} onClick={async () => {
                 try {
@@ -1226,7 +1283,7 @@ function App() {
             </div>}
         </div>
         <div className="extensions-toolbar">
-          <span className="extension-scope">{settingsSection === 'skills' ? `${extensionStatus.skills.length} 个已发现技能` : '用户级服务'}</span>
+          <span className="extension-scope">{settingsSection === 'skills' ? `${visibleSkills.length} 个已发现技能` : '用户级服务'}</span>
           {(extensionDraft.mcpServers.length > 0 || settingsSection === 'skills') && <label className="extension-search"><span aria-hidden="true">⌕</span><input value={extensionSearch} onChange={(event) => setExtensionSearch(event.target.value)} placeholder={settingsSection === 'skills' ? '搜索技能' : '搜索 MCP'} aria-label={settingsSection === 'skills' ? '搜索技能' : '搜索 MCP'} /></label>}
         </div>
         {extensionEditorOpen && settingsSection === 'skills' && <section className="extension-editor skill-editor" aria-label="Skill 目录设置">
@@ -1234,16 +1291,13 @@ function App() {
           <textarea className="skill-directories" value={skillDirectories} onChange={(event) => setSkillDirectories(event.target.value)} placeholder="/absolute/path/to/skills" aria-label="Skill 目录" />
         </section>}
       <section className="extension-catalog" aria-live="polite">
-        {settingsSection === 'skills' && extensionStatus.skills.filter((skill) => {
-          const query = extensionSearch.trim().toLowerCase();
-          return !query || `${skill.name} ${skill.description} ${skill.path}`.toLowerCase().includes(query);
-        }).map((skill) => {
-          const enabled = !extensionDraft.skills.disabled.includes(skill.id) && !skill.error && !skill.overriddenBy;
+        {settingsSection === 'skills' && filteredVisibleSkills.map((skill) => {
+          const enabled = !extensionDraft.skills.disabled.includes(skill.id) && !skill.error;
           return <article className="extension-item skill-item" key={`${skill.id}-${skill.path}`} title={skill.path} onClick={() => void openSkillDetail(skill)}>
             <ExtensionIcon kind="skill" />
             <div className="extension-item-copy"><strong>{skill.name}</strong><span>{skill.error || skill.description}</span></div>
-            <span className={`extension-item-meta ${skill.error ? 'failed' : ''}`}>{skill.error ? '错误' : skill.overriddenBy ? '已被覆盖' : skillScope(skill)}</span>
-            <button type="button" role="switch" aria-checked={enabled} aria-label={`${enabled ? '停用' : '启用'} ${skill.name}`} className={`extension-switch ${enabled ? 'on' : ''}`} disabled={Boolean(skill.error || skill.overriddenBy)} onClick={(event) => { event.stopPropagation(); setExtensionDraft((current) => ({
+            <span className={`extension-item-meta ${skill.error ? 'failed' : ''}`}>{skill.error ? '错误' : skillScope(skill)}</span>
+            <button type="button" role="switch" aria-checked={enabled} aria-label={`${enabled ? '停用' : '启用'} ${skill.name}`} className={`extension-switch ${enabled ? 'on' : ''}`} disabled={Boolean(skill.error)} onClick={(event) => { event.stopPropagation(); setExtensionDraft((current) => ({
               ...current,
               skills: {
                 ...current.skills,
@@ -1299,7 +1353,7 @@ function App() {
             </div>
           </article>;
         })}
-        {((settingsSection === 'skills' && extensionStatus.skills.filter((skill) => `${skill.name} ${skill.description} ${skill.path}`.toLowerCase().includes(extensionSearch.trim().toLowerCase())).length === 0)
+        {((settingsSection === 'skills' && filteredVisibleSkills.length === 0)
           || (settingsSection === 'mcp' && extensionDraft.mcpServers.filter((server) => `${server.name} ${server.id} ${server.transport === 'stdio' ? `${server.command} ${server.args.join(' ')}` : server.url}`.toLowerCase().includes(extensionSearch.trim().toLowerCase())).length === 0))
           && <div className="extension-empty-state"><span className="mcp-empty-illustration" aria-hidden="true"><i /><b /><em /></span><strong>{extensionSearch ? '没有匹配结果' : settingsSection === 'skills' ? '尚未发现 Skill' : '暂无 MCP 服务'}</strong><span>{extensionSearch ? '尝试其他关键词' : settingsSection === 'skills' ? '可通过 install_skill 或目录设置添加' : '点击右上角“添加”，在数据输入栏中配置服务'}</span></div>}
       </section>

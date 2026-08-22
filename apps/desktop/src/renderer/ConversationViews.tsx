@@ -203,9 +203,12 @@ export function TrajectoryView({
             onClick={() => onSelect(record.id)}
           >
             <span className="trajectory-index">#{record.index}</span>
+            <span className={`trajectory-loop ${record.finalResponseOnly ? 'final' : ''}`} aria-hidden={!record.iteration}>
+              {record.iteration ? `L${record.iteration}${record.finalResponseOnly ? ' 收尾' : ''}` : ''}
+            </span>
             <span className={`trajectory-tag ${record.kind}`}>{KIND_LABEL[record.kind]}</span>
             <span className="trajectory-text">{record.kind === 'tool' ? `${record.title} · ${record.summary}` : record.summary}</span>
-            {record.state && <span className={`trajectory-state ${record.state}`}>{record.state === 'ok' ? '完成' : record.state === 'warning' ? '无进展' : record.state === 'error' ? '失败' : record.state === 'running' ? '进行中' : '中断'}</span>}
+            <span className={`trajectory-state ${record.state ?? ''}`} aria-hidden={!record.state}>{record.state === 'ok' ? '完成' : record.state === 'warning' ? '无进展' : record.state === 'error' ? '失败' : record.state === 'running' ? '进行中' : record.state === 'stopped' ? '中断' : ''}</span>
           </button>;
         })}
       </section>)}

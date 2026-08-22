@@ -50,6 +50,10 @@ export const MessageSchema = z.object({
   role: z.enum(['user', 'assistant', 'tool']),
   content: z.array(ContentBlockSchema),
   createdAt: z.string().datetime(),
-  metadata: z.object({ internal: z.boolean().optional() }).optional()
+  metadata: z.object({
+    internal: z.boolean().optional(),
+    iteration: z.number().int().positive().optional(),
+    finalResponseOnly: z.boolean().optional()
+  }).optional()
 });
 export type Message = z.infer<typeof MessageSchema>;

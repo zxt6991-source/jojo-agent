@@ -34,6 +34,80 @@ function options(provider: ModelProvider, overrides: Partial<AgentRunOptions> = 
 }
 
 describe('runtime runner', () => {
+  it('extends the default soft Loop limit when tool rounds keep making progress', async () => {
+    const store = new MemoryAgentRuntimeStore();
+    const events: AgentEvent[] = [];
+    let requestIndex = 0;
+    const provider: ModelProvider = {
+      async *stream() {
+        if (requestIndex < 9) {
+          yield {
+            type: 'tool_call_completed',
+            call: { id: `dynamic-${requestIndex}`, name: 'echo', input: { value: requestIndex++ } }
+          } as const;
+          yield { type: 'response_completed', stopReason: 'tool_calls' } as const;
+          return;
+        }
+        yield { type: 'text_delta', text: 'done after the soft limit extended' } as const;
+        yield { type: 'response_completed', stopReason: 'stop' } as const;
+      }
+    };
+
+    const result = await runAgentTurn(options(provider, {
+      runtimeStore: store,
+      operationId: 'operation-dynamic-loop',
+      contextWindowTokens: 32_000,
+      maxOutputTokens: 8_192,
+      emit: (event) => events.push(event)
+    }));
+
+    expect(result.stopReason).toBe('stop');
+    expect(events.some((event) => event.type === 'context.updated' && event.maxIterations === 12)).toBe(true);
+    expect(await store.loadOperation('operation-dynamic-loop')).toMatchObject({
+      meta: {
+        maxIterations: 32,
+        config: {
+          dynamicIterationBudget: true,
+          initialIterationLimit: 8,
+          iterationExtensionStep: 4
+        }
+      }
+    });
+  });
+
+  it('uses a mandatory tool-free final response instead of failing at the iteration limit', async () => {
+    const store = new MemoryAgentRuntimeStore();
+    const requests: ModelRequest[] = [];
+    let requestIndex = 0;
+    const provider: ModelProvider = {
+      async *stream(request) {
+        requests.push(request);
+        if (requestIndex++ === 0) {
+          yield { type: 'tool_call_completed', call: { id: 'limit-call', name: 'echo', input: {} } };
+          yield { type: 'response_completed', stopReason: 'tool_calls' };
+        } else {
+          yield { type: 'text_delta', text: 'Partial result with a clear continuation step.' };
+          yield { type: 'response_completed', stopReason: 'stop' };
+        }
+      }
+    };
+
+    const result = await runAgentTurn(options(provider, {
+      runtimeStore: store,
+      operationId: 'operation-limit-final',
+      maxIterations: 1
+    }));
+
+    expect(requests).toHaveLength(2);
+    expect(requests[1]?.tools).toEqual([]);
+    expect(requests[1]?.instructions?.join('\n')).toContain('mandatory tool-free final response');
+    expect(result.stopReason).toBe('max_iterations');
+    expect(result.messages.at(-1)?.metadata).toMatchObject({ iteration: 1, finalResponseOnly: true });
+    expect((await store.loadOperation('operation-limit-final'))?.state).toMatchObject({
+      phase: 'completed', stopReason: 'max_iterations'
+    });
+  });
+
   it('forks a child lane from the parent leaf and keeps follow-ups on that branch', async () => {
     const store = new MemoryAgentRuntimeStore();
     const main = await runAgentTurn(options(new ScriptedProvider([[
@@ -135,9 +209,10 @@ describe('runtime runner', () => {
     const compaction = durablePath.find((entry) => entry.type === 'compaction');
     expect(compaction).toMatchObject({
       type: 'compaction',
-      summary: 'Durable summary of the old requirements.',
       tokensBefore: expect.any(Number)
     });
+    expect(compaction?.type === 'compaction' ? compaction.summary : '').toContain('Durable summary of the old requirements.');
+    expect(compaction?.type === 'compaction' ? compaction.summary : '').toContain('old requirement');
     expect(await store.getEntry('old-message')).not.toBeNull();
 
     const requests: ModelRequest[] = [];

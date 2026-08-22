@@ -250,12 +250,21 @@ export type BrowserDockState = {
   canGoForward: boolean;
 };
 
+export type SessionCompactionRecord = {
+  id: string;
+  createdAt: string;
+  summary: string;
+  tokensBefore: number;
+};
+
 export type DesktopApi = {
   listSessions(): Promise<SessionMeta[]>;
   createSession(input: z.input<typeof CreateSessionInputSchema>): Promise<SessionMeta | null>;
   renameSession(input: z.input<typeof RenameSessionInputSchema>): Promise<void>;
   deleteSession(sessionId: string): Promise<void>;
   loadMessages(sessionId: string): Promise<Message[]>;
+  loadSessionCompactions(sessionId: string): Promise<SessionCompactionRecord[]>;
+  exportSessionTrajectory(sessionId: string): Promise<{ canceled: boolean; path?: string }>;
   getWorkspaceChanges(sessionId: string): Promise<WorkspaceChanges>;
   startTurn(input: z.input<typeof StartTurnInputSchema>): Promise<void>;
   cancelTurn(sessionId: string): Promise<void>;
@@ -340,6 +349,8 @@ export const IPC = {
   renameSession: 'sessions:rename',
   deleteSession: 'sessions:delete',
   loadMessages: 'sessions:messages',
+  loadSessionCompactions: 'sessions:compactions',
+  exportSessionTrajectory: 'sessions:export-trajectory',
   getWorkspaceChanges: 'workspace:changes',
   startTurn: 'agent:start',
   cancelTurn: 'agent:cancel',

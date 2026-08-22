@@ -45,6 +45,13 @@ export type AgentEvent =
       contextWindowTokens: number;
       compactedMessages: number;
       reclaimedToolCharacters: number;
+      fixedTokens?: number;
+      targetTokens?: number;
+      messageBudgetTokens?: number;
+      overCapacity?: boolean;
+      iteration?: number;
+      maxIterations?: number;
+      finalResponseOnly?: boolean;
     }
   | { type: 'output.continuing'; attempt: number }
   | { type: 'turn.completed'; stopReason: string }

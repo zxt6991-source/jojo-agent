@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Message, ModelEvent, ModelProvider, ModelRequest } from '@desktop-agent/contracts';
-import { groupContextMessages, prepareModelContext, runAgentTurn } from '../src/index.js';
+import { calculateContextBudget, groupContextMessages, prepareModelContext, runAgentTurn } from '../src/index.js';
 
 const time = '2026-08-09T00:00:00.000Z';
 const textMessage = (id: string, role: 'user' | 'assistant', text: string): Message => ({
@@ -38,6 +38,57 @@ describe('context management', () => {
     expect(result.messages[0]?.metadata?.internal).toBe(true);
     expect(result.messages.some((message) => message.id === 'u2')).toBe(true);
     expect(summarize).toHaveBeenCalledOnce();
+  });
+
+  it('fails before compaction when fixed instructions and tools exceed the request budget', async () => {
+    const tools = [{
+      name: 'oversized_tool',
+      description: 'x'.repeat(32_000),
+      inputSchema: { type: 'object' as const, properties: {} }
+    }];
+    const budget = calculateContextBudget({
+      tools, instructions: ['y'.repeat(16_000)],
+      contextWindowTokens: 8_192, maxOutputTokens: 256
+    });
+    expect(budget.overCapacity).toBe(true);
+    expect(budget.minimumContextWindowTokens).toBeGreaterThan(8_192);
+
+    await expect(prepareModelContext({
+      messages: [textMessage('u1', 'user', 'do not discard this task')],
+      tools, instructions: ['y'.repeat(16_000)], contextWindowTokens: 8_192, maxOutputTokens: 256,
+      signal: new AbortController().signal
+    })).rejects.toMatchObject({ code: 'context_overflow' });
+  });
+
+  it('keeps verbatim user requirements stable across repeated compactions', async () => {
+    const summarize = vi.fn(async () => 'Model-generated summary without exact requirements.');
+    const first = await prepareModelContext({
+      messages: [
+        textMessage('u1', 'user', '必须把全部划线整理到同一篇飞书文档'),
+        textMessage('a1', 'assistant', 'a'.repeat(7_000)),
+        textMessage('u2', 'user', '保留原书章节顺序和原文引用'),
+        textMessage('a2', 'assistant', 'b'.repeat(7_000))
+      ],
+      tools: [], contextWindowTokens: 4_096, maxOutputTokens: 512,
+      summarize, signal: new AbortController().signal
+    });
+    const firstSummary = first.compaction?.summary ?? '';
+    expect(firstSummary).toContain(JSON.stringify('必须把全部划线整理到同一篇飞书文档'));
+    expect(firstSummary).toContain(JSON.stringify('保留原书章节顺序和原文引用'));
+
+    const second = await prepareModelContext({
+      messages: [
+        ...first.messages,
+        textMessage('u3', 'user', '新增要求：标题不要重复'),
+        textMessage('a3', 'assistant', 'c'.repeat(7_000))
+      ],
+      tools: [], contextWindowTokens: 4_096, maxOutputTokens: 512,
+      summarize, signal: new AbortController().signal
+    });
+    const secondSummary = second.compaction?.summary ?? '';
+    expect(secondSummary).toContain(JSON.stringify('必须把全部划线整理到同一篇飞书文档'));
+    expect(secondSummary).toContain(JSON.stringify('保留原书章节顺序和原文引用'));
+    expect(secondSummary).toContain(JSON.stringify('新增要求：标题不要重复'));
   });
 });
 

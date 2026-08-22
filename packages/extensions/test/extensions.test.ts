@@ -35,6 +35,29 @@ describe('Skills', () => {
     })).resolves.toMatchObject({ ok: true, content: expect.stringContaining('Inspect tests first.') });
   });
 
+  it('returns the full Skill instructions only once per conversation', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'desktop-agent-skills-deduplicate-'));
+    await writeFile(path.join(root, 'SKILL.md'), `---\nname: context-heavy\ndescription: Large instructions.\n---\nUnique full instructions`);
+    const skills = await discoverSkills([root]);
+    const loadedSkillIds = new Set<string>();
+    const tool = createSkillTool(skills, { loadedSkillIds });
+    const context = {
+      sessionId: 's1', workingDirectory: root, signal: new AbortController().signal,
+      approved: false, onProgress: () => undefined
+    };
+
+    await expect(tool!.execute({ skillId: 'context-heavy' }, context)).resolves.toMatchObject({
+      ok: true,
+      content: expect.stringContaining('Unique full instructions')
+    });
+    await expect(tool!.execute({ skillId: 'context-heavy' }, context)).resolves.toMatchObject({
+      ok: true,
+      content: expect.not.stringContaining('Unique full instructions'),
+      code: 'already_loaded'
+    });
+    expect(loadedSkillIds).toEqual(new Set(['context-heavy']));
+  });
+
   it('keeps disabled skills out of the model-visible catalog', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'desktop-agent-skills-disabled-'));
     await writeFile(path.join(root, 'SKILL.md'), `---\nname: disabled-one\ndescription: Hidden workflow.\n---\nBody`);

@@ -22,7 +22,7 @@ Desktop 是产品装配层，负责 Electron 生命周期、进程隔离、IPC�
 
 ### 3.1 Main 与 IPC
 
-- `registerIpc` 注册会话、工作区变更、Agent 控制、目录选择和 Provider 设置接口。
+- `registerIpc` 注册会话、会话轨迹导出、工作区变更、Agent 控制、目录选择和 Provider 设置接口。轨迹由 Main 读取 JSONL 原始消息，并合并 SQLite Runtime 主 lane 上的持久化 compaction，再写入用户通过系统对话框选择的 Markdown 文件，避免受 Renderer 展示截断或运行时投影影响。
 - 输入使用 `contracts` 中的 Zod Schema 解析，非法输入在进入业务逻辑前失败。
 - Main 只通过 `IPC.agentEvent` 和 `IPC.sessionsChanged` 向 Renderer 推送白名单事件。
 - Worker 使用 `utilityProcess.fork` 启动；异常退出后延迟 1 秒重建，并向 UI 报告失败。

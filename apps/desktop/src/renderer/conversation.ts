@@ -1,4 +1,4 @@
-import type { AgentEvent, ImageContentBlock, Message, ToolCall, ToolResult } from '@desktop-agent/contracts';
+import type { AgentEvent, ImageContentBlock, Message, SessionCompactionRecord, ToolCall, ToolResult } from '@desktop-agent/contracts';
 
 export type ConversationViewMode = 'chat' | 'trajectory';
 export type ToolRowState = 'running' | 'ok' | 'warning' | 'error' | 'stopped';
@@ -17,7 +17,7 @@ export type LiveStep = {
 };
 
 export type UserNode = { kind: 'user'; id: string; createdAt: string; text: string; images: ImageContentBlock[] };
-export type AssistantNode = { kind: 'assistant'; id: string; text: string; streaming: boolean };
+export type AssistantNode = { kind: 'assistant'; id: string; text: string; streaming: boolean; iteration?: number; finalResponseOnly?: boolean };
 export type ToolNode = {
   kind: 'tool';
   id: string;
@@ -32,6 +32,7 @@ export type ToolNode = {
   errorSummary: string | null;
   images: Extract<NonNullable<ToolResult['contentBlocks']>[number], { type: 'image' }>[];
   state: ToolRowState;
+  iteration?: number;
 };
 export type CompactionNode = { kind: 'compaction'; id: string; summary: string; text: string };
 export type SystemNode = { kind: 'system'; id: string; title: string; text: string };
@@ -54,6 +55,8 @@ export type TrajectoryRecord = {
   state: ToolRowState | null;
   body: string | null;
   output: string | null;
+  iteration: number | null;
+  finalResponseOnly: boolean;
 };
 
 export type ConversationSnapshot = {
@@ -64,6 +67,7 @@ export type ConversationSnapshot = {
 
 export type ConversationSnapshotInput = {
   messages: Message[];
+  compactions?: SessionCompactionRecord[];
   liveSteps?: LiveStep[];
   running?: boolean;
   workingDirectory?: string;
@@ -72,6 +76,26 @@ export type ConversationSnapshotInput = {
 const DISPLAY_LIMIT = 8_000;
 const COMPACTION_START = '[Compacted conversation context]';
 const COMPACTION_END = '[End compacted context]';
+
+function messagesWithCompactions(messages: Message[], compactions: SessionCompactionRecord[]): Message[] {
+  return [
+    ...messages.map((message, order) => ({ message, order: order * 2 + 1 })),
+    ...compactions.map((compaction, order) => ({
+      order: order * 2,
+      message: {
+        id: `${compaction.id}:summary`,
+        role: 'user' as const,
+        createdAt: compaction.createdAt,
+        metadata: { internal: true },
+        content: [{
+          type: 'text' as const,
+          text: `${COMPACTION_START}\n[Runtime compaction: ${compaction.tokensBefore} tokens before]\n${compaction.summary}\n${COMPACTION_END}`
+        }]
+      }
+    }))
+  ].sort((left, right) => left.message.createdAt.localeCompare(right.message.createdAt) || left.order - right.order)
+    .map((item) => item.message);
+}
 
 const TOOL_TITLES: Record<string, string> = {
   read_file: '读取',
@@ -253,6 +277,7 @@ export function createToolNode(options: {
   result?: ToolResult;
   running?: boolean;
   workingDirectory?: string;
+  iteration?: number;
 }): ToolNode {
   const progress = options.progress ?? '';
   const state = toolState(options.result, options.running === true);
@@ -271,7 +296,8 @@ export function createToolNode(options: {
     progress,
     errorSummary: toolErrorSummary(options.result),
     images: options.result?.contentBlocks?.filter((block): block is Extract<typeof block, { type: 'image' }> => block.type === 'image') ?? [],
-    state
+    state,
+    ...(options.iteration ? { iteration: options.iteration } : {})
   };
 }
 
@@ -285,13 +311,15 @@ export function compactionBody(text: string): string {
 
 function systemTitle(text: string): string {
   if (text.startsWith('Continue exactly where the previous response stopped')) return '续写输出';
+  if (text.startsWith('The tool-capable Agent Loop reached')) return 'Agent Loop 已进入强制收尾';
   if (text.includes('Tool use is now paused')) return '停止继续调查';
   return '系统';
 }
 
 function compactionSummaryText(text: string): string {
   const body = compactionBody(text);
-  const line = body.split('\n').map((item) => item.trim()).find(Boolean);
+  const line = body.split('\n').map((item) => item.trim())
+    .find((item) => Boolean(item) && !item.startsWith('[Runtime compaction:'));
   return line ? line.slice(0, 96) : '已压缩较早对话';
 }
 
@@ -330,7 +358,11 @@ function foldMessages(messages: Message[], workingDirectory: string | undefined)
 
     if (message.role === 'assistant') {
       const text = messageText(message);
-      if (text.trim()) nodes.push({ kind: 'assistant', id: message.id, text, streaming: false });
+      if (text.trim()) nodes.push({
+        kind: 'assistant', id: message.id, text, streaming: false,
+        ...(message.metadata?.iteration ? { iteration: message.metadata.iteration } : {}),
+        ...(message.metadata?.finalResponseOnly ? { finalResponseOnly: true } : {})
+      });
       const calls = assistantCalls(message);
       if (calls.length === 0) continue;
       const results = new Map<string, ToolResult>();
@@ -347,6 +379,7 @@ function foldMessages(messages: Message[], workingDirectory: string | undefined)
           callId: call.id,
           name: call.name,
           input: call.input,
+          ...(message.metadata?.iteration ? { iteration: message.metadata.iteration } : {}),
           ...(result ? { result } : {}),
           ...(workingDirectory ? { workingDirectory } : {})
         }));
@@ -455,7 +488,9 @@ export function toTrajectoryRecords(turns: ConversationTurn[]): TrajectoryRecord
         summary: recordSummary(node),
         state: node.kind === 'tool' ? node.state : null,
         body: node.kind === 'tool' ? node.body : node.kind === 'user' || node.kind === 'assistant' || node.kind === 'system' || node.kind === 'compaction' ? node.text : null,
-        output: node.kind === 'tool' ? node.output : null
+        output: node.kind === 'tool' ? node.output : null,
+        iteration: node.kind === 'assistant' || node.kind === 'tool' ? node.iteration ?? null : null,
+        finalResponseOnly: node.kind === 'assistant' && node.finalResponseOnly === true
       });
     }
   }
@@ -463,7 +498,7 @@ export function toTrajectoryRecords(turns: ConversationTurn[]): TrajectoryRecord
 }
 
 export function buildConversationSnapshot(input: ConversationSnapshotInput): ConversationSnapshot {
-  const folded = foldMessages(input.messages, input.workingDirectory);
+  const folded = foldMessages(messagesWithCompactions(input.messages, input.compactions ?? []), input.workingDirectory);
   const nodes = appendLiveSteps(folded, input.liveSteps ?? [], input.running === true, input.workingDirectory);
   const turns = groupTurns(nodes);
   return { turns, nodes, records: toTrajectoryRecords(turns) };

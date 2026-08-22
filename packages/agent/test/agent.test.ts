@@ -47,6 +47,38 @@ describe('runAgentTurn', () => {
     expect(events).toContainEqual({ type: 'turn.completed', stopReason: 'max_iterations' });
   });
 
+  it('reserves a tool-free final response after the tool iteration budget is exhausted', async () => {
+    const requests: ModelRequest[] = [];
+    let requestIndex = 0;
+    const provider: ModelProvider = {
+      async *stream(request) {
+        requests.push(request);
+        if (requestIndex++ === 0) {
+          yield { type: 'tool_call_completed', call: { id: 'limit-call', name: 'echo', input: { value: 1 } } };
+          yield { type: 'response_completed', stopReason: 'tool_calls' };
+        } else {
+          yield { type: 'text_delta', text: 'Completed the lookup; the requested artifact remains unfinished.' };
+          yield { type: 'response_completed', stopReason: 'stop' };
+        }
+      }
+    };
+    const events: AgentEvent[] = [];
+
+    const result = await runAgentTurn(createOptions(provider, {
+      maxIterations: 1,
+      emit: (event) => events.push(event)
+    }));
+
+    expect(requests).toHaveLength(2);
+    expect(requests[1]?.tools).toEqual([]);
+    expect(requests[1]?.instructions?.join('\n')).toContain('mandatory tool-free final response');
+    expect(result.stopReason).toBe('max_iterations');
+    expect(result.messages.some((message) => message.metadata?.internal
+      && message.content.some((block) => block.type === 'text' && block.text.includes('1-iteration budget')))).toBe(true);
+    expect(result.messages.at(-1)?.metadata).toMatchObject({ iteration: 1, finalResponseOnly: true });
+    expect(events).toContainEqual({ type: 'turn.completed', stopReason: 'max_iterations' });
+  });
+
   it('runs a tool and feeds its result into the next model request', async () => {
     const events: AgentEvent[] = [];
     const provider = new ScriptedProvider([

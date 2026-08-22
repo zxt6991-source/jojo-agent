@@ -43,6 +43,16 @@ describe('JsonlSessionStore', () => {
 });
 
 describe('JsonConfigStore', () => {
+  it('uses 128k context and 8192 output as the model settings defaults', async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), 'desktop-agent-config-defaults-'));
+    const settings = await new JsonConfigStore(path.join(directory, 'config.json')).get();
+
+    expect(settings.providers[0]).toMatchObject({
+      contextWindowTokens: 128_000,
+      maxOutputTokens: 8_192
+    });
+  });
+
   it('migrates a single-model v1 config to the model list', async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), 'desktop-agent-config-'));
     const file = path.join(directory, 'config.json');

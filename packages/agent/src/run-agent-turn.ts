@@ -4,16 +4,17 @@ import {
   appendMessage,
   createAssistantMessage,
   createContinuationMessage,
+  createIterationLimitFinalMessage,
   createNoProgressFinalMessage,
   createToolMessage,
   createUserMessage
 } from './messages.js';
 import { runModelStep } from './model-step.js';
-import { prepareModelContext } from './context-manager.js';
+import { calculateContextBudget, estimateContextTokens, prepareModelContext } from './context-manager.js';
+import { createIterationBudgetPolicy, extendIterationBudget, iterationBudgetInstruction } from './iteration-budget.js';
 import { executeToolCall } from './tool-execution.js';
 import type { AgentRunOptions, AgentRunResult } from './types.js';
 
-const DEFAULT_MAX_ITERATIONS = 12;
 const DEFAULT_CONTEXT_WINDOW_TOKENS = 128_000;
 const DEFAULT_MAX_OUTPUT_TOKENS = 8_192;
 const MAX_OUTPUT_CONTINUATIONS = 2;
@@ -57,8 +58,9 @@ async function executeToolCalls(
   calls: ToolCall[],
   state: TurnState,
   options: AgentRunOptions
-): Promise<boolean> {
+): Promise<{ noProgressDetected: boolean; madeProgress: boolean }> {
   let noProgressDetected = false;
+  let madeProgress = false;
   for (let index = 0; index < calls.length; index += 1) {
     const call = calls[index]!;
     let result: ToolResult;
@@ -80,8 +82,10 @@ async function executeToolCalls(
     }
     await appendMessage(options, state.messages, createToolMessage(result));
     noProgressDetected ||= result.code === 'no_progress';
+    madeProgress ||= !['no_progress', 'permission_denied', 'user_denied', 'hook_blocked', 'cancelled']
+      .includes(result.code ?? '');
   }
-  return noProgressDetected;
+  return { noProgressDetected, madeProgress };
 }
 
 function handleTurnError(
@@ -104,7 +108,7 @@ function handleTurnError(
 
 export async function runAgentTurn(options: AgentRunOptions): Promise<AgentRunResult> {
   const state = createTurnState(options);
-  const maxIterations = options.maxIterations ?? DEFAULT_MAX_ITERATIONS;
+  let iterationBudget = createIterationBudgetPolicy(options);
 
   options.emit({ type: 'turn.started', sessionId: options.sessionId, turnId: crypto.randomUUID() });
 
@@ -113,10 +117,12 @@ export async function runAgentTurn(options: AgentRunOptions): Promise<AgentRunRe
     let outputContinuations = 0;
     let recoveryToolStepsRemaining: number | null = null;
     let finalResponseOnly = false;
+    let finalResponseReason: 'no_progress' | 'max_iterations' | null = null;
 
     for (
       let iteration = 0;
-      iteration < maxIterations || (finalResponseOnly && iteration === maxIterations);
+      iteration < iterationBudget.currentLimit
+        || (finalResponseOnly && iteration <= iterationBudget.currentLimit + MAX_OUTPUT_CONTINUATIONS);
       iteration += 1
     ) {
       throwIfAborted(options.signal);
@@ -128,9 +134,36 @@ export async function runAgentTurn(options: AgentRunOptions): Promise<AgentRunRe
 
       const contextWindowTokens = options.contextWindowTokens ?? DEFAULT_CONTEXT_WINDOW_TOKENS;
       const maxOutputTokens = options.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
+      const iterationInstruction = finalResponseOnly
+        ? 'This is the mandatory tool-free final response. Do not request tools. Report completed work, concrete results, unfinished work, and the next action.'
+        : iterationBudgetInstruction(iterationBudget, iteration);
+      const instructions = [...(options.instructions ?? []), iterationInstruction];
+      const budget = calculateContextBudget({
+        tools: state.toolDefinitions,
+        instructions,
+        contextWindowTokens,
+        maxOutputTokens
+      });
+      if (budget.overCapacity) {
+        options.emit({
+          type: 'context.updated',
+          estimatedTokens: estimateContextTokens(state.messages, state.toolDefinitions, instructions),
+          contextWindowTokens,
+          compactedMessages: 0,
+          reclaimedToolCharacters: 0,
+          fixedTokens: budget.fixedTokens,
+          targetTokens: budget.targetTokens,
+          messageBudgetTokens: budget.messageBudgetTokens,
+          overCapacity: true,
+          iteration: Math.min(iteration + 1, iterationBudget.currentLimit),
+          maxIterations: iterationBudget.currentLimit,
+          finalResponseOnly
+        });
+      }
       const context = await prepareModelContext({
         messages: state.messages,
         tools: state.toolDefinitions,
+        instructions,
         contextWindowTokens,
         maxOutputTokens,
         ...(options.summarize ? { summarize: options.summarize } : {}),
@@ -138,14 +171,21 @@ export async function runAgentTurn(options: AgentRunOptions): Promise<AgentRunRe
       });
       options.emit({
         type: 'context.updated', estimatedTokens: context.estimatedTokens, contextWindowTokens,
-        compactedMessages: context.compactedMessages, reclaimedToolCharacters: context.reclaimedToolCharacters
+        compactedMessages: context.compactedMessages, reclaimedToolCharacters: context.reclaimedToolCharacters,
+        fixedTokens: context.budget.fixedTokens,
+        targetTokens: context.budget.targetTokens,
+        messageBudgetTokens: context.budget.messageBudgetTokens,
+        overCapacity: context.budget.overCapacity,
+        iteration: Math.min(iteration + 1, iterationBudget.currentLimit),
+        maxIterations: iterationBudget.currentLimit,
+        finalResponseOnly
       });
 
       const step = await runModelStep({
         model: options.model,
         messages: context.messages,
         toolDefinitions: state.toolDefinitions,
-        ...(options.instructions?.length ? { instructions: options.instructions } : {}),
+        instructions,
         provider: options.provider,
         signal: options.signal,
         emit: options.emit,
@@ -155,7 +195,10 @@ export async function runAgentTurn(options: AgentRunOptions): Promise<AgentRunRe
       await appendMessage(
         options,
         state.messages,
-        createAssistantMessage(step.text, step.calls)
+        createAssistantMessage(step.text, step.calls, undefined, {
+          iteration: Math.min(iteration + 1, iterationBudget.currentLimit),
+          ...(finalResponseOnly ? { finalResponseOnly: true } : {})
+        })
       );
 
       if (step.calls.length === 0) {
@@ -165,25 +208,45 @@ export async function runAgentTurn(options: AgentRunOptions): Promise<AgentRunRe
           await appendMessage(options, state.messages, createContinuationMessage());
           continue;
         }
-        options.emit({ type: 'turn.completed', stopReason: step.stopReason });
-        return { messages: state.messages, stopReason: step.stopReason };
+        const stopReason = finalResponseReason === 'max_iterations' ? 'max_iterations' : step.stopReason;
+        options.emit({ type: 'turn.completed', stopReason });
+        return { messages: state.messages, stopReason };
       }
 
-      const noProgressDetected = await executeToolCalls(step.calls, state, options);
+      const toolProgress = await executeToolCalls(step.calls, state, options);
       if (finalResponseOnly) {
         throw new AgentError(
-          'no_progress',
-          'The model requested another tool after tool use was paused for lack of progress.'
+          finalResponseReason ?? 'no_progress',
+          'The model requested another tool during the mandatory tool-free final response.'
         );
       }
-      if (noProgressDetected && recoveryToolStepsRemaining === null) {
+      if (toolProgress.noProgressDetected && recoveryToolStepsRemaining === null) {
         recoveryToolStepsRemaining = NO_PROGRESS_RECOVERY_TOOL_STEPS;
       } else if (recoveryToolStepsRemaining !== null) {
         recoveryToolStepsRemaining -= 1;
         if (recoveryToolStepsRemaining <= 0) {
           finalResponseOnly = true;
+          finalResponseReason = 'no_progress';
           await appendMessage(options, state.messages, createNoProgressFinalMessage());
         }
+      }
+      if (iteration === iterationBudget.currentLimit - 1 && !finalResponseOnly) {
+        if (
+          iterationBudget.dynamic
+          && iterationBudget.currentLimit < iterationBudget.hardLimit
+          && (toolProgress.madeProgress || recoveryToolStepsRemaining !== null)
+        ) {
+          iterationBudget = extendIterationBudget(iterationBudget);
+          outputContinuations = 0;
+          continue;
+        }
+        if (options.allowPartialOnMaxIterations) {
+          options.emit({ type: 'turn.completed', stopReason: 'max_iterations' });
+          return { messages: state.messages, stopReason: 'max_iterations' };
+        }
+        finalResponseOnly = true;
+        finalResponseReason = 'max_iterations';
+        await appendMessage(options, state.messages, createIterationLimitFinalMessage(iterationBudget.currentLimit));
       }
       outputContinuations = 0;
     }
@@ -192,7 +255,7 @@ export async function runAgentTurn(options: AgentRunOptions): Promise<AgentRunRe
       options.emit({ type: 'turn.completed', stopReason: 'max_iterations' });
       return { messages: state.messages, stopReason: 'max_iterations' };
     }
-    throw new AgentError('max_iterations', `The turn exceeded ${maxIterations} model iterations.`);
+    throw new AgentError('max_iterations', `The turn exceeded ${iterationBudget.currentLimit} model iterations.`);
   } catch (error) {
     return handleTurnError(error, options, state.messages);
   }

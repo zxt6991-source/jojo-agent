@@ -210,7 +210,10 @@ function resourceCatalog(skill: DiscoveredSkill): string {
   }).join('\n');
 }
 
-export function createSkillTool(skills: DiscoveredSkill[]): Tool | null {
+export function createSkillTool(
+  skills: DiscoveredSkill[],
+  options: { loadedSkillIds?: Set<string> } = {}
+): Tool | null {
   const enabled = skills.filter((skill) => skill.enabled && !skill.error && !skill.overriddenBy);
   if (enabled.length === 0) return null;
   const byId = new Map(enabled.map((skill) => [skill.id, skill]));
@@ -231,6 +234,15 @@ export function createSkillTool(skills: DiscoveredSkill[]): Tool | null {
       const { skillId } = LoadSkillInput.parse(input);
       const skill = byId.get(skillId);
       if (!skill) return { callId: '', ok: false, code: 'skill_not_found', content: `Unknown or disabled skill: ${skillId}` };
+      if (options.loadedSkillIds?.has(skillId)) {
+        return {
+          callId: '',
+          ok: true,
+          code: 'already_loaded',
+          content: `[Skill already loaded: ${skill.name}] Reuse its existing instructions and previously read references; do not reload it again in this conversation.`
+        };
+      }
+      options.loadedSkillIds?.add(skillId);
       return {
         callId: '',
         ok: true,

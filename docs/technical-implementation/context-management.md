@@ -113,6 +113,7 @@ flowchart TD
 type ContextPreparationOptions = {
   messages: Message[];
   tools: ToolDefinition[];
+  instructions?: string[];
   contextWindowTokens: number;
   maxOutputTokens: number;
   summarize?: (source: string, signal: AbortSignal) => Promise<string>;
@@ -124,8 +125,9 @@ type ContextPreparationOptions = {
 |---|---|---|
 | `messages` | JSONL 历史 + 本轮新增消息 | 要处理的完整内存历史 |
 | `tools` | 当前 Tool Runtime | 工具描述和 JSON Schema 也占 token |
-| `contextWindowTokens` | Provider 设置 | 模型窗口上限 |
-| `maxOutputTokens` | Provider 设置 | 为本次回答预留输出空间 |
+| `instructions` | Runtime、Memory、MCP 等指令 | 与工具一样属于不可通过压缩历史回收的固定成本 |
+| `contextWindowTokens` | 「设置 → 模型」中的当前 Provider | 模型窗口上限 |
+| `maxOutputTokens` | 「设置 → 模型」中的当前 Provider | 为本次回答预留输出空间 |
 | `summarize` | Worker 注入 | 用默认模型生成历史摘要 |
 | `signal` | 本轮 AbortController | 用户取消时终止摘要 |
 
@@ -137,6 +139,7 @@ type ContextPreparationResult = {
   estimatedTokens: number;
   compactedMessages: number;
   reclaimedToolCharacters: number;
+  budget: ContextBudget;
 };
 ```
 
@@ -146,6 +149,7 @@ type ContextPreparationResult = {
 | `estimatedTokens` | 处理后的估算 token |
 | `compactedMessages` | 被摘要替代的原始消息数 |
 | `reclaimedToolCharacters` | 从大型 Tool Result 请求视图中回收的字符数 |
+| `budget` | target、固定成本、消息预算、容量不足状态和建议最小窗口 |
 
 这些统计随后通过 `context.updated` 事件发送给 Renderer。
 
@@ -240,7 +244,11 @@ target = max(
   1024,
   floor(contextWindowTokens × 0.82) - maxOutputTokens
 )
+fixed = tools + instructions + protocol overhead
+messageBudget = max(0, target - fixed)
 ```
+
+工具 Schema、Skill/MCP 目录和运行指令不能靠删除聊天历史回收，因此必须先从 target 扣除。如果 `messageBudget < 1024`，Runtime 会先发出 `context.updated(overCapacity = true)`，随后以 `context_overflow` 终止本次请求，并给出包含最小消息预算的建议窗口。这个保护避免“越压缩用户历史，固定成本占比反而越高”的压缩风暴。
 
 ### 8.1 为什么只使用窗口的 82%
 
@@ -253,15 +261,15 @@ target = max(
 ### 8.3 数值示例
 
 ```text
-上下文窗口 = 8192
-最大输出   = 1024
+上下文窗口 = 128000
+最大输出   = 8192
 
-floor(8192 × 0.82) = 6717
-target             = 6717 - 1024
-                   = 5693 tokens
+floor(128000 × 0.82) = 104960
+target               = 104960 - 8192
+                     = 96768 tokens
 ```
 
-这意味着估算输入超过约 5,693 token 时，就会开始压缩，而不是等到 8,192 才处理。
+再扣除工具与指令固定成本后，剩余的 `messageBudget` 才用于会话消息和压缩摘要。
 
 > **项目实现位置**
 >
@@ -309,12 +317,12 @@ target             = 6717 - 1024
 
 ## 10. 第五步：保留新历史，摘要旧历史
 
-只有估算超过 target 时才进入压缩。
+只有完整估算超过 target 且固定成本仍有可用消息预算时才进入压缩。
 
 ### 10.1 保留预算
 
 ```text
-keepBudget = max(1024, floor(target × 0.62))
+keepBudget = max(1024, floor(messageBudget × 0.62))
 ```
 
 算法从最新原子组向前选择消息：
@@ -324,7 +332,7 @@ keepBudget = max(1024, floor(target × 0.62))
 - 至少保留最新一组；
 - 更老的完整组进入摘要。
 
-62% 是安全 target 中为最新原始消息预留的比例，剩余空间用于摘要和估算误差。
+62% 是可用消息预算中为最新原始消息预留的比例，剩余空间用于摘要和估算误差。
 
 ### 10.2 摘要消息
 
@@ -343,6 +351,8 @@ keepBudget = max(1024, floor(target × 0.62))
 [最近的原始消息组]
 [最新用户消息]
 ```
+
+摘要正文前还有稳定的 pinned requirements 区段。它以 JSON 字符串逐条保存旧摘要继承的要求和真实 User Message；连续压缩时先解析旧区段再加入新要求。常规要求保留原文，单条超大要求才会按 token 预算保留头尾并显式标注裁剪。模型生成的叙述摘要始终从属于该区段。
 
 > **项目实现位置**
 >
@@ -366,7 +376,7 @@ keepBudget = max(1024, floor(target × 0.62))
 |---|---:|---|
 | 摘要源 | 48,000 字符 | 保留头尾各一半 |
 | 本地回退摘要 | 约 8,000 字符 | 保留头尾各 4,000 |
-| 模型摘要结果 | 12,000 字符 | 超过后保留头尾各 6,000 |
+| 稳定摘要结果 | 最多约为消息预算的 34%（并限制为 3,200 tokens） | pinned requirements 优先，其余模型摘要按 token 预算保留头尾 |
 
 ### 11.3 摘要失败不会终止主对话
 
@@ -438,6 +448,8 @@ flowchart LR
 - 最大输出：256～128,000；
 - 最大输出必须小于上下文窗口。
 
+`contextWindowTokens = 128000` 和 `maxOutputTokens = 8192` 是「设置 → 模型」中 Provider 的默认配置。Session Meta 不保存这两个字段；Worker 每轮都读取当前 Provider 配置，因此在模型设置中保存新值后，所有使用该 Provider 的会话从下一轮起生效。
+
 数字输入在编辑期间以字符串保存，可以先清空再重新输入；点击保存时才转换和校验，避免空字符串立刻变成 0。
 
 > **项目实现位置**
@@ -459,11 +471,20 @@ flowchart LR
   estimatedTokens,
   contextWindowTokens,
   compactedMessages,
-  reclaimedToolCharacters
+  reclaimedToolCharacters,
+  fixedTokens,
+  targetTokens,
+  messageBudgetTokens,
+  overCapacity,
+  iteration,
+  maxIterations,
+  finalResponseOnly
 }
 ```
 
-Renderer 当前展示估算 token/窗口、压缩消息数、本轮 input/output 和 cache usage。
+Renderer 当前展示估算 token/窗口、压缩消息数、本轮 input/output、cache usage 和 `Loop 当前/上限`。容量不足时状态变红，悬停可看到固定成本与目标预算；进入迭代上限的无工具回答时显示“收尾”。
+
+持久化 compaction 位于 SQLite Runtime Store，而非 JSONL 消息流。Renderer 选择/刷新会话时读取主 lane 的 compaction 并按时间合并为压缩节点；Markdown 轨迹导出走同一合并规则，因此能解释每次新问题前实际发生的上下文变化。
 
 切换、新建或删除会话，以及开始新一轮时，会清空上一会话的 Context/Usage UI 状态。当前没有单独展示 `reclaimedToolCharacters`。
 
@@ -479,8 +500,8 @@ Renderer 当前展示估算 token/窗口、压缩消息数、本轮 input/output
 假设：
 
 ```text
-contextWindowTokens = 8192
-maxOutputTokens     = 1024
+contextWindowTokens = 128000
+maxOutputTokens     = 8192
 ```
 
 历史包含早期需求、一次 30,000 字符文件读取、一组 Tool Call/Result，以及最近两轮要求。
@@ -488,10 +509,10 @@ maxOutputTokens     = 1024
 处理过程：
 
 1. 30,000 字符 Tool Result 缩成“头 4,000 + 标记 + 尾 4,000”；
-2. 计算 `floor(8192 × 0.82) - 1024 = 5693`；
-3. 如果仍超过 5,693 token，构造原子组；
-4. 计算 `keepBudget = floor(5693 × 0.62) = 3529`；
-5. 从最新消息向前保留约 3,529 token 的完整组；
+2. 计算 `floor(128000 × 0.82) - 8192 = 96768`；
+3. 扣除工具与指令固定成本；若剩余消息预算不足 1,024 tokens，则直接报容量不足；
+4. 如果完整请求仍超过 target，按 `messageBudget × 0.62` 计算 keepBudget；
+5. 从最新消息向前保留预算内的完整组；
 6. 较老组交给默认模型摘要，失败则用本地摘要；
 7. 最终发送“内部摘要 + 最近原始消息 + 最新用户消息”；
 8. JSONL 仍保留原始 30,000 字符 Tool Result 和全部历史。
@@ -505,11 +526,14 @@ maxOutputTokens     = 1024
 3. Tool Call 和匹配 Tool Result 不拆组；
 4. 最新消息至少保留一组；
 5. 摘要失败不能中断主对话；
-6. 内部摘要和续写消息不显示在 UI；
+6. 内部摘要不会伪装成用户气泡，而是显示为可展开的压缩/系统节点；
 7. 用户取消传递到摘要请求；
 8. 最终请求仍带完整 ToolDefinition；
 9. token 估算不冒充 Provider usage；
 10. 自动续写有明确上限。
+11. 固定工具与指令成本超过 target 时，不得通过压缩用户消息继续尝试；
+12. 连续压缩必须继承 pinned user requirements；
+13. 同一会话重复 `load_skill` 不得再次注入完整 Skill 内容。
 
 > **项目实现位置**
 >
@@ -526,7 +550,7 @@ maxOutputTokens     = 1024
 pnpm exec vitest run packages/agent/test/context-manager.test.ts
 ```
 
-覆盖原子分组、大结果回收、历史摘要、内部消息和自动续写。
+覆盖原子分组、大结果回收、固定成本超限、连续压缩约束继承、内部消息和自动续写。
 
 ### 18.2 完整回归
 
@@ -538,21 +562,20 @@ pnpm test
 
 ### 18.3 UI 手工验证
 
-1. 设置上下文窗口为 `8192`；
-2. 设置最大输出为 `1024`；
-3. 连续发送多轮长文本；
-4. 提前写入三个必须记住的约束；
-5. 悬浮上下文状态，查看压缩提示；
-6. 询问之前三个约束；
-7. 重启应用，确认完整历史仍可见；
-8. 新建会话，确认 Context/Usage 状态为空。
+1. 打开「设置 → 模型」，确认默认显示 `128000 / 8192`；
+2. 连续发送多轮长文本并提前写入三个必须记住的约束；
+3. 悬浮上下文状态，查看压缩提示；
+4. 询问之前三个约束；
+5. 切换到轨迹视图并导出 Markdown，确认压缩记录出现且顺序正确；
+6. 重启应用，确认完整历史与压缩记录仍可见；
+7. 在模型设置中人为降低窗口并启用超大工具目录，确认显示“容量不足”而不是反复压缩。
 
 ## 19. 当前限制
 
 - 估算不是精确 tokenizer，中文、代码和 JSON 仍会有误差；
-- 摘要模型可能遗漏细节；
+- 模型叙述摘要仍可能遗漏细节；pinned requirements 只保障预算内的用户原文，单条超大输入会显式保留头尾；
 - 摘要后如果仍超预算，当前不会递归执行多轮压缩；
-- Context/Usage 是运行时 UI 状态，不从 JSONL 重建；
+- Context/Usage 数字是本轮运行时 UI 状态；持久化 compaction 会从 SQLite 重建并显示；
 - 12,000 的 Tool Result 阈值按字符而不是 token；
 - 82% 和 62% 是当前经验参数，还没有评测集校准。
 

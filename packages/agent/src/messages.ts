@@ -16,11 +16,17 @@ export function createUserMessage(text: string, images: ImageContentBlock[] = []
   };
 }
 
-export function createAssistantMessage(text: string, calls: ToolCall[], id = createId()): Message {
+export function createAssistantMessage(
+  text: string,
+  calls: ToolCall[],
+  id = createId(),
+  metadata?: { iteration?: number; finalResponseOnly?: boolean }
+): Message {
   return {
     id,
     role: 'assistant',
     createdAt: now(),
+    ...(metadata ? { metadata } : {}),
     content: [
       ...(text ? [{ type: 'text' as const, text }] : []),
       ...calls.map((call) => ({ type: 'tool_call' as const, call }))
@@ -50,6 +56,16 @@ export function createNoProgressFinalMessage(): Message {
     content: [{
       type: 'text',
       text: 'Tool use is now paused because repeated investigation did not produce enough progress. Do not request more tools. Give the user the best final answer supported by the existing results, clearly stating the remaining limitation and the next concrete action.'
+    }]
+  };
+}
+
+export function createIterationLimitFinalMessage(maxIterations: number): Message {
+  return {
+    id: createId(), role: 'user', createdAt: now(), metadata: { internal: true },
+    content: [{
+      type: 'text',
+      text: `The tool-capable Agent Loop reached its ${maxIterations}-iteration budget. Tool use is now disabled for one mandatory final response. Summarize what was completed, preserve concrete results and artifact paths, state exactly what remains unfinished, and give the next actionable step. Do not request another tool or claim unfinished work succeeded.`
     }]
   };
 }
