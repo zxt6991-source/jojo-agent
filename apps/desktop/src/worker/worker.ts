@@ -19,6 +19,15 @@ import {
 import { createProvider } from '@desktop-agent/providers';
 import { FileHookTrustStore, loadHookRuntime } from '@desktop-agent/hooks';
 import {
+  createMemoryTools,
+  createProjectIdentity,
+  DurableMemoryRuntime,
+  MarkdownMemoryStore,
+  MemoryIndex,
+  MemoryPermissionGate,
+  MemoryService
+} from '@desktop-agent/memory';
+import {
   AgentExecutionScheduler,
   createBuiltinAgentProfileRegistry,
   createBuiltinSavedWorkflowRegistry,
@@ -52,6 +61,12 @@ const store = new JsonlSessionStore(path.join(dataDirectory, 'sessions'));
 const agentRuntimeStore = new SqliteAgentRuntimeStore(path.join(dataDirectory, 'runtime', 'agent-runtime.sqlite'));
 const hookInvocationStore = new SqliteHookInvocationStore(path.join(dataDirectory, 'runtime', 'hooks.sqlite'));
 const hookTrustStore = new FileHookTrustStore(path.join(os.homedir(), '.jojo', 'hooks-trust.json'));
+const memoryRoot = path.join(os.homedir(), '.jojo', 'memory');
+const memoryIndex = new MemoryIndex(path.join(dataDirectory, 'runtime', 'memory.sqlite'));
+const memoryStore = new MarkdownMemoryStore(memoryRoot, memoryIndex);
+const memoryService = new MemoryService(memoryStore);
+const memoryRuntime = new DurableMemoryRuntime(memoryStore);
+const memoryReady = memoryStore.initialize().catch(() => undefined);
 const controllers = new Map<string, AbortController>();
 const turnTasks = new TurnTaskRegistry();
 const approvals = new Map<string, { resolve: (allowed: boolean) => void; sessionId: string }>();
@@ -165,6 +180,8 @@ async function applyRuntimeConfig(
   mcpOAuthCredentials: Record<string, unknown>
 ): Promise<void> {
   runtime = { settings, apiKeys };
+  memoryRuntime.updateSettings(settings.memory);
+  memoryService.updateSettings(settings.memory);
   await reloadOrchestrationAssets();
   skillStatuses = (await discoverSkills(
     globalSkillDirectories(settings),
@@ -266,6 +283,8 @@ async function startTurn(sessionId: string, text: string, images: ImageContentBl
     if (!providerConfig.models.includes(model)) throw new Error(`模型“${model}”不在 ${providerConfig.name} 的可用模型中。`);
     const session = await store.get(sessionId);
     if (!session) throw new Error('Session not found.');
+    await memoryReady;
+    const projectIdentity = session.projectIdentity ?? await createProjectIdentity(session.workingDirectory);
     await reloadOrchestrationAssets(session.workingDirectory);
     let history = redactLegacyTerminalOutput(await store.messages(sessionId));
     const committedMessageIds = new Set(history.map((message) => message.id));
@@ -358,6 +377,9 @@ async function startTurn(sessionId: string, text: string, images: ImageContentBl
       ...createSubAgentTools(subAgentManager, { providerId, model }),
       ...createWorkflowTools(workflowManager, { providerId, model })
     ];
+    const memoryTools = runtime.settings.memory.enabled
+      ? createMemoryTools(memoryService).filter((tool) => runtime!.settings.memory.search.enabled || tool.definition.name !== 'memory_search')
+      : [];
     const instructions = [
       'You may delegate self-contained tasks to registered leaf-agent profiles: explore for read-only investigation, code-review for focused review, synthesize for tool-free synthesis, and general for broader tasks. Profile and request tool policies are enforced by the runtime; request policies may tighten but never loosen profile restrictions. Background agents cannot approve interactive high-risk operations or spawn more agents. For parallel work, start all independent sub-agents first, then wait for them together. A continuable agent becomes idle after a round; use sub_agent_send for contextual follow-up and sub_agent_close when finished. Treat INCOMPLETE results as partial evidence.',
       'For repeatable multi-step analysis, you may start a declarative workflow DAG with workflow_start, then use workflow_wait once. Prefer a saved workflow name from workflow_list when one matches; otherwise pass an inline definition. Workflow agent steps use registered profiles under the same runtime tool-policy and non-interactive permission boundaries. Dependencies, timeouts, and maxConcurrency must be explicit. Prefer outputSchema plus inputs.valueFrom for reliable step-to-step data; supported references are $steps.<id>.output, $steps.<id>.structuredResult.<path>, and $workflow.args.<name>. Agent tasks may interpolate {{inputs.<name>}} from workflow args. A step with explicit inputs receives only those values instead of every dependency output. Do not assume a background workflow can approve file modification, terminal, browser, or MCP operations.',
@@ -374,7 +396,12 @@ async function startTurn(sessionId: string, text: string, images: ImageContentBl
       hooks: loadedHooks.runtime,
       hookMeta: { transport: 'desktop' as const, agent: { kind: 'main' as const } },
       provider: createProvider(providerConfig, apiKey),
-      tools: [...toolRuntime.tools, ...browserBridge.tools(), ...orchestrationTools],
+      tools: [...toolRuntime.tools, ...memoryTools, ...browserBridge.tools(), ...orchestrationTools],
+      memoryRuntime,
+      ...(projectIdentity ? {
+        projectIdentity,
+        sessionMetadata: { projectIdentity: projectIdentity as unknown as import('@desktop-agent/agent-runtime').JsonValue }
+      } : {}),
       instructions,
       getTools: (context: { contextWindowTokens: number; maxOutputTokens: number }) => {
         const skillTool = createSkillTool(skills);
@@ -384,7 +411,10 @@ async function startTurn(sessionId: string, text: string, images: ImageContentBl
           ...mcpManager.getTools(context)
         ];
       },
-      permissionGate: new OrchestrationPermissionGate(new BrowserPermissionGate(new ExtensionPermissionGate(toolRuntime.permissionGate), browserSettings)), signal: controller.signal,
+      permissionGate: new OrchestrationPermissionGate(new BrowserPermissionGate(
+        new ExtensionPermissionGate(new MemoryPermissionGate(toolRuntime.permissionGate, memoryRoot)),
+        browserSettings
+      )), signal: controller.signal,
       contextWindowTokens: providerConfig.contextWindowTokens,
       maxOutputTokens: providerConfig.maxOutputTokens,
       summarize: (source: string, signal: AbortSignal) => utilityCompletion(
@@ -443,6 +473,8 @@ async function stopSession(sessionId: string): Promise<void> {
     subAgentManager.quiesceSession(sessionId),
     workflowManager.quiesceSession(sessionId)
   ]);
+  await agentRuntimeStore.deleteSession(sessionId);
+  memoryRuntime.deleteSession(sessionId);
   sessionHookRuntimes.delete(sessionId);
 }
 
@@ -508,6 +540,30 @@ parentPort.on('message', (event) => {
   } else if (command.type === 'hooks.invalidate') {
     sessionHookRuntimes.clear();
     post({ type: 'hooks.invalidated', requestId: command.requestId, ok: true });
+  } else if (command.type === 'memory.status') {
+    void memoryReady
+      .then(() => memoryService.status(command.workingDirectory))
+      .then((status) => post({ type: 'memory.result', requestId: command.requestId, ok: true, status }))
+      .catch((error) => post({
+        type: 'memory.result', requestId: command.requestId, ok: false,
+        error: error instanceof Error ? error.message : String(error)
+      }));
+  } else if (command.type === 'memory.rebuild') {
+    void memoryReady
+      .then(() => memoryService.rebuild(command.scope, command.workingDirectory))
+      .then((status) => post({ type: 'memory.result', requestId: command.requestId, ok: true, status }))
+      .catch((error) => post({
+        type: 'memory.result', requestId: command.requestId, ok: false,
+        error: error instanceof Error ? error.message : String(error)
+      }));
+  } else if (command.type === 'memory.delete') {
+    void memoryReady
+      .then(() => memoryService.deleteEntry(command.scope, command.entryId, command.workingDirectory))
+      .then((status) => post({ type: 'memory.result', requestId: command.requestId, ok: true, status }))
+      .catch((error) => post({
+        type: 'memory.result', requestId: command.requestId, ok: false,
+        error: error instanceof Error ? error.message : String(error)
+      }));
   }
 });
 

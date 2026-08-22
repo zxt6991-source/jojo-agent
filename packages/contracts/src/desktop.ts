@@ -11,6 +11,8 @@ import { ImageContentBlockSchema } from './messages';
 import type { ImageContentBlock, ToolResult } from './messages';
 import { BROWSER_RECORDING_PARAM_NAME_PATTERN, BrowserRecordingIdSchema } from './browser-recording';
 import type { HookSettingsSnapshot } from './hooks';
+import { MemorySettingsSchema } from './memory';
+import type { MemorySettings, MemoryStatusSnapshot } from './memory';
 
 export const MAX_IMAGE_ATTACHMENTS = 4;
 export const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
@@ -195,6 +197,27 @@ export const ListModelsInputSchema = z.object({
 });
 
 export const SaveExtensionSettingsInputSchema = ExtensionSettingsSchema;
+export const SaveMemorySettingsInputSchema = MemorySettingsSchema;
+export const GetMemoryStatusInputSchema = z.object({
+  workingDirectory: z.string().trim().min(1).max(4_096).optional()
+});
+export const RebuildMemoryIndexInputSchema = z.object({
+  scope: z.enum(['global', 'project']),
+  workingDirectory: z.string().trim().min(1).max(4_096).optional()
+}).superRefine((input, context) => {
+  if (input.scope === 'project' && !input.workingDirectory) {
+    context.addIssue({ code: 'custom', message: 'Project Memory requires a working directory.' });
+  }
+});
+export const DeleteMemoryEntryInputSchema = z.object({
+  scope: z.enum(['global', 'project']),
+  entryId: z.string().trim().min(1).max(512),
+  workingDirectory: z.string().trim().min(1).max(4_096).optional()
+}).superRefine((input, context) => {
+  if (input.scope === 'project' && !input.workingDirectory) {
+    context.addIssue({ code: 'custom', message: 'Project Memory requires a working directory.' });
+  }
+});
 
 export const BrowserDockLayoutSchema = z.object({
   sessionId: z.string().min(1),
@@ -253,6 +276,10 @@ export type DesktopApi = {
   exportSkill(input: z.input<typeof SkillPathInputSchema>): Promise<SkillOperationResult>;
   trashSkill(input: z.input<typeof SkillPathInputSchema>): Promise<SkillOperationResult>;
   saveExtensionSettings(input: z.input<typeof SaveExtensionSettingsInputSchema>): Promise<ExtensionSettings>;
+  saveMemorySettings(input: z.input<typeof SaveMemorySettingsInputSchema>): Promise<MemorySettings>;
+  getMemoryStatus(input?: z.input<typeof GetMemoryStatusInputSchema>): Promise<MemoryStatusSnapshot>;
+  rebuildMemoryIndex(input: z.input<typeof RebuildMemoryIndexInputSchema>): Promise<MemoryStatusSnapshot>;
+  deleteMemoryEntry(input: z.input<typeof DeleteMemoryEntryInputSchema>): Promise<MemoryStatusSnapshot>;
   probeChromeBrowser(port?: number): Promise<{ ok: true; browser: string } | { ok: false; error: string }>;
   setBrowserDockLayout(input: z.input<typeof BrowserDockLayoutSchema>): Promise<void>;
   browserDockAction(input: z.input<typeof BrowserDockActionSchema>): Promise<void>;
@@ -286,7 +313,10 @@ export type WorkerCommand =
   | { type: 'mcp.oauth.disconnect'; requestId: string; serverId: string }
   | { type: 'mcp.reconnect'; requestId: string; serverId: string }
   | { type: 'browser.result'; requestId: string; result?: ToolResult; error?: string }
-  | { type: 'hooks.invalidate'; requestId: string };
+  | { type: 'hooks.invalidate'; requestId: string }
+  | { type: 'memory.status'; requestId: string; workingDirectory?: string }
+  | { type: 'memory.rebuild'; requestId: string; scope: 'global' | 'project'; workingDirectory?: string }
+  | { type: 'memory.delete'; requestId: string; scope: 'global' | 'project'; entryId: string; workingDirectory?: string };
 
 export type WorkerMessage =
   | { type: 'ready' }
@@ -301,6 +331,7 @@ export type WorkerMessage =
   | { type: 'mcp.oauth.result'; requestId: string; ok: boolean; error?: string }
   | { type: 'browser.request'; requestId: string; sessionId: string; action: BrowserAction; approved: boolean }
   | { type: 'hooks.invalidated'; requestId: string; ok: boolean; error?: string }
+  | { type: 'memory.result'; requestId: string; ok: boolean; status?: MemoryStatusSnapshot; error?: string }
   | { type: 'worker.error'; message: string };
 
 export const IPC = {
@@ -329,6 +360,10 @@ export const IPC = {
   exportSkill: 'extensions:skill-export',
   trashSkill: 'extensions:skill-trash',
   saveExtensionSettings: 'extensions:save',
+  saveMemorySettings: 'memory:settings-save',
+  getMemoryStatus: 'memory:status',
+  rebuildMemoryIndex: 'memory:rebuild-index',
+  deleteMemoryEntry: 'memory:entry-delete',
   probeChromeBrowser: 'browser:chrome-probe',
   browserDockLayout: 'browser:dock-layout',
   browserDockAction: 'browser:dock-action',

@@ -14,6 +14,7 @@
     "@desktop-agent/contracts": "workspace:*",
     "@desktop-agent/extensions": "workspace:*",
     "@desktop-agent/hooks": "workspace:*",
+    "@desktop-agent/memory": "workspace:*",
     "@desktop-agent/orchestration": "workspace:*",
     "@desktop-agent/providers": "workspace:*",
     "@desktop-agent/storage": "workspace:*",

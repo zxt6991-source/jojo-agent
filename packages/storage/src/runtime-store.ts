@@ -1,4 +1,4 @@
-import { appendFile, mkdir, readFile, readdir, stat } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, readdir, stat, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import {
   assertOperationState,
@@ -214,6 +214,14 @@ export class JsonlAgentRuntimeStore implements AgentRuntimeStore {
   async getSession(sessionId: string): Promise<Session | null> {
     const snapshot = await this.loadSnapshot(sessionId);
     return snapshot.session ? clone(snapshot.session) : null;
+  }
+
+  async deleteSession(sessionId: string): Promise<void> {
+    await this.writes.get(sessionId);
+    const snapshot = await this.readSnapshot(sessionId);
+    for (const operationId of snapshot.operations.keys()) this.operationSessions.delete(operationId);
+    try { await unlink(this.file(sessionId)); }
+    catch (error: unknown) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
   }
 
   async appendEntry(input: AppendEntryInput): Promise<SessionEntry> {

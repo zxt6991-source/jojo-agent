@@ -14,6 +14,7 @@ export interface IdGenerator {
 export interface AgentRuntimeStore {
   createSession(session: Session): Promise<void>;
   getSession(sessionId: string): Promise<Session | null>;
+  deleteSession(sessionId: string): Promise<void>;
   appendEntry(input: AppendEntryInput): Promise<SessionEntry>;
   getEntry(id: string): Promise<SessionEntry | null>;
   readPath(leafId: string | null): Promise<SessionEntry[]>;

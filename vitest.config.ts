@@ -11,6 +11,7 @@ export default defineConfig({
       '@desktop-agent/providers': path.resolve('packages/providers/src/index.ts'),
       '@desktop-agent/tools-node': path.resolve('packages/tools-node/src/index.ts'),
       '@desktop-agent/storage': path.resolve('packages/storage/src/index.ts')
+      ,'@desktop-agent/memory': path.resolve('packages/memory/src/index.ts')
       ,'@desktop-agent/extensions': path.resolve('packages/extensions/src/index.ts')
     }
   },

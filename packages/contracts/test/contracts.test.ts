@@ -4,6 +4,7 @@ import {
   BrowserActionSchema,
   BrowserRecordingDocumentSchema,
   DEFAULT_BROWSER_SETTINGS,
+  DEFAULT_MEMORY_SETTINGS,
   DEFAULT_PROVIDERS,
   DEFAULT_SESSION_TITLE,
   IPC,
@@ -46,6 +47,7 @@ describe('contracts', () => {
       activeProviderId: 'openai',
       providers: DEFAULT_PROVIDERS,
       utilityModel: { providerId: 'openai', model: 'gpt-5-mini' },
+      memory: DEFAULT_MEMORY_SETTINGS,
       extensions: { mcpServers: [], skills: { directories: [], disabled: [] }, browser: { ...DEFAULT_BROWSER_SETTINGS } }
     });
     expect(SaveSettingsInputSchema.parse({
@@ -206,6 +208,10 @@ describe('contracts', () => {
     expect(IPC.trustProjectHooks).toBe('hooks:trust');
     expect(IPC.disableProjectHooks).toBe('hooks:disable');
     expect(IPC.openHookConfig).toBe('hooks:open-config');
+    expect(IPC.saveMemorySettings).toBe('memory:settings-save');
+    expect(IPC.getMemoryStatus).toBe('memory:status');
+    expect(IPC.rebuildMemoryIndex).toBe('memory:rebuild-index');
+    expect(IPC.deleteMemoryEntry).toBe('memory:entry-delete');
     expectTypeOf<DesktopApi['setBrowserDockLayout']>().toBeFunction();
     expectTypeOf<DesktopApi['browserDockAction']>().toBeFunction();
     expectTypeOf<DesktopApi['onBrowserDockState']>().toBeFunction();
@@ -214,6 +220,10 @@ describe('contracts', () => {
     expectTypeOf<DesktopApi['trustProjectHooks']>().toBeFunction();
     expectTypeOf<DesktopApi['disableProjectHooks']>().toBeFunction();
     expectTypeOf<DesktopApi['openHookConfig']>().toBeFunction();
+    expectTypeOf<DesktopApi['saveMemorySettings']>().toBeFunction();
+    expectTypeOf<DesktopApi['getMemoryStatus']>().toBeFunction();
+    expectTypeOf<DesktopApi['rebuildMemoryIndex']>().toBeFunction();
+    expectTypeOf<DesktopApi['deleteMemoryEntry']>().toBeFunction();
     expectTypeOf<(typeof MessageSchema)['_output']>().toEqualTypeOf<Message>();
     expectTypeOf<DesktopApi['startTurn']>().toBeFunction();
   });

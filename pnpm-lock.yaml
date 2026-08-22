@@ -47,6 +47,9 @@ importers:
       '@desktop-agent/hooks':
         specifier: workspace:*
         version: link:../../packages/hooks
+      '@desktop-agent/memory':
+        specifier: workspace:*
+        version: link:../../packages/memory
       '@desktop-agent/orchestration':
         specifier: workspace:*
         version: link:../../packages/orchestration
@@ -162,6 +165,18 @@ importers:
       yaml:
         specifier: ^2.9.0
         version: 2.9.0
+      zod:
+        specifier: ^4.1.13
+        version: 4.4.3
+
+  packages/memory:
+    dependencies:
+      '@desktop-agent/agent-runtime':
+        specifier: workspace:*
+        version: link:../agent-runtime
+      '@desktop-agent/contracts':
+        specifier: workspace:*
+        version: link:../contracts
       zod:
         specifier: ^4.1.13
         version: 4.4.3

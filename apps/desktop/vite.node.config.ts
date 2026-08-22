@@ -13,7 +13,8 @@ export const electronNodeConfig: UserConfig = {
   resolve: {
     alias: {
       '@desktop-agent/contracts': fileURLToPath(new URL('../../packages/contracts/src/index.ts', import.meta.url)),
-      '@desktop-agent/hooks': fileURLToPath(new URL('../../packages/hooks/src/index.ts', import.meta.url))
+      '@desktop-agent/hooks': fileURLToPath(new URL('../../packages/hooks/src/index.ts', import.meta.url)),
+      '@desktop-agent/memory': fileURLToPath(new URL('../../packages/memory/src/index.ts', import.meta.url))
     }
   },
   build: {

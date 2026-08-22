@@ -5,6 +5,7 @@ import {
   MemoryAgentRuntimeStore,
   runAgentTurn,
   type AgentRunOptions,
+  type MemoryRuntime,
   type OperationState
 } from '../src/index.js';
 
@@ -313,5 +314,42 @@ describe('runtime runner', () => {
       { callId: 'first', code: 'cancelled' },
       { callId: 'second', code: 'cancelled' }
     ]);
+  });
+
+  it('persists and reuses one memory snapshot as ambient context', async () => {
+    const store = new MemoryAgentRuntimeStore();
+    const snapshot = vi.fn(async () => ({
+      id: 'snapshot-1', version: 1, scope: { globalScopeId: 'global' as const },
+      content: 'Use pnpm for this project.', sourceEntryIds: ['mem-1'],
+      scopeVersions: { global: 1 }, estimatedTokens: 8, contentHash: 'snapshot-hash'
+    }));
+    const memoryRuntime: MemoryRuntime = {
+      snapshot,
+      recallTriggered: async () => [],
+      beforeCompact: async () => ({ refreshSnapshot: false }),
+      onTurnSettled: async () => undefined
+    };
+    const requests: ModelRequest[] = [];
+    const provider: ModelProvider = {
+      async *stream(request) {
+        requests.push(request);
+        yield { type: 'text_delta', text: 'done' };
+        yield { type: 'response_completed', stopReason: 'stop' };
+      }
+    };
+    await runAgentTurn(options(provider, {
+      runtimeStore: store, operationId: 'memory-op-1', tools: [], memoryRuntime
+    }));
+    await runAgentTurn(options(provider, {
+      runtimeStore: store, operationId: 'memory-op-2', tools: [], memoryRuntime, userText: 'follow up'
+    }));
+
+    expect(snapshot).toHaveBeenCalledOnce();
+    expect(requests).toHaveLength(2);
+    expect(requests.every((request) => request.instructions?.some((instruction) =>
+      instruction.includes('Use pnpm for this project.')
+    ))).toBe(true);
+    const lane = await store.getLane('session-1', 'main');
+    expect((await store.readPath(lane?.leafId ?? null)).filter((entry) => entry.type === 'memory_snapshot')).toHaveLength(1);
   });
 });

@@ -154,6 +154,10 @@ export class SqliteAgentRuntimeStore implements AgentRuntimeStore {
     };
   }
 
+  async deleteSession(sessionId: string): Promise<void> {
+    this.database.prepare('DELETE FROM sessions WHERE id = ?').run(sessionId);
+  }
+
   async appendEntry(input: AppendEntryInput): Promise<SessionEntry> {
     this.requireSession(input.sessionId);
     if (this.entryRow(input.id)) throw new Error(`runtime_entry_exists: ${input.id}`);

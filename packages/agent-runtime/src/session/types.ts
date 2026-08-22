@@ -61,6 +61,26 @@ export type HookContextEntry = EntryBase & {
   subjectId?: string;
 };
 
+export type MemorySnapshotEntry = EntryBase & {
+  type: 'memory_snapshot';
+  snapshotId: string;
+  content: string;
+  contentHash: string;
+  sourceEntryIds: string[];
+  scopeVersions: Record<string, number>;
+  estimatedTokens: number;
+  refreshedBy: 'session_start' | 'compaction' | 'manual';
+};
+
+export type MemoryRecallEntry = EntryBase & {
+  type: 'memory_recall';
+  snapshotId: string;
+  ruleIds: string[];
+  userMessageId: string;
+  content: string;
+  estimatedTokens: number;
+};
+
 export type SessionEntry =
   | MessageEntry
   | CompactionEntry
@@ -68,6 +88,8 @@ export type SessionEntry =
   | ModelChangeEntry
   | ActiveToolsChangeEntry
   | HookContextEntry
+  | MemorySnapshotEntry
+  | MemoryRecallEntry
   | CustomEntry;
 
 export type AppendEntryInput = SessionEntry extends infer Entry

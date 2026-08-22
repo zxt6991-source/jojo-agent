@@ -4,6 +4,7 @@ export * from './desktop';
 export * from './extensions';
 export * from './hooks';
 export * from './messages';
+export * from './memory';
 export * from './model';
 export * from './orchestration';
 export * from './persistence';

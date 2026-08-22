@@ -2,7 +2,7 @@ import { appendFile, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_BROWSER_SETTINGS } from '@desktop-agent/contracts';
+import { DEFAULT_BROWSER_SETTINGS, DEFAULT_MEMORY_SETTINGS } from '@desktop-agent/contracts';
 import { JsonConfigStore, JsonlSessionStore } from '../src/index.js';
 
 describe('JsonlSessionStore', () => {
@@ -60,6 +60,7 @@ describe('JsonConfigStore', () => {
         })
       ]),
       utilityModel: { providerId: 'openai', model: 'legacy-model' },
+      memory: DEFAULT_MEMORY_SETTINGS,
       extensions: { mcpServers: [], skills: { directories: [], disabled: [] }, browser: { ...DEFAULT_BROWSER_SETTINGS } }
     });
   });
@@ -102,6 +103,7 @@ describe('JsonConfigStore', () => {
       models: ['model-a', 'model-b'], hasApiKey: true
     };
     settings.utilityModel = { providerId: 'openai', model: 'model-a' };
+    settings.memory = { ...settings.memory, enabled: false, recoveryRetentionDays: 14 };
     settings.extensions = {
       mcpServers: [{ id: 'files', name: 'Files', enabled: true, transport: 'stdio', command: 'node', args: ['server.js'] }],
       skills: { directories: ['/skills'], disabled: ['disabled-skill'] },
@@ -116,6 +118,7 @@ describe('JsonConfigStore', () => {
       utilityModel: { providerId: 'openai', model: 'model-a' }
     });
     expect(stored.extensions).toEqual(settings.extensions);
+    expect(stored.memory).toEqual(settings.memory);
     expect(JSON.stringify(stored)).not.toContain('hasApiKey');
     await expect(store.get()).resolves.toMatchObject({
       providers: expect.arrayContaining([expect.objectContaining({ id: 'openai', hasApiKey: false })])

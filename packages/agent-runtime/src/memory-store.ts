@@ -35,6 +35,19 @@ export class MemoryAgentRuntimeStore implements AgentRuntimeStore {
     return session ? clone(session) : null;
   }
 
+  async deleteSession(sessionId: string): Promise<void> {
+    this.sessions.delete(sessionId);
+    this.nextSequence.delete(sessionId);
+    for (const [id, entry] of this.entries) if (entry.sessionId === sessionId) this.entries.delete(id);
+    for (const [key, lane] of this.lanes) if (lane.sessionId === sessionId) this.lanes.delete(key);
+    for (const [id, operation] of this.operations) {
+      if (operation.meta.sessionId === sessionId) this.operations.delete(id);
+    }
+    for (let index = this.usage.length - 1; index >= 0; index -= 1) {
+      if (this.usage[index]?.sessionId === sessionId) this.usage.splice(index, 1);
+    }
+  }
+
   async appendEntry(input: AppendEntryInput): Promise<SessionEntry> {
     this.requireSession(input.sessionId);
     if (this.entries.has(input.id)) throw new Error(`runtime_entry_exists: ${input.id}`);

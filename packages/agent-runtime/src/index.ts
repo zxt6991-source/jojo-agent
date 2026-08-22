@@ -8,6 +8,13 @@ export type { AgentRunResult } from '@desktop-agent/agent';
 export { MemoryAgentRuntimeStore } from './memory-store.js';
 export { DefaultContextBuilder } from './context/builder.js';
 export type { BuildContextInput, ContextBuilder, ModelContext } from './context/builder.js';
+export { NoopMemoryRuntime } from './memory/runtime.js';
+export type {
+  MemoryCompactInput,
+  MemoryCompactResult,
+  MemoryRuntime,
+  MemoryTurnSettledInput
+} from './memory/runtime.js';
 export { projectEntriesToMessages } from './context/projection.js';
 export type { AgentRuntimeStore, Clock, IdGenerator } from './store.js';
 export type { OperationKind, OperationMeta, StoredOperation } from './operation/meta.js';
@@ -24,6 +31,8 @@ export type {
   LaneState,
   MessageEntry,
   ModelChangeEntry,
+  MemoryRecallEntry,
+  MemorySnapshotEntry,
   Session,
   SessionEntry
 } from './session/types.js';

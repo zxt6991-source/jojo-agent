@@ -11,6 +11,7 @@ import {
   sessionTitleFromPrompt,
   type Message,
   type ProviderSettings,
+  type ProjectIdentity,
   type SessionMeta,
   type SessionRecord
 } from '@desktop-agent/contracts';
@@ -44,6 +45,7 @@ const StoredConfigV3Schema = z.object({
   activeProviderId: z.string().min(1),
   providers: z.array(StoredProviderSchema).min(1),
   utilityModel: z.object({ providerId: z.string().min(1), model: z.string().min(1) }),
+  memory: z.unknown().optional(),
   extensions: z.unknown().optional()
 });
 
@@ -62,9 +64,13 @@ export class JsonlSessionStore {
     await this.ensureDirectory();
     await appendFile(this.file(sessionId), `${JSON.stringify(record)}\n`, { encoding: 'utf8', flag: 'a' });
   }
-  async create(title: string, workingDirectory: string): Promise<SessionMeta> {
+  async create(title: string, workingDirectory: string, projectIdentity?: ProjectIdentity): Promise<SessionMeta> {
     const time = new Date().toISOString();
-    const meta = SessionMetaSchema.parse({ id: crypto.randomUUID(), title, workingDirectory, createdAt: time, updatedAt: time });
+    const meta = SessionMetaSchema.parse({
+      id: crypto.randomUUID(), title, workingDirectory,
+      ...(projectIdentity ? { projectIdentity } : {}),
+      createdAt: time, updatedAt: time
+    });
     await this.append(meta.id, { schemaVersion: 1, type: 'meta', session: meta });
     return meta;
   }
@@ -178,6 +184,7 @@ export class JsonConfigStore {
         activeProviderId: activeProvider.id,
         providers,
         utilityModel,
+        ...(stored.memory !== undefined ? { memory: stored.memory } : {}),
         ...(stored.extensions !== undefined ? { extensions: stored.extensions } : {})
       });
     } catch {
@@ -198,6 +205,7 @@ export class JsonConfigStore {
       activeProviderId: validSettings.activeProviderId,
       providers: validSettings.providers.map(({ hasApiKey: _hasApiKey, ...provider }) => provider),
       utilityModel: validSettings.utilityModel,
+      memory: validSettings.memory,
       extensions: validSettings.extensions
     };
     await writeFile(temporary, JSON.stringify(stored, null, 2), { encoding: 'utf8', mode: 0o600 });

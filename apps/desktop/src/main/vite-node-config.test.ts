@@ -27,7 +27,8 @@ describe('Electron Node Vite config', () => {
     const alias = electronNodeConfig.resolve?.alias;
     expect(alias).toMatchObject({
       '@desktop-agent/contracts': expect.stringContaining('/packages/contracts/src/index.ts'),
-      '@desktop-agent/hooks': expect.stringContaining('/packages/hooks/src/index.ts')
+      '@desktop-agent/hooks': expect.stringContaining('/packages/hooks/src/index.ts'),
+      '@desktop-agent/memory': expect.stringContaining('/packages/memory/src/index.ts')
     });
   });
 });

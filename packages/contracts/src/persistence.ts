@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { MessageSchema } from './messages';
 import { ExtensionSettingsSchema, DEFAULT_BROWSER_SETTINGS } from './extensions';
+import { DEFAULT_MEMORY_SETTINGS, MemorySettingsSchema, ProjectIdentitySchema } from './memory';
 
 export const DEFAULT_SESSION_TITLE = '新会话';
 export const SESSION_TITLE_MAX_LENGTH = 120;
@@ -27,6 +28,7 @@ export const SessionMetaSchema = z.object({
   id: z.string().min(1),
   title: z.string().min(1).max(SESSION_TITLE_MAX_LENGTH),
   workingDirectory: z.string().min(1),
+  projectIdentity: ProjectIdentitySchema.optional(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime()
 });
@@ -73,6 +75,7 @@ export const ProviderSettingsSchema = z.object({
   activeProviderId: z.string().min(1).default('openai'),
   providers: z.array(ProviderConfigSchema).min(1).default(() => DEFAULT_PROVIDERS.map((provider) => ({ ...provider }))),
   utilityModel: ModelSelectionSchema.default({ providerId: 'openai', model: 'gpt-5-mini' }),
+  memory: MemorySettingsSchema.default(() => structuredClone(DEFAULT_MEMORY_SETTINGS)),
   extensions: ExtensionSettingsSchema.default({
     mcpServers: [], skills: { directories: [], disabled: [] }, browser: { ...DEFAULT_BROWSER_SETTINGS }
   })

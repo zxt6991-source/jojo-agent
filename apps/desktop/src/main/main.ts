@@ -5,15 +5,16 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  ApprovalInputSchema, BrowserDockActionSchema, BrowserDockLayoutSchema, CreateSessionInputSchema, CreateSkillInputSchema, GetExtensionStatusInputSchema, GetHookStatusInputSchema, HookProjectActionInputSchema, ImportSkillInputSchema, IPC, ListModelsInputSchema, MAX_IMAGE_ATTACHMENTS, MAX_IMAGE_BYTES, McpServerIdInputSchema, OpenHookConfigInputSchema, RenameSessionInputSchema, SaveExtensionSettingsInputSchema, SaveSettingsInputSchema,
+  ApprovalInputSchema, BrowserDockActionSchema, BrowserDockLayoutSchema, CreateSessionInputSchema, CreateSkillInputSchema, DeleteMemoryEntryInputSchema, GetExtensionStatusInputSchema, GetHookStatusInputSchema, GetMemoryStatusInputSchema, HookProjectActionInputSchema, ImportSkillInputSchema, IPC, ListModelsInputSchema, MAX_IMAGE_ATTACHMENTS, MAX_IMAGE_BYTES, McpServerIdInputSchema, OpenHookConfigInputSchema, RebuildMemoryIndexInputSchema, RenameSessionInputSchema, SaveExtensionSettingsInputSchema, SaveMemorySettingsInputSchema, SaveSettingsInputSchema,
   SessionIdInputSchema, SkillPathInputSchema, StartTurnInputSchema, UpdateSkillInputSchema, WorkflowRunActionInputSchema,
-  type ExtensionStatus, type ProviderSettings, type WorkerCommand, type WorkerMessage, type WorkflowRunSnapshot
+  type ExtensionStatus, type MemoryStatusSnapshot, type ProviderSettings, type WorkerCommand, type WorkerMessage, type WorkflowRunSnapshot
 } from '@desktop-agent/contracts';
 import { z } from 'zod';
 import { createProvider } from '@desktop-agent/providers';
 import { createSkillSource, discoverSkills, parseSkillSource, skillId, userSkillDirectories, type SkillDirectory } from '@desktop-agent/extensions';
 import { EMPTY_HOOK_CONFIG, FileHookTrustStore, loadHookSettings } from '@desktop-agent/hooks';
 import { JsonConfigStore, JsonlSessionStore } from '@desktop-agent/storage';
+import { createProjectIdentity } from '@desktop-agent/memory';
 import { collectWorkspaceChanges } from './workspace-changes';
 import { BrowserRuntime } from './browser-runtime';
 import { mapChromeCdpError, probeChromeCdp } from './browser-backends/chrome-cdp-client';
@@ -43,6 +44,11 @@ const oauthRequests = new Map<string, {
 }>();
 const workerRequests = new Map<string, {
   resolve: () => void;
+  reject: (error: Error) => void;
+  timer: ReturnType<typeof setTimeout>;
+}>();
+const memoryRequests = new Map<string, {
+  resolve: (status: MemoryStatusSnapshot) => void;
   reject: (error: Error) => void;
   timer: ReturnType<typeof setTimeout>;
 }>();
@@ -132,6 +138,27 @@ function finishWorkerRequest(requestId: string, error?: Error): void {
   workerRequests.delete(requestId);
   clearTimeout(request.timer);
   if (error) request.reject(error); else request.resolve();
+}
+
+function requestMemoryStatus(command: Extract<WorkerCommand, { type: 'memory.status' | 'memory.rebuild' | 'memory.delete' }>): Promise<MemoryStatusSnapshot> {
+  if (!worker) return Promise.reject(new Error('Agent runtime is not available.'));
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      memoryRequests.delete(command.requestId);
+      reject(new Error('Memory status request timed out.'));
+    }, 30_000);
+    memoryRequests.set(command.requestId, { resolve, reject, timer });
+    worker!.postMessage(command);
+  });
+}
+
+function finishMemoryRequest(message: Extract<WorkerMessage, { type: 'memory.result' }>): void {
+  const request = memoryRequests.get(message.requestId);
+  if (!request) return;
+  memoryRequests.delete(message.requestId);
+  clearTimeout(request.timer);
+  if (!message.ok || !message.status) request.reject(new Error(message.error ?? 'Memory request failed.'));
+  else request.resolve(message.status);
 }
 
 async function stopSessionRuntime(sessionId: string): Promise<void> {
@@ -367,10 +394,16 @@ function startWorker(): void {
     else if (message.type === 'hooks.invalidated') {
       finishWorkerRequest(message.requestId, message.ok ? undefined : new Error(message.error ?? 'Hook runtime reload failed.'));
     }
+    else if (message.type === 'memory.result') finishMemoryRequest(message);
   });
   worker.on('exit', (code) => {
     for (const requestId of workerRequests.keys()) {
       finishWorkerRequest(requestId, new Error(`Agent runtime exited (${code}).`));
+    }
+    for (const [requestId, request] of memoryRequests) {
+      memoryRequests.delete(requestId);
+      clearTimeout(request.timer);
+      request.reject(new Error(`Agent runtime exited (${code}).`));
     }
     sendToRenderer(IPC.agentEvent, { type: 'turn.failed', code: 'worker_exit', message: `Agent runtime exited (${code}).` });
     worker = null;
@@ -382,7 +415,11 @@ function registerIpc(): void {
   ipcMain.handle(IPC.listSessions, async (event) => { assertTrusted(event); return sessionStore.list(); });
   ipcMain.handle(IPC.createSession, async (event, raw) => {
     assertTrusted(event); const input = CreateSessionInputSchema.parse(raw);
-    const session = await sessionStore.create(input.title, input.workingDirectory);
+    const session = await sessionStore.create(
+      input.title,
+      input.workingDirectory,
+      await createProjectIdentity(input.workingDirectory)
+    );
     sendToRenderer(IPC.sessionsChanged); return session;
   });
   ipcMain.handle(IPC.renameSession, async (event, raw) => {
@@ -487,7 +524,10 @@ function registerIpc(): void {
     const providers = current.providers.some((item) => item.id === provider.id)
       ? current.providers.map((item) => item.id === provider.id ? provider : item)
       : [...current.providers, provider];
-    const settings = { activeProviderId: input.activeProviderId, providers, utilityModel: input.utilityModel, extensions: current.extensions };
+    const settings = {
+      activeProviderId: input.activeProviderId, providers, utilityModel: input.utilityModel,
+      memory: current.memory, extensions: current.extensions
+    };
     await configStore.save(settings);
     await pushConfig(); return configStore.get(apiKeys);
   });
@@ -603,6 +643,48 @@ function registerIpc(): void {
     await configStore.save({ ...current, extensions });
     await pushConfig();
     return extensions;
+  });
+  ipcMain.handle(IPC.saveMemorySettings, async (event, raw) => {
+    assertTrusted(event);
+    const memory = SaveMemorySettingsInputSchema.parse(raw);
+    const apiKeys = await readApiKeys();
+    const current = await configStore.get(apiKeys);
+    await configStore.save({ ...current, memory });
+    await pushConfig();
+    return memory;
+  });
+  ipcMain.handle(IPC.getMemoryStatus, async (event, raw) => {
+    assertTrusted(event);
+    const input = GetMemoryStatusInputSchema.parse(raw ?? {});
+    const requestId = crypto.randomUUID();
+    return requestMemoryStatus({
+      requestId,
+      type: 'memory.status',
+      ...(input.workingDirectory ? { workingDirectory: input.workingDirectory } : {})
+    });
+  });
+  ipcMain.handle(IPC.rebuildMemoryIndex, async (event, raw) => {
+    assertTrusted(event);
+    const input = RebuildMemoryIndexInputSchema.parse(raw);
+    const requestId = crypto.randomUUID();
+    return requestMemoryStatus({
+      requestId,
+      type: 'memory.rebuild',
+      scope: input.scope,
+      ...(input.workingDirectory ? { workingDirectory: input.workingDirectory } : {})
+    });
+  });
+  ipcMain.handle(IPC.deleteMemoryEntry, async (event, raw) => {
+    assertTrusted(event);
+    const input = DeleteMemoryEntryInputSchema.parse(raw);
+    const requestId = crypto.randomUUID();
+    return requestMemoryStatus({
+      requestId,
+      type: 'memory.delete',
+      scope: input.scope,
+      entryId: input.entryId,
+      ...(input.workingDirectory ? { workingDirectory: input.workingDirectory } : {})
+    });
   });
   ipcMain.handle(IPC.browserDockLayout, async (event, raw) => {
     assertTrusted(event);

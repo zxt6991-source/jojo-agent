@@ -1,9 +1,9 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import type {
-  AgentEvent, ApprovalRequest, BrowserDockState, ExtensionSettings, ExtensionStatus, HookSettingsSnapshot, ImageContentBlock, Message, ProviderConfig, ProviderSettings, SessionMeta, SkillDetail, SkillStatus, WorkflowRunSnapshot, WorkspaceChanges
+  AgentEvent, ApprovalRequest, BrowserDockState, ExtensionSettings, ExtensionStatus, HookSettingsSnapshot, ImageContentBlock, MemorySettings, MemoryStatusSnapshot, Message, ProviderConfig, ProviderSettings, SessionMeta, SkillDetail, SkillStatus, WorkflowRunSnapshot, WorkspaceChanges
 } from '@desktop-agent/contracts';
-import { DEFAULT_BROWSER_SETTINGS, DEFAULT_PROVIDERS, DEFAULT_SESSION_TITLE } from '@desktop-agent/contracts';
+import { DEFAULT_BROWSER_SETTINGS, DEFAULT_MEMORY_SETTINGS, DEFAULT_PROVIDERS, DEFAULT_SESSION_TITLE } from '@desktop-agent/contracts';
 import {
   applyLiveEvent,
   buildConversationSnapshot,
@@ -14,6 +14,7 @@ import {
 } from './conversation';
 import { browserDomainIssue, parseBrowserDomainList } from './browser-settings';
 import { HooksSettingsPage, hookStatusErrorMessage } from './HooksSettings';
+import { MemorySettingsPage } from './MemorySettings';
 import { ChatTranscript, ConversationViewTabs, Markdown, TrajectoryView } from './ConversationViews';
 import { Sidebar } from './Sidebar';
 import { WorkflowCard } from './WorkflowCard';
@@ -22,11 +23,13 @@ import './styles.css';
 
 type DiffLine = { type: 'addition' | 'deletion' | 'context' | 'hunk' | 'meta'; oldLine?: number; newLine?: number; text: string };
 const FOLLOW_THRESHOLD = 24;
+type SettingsSection = 'models' | 'memory' | 'browser' | 'mcp' | 'skills' | 'hooks';
 
 const defaultSettings: ProviderSettings = {
   activeProviderId: 'openai',
   providers: DEFAULT_PROVIDERS.map((provider) => ({ ...provider })),
   utilityModel: { providerId: 'openai', model: 'gpt-5-mini' },
+  memory: structuredClone(DEFAULT_MEMORY_SETTINGS),
   extensions: { mcpServers: [], skills: { directories: [], disabled: [] }, browser: { ...DEFAULT_BROWSER_SETTINGS } }
 };
 
@@ -434,7 +437,7 @@ function App() {
   const [runningSessionId, setRunningSessionId] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [settingsSection, setSettingsSection] = useState<'models' | 'browser' | 'mcp' | 'skills' | 'hooks'>('models');
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>('models');
   const [settings, setSettings] = useState<ProviderSettings>(defaultSettings);
   const [settingsDraft, setSettingsDraft] = useState<ProviderSettings>(defaultSettings);
   const [selectedModel, setSelectedModel] = useState(providerById(defaultSettings, defaultSettings.activeProviderId).model);
@@ -445,6 +448,10 @@ function App() {
   const [contextWindowInput, setContextWindowInput] = useState(String(providerById(defaultSettings, defaultSettings.activeProviderId).contextWindowTokens));
   const [maxOutputInput, setMaxOutputInput] = useState(String(providerById(defaultSettings, defaultSettings.activeProviderId).maxOutputTokens));
   const [settingsError, setSettingsError] = useState('');
+  const [memoryDraft, setMemoryDraft] = useState<MemorySettings>(structuredClone(DEFAULT_MEMORY_SETTINGS));
+  const [memoryStatus, setMemoryStatus] = useState<MemoryStatusSnapshot | null>(null);
+  const [memoryError, setMemoryError] = useState('');
+  const [memoryBusy, setMemoryBusy] = useState(false);
   const [extensionDraft, setExtensionDraft] = useState<ExtensionSettings>(defaultSettings.extensions);
   const [extensionStatus, setExtensionStatus] = useState<ExtensionStatus>({ mcpServers: [], skills: [] });
   const [mcpServersJson, setMcpServersJson] = useState('[]');
@@ -516,6 +523,59 @@ function App() {
     }
   };
 
+  const memoryDirectoryInput = () => {
+    const workingDirectory = activeIdRef.current ? sessionDirectoriesRef.current.get(activeIdRef.current) : undefined;
+    return workingDirectory ? { workingDirectory } : undefined;
+  };
+
+  const refreshMemoryStatus = async (): Promise<void> => {
+    setMemoryBusy(true);
+    setMemoryError('');
+    try {
+      setMemoryStatus(await window.desktopAgent.getMemoryStatus(memoryDirectoryInput()));
+    } catch (cause) {
+      setMemoryError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setMemoryBusy(false);
+    }
+  };
+
+  const rebuildMemoryIndex = async (scope: 'global' | 'project'): Promise<void> => {
+    const directory = memoryDirectoryInput();
+    if (scope === 'project' && !directory) {
+      setMemoryError('请先选择一个项目会话，再重建 Project Memory 索引。');
+      return;
+    }
+    setMemoryBusy(true);
+    setMemoryError('');
+    try {
+      setMemoryStatus(await window.desktopAgent.rebuildMemoryIndex({ scope, ...directory }));
+    } catch (cause) {
+      setMemoryError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setMemoryBusy(false);
+    }
+  };
+
+  const deleteMemoryEntry = async (scope: 'global' | 'project', entryId: string): Promise<boolean> => {
+    const directory = memoryDirectoryInput();
+    if (scope === 'project' && !directory) {
+      setMemoryError('请先选择一个项目会话，再删除 Project Memory 配置。');
+      return false;
+    }
+    setMemoryBusy(true);
+    setMemoryError('');
+    try {
+      setMemoryStatus(await window.desktopAgent.deleteMemoryEntry({ scope, entryId, ...directory }));
+      return true;
+    } catch (cause) {
+      setMemoryError(cause instanceof Error ? cause.message : String(cause));
+      return false;
+    } finally {
+      setMemoryBusy(false);
+    }
+  };
+
   const saveExtensionDraft = async (): Promise<ExtensionSettings> => {
     let mcpServers = extensionDraft.mcpServers;
     if (settingsSection === 'mcp') {
@@ -583,6 +643,7 @@ function App() {
       setSettingsDraft(saved);
       setSelectedModel(providerById(saved, saved.activeProviderId).model);
       setExtensionDraft(saved.extensions);
+      setMemoryDraft(saved.memory);
     });
     void refreshExtensionStatus();
     const offSessions = window.desktopAgent.onSessionsChanged(() => void refreshSessions());
@@ -628,6 +689,11 @@ function App() {
       .catch((cause) => { if (!cancelled) setHookError(hookStatusErrorMessage(cause)); })
       .finally(() => { if (!cancelled) setHookBusy(false); });
     return () => { cancelled = true; };
+  }, [settingsOpen, settingsSection, activeId]);
+
+  useEffect(() => {
+    if (!settingsOpen || settingsSection !== 'memory') return;
+    void refreshMemoryStatus();
   }, [settingsOpen, settingsSection, activeId]);
 
   useEffect(() => {
@@ -839,7 +905,7 @@ function App() {
     setReviewOpen(true);
   };
 
-  const openSettings = (section: 'models' | 'browser' | 'mcp' | 'skills' = 'models') => {
+  const openSettings = (section: SettingsSection = 'models') => {
     const provider = providerById(settings, settings.activeProviderId);
     setSettingsDraft(settings); setApiKey(''); setModelsFresh(true); setModelsError(''); setSettingsError('');
     setContextWindowInput(String(provider.contextWindowTokens));
@@ -848,6 +914,8 @@ function App() {
     setMcpServersJson(JSON.stringify(settings.extensions.mcpServers, null, 2));
     setSkillDirectories(settings.extensions.skills.directories.join('\n'));
     setBrowserDomains(settings.extensions.browser.allowedDomains.join('\n'));
+    setMemoryDraft(structuredClone(settings.memory));
+    setMemoryStatus(null); setMemoryError('');
     setExtensionError(''); setExtensionSearch(''); setExtensionEditorOpen(false);
     void refreshExtensionStatus(active?.workingDirectory);
     setSettingsSection(section);
@@ -997,6 +1065,7 @@ function App() {
         <button className="settings-back" type="button" onClick={() => setSettingsOpen(false)}><span aria-hidden="true">←</span> 返回</button>
         <nav aria-label="设置分类">
           <button type="button" className={settingsSection === 'models' ? 'active' : ''} onClick={() => { setSettingsSection('models'); setExtensionEditorOpen(false); }}><span aria-hidden="true">◇</span> 模型</button>
+          <button type="button" className={settingsSection === 'memory' ? 'active' : ''} onClick={() => { setSettingsSection('memory'); setExtensionEditorOpen(false); }}><span aria-hidden="true">◈</span> Memory</button>
           <button type="button" className={settingsSection === 'browser' ? 'active' : ''} onClick={() => { setSettingsSection('browser'); setExtensionEditorOpen(false); }}><span aria-hidden="true">◎</span> 浏览器</button>
           <button type="button" className={settingsSection === 'skills' ? 'active' : ''} onClick={() => { setSettingsSection('skills'); setExtensionSearch(''); setExtensionEditorOpen(false); }}><span aria-hidden="true">⬡</span> 技能</button>
           <button type="button" className={settingsSection === 'mcp' ? 'active' : ''} onClick={() => { setSettingsSection('mcp'); setExtensionSearch(''); setExtensionEditorOpen(false); }}><span aria-hidden="true">⌘</span> MCP 服务</button>
@@ -1004,7 +1073,7 @@ function App() {
         </nav>
       </aside>
       <main className="settings-main">
-        <header className="settings-topbar"><strong>{settingsSection === 'models' ? '模型' : settingsSection === 'browser' ? '浏览器' : settingsSection === 'skills' ? '技能' : settingsSection === 'hooks' ? 'Hooks' : 'MCP 服务'}</strong></header>
+        <header className="settings-topbar"><strong>{settingsSection === 'models' ? '模型' : settingsSection === 'memory' ? 'Memory' : settingsSection === 'browser' ? '浏览器' : settingsSection === 'skills' ? '技能' : settingsSection === 'hooks' ? 'Hooks' : 'MCP 服务'}</strong></header>
         <div className="settings-page-body">
     {settingsSection === 'models' && <form className="settings-content model-settings-page" aria-labelledby="settings-title" onSubmit={async (event) => {
       event.preventDefault();
@@ -1066,6 +1135,33 @@ function App() {
       <div className="settings-actions"><button className="primary" type="submit" disabled={modelsLoading}>保存模型设置</button></div>
       </section>
     </form>}
+    {settingsSection === 'memory' && <MemorySettingsPage
+      draft={memoryDraft}
+      saved={settings.memory}
+      status={memoryStatus}
+      error={memoryError}
+      busy={memoryBusy}
+      {...(active?.workingDirectory ? { workingDirectory: active.workingDirectory } : {})}
+      onChange={(next) => { setMemoryDraft(next); setMemoryError(''); }}
+      onRefresh={() => { void refreshMemoryStatus(); }}
+      onRebuild={(scope) => { void rebuildMemoryIndex(scope); }}
+      onDelete={deleteMemoryEntry}
+      onSave={async () => {
+        setMemoryBusy(true);
+        setMemoryError('');
+        try {
+          const saved = await window.desktopAgent.saveMemorySettings(memoryDraft);
+          setMemoryDraft(saved);
+          setSettings((current) => ({ ...current, memory: saved }));
+          setSettingsDraft((current) => ({ ...current, memory: saved }));
+          setMemoryStatus(await window.desktopAgent.getMemoryStatus(memoryDirectoryInput()));
+        } catch (cause) {
+          setMemoryError(cause instanceof Error ? cause.message : String(cause));
+        } finally {
+          setMemoryBusy(false);
+        }
+      }}
+    />}
     {settingsSection === 'browser' && <BrowserSettingsPage
       enabled={extensionDraft.browser.enabled}
       mode={extensionDraft.browser.mode}
