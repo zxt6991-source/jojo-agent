@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { Message, ModelProvider, PermissionGate, Tool, ToolResult } from '@desktop-agent/contracts';
-import { ScriptedProvider } from '@desktop-agent/agent';
+import type { Message, ModelProvider, ModelRequest, PermissionGate, Tool, ToolCall, ToolResult } from '@desktop-agent/contracts';
+import { fingerprintToolBatch, ScriptedProvider } from '@desktop-agent/agent';
 import {
   MemoryAgentRuntimeStore,
   resumeAgentTurn,
@@ -81,6 +81,74 @@ const finalProvider = () => new ScriptedProvider([[
 ]]);
 
 describe('crash recovery', () => {
+  it('does not reset persisted cycle history when an operation resumes', async () => {
+    const execute = vi.fn(async () => ({ callId: '', ok: true, content: 'unexpected' }));
+    const tool: Tool = {
+      definition: { name: 'effect', description: 'effect', inputSchema: { type: 'object' } },
+      replay: 'safe', execute
+    };
+    const tools = new Map([['effect', tool]]);
+    const batch = (value: number, id: string): string => fingerprintToolBatch(
+      [{ id, name: 'effect', input: { value } } satisfies ToolCall],
+      tools
+    )!;
+    const recent = [batch(0, 'a1'), batch(1, 'b1'), batch(0, 'a2'), batch(1, 'b2'), batch(0, 'a3')];
+    const store = await operationStore({
+      phase: 'checkpoint', operationId: 'operation-1', lane: 'main', iteration: 5,
+      outputContinuations: 0,
+      progress: { ...progress, iterationLimit: 12, recentIterationFingerprints: recent }
+    });
+    let step = 0;
+    const provider: ModelProvider = {
+      async *stream(request) {
+        if (step++ === 0) {
+          yield { type: 'tool_call_completed', call: { id: 'b3', name: 'effect', input: { value: 1 } } };
+          yield { type: 'response_completed', stopReason: 'tool_calls' };
+          return;
+        }
+        expect(request.tools).toEqual([]);
+        yield { type: 'text_delta', text: 'Stopped the persisted cycle.' };
+        yield { type: 'response_completed', stopReason: 'stop' };
+      }
+    };
+
+    const result = await resumeAgentTurn(options(store, provider, tool, []));
+
+    expect(result.stopReason).toBe('loop_detected');
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('clamps a legacy oversized persisted limit to the absolute fuse on resume', async () => {
+    const store = new MemoryAgentRuntimeStore();
+    await store.createSession({ id: 'session-1', createdAt: 1 });
+    await store.saveLane({ sessionId: 'session-1', name: 'main', leafId: null, currentOperationId: null });
+    await store.startOperation({
+      id: 'operation-1', sessionId: 'session-1', lane: 'main', kind: 'run', createdAt: 2,
+      providerId: 'provider-1', model: 'model-1', maxIterations: 999_999
+    }, {
+      phase: 'checkpoint', operationId: 'operation-1', lane: 'main', iteration: 128,
+      outputContinuations: 0, progress
+    });
+    const requests: ModelRequest[] = [];
+    const provider: ModelProvider = {
+      async *stream(request) {
+        requests.push(request);
+        yield { type: 'text_delta', text: 'Absolute safety summary.' };
+        yield { type: 'response_completed', stopReason: 'stop' };
+      }
+    };
+    const tool: Tool = {
+      definition: { name: 'effect', description: 'effect', inputSchema: { type: 'object' } },
+      replay: 'safe', execute: async () => ({ callId: '', ok: true, content: 'unused' })
+    };
+
+    const result = await resumeAgentTurn(options(store, provider, tool, []));
+
+    expect(result.stopReason).toBe('absolute_iteration_limit');
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.tools).toEqual([]);
+  });
+
   it('restores the same pending approval instead of generating a new request', async () => {
     const state = pendingTool('never');
     state.calls[0] = {

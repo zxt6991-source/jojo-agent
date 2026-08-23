@@ -6,6 +6,28 @@ import { DEFAULT_BROWSER_SETTINGS, DEFAULT_MEMORY_SETTINGS } from '@desktop-agen
 import { JsonConfigStore, JsonlSessionStore } from '../src/index.js';
 
 describe('JsonlSessionStore', () => {
+  it('persists whether a session is not bound to a project', async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), 'desktop-agent-general-session-'));
+    const store = new JsonlSessionStore(directory);
+    const session = await store.create('General', directory, undefined, false);
+
+    expect(session.projectBound).toBe(false);
+    await expect(store.get(session.id)).resolves.toMatchObject({ projectBound: false });
+
+    const projectDirectory = await mkdtemp(path.join(os.tmpdir(), 'desktop-agent-selected-project-'));
+    const projectIdentity = {
+      id: `prj_${'a'.repeat(64)}`,
+      displayName: path.basename(projectDirectory),
+      canonicalPath: projectDirectory
+    } as const;
+    await expect(store.bindProject(session.id, projectDirectory, projectIdentity)).resolves.toMatchObject({
+      workingDirectory: projectDirectory,
+      projectBound: true,
+      projectIdentity
+    });
+    await expect(store.get(session.id)).resolves.toMatchObject({ workingDirectory: projectDirectory, projectBound: true });
+  });
+
   it('recovers complete records before a damaged tail', async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), 'desktop-agent-store-'));
     const store = new JsonlSessionStore(directory);

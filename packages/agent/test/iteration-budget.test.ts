@@ -10,14 +10,20 @@ describe('dynamic Agent Loop budget', () => {
     expect(createIterationBudgetPolicy({ contextWindowTokens: 32_000, maxOutputTokens: 8_192 })).toEqual({
       dynamic: true,
       currentLimit: 8,
+      runLimit: 32,
+      absoluteLimit: 128,
       hardLimit: 32,
-      extensionStep: 4
+      extensionStep: 4,
+      limitReason: 'max_iterations'
     });
     expect(createIterationBudgetPolicy({ contextWindowTokens: 128_000, maxOutputTokens: 8_192 })).toEqual({
       dynamic: true,
       currentLimit: 14,
+      runLimit: 56,
+      absoluteLimit: 128,
       hardLimit: 56,
-      extensionStep: 7
+      extensionStep: 7,
+      limitReason: 'max_iterations'
     });
   });
 
@@ -34,5 +40,25 @@ describe('dynamic Agent Loop budget', () => {
 
     expect(extendIterationBudget(policy)).toEqual(policy);
     expect(policy).toMatchObject({ dynamic: false, currentLimit: 5, hardLimit: 5 });
+  });
+
+  it('caps an untrusted legacy limit at the absolute runtime fuse', () => {
+    const policy = createIterationBudgetPolicy({ maxIterations: 999_999 });
+
+    expect(policy).toMatchObject({
+      dynamic: false,
+      currentLimit: 128,
+      runLimit: 128,
+      absoluteLimit: 128,
+      limitReason: 'absolute_iteration_limit'
+    });
+  });
+
+  it('supports separate initial and normal run limits', () => {
+    const policy = createIterationBudgetPolicy({
+      loopBudget: { initialIterations: 6, runMaxIterations: 20, dynamic: true, extensionStep: 5 }
+    });
+
+    expect(policy).toMatchObject({ currentLimit: 6, runLimit: 20, absoluteLimit: 128, extensionStep: 5 });
   });
 });

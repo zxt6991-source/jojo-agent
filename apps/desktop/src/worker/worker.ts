@@ -297,8 +297,11 @@ async function startTurn(sessionId: string, text: string, images: ImageContentBl
     const session = await store.get(sessionId);
     if (!session) throw new Error('Session not found.');
     await memoryReady;
-    const projectIdentity = session.projectIdentity ?? await createProjectIdentity(session.workingDirectory);
-    await reloadOrchestrationAssets(session.workingDirectory);
+    const projectBound = session.projectBound !== false;
+    const projectIdentity = projectBound
+      ? session.projectIdentity ?? await createProjectIdentity(session.workingDirectory)
+      : undefined;
+    await reloadOrchestrationAssets(projectBound ? session.workingDirectory : undefined);
     let history = redactLegacyTerminalOutput(await store.messages(sessionId));
     const loadedSkillIds = loadedSkillIdsFromHistory(history);
     const committedMessageIds = new Set(history.map((message) => message.id));
@@ -315,6 +318,7 @@ async function startTurn(sessionId: string, text: string, images: ImageContentBl
     };
     let loadedHooks = await loadHookRuntime({
       workingDirectory: session.workingDirectory,
+      includeProject: projectBound,
       invocationStore: hookInvocationStore,
       trustStore: hookTrustStore,
       signal: controller.signal,
@@ -342,6 +346,7 @@ async function startTurn(sessionId: string, text: string, images: ImageContentBl
         await hookTrustStore.trust(untrustedProject.path, untrustedProject.fingerprint);
         loadedHooks = await loadHookRuntime({
           workingDirectory: session.workingDirectory,
+          includeProject: projectBound,
           invocationStore: hookInvocationStore,
           trustStore: hookTrustStore,
           signal: controller.signal,
@@ -351,6 +356,7 @@ async function startTurn(sessionId: string, text: string, images: ImageContentBl
         await hookTrustStore.disable(untrustedProject.path);
         loadedHooks = await loadHookRuntime({
           workingDirectory: session.workingDirectory,
+          includeProject: projectBound,
           invocationStore: hookInvocationStore,
           trustStore: hookTrustStore,
           signal: controller.signal,
@@ -365,8 +371,10 @@ async function startTurn(sessionId: string, text: string, images: ImageContentBl
     await maybeGenerateTitle(sessionId, session.workingDirectory, session.title, history, text, controller.signal);
     const toolRuntime = createDefaultToolRuntime({ trashDirectory: path.join(dataDirectory, 'trash') });
     const skillDirectories: SkillDirectory[] = [
-      { path: path.join(session.workingDirectory, '.codex', 'skills'), origin: 'project' },
-      { path: path.join(session.workingDirectory, '.agents', 'skills'), origin: 'project' },
+      ...(projectBound ? [
+        { path: path.join(session.workingDirectory, '.codex', 'skills'), origin: 'project' as const },
+        { path: path.join(session.workingDirectory, '.agents', 'skills'), origin: 'project' as const }
+      ] : []),
       ...globalSkillDirectories(runtime.settings)
     ];
     let skills: Awaited<ReturnType<typeof discoverSkills>> = [];

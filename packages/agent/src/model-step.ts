@@ -57,7 +57,8 @@ export async function runModelStep(options: ModelStepOptions): Promise<ModelStep
           ...(event.inputTokens !== undefined ? { inputTokens: event.inputTokens } : {}),
           ...(event.outputTokens !== undefined ? { outputTokens: event.outputTokens } : {}),
           ...(event.cacheReadInputTokens !== undefined ? { cacheReadInputTokens: event.cacheReadInputTokens } : {}),
-          ...(event.cacheWriteInputTokens !== undefined ? { cacheWriteInputTokens: event.cacheWriteInputTokens } : {})
+          ...(event.cacheWriteInputTokens !== undefined ? { cacheWriteInputTokens: event.cacheWriteInputTokens } : {}),
+          ...(event.costUsd !== undefined ? { costUsd: event.costUsd } : {})
         });
         break;
       case 'response_completed':

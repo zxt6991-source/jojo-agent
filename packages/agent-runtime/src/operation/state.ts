@@ -5,6 +5,21 @@ export type ReplayPolicy = 'safe' | 'never';
 export type ProgressState = {
   toolCallCounts: Record<string, number>;
   observationFingerprints: string[];
+  pollingCalls?: Record<string, { count: number; firstAt: number; lastAt: number }>;
+  recentIterationFingerprints?: string[];
+  repeatedToolCalls?: number;
+  duplicateObservations?: number;
+  usage?: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadInputTokens: number;
+    cacheWriteInputTokens: number;
+    totalTokens: number;
+    costUsd: number;
+  };
+  toolCalls?: number;
+  compactions?: number;
+  startedAt?: number;
   recoveryStepsRemaining: number | null;
   /** Current soft limit for a dynamically extended Agent Loop. Missing on legacy operations. */
   iterationLimit?: number;
@@ -70,7 +85,17 @@ export type CheckpointState = RunningState & {
   phase: 'checkpoint';
 };
 
-export type FinalResponseReason = 'no_progress' | 'max_iterations' | 'tool_disabled';
+export type FinalResponseReason =
+  | 'no_progress'
+  | 'max_iterations'
+  | 'tool_disabled'
+  | 'absolute_iteration_limit'
+  | 'loop_detected'
+  | 'time_budget'
+  | 'token_budget'
+  | 'cost_budget'
+  | 'context_budget'
+  | 'tool_call_budget';
 
 export type FinalResponseState = RunningState & {
   phase: 'final_response';
@@ -145,10 +170,25 @@ export type OperationState =
 
 export type TerminalOperationState = CompletedState | FailedState | AbortedState;
 
-export function emptyProgressState(iterationLimit?: number): ProgressState {
+export function emptyProgressState(iterationLimit?: number, startedAt = Date.now()): ProgressState {
   return {
     toolCallCounts: {},
     observationFingerprints: [],
+    pollingCalls: {},
+    recentIterationFingerprints: [],
+    repeatedToolCalls: 0,
+    duplicateObservations: 0,
+    usage: {
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadInputTokens: 0,
+      cacheWriteInputTokens: 0,
+      totalTokens: 0,
+      costUsd: 0
+    },
+    toolCalls: 0,
+    compactions: 0,
+    startedAt,
     recoveryStepsRemaining: null,
     ...(iterationLimit === undefined ? {} : { iterationLimit })
   };

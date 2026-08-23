@@ -6,6 +6,7 @@ import type {
   PermissionGate,
   Tool
 } from '@desktop-agent/contracts';
+import type { AgentLoopBudgetOptions, AgentLoopSafetyPolicy } from './loop/types.js';
 
 export type AgentRunOptions = {
   sessionId: string;
@@ -23,6 +24,10 @@ export type AgentRunOptions = {
   permissionGate: PermissionGate;
   signal: AbortSignal;
   maxIterations?: number;
+  /** Structured task budget. Takes precedence over the legacy maxIterations option. */
+  loopBudget?: AgentLoopBudgetOptions;
+  /** Trusted runtime policy. Never populate this from a prompt or untrusted workflow input. */
+  loopSafety?: AgentLoopSafetyPolicy;
   /** Return accumulated messages instead of throwing when the iteration limit is reached. */
   allowPartialOnMaxIterations?: boolean;
   contextWindowTokens?: number;

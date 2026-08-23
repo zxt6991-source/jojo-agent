@@ -161,13 +161,10 @@ export function markToolInterrupted(state: ToolsState, callId: string): ToolsSta
 }
 
 function nextProgress(state: ToolsState): ProgressState {
-  const nonProgressCodes = new Set([
-    'no_progress', 'permission_denied', 'user_denied', 'hook_blocked', 'cancelled'
-  ]);
   const progress = {
     ...state.progress,
     lastToolRoundMadeProgress: state.calls.some((call) =>
-      Boolean(call.result) && !nonProgressCodes.has(call.result?.code ?? '')
+      call.result?.ok === true
     )
   };
   if (state.noProgressDetected && progress.recoveryStepsRemaining === null) {
@@ -219,4 +216,19 @@ export function enterFinalResponse(
   reason: FinalResponseReason
 ): FinalResponseState {
   return { ...state, phase: 'final_response', reason };
+}
+
+export function enterFinalResponseAfterModel(
+  state: ModelPendingState,
+  reason: FinalResponseReason
+): FinalResponseState {
+  return {
+    phase: 'final_response',
+    operationId: state.operationId,
+    lane: state.lane,
+    iteration: state.iteration + 1,
+    outputContinuations: 0,
+    progress: state.progress,
+    reason
+  };
 }

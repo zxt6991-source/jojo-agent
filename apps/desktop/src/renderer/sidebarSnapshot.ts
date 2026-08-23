@@ -1,7 +1,9 @@
-import { isPlaceholderSessionTitle, projectNameFromDirectory, type SessionMeta } from '@desktop-agent/contracts';
+import { isPlaceholderSessionTitle, projectNameFromDirectory, sessionHasProject, type SessionMeta } from '@desktop-agent/contracts';
 
 export const COLLAPSED_SESSION_LIMIT = 5;
 export const SEARCH_RESULT_LIMIT = 20;
+export const NO_PROJECT_GROUP_PATH = '';
+export const NO_PROJECT_GROUP_NAME = '未选择项目';
 export type SidebarGroupBy = 'workspace' | 'flat';
 export type SessionRowStatus = 'idle' | 'running' | 'approval';
 export type RelativeTimeUnit = 'now' | 'minutes' | 'hours' | 'days' | 'months' | 'years';
@@ -93,8 +95,8 @@ export function toSidebarSession(
     blank: isPlaceholderSessionTitle(session.title, session.workingDirectory),
     updatedAt: Date.parse(session.updatedAt),
     status: sessionStatus(session.id, runningSessionId, approvalSessionId),
-    workspace: projectNameFromDirectory(session.workingDirectory),
-    path: session.workingDirectory
+    workspace: sessionHasProject(session) ? projectNameFromDirectory(session.workingDirectory) : NO_PROJECT_GROUP_NAME,
+    path: sessionHasProject(session) ? session.workingDirectory : NO_PROJECT_GROUP_PATH
   };
 }
 
@@ -109,7 +111,7 @@ export function groupSidebarSessions(sessions: readonly SidebarSession[]): Pick<
     const sessionsInGroup = [...members].sort(byRecency);
     return {
       path,
-      name: projectNameFromDirectory(path),
+      name: path === NO_PROJECT_GROUP_PATH ? NO_PROJECT_GROUP_NAME : projectNameFromDirectory(path),
       sessions: sessionsInGroup
     };
   }).sort((left, right) => {

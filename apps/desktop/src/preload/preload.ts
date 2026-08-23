@@ -4,6 +4,7 @@ import { IPC, type AgentEvent, type BrowserDockState, type DesktopApi, type Orch
 const api: DesktopApi = {
   listSessions: () => ipcRenderer.invoke(IPC.listSessions),
   createSession: (input) => ipcRenderer.invoke(IPC.createSession, input),
+  bindSessionProject: (input) => ipcRenderer.invoke(IPC.bindSessionProject, input),
   renameSession: (input) => ipcRenderer.invoke(IPC.renameSession, input),
   deleteSession: (sessionId) => ipcRenderer.invoke(IPC.deleteSession, sessionId),
   loadMessages: (sessionId) => ipcRenderer.invoke(IPC.loadMessages, sessionId),

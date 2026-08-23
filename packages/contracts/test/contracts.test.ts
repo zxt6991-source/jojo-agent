@@ -1,8 +1,10 @@
 import { describe, expect, expectTypeOf, it } from 'vitest';
 import {
   ContentBlockSchema,
+  BindSessionProjectInputSchema,
   BrowserActionSchema,
   BrowserRecordingDocumentSchema,
+  CreateSessionInputSchema,
   DEFAULT_BROWSER_SETTINGS,
   DEFAULT_MEMORY_SETTINGS,
   DEFAULT_PROVIDERS,
@@ -194,6 +196,13 @@ describe('contracts', () => {
     expect(emojiTitle.endsWith('\ud83d')).toBe(false);
     expect(isPlaceholderSessionTitle('project', '/workspace/project')).toBe(true);
     expect(isPlaceholderSessionTitle('手动标题', '/workspace/project')).toBe(false);
+  });
+
+  it('allows creating a session without selecting a project', () => {
+    expect(CreateSessionInputSchema.parse({ title: '新会话' })).toEqual({ title: '新会话' });
+    expect(() => CreateSessionInputSchema.parse({ title: '新会话', workingDirectory: '  ' })).toThrow();
+    expect(BindSessionProjectInputSchema.parse({ sessionId: 'session-1', workingDirectory: ' /repo ' }))
+      .toEqual({ sessionId: 'session-1', workingDirectory: '/repo' });
   });
 
   it('keeps the root barrel API usable by consumers', () => {

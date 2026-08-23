@@ -1,5 +1,6 @@
 import {
   NoopHookRuntime,
+  type AgentEvent,
   type HookEnvelope,
   type HookInjectionResult,
   type HookPayloadMap,
@@ -27,20 +28,33 @@ import {
   createContinuationMessage,
   createIterationLimitFinalMessage,
   createNoProgressFinalMessage,
+  createSafetyFinalMessage,
   createToolMessage,
   createUserMessage,
   createIterationBudgetPolicy,
+  detectRepeatedCycle,
+  DEFAULT_AGENT_LOOP_RESOURCE_BUDGET,
+  DEFAULT_AGENT_LOOP_SAFETY,
+  emptyLoopUsage,
   errorMessage,
   estimateContextTokens,
+  evaluateLoopGuards,
   extendIterationBudget,
   executeApprovedToolCall,
+  fingerprintToolBatch,
   isAbortError,
   iterationBudgetInstruction,
   prepareModelContext,
+  recordIterationFingerprint,
   runModelStep,
   throwIfAborted,
   type AgentRunOptions,
   type AgentRunResult,
+  type AgentLoopBudgetOptions,
+  type AgentLoopSafetyPolicy,
+  type LoopGuardContext,
+  type LoopUsage,
+  type PollingCallState,
   type ToolExecutionState
 } from '@desktop-agent/agent';
 import { MemoryAgentRuntimeStore } from '../memory-store.js';
@@ -53,6 +67,7 @@ import {
   continueOutput,
   createReadyState,
   enterFinalResponse,
+  enterFinalResponseAfterModel,
   planToolCalls,
   prepareToolEffect,
   resolveToolPermission,
@@ -61,7 +76,7 @@ import {
   settleToolEffect
 } from '../operation/reducer.js';
 import { assertOperationState } from '../operation/invariants.js';
-import { isTerminalState, type OperationState, type ToolsState } from '../operation/state.js';
+import { isTerminalState, type OperationState, type ProgressState, type ToolsState } from '../operation/state.js';
 import type { AgentRuntimeStore } from '../store.js';
 import type { JsonValue } from '../session/types.js';
 
@@ -115,6 +130,11 @@ type RunnerData = ToolExecutionState & {
   messages: Message[];
   toolDefinitions: ToolDefinition[];
   memorySaveNudge: boolean;
+  recentIterationFingerprints: string[];
+  usage: LoopUsage;
+  toolCalls: number;
+  compactions: number;
+  startedAt: number;
 };
 
 const defaultContextBuilder = new DefaultContextBuilder();
@@ -187,8 +207,79 @@ function createRunnerData(options: RuntimeAgentRunOptions): RunnerData {
     executedCallIds: new Set<string>(),
     toolCallCounts: new Map<string, number>(),
     observationFingerprints: new Set<string>(),
+    pollingCalls: new Map<string, PollingCallState>(),
+    repeatedToolCalls: 0,
+    duplicateObservations: 0,
+    recentIterationFingerprints: [],
+    usage: emptyLoopUsage(),
+    toolCalls: 0,
+    compactions: 0,
+    startedAt: Date.now(),
     memorySaveNudge: false
   };
+}
+
+function accrueUsage(usage: LoopUsage, event: AgentEvent): void {
+  if (event.type !== 'usage') return;
+  usage.inputTokens += event.inputTokens ?? 0;
+  usage.outputTokens += event.outputTokens ?? 0;
+  usage.cacheReadInputTokens += event.cacheReadInputTokens ?? 0;
+  usage.cacheWriteInputTokens += event.cacheWriteInputTokens ?? 0;
+  usage.totalTokens += (event.inputTokens ?? 0) + (event.outputTokens ?? 0);
+  usage.costUsd += event.costUsd ?? 0;
+}
+
+function syncProgressData<State extends OperationState>(state: State, data: RunnerData): State {
+  if (!('progress' in state)) return state;
+  return {
+    ...state,
+    progress: {
+      ...state.progress,
+      toolCallCounts: Object.fromEntries(data.toolCallCounts),
+      observationFingerprints: [...data.observationFingerprints],
+      pollingCalls: Object.fromEntries(data.pollingCalls),
+      repeatedToolCalls: data.repeatedToolCalls,
+      duplicateObservations: data.duplicateObservations,
+      recentIterationFingerprints: [...data.recentIterationFingerprints],
+      usage: { ...data.usage },
+      toolCalls: data.toolCalls,
+      compactions: data.compactions,
+      startedAt: data.startedAt
+    }
+  };
+}
+
+function runtimeGuardContext(
+  data: RunnerData,
+  budget: AgentLoopBudgetOptions,
+  safety: AgentLoopSafetyPolicy,
+  iterationBudget: ReturnType<typeof createIterationBudgetPolicy>,
+  state: OperationState & { iteration: number; progress: ProgressState },
+  cycleDetected = false
+): LoopGuardContext {
+  return {
+    iteration: state.iteration,
+    currentLimit: iterationBudget.currentLimit,
+    runLimit: iterationBudget.runLimit,
+    absoluteLimit: iterationBudget.absoluteLimit,
+    limitReason: iterationBudget.limitReason,
+    dynamic: iterationBudget.dynamic,
+    extensionStep: iterationBudget.extensionStep,
+    elapsedMs: Date.now() - data.startedAt,
+    madeProgress: state.progress.lastToolRoundMadeProgress ?? false,
+    recoveryStepsRemaining: state.progress.recoveryStepsRemaining,
+    cycleDetected,
+    usage: data.usage,
+    toolCalls: data.toolCalls,
+    compactions: data.compactions,
+    budget,
+    maxCompactionsPerTurn: safety.maxCompactionsPerTurn
+  };
+}
+
+function numericConfig(config: Record<string, JsonValue> | undefined, key: string): number | undefined {
+  const value = config?.[key];
+  return typeof value === 'number' ? value : undefined;
 }
 
 function replayPolicy(data: RunnerData, toolName: string): 'safe' | 'never' {
@@ -374,8 +465,10 @@ async function executeAgentTurn(options: RuntimeAgentRunOptions, resuming: boole
   const operationId = options.operationId ?? crypto.randomUUID();
   const sessionExisted = Boolean(await runtimeStore.getSession(options.sessionId));
   let laneName = options.lane ?? 'main';
+  let safety = options.loopSafety ?? DEFAULT_AGENT_LOOP_SAFETY;
+  let loopBudget = { ...DEFAULT_AGENT_LOOP_RESOURCE_BUDGET, ...(options.loopBudget ?? {}) };
   let iterationBudget = createIterationBudgetPolicy(options);
-  let maxIterations = iterationBudget.hardLimit;
+  let maxIterations = iterationBudget.runLimit;
   let state: OperationState;
   let operationStarted: boolean;
 
@@ -393,22 +486,67 @@ async function executeAgentTurn(options: RuntimeAgentRunOptions, resuming: boole
     }
     state = operation.state;
     laneName = operation.meta.lane;
-    maxIterations = operation.meta.maxIterations;
+    const persistedAbsolute = numericConfig(operation.meta.config, 'absoluteIterationLimit')
+      ?? DEFAULT_AGENT_LOOP_SAFETY.absoluteMaxIterations;
+    safety = {
+      ...DEFAULT_AGENT_LOOP_SAFETY,
+      absoluteMaxIterations: persistedAbsolute,
+      maxCyclePeriod: numericConfig(operation.meta.config, 'maxCyclePeriod')
+        ?? DEFAULT_AGENT_LOOP_SAFETY.maxCyclePeriod,
+      requiredCycleRepeats: numericConfig(operation.meta.config, 'requiredCycleRepeats')
+        ?? DEFAULT_AGENT_LOOP_SAFETY.requiredCycleRepeats,
+      maxIdenticalToolCalls: numericConfig(operation.meta.config, 'maxIdenticalToolCalls')
+        ?? DEFAULT_AGENT_LOOP_SAFETY.maxIdenticalToolCalls,
+      maxCompactionsPerTurn: numericConfig(operation.meta.config, 'maxCompactionsPerTurn')
+        ?? DEFAULT_AGENT_LOOP_SAFETY.maxCompactionsPerTurn,
+      recentIterationWindow: numericConfig(operation.meta.config, 'recentIterationWindow')
+        ?? DEFAULT_AGENT_LOOP_SAFETY.recentIterationWindow,
+      maxPollsPerInput: numericConfig(operation.meta.config, 'maxPollsPerInput')
+        ?? DEFAULT_AGENT_LOOP_SAFETY.maxPollsPerInput,
+      maxPollDurationMs: numericConfig(operation.meta.config, 'maxPollDurationMs')
+        ?? DEFAULT_AGENT_LOOP_SAFETY.maxPollDurationMs,
+      minPollIntervalMs: numericConfig(operation.meta.config, 'minPollIntervalMs')
+        ?? DEFAULT_AGENT_LOOP_SAFETY.minPollIntervalMs
+    };
+    loopBudget = { ...DEFAULT_AGENT_LOOP_RESOURCE_BUDGET };
+    const persistedWallTime = numericConfig(operation.meta.config, 'maxWallTimeMs');
+    const persistedTotalTokens = numericConfig(operation.meta.config, 'maxTotalTokens');
+    const persistedCost = numericConfig(operation.meta.config, 'maxCostUsd');
+    const persistedToolCalls = numericConfig(operation.meta.config, 'maxToolCalls');
+    if (persistedWallTime !== undefined) loopBudget.maxWallTimeMs = persistedWallTime;
+    if (persistedTotalTokens !== undefined) loopBudget.maxTotalTokens = persistedTotalTokens;
+    if (persistedCost !== undefined) loopBudget.maxCostUsd = persistedCost;
+    if (persistedToolCalls !== undefined) loopBudget.maxToolCalls = persistedToolCalls;
+    maxIterations = Math.min(operation.meta.maxIterations, safety.absoluteMaxIterations);
     const dynamic = operation.meta.config?.dynamicIterationBudget === true;
     const configuredInitial = operation.meta.config?.initialIterationLimit;
     const configuredStep = operation.meta.config?.iterationExtensionStep;
     const persistedLimit = 'progress' in state ? state.progress.iterationLimit : undefined;
     iterationBudget = dynamic ? {
       dynamic: true,
-      currentLimit: persistedLimit
-        ?? (typeof configuredInitial === 'number' ? configuredInitial : maxIterations),
+      currentLimit: Math.min(
+        persistedLimit ?? (typeof configuredInitial === 'number' ? configuredInitial : maxIterations),
+        maxIterations
+      ),
+      runLimit: maxIterations,
+      absoluteLimit: safety.absoluteMaxIterations,
       hardLimit: maxIterations,
-      extensionStep: typeof configuredStep === 'number' ? configuredStep : 4
+      extensionStep: typeof configuredStep === 'number' ? configuredStep : 4,
+      limitReason: operation.meta.config?.iterationLimitReason === 'absolute_iteration_limit'
+        || operation.meta.maxIterations > safety.absoluteMaxIterations
+        ? 'absolute_iteration_limit'
+        : 'max_iterations'
     } : {
       dynamic: false,
       currentLimit: maxIterations,
+      runLimit: maxIterations,
+      absoluteLimit: safety.absoluteMaxIterations,
       hardLimit: maxIterations,
-      extensionStep: 0
+      extensionStep: 0,
+      limitReason: operation.meta.config?.iterationLimitReason === 'absolute_iteration_limit'
+        || operation.meta.maxIterations > safety.absoluteMaxIterations
+        ? 'absolute_iteration_limit'
+        : 'max_iterations'
     };
     operationStarted = true;
   } else {
@@ -449,7 +587,21 @@ async function executeAgentTurn(options: RuntimeAgentRunOptions, resuming: boole
       config: {
         dynamicIterationBudget: iterationBudget.dynamic,
         initialIterationLimit: iterationBudget.currentLimit,
-        iterationExtensionStep: iterationBudget.extensionStep
+        iterationExtensionStep: iterationBudget.extensionStep,
+        absoluteIterationLimit: iterationBudget.absoluteLimit,
+        iterationLimitReason: iterationBudget.limitReason,
+        maxCyclePeriod: safety.maxCyclePeriod,
+        requiredCycleRepeats: safety.requiredCycleRepeats,
+        maxIdenticalToolCalls: safety.maxIdenticalToolCalls,
+        maxCompactionsPerTurn: safety.maxCompactionsPerTurn,
+        recentIterationWindow: safety.recentIterationWindow,
+        maxPollsPerInput: safety.maxPollsPerInput,
+        maxPollDurationMs: safety.maxPollDurationMs,
+        minPollIntervalMs: safety.minPollIntervalMs,
+        ...(loopBudget.maxWallTimeMs !== undefined ? { maxWallTimeMs: loopBudget.maxWallTimeMs } : {}),
+        ...(loopBudget.maxTotalTokens !== undefined ? { maxTotalTokens: loopBudget.maxTotalTokens } : {}),
+        ...(loopBudget.maxCostUsd !== undefined ? { maxCostUsd: loopBudget.maxCostUsd } : {}),
+        ...(loopBudget.maxToolCalls !== undefined ? { maxToolCalls: loopBudget.maxToolCalls } : {})
       }
     }, state);
     operationStarted = true;
@@ -458,6 +610,14 @@ async function executeAgentTurn(options: RuntimeAgentRunOptions, resuming: boole
   if ('progress' in state) {
     data.toolCallCounts = new Map(Object.entries(state.progress.toolCallCounts));
     data.observationFingerprints = new Set(state.progress.observationFingerprints);
+    data.pollingCalls = new Map(Object.entries(state.progress.pollingCalls ?? {}));
+    data.repeatedToolCalls = state.progress.repeatedToolCalls ?? 0;
+    data.duplicateObservations = state.progress.duplicateObservations ?? 0;
+    data.recentIterationFingerprints = [...(state.progress.recentIterationFingerprints ?? [])];
+    data.usage = { ...emptyLoopUsage(), ...(state.progress.usage ?? {}) };
+    data.toolCalls = state.progress.toolCalls ?? 0;
+    data.compactions = state.progress.compactions ?? 0;
+    data.startedAt = state.progress.startedAt ?? Date.now();
   }
   if (state.phase === 'tools') {
     data.executedCallIds = new Set(
@@ -472,8 +632,9 @@ async function executeAgentTurn(options: RuntimeAgentRunOptions, resuming: boole
   await bootstrapHistory(runtimeStore, options.sessionId, laneName, operationId, options.history);
 
   const transition = async <State extends OperationState>(next: State): Promise<State> => {
-    await runtimeStore.saveOperationState(next);
-    return next;
+    const synced = syncProgressData(next, data);
+    await runtimeStore.saveOperationState(synced);
+    return synced;
   };
 
   options.emit({ type: 'turn.started', sessionId: options.sessionId, turnId: operationId });
@@ -530,35 +691,61 @@ async function executeAgentTurn(options: RuntimeAgentRunOptions, resuming: boole
     while (!isTerminalState(state)) {
       throwIfAborted(options.signal);
       assertOperationState(state);
-      if (
-        iterationBudget.dynamic
-        && state.phase === 'checkpoint'
-        && state.iteration >= iterationBudget.currentLimit
-        && iterationBudget.currentLimit < iterationBudget.hardLimit
-        && (state.progress.lastToolRoundMadeProgress || state.progress.recoveryStepsRemaining !== null)
-      ) {
-        iterationBudget = extendIterationBudget(iterationBudget);
-        state = await transition(setIterationLimit(state, iterationBudget.currentLimit));
+      if (state.phase === 'ready' || state.phase === 'checkpoint') {
+        const decision = await evaluateLoopGuards(runtimeGuardContext(
+          data, loopBudget, safety, iterationBudget, state
+        ));
+        if (decision.action === 'extend') {
+          iterationBudget = extendIterationBudget(iterationBudget);
+          state = await transition(setIterationLimit(state, iterationBudget.currentLimit));
+        } else if (decision.action === 'finalize') {
+          if (options.allowPartialOnMaxIterations
+            && (decision.reason === 'max_iterations' || decision.reason === 'absolute_iteration_limit')) {
+            state = await transition(completedState(state, decision.reason, null));
+            options.emit({ type: 'turn.completed', stopReason: decision.reason });
+            continue;
+          }
+          await appendDurableMessage(
+            options,
+            data,
+            runtimeStore,
+            state,
+            decision.reason === 'max_iterations'
+              ? createIterationLimitFinalMessage(iterationBudget.currentLimit)
+              : decision.reason === 'no_progress'
+                ? createNoProgressFinalMessage()
+                : createSafetyFinalMessage(decision.reason, iterationBudget.absoluteLimit)
+          );
+          state = await transition(enterFinalResponse(state, decision.reason));
+        } else if (decision.action === 'stop') {
+          state = await transition(completedState(state, decision.reason, null));
+          options.emit({ type: 'turn.completed', stopReason: decision.reason });
+          continue;
+        }
       }
       const pendingRecoveryCall = state.phase === 'tools' ? state.calls[state.currentIndex] : undefined;
       const action = defaultAgentInterpreter.peekAction(state, {
-        maxIterations: iterationBudget.currentLimit,
+        maxIterations: iterationBudget.currentLimit
+          + (state.phase === 'final_response' ? MAX_OUTPUT_CONTINUATIONS : 0),
         recovering: Boolean(pendingRecoveryCall && uncertainEffectCallIds.has(pendingRecoveryCall.callId))
       });
       if (!action) throw new AgentError('operation_corrupted', `No action is available for ${state.phase}.`);
 
       if (action.type === 'finish') {
         if (options.allowPartialOnMaxIterations) {
-          state = await transition(completedState(state, 'max_iterations', null));
-          options.emit({ type: 'turn.completed', stopReason: 'max_iterations' });
+          state = await transition(completedState(state, iterationBudget.limitReason, null));
+          options.emit({ type: 'turn.completed', stopReason: iterationBudget.limitReason });
           continue;
         }
         if (state.phase === 'ready' || state.phase === 'checkpoint') {
-          await appendDurableMessage(options, data, runtimeStore, state, createIterationLimitFinalMessage(iterationBudget.currentLimit));
-          state = await transition(enterFinalResponse(state, 'max_iterations'));
+          await appendDurableMessage(options, data, runtimeStore, state,
+            iterationBudget.limitReason === 'max_iterations'
+              ? createIterationLimitFinalMessage(iterationBudget.currentLimit)
+              : createSafetyFinalMessage('absolute_iteration_limit', iterationBudget.absoluteLimit));
+          state = await transition(enterFinalResponse(state, iterationBudget.limitReason));
           continue;
         }
-        throw new AgentError('max_iterations', `The turn exceeded ${iterationBudget.currentLimit} model iterations.`);
+        throw new AgentError(iterationBudget.limitReason, `The turn exceeded ${iterationBudget.currentLimit} model iterations.`);
       }
 
       if (action.type === 'request_model' || action.type === 'request_model_without_tools') {
@@ -681,6 +868,12 @@ async function executeAgentTurn(options: RuntimeAgentRunOptions, resuming: boole
             overCapacity: true,
             iteration: Math.min(('iteration' in state ? state.iteration : 0) + 1, iterationBudget.currentLimit),
             maxIterations: iterationBudget.currentLimit,
+            runMaxIterations: iterationBudget.runLimit,
+            absoluteMaxIterations: iterationBudget.absoluteLimit,
+            toolCalls: data.toolCalls,
+            repeatedToolCalls: data.repeatedToolCalls,
+            duplicateObservations: data.duplicateObservations,
+            elapsedMs: Date.now() - data.startedAt,
             finalResponseOnly
           });
         }
@@ -706,6 +899,7 @@ async function executeAgentTurn(options: RuntimeAgentRunOptions, resuming: boole
           } : {}),
           signal: options.signal
         });
+        if (context.compactedMessages > 0) data.compactions += 1;
         options.emit({
           type: 'context.updated', estimatedTokens: context.estimatedTokens, contextWindowTokens,
           compactedMessages: context.compactedMessages,
@@ -716,6 +910,12 @@ async function executeAgentTurn(options: RuntimeAgentRunOptions, resuming: boole
           overCapacity: context.budget.overCapacity,
           iteration: Math.min(('iteration' in state ? state.iteration : 0) + 1, iterationBudget.currentLimit),
           maxIterations: iterationBudget.currentLimit,
+          runMaxIterations: iterationBudget.runLimit,
+          absoluteMaxIterations: iterationBudget.absoluteLimit,
+          toolCalls: data.toolCalls,
+          repeatedToolCalls: data.repeatedToolCalls,
+          duplicateObservations: data.duplicateObservations,
+          elapsedMs: Date.now() - data.startedAt,
           finalResponseOnly
         });
         if (context.compaction) {
@@ -767,19 +967,57 @@ async function executeAgentTurn(options: RuntimeAgentRunOptions, resuming: boole
           ...(requestInstructions.length ? { instructions: requestInstructions } : {}),
           provider: options.provider,
           signal: options.signal,
-          emit: options.emit,
+          emit: (event) => {
+            accrueUsage(data.usage, event);
+            options.emit(event);
+          },
           maxOutputTokens
         });
+        let cycleDetected = false;
+        if (!pending.request.finalResponseOnly && step.calls.length > 0) {
+          const fingerprint = fingerprintToolBatch(step.calls, data.toolsByName);
+          data.recentIterationFingerprints = recordIterationFingerprint(
+            data.recentIterationFingerprints,
+            fingerprint,
+            safety.recentIterationWindow
+          );
+          cycleDetected = Boolean(detectRepeatedCycle(
+            data.recentIterationFingerprints,
+            safety.maxCyclePeriod,
+            safety.requiredCycleRepeats
+          ));
+        }
+        const predictedToolCalls = data.toolCalls + step.calls.length;
+        const toolBudgetExceeded = loopBudget.maxToolCalls !== undefined
+          && predictedToolCalls > loopBudget.maxToolCalls;
+        const resourceDecision = await evaluateLoopGuards(runtimeGuardContext(
+          data, loopBudget, safety, iterationBudget, pending
+        ));
+        const resourceReason = step.calls.length > 0 && resourceDecision.action === 'finalize'
+          && ['time_budget', 'token_budget', 'cost_budget', 'context_budget', 'tool_call_budget']
+            .includes(resourceDecision.reason)
+          ? resourceDecision.reason
+          : toolBudgetExceeded ? 'tool_call_budget' as const : null;
+
         await appendDurableMessage(
           options,
           data,
           runtimeStore,
           pending,
-          createAssistantMessage(step.text, step.calls, pending.responseEntryId, {
+          createAssistantMessage(step.text, cycleDetected || resourceReason ? [] : step.calls, pending.responseEntryId, {
             iteration: Math.min(pending.iteration + 1, iterationBudget.currentLimit),
             ...(pending.request.finalResponseOnly ? { finalResponseOnly: true } : {})
           })
         );
+
+        if (cycleDetected || resourceReason) {
+          const reason = cycleDetected ? 'loop_detected' as const : resourceReason!;
+          await appendDurableMessage(
+            options, data, runtimeStore, pending, createSafetyFinalMessage(reason, iterationBudget.absoluteLimit)
+          );
+          state = await transition(enterFinalResponseAfterModel(pending, reason));
+          continue;
+        }
 
         if (step.calls.length === 0) {
           if (
@@ -794,9 +1032,7 @@ async function executeAgentTurn(options: RuntimeAgentRunOptions, resuming: boole
               pending.request.finalResponseReason
             ));
           } else {
-            const stopReason = pending.request.finalResponseReason === 'max_iterations'
-              ? 'max_iterations'
-              : step.stopReason;
+            const stopReason = pending.request.finalResponseReason ?? step.stopReason;
             state = await transition(completedState(pending, stopReason, pending.responseEntryId));
             options.emit({ type: 'turn.completed', stopReason });
           }
@@ -809,6 +1045,7 @@ async function executeAgentTurn(options: RuntimeAgentRunOptions, resuming: boole
             'The model requested another tool during the mandatory tool-free final response.'
           );
         }
+        data.toolCalls = predictedToolCalls;
         state = await transition(planToolCalls(
           pending,
           pending.responseEntryId,
@@ -913,7 +1150,7 @@ async function executeAgentTurn(options: RuntimeAgentRunOptions, resuming: boole
         const existingResult = existing?.type === 'message'
           ? toolResultFromMessage(existing.message, call.id)
           : undefined;
-        const result = existingResult ?? await executeApprovedToolCall(call, data, options);
+        const result = existingResult ?? await executeApprovedToolCall(call, data, { ...options, loopSafety: safety });
         if (result.ok && !call.name.startsWith('memory_')) data.memorySaveNudge = true;
         if (!existingResult || !data.messages.some((message) => message.id === resultEntryId)) {
           await appendDurableMessage(options, data, runtimeStore, state, createToolMessage(result, resultEntryId));

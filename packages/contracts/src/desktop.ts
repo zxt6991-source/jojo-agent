@@ -19,12 +19,17 @@ export const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 
 export const CreateSessionInputSchema = z.object({
   title: z.string().trim().min(1).max(SESSION_TITLE_MAX_LENGTH),
-  workingDirectory: z.string().min(1)
+  workingDirectory: z.string().trim().min(1).max(4_096).optional()
 });
 
 export const RenameSessionInputSchema = z.object({
   sessionId: z.string(),
   title: z.string().trim().min(1).max(SESSION_TITLE_MAX_LENGTH)
+});
+
+export const BindSessionProjectInputSchema = z.object({
+  sessionId: z.string().min(1),
+  workingDirectory: z.string().trim().min(1).max(4_096)
 });
 
 export const StartTurnInputSchema = z.object({
@@ -260,6 +265,7 @@ export type SessionCompactionRecord = {
 export type DesktopApi = {
   listSessions(): Promise<SessionMeta[]>;
   createSession(input: z.input<typeof CreateSessionInputSchema>): Promise<SessionMeta | null>;
+  bindSessionProject(input: z.input<typeof BindSessionProjectInputSchema>): Promise<SessionMeta>;
   renameSession(input: z.input<typeof RenameSessionInputSchema>): Promise<void>;
   deleteSession(sessionId: string): Promise<void>;
   loadMessages(sessionId: string): Promise<Message[]>;
@@ -346,6 +352,7 @@ export type WorkerMessage =
 export const IPC = {
   listSessions: 'sessions:list',
   createSession: 'sessions:create',
+  bindSessionProject: 'sessions:bind-project',
   renameSession: 'sessions:rename',
   deleteSession: 'sessions:delete',
   loadMessages: 'sessions:messages',

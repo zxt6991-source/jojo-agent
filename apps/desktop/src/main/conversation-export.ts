@@ -227,7 +227,7 @@ export function renderConversationTrajectoryMarkdown(input: ConversationTrajecto
     `# ${heading(input.session.title)} · 会话轨迹`,
     '',
     `- 会话 ID：${inlineCode(input.session.id)}`,
-    `- 工作目录：${inlineCode(input.session.workingDirectory)}`,
+    `- 项目：${input.session.projectBound === false ? '未选择项目' : inlineCode(input.session.workingDirectory)}`,
     `- 创建时间：${inlineCode(input.session.createdAt)}`,
     `- 最近更新：${inlineCode(input.session.updatedAt)}`,
     `- 导出时间：${inlineCode(exportedAt)}`,

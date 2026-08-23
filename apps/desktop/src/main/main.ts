@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  ApprovalInputSchema, BrowserDockActionSchema, BrowserDockLayoutSchema, CreateSessionInputSchema, CreateSkillInputSchema, DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS, DEFAULT_MODEL_MAX_OUTPUT_TOKENS, DeleteMemoryEntryInputSchema, GetExtensionStatusInputSchema, GetHookStatusInputSchema, GetMemoryStatusInputSchema, HookProjectActionInputSchema, ImportSkillInputSchema, IPC, ListModelsInputSchema, MAX_IMAGE_ATTACHMENTS, MAX_IMAGE_BYTES, McpServerIdInputSchema, OpenHookConfigInputSchema, RebuildMemoryIndexInputSchema, RenameSessionInputSchema, SaveExtensionSettingsInputSchema, SaveMemorySettingsInputSchema, SaveSettingsInputSchema,
+  ApprovalInputSchema, BindSessionProjectInputSchema, BrowserDockActionSchema, BrowserDockLayoutSchema, CreateSessionInputSchema, CreateSkillInputSchema, DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS, DEFAULT_MODEL_MAX_OUTPUT_TOKENS, DeleteMemoryEntryInputSchema, GetExtensionStatusInputSchema, GetHookStatusInputSchema, GetMemoryStatusInputSchema, HookProjectActionInputSchema, ImportSkillInputSchema, IPC, ListModelsInputSchema, MAX_IMAGE_ATTACHMENTS, MAX_IMAGE_BYTES, McpServerIdInputSchema, OpenHookConfigInputSchema, RebuildMemoryIndexInputSchema, RenameSessionInputSchema, SaveExtensionSettingsInputSchema, SaveMemorySettingsInputSchema, SaveSettingsInputSchema,
   SessionIdInputSchema, SkillPathInputSchema, StartTurnInputSchema, UpdateSkillInputSchema, WorkflowRunActionInputSchema,
   type ExtensionStatus, type MemoryStatusSnapshot, type ProviderSettings, type SessionCompactionRecord, type WorkerCommand, type WorkerMessage, type WorkflowRunSnapshot
 } from '@desktop-agent/contracts';
@@ -434,10 +434,25 @@ function registerIpc(): void {
   ipcMain.handle(IPC.listSessions, async (event) => { assertTrusted(event); return sessionStore.list(); });
   ipcMain.handle(IPC.createSession, async (event, raw) => {
     assertTrusted(event); const input = CreateSessionInputSchema.parse(raw);
+    const projectBound = Boolean(input.workingDirectory);
+    const workingDirectory = input.workingDirectory ?? path.join(app.getPath('userData'), 'workspaces', 'general');
+    await mkdir(workingDirectory, { recursive: true });
     const session = await sessionStore.create(
       input.title,
+      workingDirectory,
+      projectBound ? await createProjectIdentity(workingDirectory) : undefined,
+      projectBound
+    );
+    sendToRenderer(IPC.sessionsChanged); return session;
+  });
+  ipcMain.handle(IPC.bindSessionProject, async (event, raw) => {
+    assertTrusted(event); const input = BindSessionProjectInputSchema.parse(raw);
+    const projectIdentity = await createProjectIdentity(input.workingDirectory);
+    if (!projectIdentity) throw new Error('所选项目目录不存在或无法访问。');
+    const session = await sessionStore.bindProject(
+      input.sessionId,
       input.workingDirectory,
-      await createProjectIdentity(input.workingDirectory)
+      projectIdentity
     );
     sendToRenderer(IPC.sessionsChanged); return session;
   });

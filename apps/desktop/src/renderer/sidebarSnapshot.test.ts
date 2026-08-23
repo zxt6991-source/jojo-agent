@@ -20,7 +20,25 @@ function session(id: string, title: string, directory: string, updatedAt: string
   };
 }
 
+function generalSession(id: string, title: string, updatedAt: string): SessionMeta {
+  return { ...session(id, title, '/internal/general', updatedAt), projectBound: false };
+}
+
 describe('sidebar snapshot', () => {
+  it('groups sessions without a project separately from project sessions', () => {
+    const snapshot = deriveSidebar([
+      generalSession('general', '普通对话', '2026-08-13T00:00:00.000Z'),
+      session('project', '项目对话', '/repo/app', '2026-08-12T00:00:00.000Z')
+    ], {
+      groupBy: 'workspace', query: '', collapsedProjects: [], overflowProjects: [],
+      currentId: 'general', runningSessionId: null, approvalSessionId: null
+    });
+
+    expect(snapshot.groups.map((group) => group.name)).toEqual(['未选择项目', 'app']);
+    expect(snapshot.groups[0]?.path).toBe('');
+    expect(snapshot.groups[0]?.sessions[0]?.workspace).toBe('未选择项目');
+  });
+
   it('groups by project, newest session first, newest project first', () => {
     const snapshot = deriveSidebar([
       session('old', '旧会话', '/repo/alpha', '2026-08-10T00:00:00.000Z'),

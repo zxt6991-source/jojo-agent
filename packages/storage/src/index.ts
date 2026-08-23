@@ -64,10 +64,15 @@ export class JsonlSessionStore {
     await this.ensureDirectory();
     await appendFile(this.file(sessionId), `${JSON.stringify(record)}\n`, { encoding: 'utf8', flag: 'a' });
   }
-  async create(title: string, workingDirectory: string, projectIdentity?: ProjectIdentity): Promise<SessionMeta> {
+  async create(
+    title: string,
+    workingDirectory: string,
+    projectIdentity?: ProjectIdentity,
+    projectBound = true
+  ): Promise<SessionMeta> {
     const time = new Date().toISOString();
     const meta = SessionMetaSchema.parse({
-      id: crypto.randomUUID(), title, workingDirectory,
+      id: crypto.randomUUID(), title, workingDirectory, projectBound,
       ...(projectIdentity ? { projectIdentity } : {}),
       createdAt: time, updatedAt: time
     });
@@ -126,6 +131,14 @@ export class JsonlSessionStore {
         const currentMeta: SessionMeta | null = meta;
         if (currentMeta) meta = Object.assign({}, currentMeta, { title: record.title }) as SessionMeta;
       }
+      else if (record.type === 'project') {
+        const currentMeta: SessionMeta | null = meta;
+        if (currentMeta) meta = Object.assign({}, currentMeta, {
+          workingDirectory: record.workingDirectory,
+          projectIdentity: record.projectIdentity,
+          projectBound: true
+        }) as SessionMeta;
+      }
       else if (record.type === 'message') messages.push(record.message);
     }
     return { meta, messages, warnings };
@@ -137,6 +150,20 @@ export class JsonlSessionStore {
   }
   async rename(sessionId: string, title: string): Promise<void> {
     await this.append(sessionId, { schemaVersion: 1, type: 'title', title });
+  }
+  async bindProject(
+    sessionId: string,
+    workingDirectory: string,
+    projectIdentity: ProjectIdentity
+  ): Promise<SessionMeta> {
+    if (!await this.get(sessionId)) throw new Error('Session not found.');
+    await this.append(sessionId, {
+      schemaVersion: 1,
+      type: 'project',
+      workingDirectory,
+      projectIdentity
+    });
+    return (await this.get(sessionId))!;
   }
   async delete(sessionId: string): Promise<void> {
     try { await unlink(this.file(sessionId)); }

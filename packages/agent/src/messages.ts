@@ -1,5 +1,6 @@
 import type { ImageContentBlock, Message, ToolCall, ToolResult } from '@desktop-agent/contracts';
 import type { AgentRunOptions } from './types.js';
+import type { AgentStopReason } from './loop/types.js';
 
 const createId = (): string => crypto.randomUUID();
 const now = () => new Date().toISOString();
@@ -56,6 +57,31 @@ export function createNoProgressFinalMessage(): Message {
     content: [{
       type: 'text',
       text: 'Tool use is now paused because repeated investigation did not produce enough progress. Do not request more tools. Give the user the best final answer supported by the existing results, clearly stating the remaining limitation and the next concrete action.'
+    }]
+  };
+}
+
+export function createSafetyFinalMessage(reason: AgentStopReason, limit?: number): Message {
+  const detail = reason === 'loop_detected'
+    ? 'Repeated action batches formed a cycle and are no longer producing meaningful progress.'
+    : reason === 'absolute_iteration_limit'
+      ? `The runtime absolute safety fuse${limit === undefined ? '' : ` of ${limit} iterations`} was reached.`
+      : reason === 'time_budget'
+        ? 'The wall-clock budget was reached.'
+        : reason === 'token_budget'
+          ? 'The cumulative token budget was reached.'
+          : reason === 'cost_budget'
+            ? 'The provider cost budget was reached.'
+            : reason === 'tool_call_budget'
+              ? 'The cumulative tool-call budget was reached.'
+              : reason === 'context_budget'
+                ? 'The context compaction budget was reached without stabilizing the context.'
+                : 'Repeated investigation did not produce enough progress.';
+  return {
+    id: createId(), role: 'user', createdAt: now(), metadata: { internal: true },
+    content: [{
+      type: 'text',
+      text: `${detail} Tool use is now disabled. Provide the best possible final response using information and artifacts already produced. Clearly state what was completed, what remains incomplete, and any important uncertainty or limitation. Do not claim unfinished work is complete.`
     }]
   };
 }

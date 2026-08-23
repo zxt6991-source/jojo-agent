@@ -38,6 +38,7 @@ export type AgentEvent =
       outputTokens?: number;
       cacheReadInputTokens?: number;
       cacheWriteInputTokens?: number;
+      costUsd?: number;
     }
   | {
       type: 'context.updated';
@@ -51,6 +52,12 @@ export type AgentEvent =
       overCapacity?: boolean;
       iteration?: number;
       maxIterations?: number;
+      runMaxIterations?: number;
+      absoluteMaxIterations?: number;
+      toolCalls?: number;
+      repeatedToolCalls?: number;
+      duplicateObservations?: number;
+      elapsedMs?: number;
       finalResponseOnly?: boolean;
     }
   | { type: 'output.continuing'; attempt: number }

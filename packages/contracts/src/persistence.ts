@@ -30,16 +30,28 @@ export const SessionMetaSchema = z.object({
   id: z.string().min(1),
   title: z.string().min(1).max(SESSION_TITLE_MAX_LENGTH),
   workingDirectory: z.string().min(1),
+  projectBound: z.boolean().optional(),
   projectIdentity: ProjectIdentitySchema.optional(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime()
 });
 export type SessionMeta = z.infer<typeof SessionMetaSchema>;
 
+/** Missing means project-bound for sessions created before this flag existed. */
+export function sessionHasProject(session: Pick<SessionMeta, 'projectBound'>): boolean {
+  return session.projectBound !== false;
+}
+
 export const SessionRecordSchema = z.discriminatedUnion('type', [
   z.object({ schemaVersion: z.literal(1), type: z.literal('meta'), session: SessionMetaSchema }),
   z.object({ schemaVersion: z.literal(1), type: z.literal('message'), message: MessageSchema }),
-  z.object({ schemaVersion: z.literal(1), type: z.literal('title'), title: z.string() })
+  z.object({ schemaVersion: z.literal(1), type: z.literal('title'), title: z.string() }),
+  z.object({
+    schemaVersion: z.literal(1),
+    type: z.literal('project'),
+    workingDirectory: z.string().min(1),
+    projectIdentity: ProjectIdentitySchema
+  })
 ]);
 export type SessionRecord = z.infer<typeof SessionRecordSchema>;
 

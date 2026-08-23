@@ -51,4 +51,14 @@ describe('conversation trajectory export', () => {
     expect(trajectoryExportFilename('CON')).toBe('CON-session-trajectory.md');
     expect(trajectoryExportFilename('///')).toBe('----trajectory.md');
   });
+
+  it('does not expose the internal workspace as a selected project', () => {
+    const markdown = renderConversationTrajectoryMarkdown({
+      session: { ...session, workingDirectory: '/internal/general', projectBound: false },
+      messages: []
+    });
+
+    expect(markdown).toContain('- 项目：未选择项目');
+    expect(markdown).not.toContain('/internal/general');
+  });
 });

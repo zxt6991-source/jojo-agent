@@ -108,6 +108,32 @@ describe('runtime runner', () => {
     });
   });
 
+  it('allows bounded output continuation while composing a limit final response', async () => {
+    let requestIndex = 0;
+    const requests: ModelRequest[] = [];
+    const provider: ModelProvider = {
+      async *stream(request) {
+        requests.push(request);
+        if (requestIndex++ === 0) {
+          yield { type: 'tool_call_completed', call: { id: 'limit-continuation', name: 'echo', input: {} } };
+          yield { type: 'response_completed', stopReason: 'tool_calls' };
+        } else if (requestIndex === 2) {
+          yield { type: 'text_delta', text: 'Partial safety summary' };
+          yield { type: 'response_completed', stopReason: 'max_tokens' };
+        } else {
+          yield { type: 'text_delta', text: ' completed.' };
+          yield { type: 'response_completed', stopReason: 'stop' };
+        }
+      }
+    };
+
+    const result = await runAgentTurn(options(provider, { maxIterations: 1 }));
+
+    expect(result.stopReason).toBe('max_iterations');
+    expect(requests).toHaveLength(3);
+    expect(requests.slice(1).every((request) => request.tools.length === 0)).toBe(true);
+  });
+
   it('forks a child lane from the parent leaf and keeps follow-ups on that branch', async () => {
     const store = new MemoryAgentRuntimeStore();
     const main = await runAgentTurn(options(new ScriptedProvider([[

@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client';
 import type {
   AgentEvent, ApprovalRequest, BrowserDockState, ExtensionSettings, ExtensionStatus, HookSettingsSnapshot, ImageContentBlock, MemorySettings, MemoryStatusSnapshot, Message, ProviderConfig, ProviderSettings, SessionCompactionRecord, SessionMeta, SkillDetail, SkillStatus, WorkflowRunSnapshot, WorkspaceChanges
 } from '@desktop-agent/contracts';
-import { DEFAULT_BROWSER_SETTINGS, DEFAULT_MEMORY_SETTINGS, DEFAULT_PROVIDERS, DEFAULT_SESSION_TITLE } from '@desktop-agent/contracts';
+import { DEFAULT_BROWSER_SETTINGS, DEFAULT_MEMORY_SETTINGS, DEFAULT_PROVIDERS, DEFAULT_SESSION_TITLE, projectNameFromDirectory } from '@desktop-agent/contracts';
 import {
   applyLiveEvent,
   buildConversationSnapshot,
@@ -56,6 +56,13 @@ function ExtensionIcon({ kind }: { kind: 'mcp' | 'skill' }) {
       ? <svg viewBox="0 0 24 24"><path d="m12 3 6.5 3.75v7.5L12 18l-6.5-3.75v-7.5L12 3Zm0 7.5 6.5-3.75M12 10.5 5.5 6.75M12 10.5V18" /></svg>
       : <svg viewBox="0 0 24 24"><circle cx="7" cy="7" r="2.25" /><circle cx="17" cy="7" r="2.25" /><circle cx="12" cy="17" r="2.25" /><path d="m8.8 8.25 2.1 6.6m4.3-6.6-2.1 6.6M9.25 7h5.5" /></svg>}
   </span>;
+}
+
+function SidebarToggleIcon() {
+  return <svg viewBox="0 0 20 20" aria-hidden="true">
+    <rect x="2.75" y="3.25" width="14.5" height="13.5" rx="2.25" />
+    <path d="M7.25 3.75v12.5" />
+  </svg>;
 }
 
 function skillScope(skill: SkillStatus): string {
@@ -481,8 +488,12 @@ function App() {
   const [skillOperationBusy, setSkillOperationBusy] = useState(false);
   const [oauthBusyServerId, setOauthBusyServerId] = useState('');
   const [collapsedProjects, setCollapsedProjects] = useState<string[]>([]);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
   const [workspaceChanges, setWorkspaceChanges] = useState<WorkspaceChanges | null>(null);
   const [workspaceChangesError, setWorkspaceChangesError] = useState('');
+  const [projectPickerOpen, setProjectPickerOpen] = useState(false);
+  const [projectQuery, setProjectQuery] = useState('');
+  const [projectBinding, setProjectBinding] = useState(false);
   const [reviewOpen, setReviewOpen] = useState(false);
   const [reviewPath, setReviewPath] = useState('');
   const [browserDock, setBrowserDock] = useState<BrowserDockState | null>(null);
@@ -505,10 +516,14 @@ function App() {
   const [atBottom, setAtBottom] = useState(true);
   const turnBaselineRef = useRef<WorkspaceChanges | null>(null);
   const mcpLineNumbersRef = useRef<HTMLDivElement>(null);
+  const projectPickerRef = useRef<HTMLDivElement>(null);
+  const projectSearchRef = useRef<HTMLInputElement>(null);
 
   const refreshSessions = async () => {
     const next = await window.desktopAgent.listSessions();
-    sessionDirectoriesRef.current = new Map(next.map((session) => [session.id, session.workingDirectory]));
+    sessionDirectoriesRef.current = new Map(next.flatMap((session) => (
+      session.projectBound === false ? [] : [[session.id, session.workingDirectory] as const]
+    )));
     setSessions(next);
     if (!activeIdRef.current && next[0]) selectSession(next[0].id);
   };
@@ -678,7 +693,7 @@ function App() {
     });
     const offEvents = window.desktopAgent.onAgentEvent((event: AgentEvent) => {
       if (event.type === 'turn.started') {
-        runningRef.current = true; setRunningSessionId(event.sessionId); setError(''); setLiveSteps(emptyLiveSteps()); setTurnStartedAt(Date.now());
+        runningRef.current = true; setRunningSessionId(event.sessionId); setError(''); setLiveSteps(emptyLiveSteps()); setTurnStartedAt(Date.now()); setProjectPickerOpen(false); setProjectQuery('');
         setUsage({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
         setContextUsage(null);
       }
@@ -706,6 +721,16 @@ function App() {
       else if (event.type === 'turn.completed' || event.type === 'turn.cancelled') { runningRef.current = false; setRunningSessionId(null); setTurnStartedAt(null); setApproval(null); void reloadActive(); }
     });
     return () => { offSessions(); offExtensions(); offSecret(); offDock(); offOrchestration(); offEvents(); };
+  }, []);
+
+  useEffect(() => {
+    const toggleSidebar = (event: KeyboardEvent) => {
+      if (event.key.toLowerCase() !== 'b' || (!event.metaKey && !event.ctrlKey) || event.altKey || event.shiftKey) return;
+      event.preventDefault();
+      setSidebarOpen((open) => !open);
+    };
+    window.addEventListener('keydown', toggleSidebar);
+    return () => window.removeEventListener('keydown', toggleSidebar);
   }, []);
 
   useEffect(() => {
@@ -821,16 +846,37 @@ function App() {
     if (session) await selectSession(session.id);
   };
 
+  const createSession = async () => {
+    const session = await window.desktopAgent.createSession({ title: DEFAULT_SESSION_TITLE });
+    if (session) await selectSession(session.id);
+  };
+
   const createProject = async () => {
     const directory = await window.desktopAgent.chooseDirectory();
     if (!directory) return;
     await createSessionForDirectory(directory);
   };
 
-  const createSession = async () => {
-    const activeSession = sessions.find((session) => session.id === activeIdRef.current);
-    if (activeSession) await createSessionForDirectory(activeSession.workingDirectory);
-    else await createProject();
+  const bindActiveSessionToProject = async (selectedDirectory?: string) => {
+    const sessionId = activeIdRef.current;
+    if (!sessionId || projectBinding || runningRef.current) return;
+    const directory = selectedDirectory ?? await window.desktopAgent.chooseDirectory();
+    if (!directory) return;
+    setProjectBinding(true);
+    setError('');
+    try {
+      await window.desktopAgent.bindSessionProject({ sessionId, workingDirectory: directory });
+      setProjectPickerOpen(false);
+      setProjectQuery('');
+      setCollapsedProjects((items) => items.filter((path) => path !== directory));
+      await refreshSessions();
+      await selectSession(sessionId);
+      await refreshExtensionStatus(directory);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setProjectBinding(false);
+    }
   };
 
   const renameSession = async (session: SessionMeta) => {
@@ -883,6 +929,20 @@ function App() {
   };
 
   const active = sessions.find((session) => session.id === activeId);
+  const recentProjects = useMemo(() => {
+    const unique = new Map<string, { path: string; name: string }>();
+    for (const session of sessions) {
+      if (session.projectBound === false || unique.has(session.workingDirectory)) continue;
+      unique.set(session.workingDirectory, {
+        path: session.workingDirectory,
+        name: projectNameFromDirectory(session.workingDirectory)
+      });
+    }
+    const query = projectQuery.trim().toLowerCase();
+    return [...unique.values()].filter((project) => (
+      query === '' || `${project.name} ${project.path}`.toLowerCase().includes(query)
+    ));
+  }, [sessions, projectQuery]);
   const selectedProvider = providerById(settings, settings.activeProviderId);
   const draftProvider = providerById(settingsDraft, settingsDraft.activeProviderId);
   const updateDraftProvider = (update: Partial<ProviderConfig>) => setSettingsDraft((current) => ({
@@ -890,7 +950,8 @@ function App() {
     providers: current.providers.map((provider) => provider.id === current.activeProviderId ? { ...provider, ...update } : provider)
   }));
   const sessionBusy = runningSessionId === activeId;
-  const overlayOpen = settingsOpen || Boolean(approval) || Boolean(browserSecret) || skillCreateOpen || Boolean(selectedSkill);
+  const showProjectPicker = active?.projectBound === false && messages.length === 0 && !sessionBusy;
+  const overlayOpen = settingsOpen || Boolean(approval) || Boolean(browserSecret) || skillCreateOpen || Boolean(selectedSkill) || projectPickerOpen;
   const visibleDock = browserDock && activeId && browserDock.sessionId === activeId ? browserDock : null;
   const browsing = Boolean(visibleDock);
   const visibleWorkflows = useMemo(() => workflowsForSession(workflows, activeId), [workflows, activeId]);
@@ -918,6 +979,28 @@ function App() {
     if (!activeId || visibleDock) return;
     void window.desktopAgent.setBrowserDockLayout({ sessionId: activeId, overlayOpen, bounds: null });
   }, [activeId, overlayOpen, visibleDock]);
+
+  useEffect(() => {
+    if (!projectPickerOpen) return;
+    projectSearchRef.current?.focus();
+    const close = (event: MouseEvent) => {
+      const root = projectPickerRef.current;
+      if (root && event.target instanceof Node && root.contains(event.target)) return;
+      setProjectPickerOpen(false);
+      setProjectQuery('');
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      setProjectPickerOpen(false);
+      setProjectQuery('');
+    };
+    window.addEventListener('mousedown', close);
+    window.addEventListener('keydown', closeOnEscape);
+    return () => {
+      window.removeEventListener('mousedown', close);
+      window.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [projectPickerOpen]);
 
   const onConversationScroll = () => {
     const el = conversationRef.current;
@@ -997,7 +1080,17 @@ function App() {
     } finally { setSkillOperationBusy(false); }
   };
 
-  return <div className="app-shell">
+  const sidebarToggle = <button
+    type="button"
+    className="sidebar-toggle"
+    aria-label={sidebarOpen ? '收起左侧对话栏' : '打开左侧对话栏'}
+    aria-controls="conversation-sidebar"
+    aria-expanded={sidebarOpen}
+    title={`${sidebarOpen ? '收起' : '打开'}左侧对话栏（⌘/Ctrl+B）`}
+    onClick={() => setSidebarOpen((open) => !open)}
+  ><SidebarToggleIcon /></button>;
+
+  return <div className={`app-shell ${sidebarOpen ? '' : 'sidebar-collapsed'}`}>
     <Sidebar
       sessions={sessions}
       activeId={activeId}
@@ -1016,7 +1109,10 @@ function App() {
     <main className="main-panel">
       {active ? <>
         <header className="topbar">
-          <div><h1>{active.title}</h1><div className="working-directory">{active.workingDirectory}</div></div>
+          <div className="topbar-leading">
+            {sidebarToggle}
+            <div className="topbar-title"><h1>{active.title}</h1><div className="working-directory">{active.projectBound === false ? '未选择项目' : active.workingDirectory}</div></div>
+          </div>
           <div className="topbar-actions">
             <ConversationViewTabs mode={conversationView} onChange={setConversationView} />
             <button
@@ -1031,7 +1127,7 @@ function App() {
         <div className={`workspace-content ${browsing ? 'browsing' : reviewOpen ? 'reviewing' : ''}`}>
         <div className="chat-pane">
         <div className="conversation" ref={conversationRef} onScroll={onConversationScroll} role="region" aria-label="对话记录">
-          {snapshot.nodes.length === 0 && !sessionBusy && conversationView === 'chat' && <div className="empty"><div className="empty-icon">⌁</div><h2>从本地项目开始</h2><p>可以让我阅读文件、列出目录，或在你批准后执行命令。</p></div>}
+          {snapshot.nodes.length === 0 && !sessionBusy && conversationView === 'chat' && <div className="empty"><div className="empty-icon">⌁</div><h2>{active.projectBound === false ? '开始一段新对话' : '从本地项目开始'}</h2><p>{active.projectBound === false ? '直接提问，或从侧边栏选择项目后处理本地文件。' : '可以让我阅读文件、列出目录，或在你批准后执行命令。'}</p></div>}
           {conversationView === 'chat'
             ? <ChatTranscript
               snapshot={snapshot}
@@ -1057,7 +1153,57 @@ function App() {
           {!sessionBusy && messages.length > 0 && workspaceChanges && workspaceChanges.files.length > 0 && <WorkspaceChangesCard changes={workspaceChanges} onReview={openReview} />}
           {!atBottom && <button type="button" className="to-bottom" aria-label="回到底部" title="回到底部" onClick={() => { const el = conversationRef.current; if (!el) return; el.scrollTop = el.scrollHeight; atBottomRef.current = true; setAtBottom(true); }}>↓</button>}
         </div>
-        <footer className="composer-wrap"><div className="composer">
+        <footer className="composer-wrap">
+          {showProjectPicker && <div className="composer-project-picker" ref={projectPickerRef}>
+            <button
+              type="button"
+              className="composer-project-trigger"
+              aria-haspopup="listbox"
+              aria-expanded={projectPickerOpen}
+              disabled={sessionBusy || projectBinding}
+              onClick={() => setProjectPickerOpen((open) => !open)}
+            >
+              <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M2.5 5.75c0-1.1.9-2 2-2h3l1.45 1.7h6.55c1.1 0 2 .9 2 2v6.75c0 1.1-.9 2-2 2h-11c-1.1 0-2-.9-2-2V5.75Z" /></svg>
+              <span>{projectBinding ? '正在选择项目…' : '选择项目'}</span>
+              <span className="composer-project-chevron" aria-hidden="true">⌄</span>
+            </button>
+            {projectPickerOpen && <div className="composer-project-menu">
+              <label className="composer-project-search">
+                <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.25" /><path d="m12.4 12.4 4 4" /></svg>
+                <input
+                  ref={projectSearchRef}
+                  value={projectQuery}
+                  placeholder="搜索项目"
+                  aria-label="搜索项目"
+                  disabled={sessionBusy || projectBinding}
+                  onChange={(event) => setProjectQuery(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' && recentProjects[0]) {
+                      event.preventDefault();
+                      void bindActiveSessionToProject(recentProjects[0].path);
+                    }
+                  }}
+                />
+              </label>
+              <div className="composer-project-options" role="listbox" aria-label="最近项目">
+                {recentProjects.slice(0, 8).map((project) => <button
+                  type="button"
+                  role="option"
+                  aria-selected="false"
+                  key={project.path}
+                  title={project.path}
+                  disabled={sessionBusy || projectBinding}
+                  onClick={() => void bindActiveSessionToProject(project.path)}
+                >
+                  <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M2.5 5.75c0-1.1.9-2 2-2h3l1.45 1.7h6.55c1.1 0 2 .9 2 2v6.75c0 1.1-.9 2-2 2h-11c-1.1 0-2-.9-2-2V5.75Z" /></svg>
+                  <span><strong>{project.name}</strong><small>{project.path}</small></span>
+                </button>)}
+                {recentProjects.length === 0 && <div className="composer-project-empty">没有匹配的最近项目</div>}
+              </div>
+              <button type="button" className="composer-project-browse" disabled={sessionBusy || projectBinding} onClick={() => void bindActiveSessionToProject()}><span aria-hidden="true">＋</span> 打开其他项目…</button>
+            </div>}
+          </div>}
+          <div className="composer">
           {attachments.length > 0 && <div className="composer-attachments" aria-label="待发送图片">{attachments.map((image, index) => <figure key={`${image.name ?? 'image'}-${index}`}><img src={`data:${image.mimeType};base64,${image.data}`} alt={image.name ?? '待发送图片'} /><button type="button" aria-label={`移除 ${image.name ?? '图片'}`} onClick={() => setAttachments((items) => items.filter((_, itemIndex) => itemIndex !== index))}>×</button><figcaption>{image.name ?? '图片'}</figcaption></figure>)}</div>}
           <textarea value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="随心输入" rows={2}
             onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void send(); } }} />
@@ -1084,7 +1230,7 @@ function App() {
           ? <BrowserDock key={activeId} sessionId={activeId} state={visibleDock} overlayOpen={overlayOpen} />
           : reviewOpen && workspaceChanges && <ReviewPanel changes={workspaceChanges} selectedPath={reviewPath} onSelect={setReviewPath} onClose={() => setReviewOpen(false)} />}
         </div>
-      </> : <section className="welcome"><div className="empty-icon">⌁</div><h1>Desktop Agent</h1><p>选择一个本地目录，开始安全、可控的 AI 协作。</p><button className="primary" onClick={() => void createProject()}>选择项目目录</button></section>}
+      </> : <section className="welcome"><div className="welcome-sidebar-toggle">{sidebarToggle}</div><div className="empty-icon">⌁</div><h1>Desktop Agent</h1><p>直接开始对话，或选择本地项目进行协作。</p><div className="welcome-actions"><button className="primary" onClick={() => void createSession()}>新建对话</button><button onClick={() => void createProject()}>选择项目目录</button></div></section>}
     </main>
     {approval && <div className="approval-layer"><div className="approval-panel" role="dialog" aria-modal="true" aria-labelledby="approval-title">
       <div className="approval-tool"><span className="approval-tool-icon" aria-hidden="true">›_</span><span>{approvalToolLabel(approval)}</span></div>

@@ -151,7 +151,7 @@ describe('runAgentTurn', () => {
     expect(execute).toHaveBeenCalledTimes(1);
   });
 
-  it('stops executing an identical tool call after two attempts and lets the model recover', async () => {
+  it('detects a period-1 repeated tool batch before executing it a third time', async () => {
     const execute = vi.fn(echoTool.execute);
     const provider = new ScriptedProvider([
       [
@@ -175,13 +175,10 @@ describe('runAgentTurn', () => {
     const result = await runAgentTurn(createOptions(provider, {
       tools: [{ ...echoTool, execute }]
     }));
-    const noProgressResult = result.messages
-      .flatMap((message) => message.content)
-      .find((block) => block.type === 'tool_result' && block.result.code === 'no_progress');
-
-    expect(result.stopReason).toBe('stop');
+    expect(result.stopReason).toBe('loop_detected');
     expect(execute).toHaveBeenCalledTimes(2);
-    expect(noProgressResult?.type === 'tool_result' && noProgressResult.result.content).toContain('already run twice');
+    expect(result.messages.some((message) => message.metadata?.internal
+      && message.content.some((block) => block.type === 'text' && block.text.includes('formed a cycle')))).toBe(true);
   });
 
   it('allows identical polling calls while background work is still changing state', async () => {
@@ -215,6 +212,153 @@ describe('runAgentTurn', () => {
     expect(noProgressResults).toHaveLength(0);
   });
 
+  it('detects an A-B-A-B-A-B tool-batch cycle and finalizes without the sixth execution', async () => {
+    const execute = vi.fn(echoTool.execute);
+    let step = 0;
+    const provider: ModelProvider = {
+      async *stream(request) {
+        if (step < 6) {
+          const current = step++;
+          yield {
+            type: 'tool_call_completed',
+            call: { id: `period-two-${current}`, name: 'echo', input: { value: current % 2 } }
+          };
+          yield { type: 'response_completed', stopReason: 'tool_calls' };
+          return;
+        }
+        expect(request.tools).toEqual([]);
+        yield { type: 'text_delta', text: 'The repeated cycle was stopped.' };
+        yield { type: 'response_completed', stopReason: 'stop' };
+      }
+    };
+
+    const result = await runAgentTurn(createOptions(provider, { tools: [{ ...echoTool, execute }] }));
+
+    expect(result.stopReason).toBe('loop_detected');
+    expect(execute).toHaveBeenCalledTimes(4);
+  });
+
+  it('enforces a bounded polling budget without treating polling as a batch cycle', async () => {
+    const execute = vi.fn(echoTool.execute);
+    const pollingTool: Tool = {
+      ...echoTool,
+      repeatPolicy: 'polling',
+      polling: { maxPollsPerInput: 2 },
+      execute
+    };
+    const provider = new ScriptedProvider([
+      ...Array.from({ length: 3 }, (_, index) => [
+        { type: 'tool_call_completed' as const, call: { id: `bounded-poll-${index}`, name: 'echo', input: { id: 'job' } } },
+        { type: 'response_completed' as const, stopReason: 'tool_calls' }
+      ]),
+      [
+        { type: 'text_delta', text: 'Polling could not continue safely.' },
+        { type: 'response_completed', stopReason: 'stop' }
+      ]
+    ]);
+
+    const result = await runAgentTurn(createOptions(provider, { tools: [pollingTool] }));
+    const budgetResult = result.messages.flatMap((message) => message.content)
+      .find((block) => block.type === 'tool_result' && block.result.code === 'no_progress');
+
+    expect(result.stopReason).toBe('stop');
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(budgetResult?.type === 'tool_result' && budgetResult.result.content).toContain('polling budget');
+  });
+
+  it('finalizes when the cumulative token budget is reached', async () => {
+    let step = 0;
+    const requests: ModelRequest[] = [];
+    const provider: ModelProvider = {
+      async *stream(request) {
+        requests.push(request);
+        if (step++ === 0) {
+          yield { type: 'usage', inputTokens: 6, outputTokens: 4 };
+          yield { type: 'tool_call_completed', call: { id: 'token-call', name: 'echo', input: {} } };
+          yield { type: 'response_completed', stopReason: 'tool_calls' };
+          return;
+        }
+        yield { type: 'text_delta', text: 'Token budget reached; here is the partial result.' };
+        yield { type: 'response_completed', stopReason: 'stop' };
+      }
+    };
+
+    const result = await runAgentTurn(createOptions(provider, {
+      loopBudget: { maxTotalTokens: 10 }
+    }));
+
+    expect(result.stopReason).toBe('token_budget');
+    expect(requests.at(-1)?.tools).toEqual([]);
+  });
+
+  it('finalizes when provider-reported cost reaches the configured budget', async () => {
+    let step = 0;
+    const provider: ModelProvider = {
+      async *stream() {
+        if (step++ === 0) {
+          yield { type: 'usage', costUsd: 0.25 };
+          yield { type: 'tool_call_completed', call: { id: 'cost-call', name: 'echo', input: {} } };
+          yield { type: 'response_completed', stopReason: 'tool_calls' };
+          return;
+        }
+        yield { type: 'text_delta', text: 'Cost budget reached.' };
+        yield { type: 'response_completed', stopReason: 'stop' };
+      }
+    };
+
+    const result = await runAgentTurn(createOptions(provider, {
+      loopBudget: { maxCostUsd: 0.25 }
+    }));
+
+    expect(result.stopReason).toBe('cost_budget');
+  });
+
+  it('starts with a tool-free final response when the wall-time budget is already exhausted', async () => {
+    const requests: ModelRequest[] = [];
+    const provider: ModelProvider = {
+      async *stream(request) {
+        requests.push(request);
+        yield { type: 'text_delta', text: 'No safe execution time remained.' };
+        yield { type: 'response_completed', stopReason: 'stop' };
+      }
+    };
+
+    const result = await runAgentTurn(createOptions(provider, {
+      loopBudget: { maxWallTimeMs: 0 }
+    }));
+
+    expect(result.stopReason).toBe('time_budget');
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.tools).toEqual([]);
+  });
+
+  it('does not execute a batch that would exceed the tool-call budget', async () => {
+    const execute = vi.fn(echoTool.execute);
+    let step = 0;
+    const provider: ModelProvider = {
+      async *stream(request) {
+        if (step++ === 0) {
+          for (let index = 0; index < 3; index += 1) {
+            yield { type: 'tool_call_completed', call: { id: `batch-${index}`, name: 'echo', input: { index } } };
+          }
+          yield { type: 'response_completed', stopReason: 'tool_calls' };
+          return;
+        }
+        expect(request.tools).toEqual([]);
+        yield { type: 'text_delta', text: 'The tool batch exceeded its budget.' };
+        yield { type: 'response_completed', stopReason: 'stop' };
+      }
+    };
+
+    const result = await runAgentTurn(createOptions(provider, {
+      tools: [{ ...echoTool, execute }],
+      loopBudget: { maxToolCalls: 2 }
+    }));
+
+    expect(result.stopReason).toBe('tool_call_budget');
+    expect(execute).not.toHaveBeenCalled();
+  });
+
   it('detects repeated read-only results across different searches and forces a final response', async () => {
     let step = 0;
     const seenTools: string[][] = [];
@@ -246,7 +390,7 @@ describe('runAgentTurn', () => {
       .flatMap((message) => message.content)
       .filter((block) => block.type === 'tool_result' && block.result.code === 'no_progress');
 
-    expect(result.stopReason).toBe('stop');
+    expect(result.stopReason).toBe('no_progress');
     expect(execute).toHaveBeenCalledTimes(4);
     expect(noProgressResults.length).toBe(3);
     expect(seenTools.at(-1)).toEqual([]);

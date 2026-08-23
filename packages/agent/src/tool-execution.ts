@@ -1,6 +1,7 @@
-import { createHash } from 'node:crypto';
 import type { Tool, ToolCall, ToolResult } from '@desktop-agent/contracts';
 import { errorMessage, throwIfAborted } from './errors.js';
+import { canonicalJson, normalizeObservation, sha256 } from './loop/fingerprint.js';
+import { DEFAULT_AGENT_LOOP_SAFETY, type PollingCallState } from './loop/types.js';
 import type { AgentRunOptions } from './types.js';
 
 export type ToolExecutionState = {
@@ -8,9 +9,11 @@ export type ToolExecutionState = {
   executedCallIds: Set<string>;
   toolCallCounts: Map<string, number>;
   observationFingerprints: Set<string>;
+  pollingCalls: Map<string, PollingCallState>;
+  repeatedToolCalls: number;
+  duplicateObservations: number;
 };
 
-const MAX_IDENTICAL_TOOL_CALLS = 2;
 const INFORMATION_ONLY_TOOLS = new Set([
   'glob',
   'grep',
@@ -25,29 +28,62 @@ const INFORMATION_ONLY_TOOLS = new Set([
   'web_search'
 ]);
 
-function canonicalJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
-  if (value && typeof value === 'object') {
-    return `{${Object.entries(value as Record<string, unknown>)
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([key, child]) => `${JSON.stringify(key)}:${canonicalJson(child)}`)
-      .join(',')}}`;
+function repeatedCallResult(
+  call: ToolCall,
+  tool: Tool,
+  state: ToolExecutionState,
+  options: AgentRunOptions
+): ToolResult | null {
+  if ((tool.repeatPolicy ?? tool.definition.repeatPolicy) === 'polling') {
+    return pollingBudgetResult(call, tool, state, options);
   }
-  const serialized = JSON.stringify(value);
-  return serialized === undefined ? String(value) : serialized;
-}
-
-function repeatedCallResult(call: ToolCall, tool: Tool, state: ToolExecutionState): ToolResult | null {
-  if (tool.repeatPolicy === 'polling') return null;
   const signature = `${call.name}:${canonicalJson(call.input)}`;
   const count = (state.toolCallCounts.get(signature) ?? 0) + 1;
   state.toolCallCounts.set(signature, count);
-  if (count <= MAX_IDENTICAL_TOOL_CALLS) return null;
+  if (count > 1) state.repeatedToolCalls += 1;
+  const maximum = options.loopSafety?.maxIdenticalToolCalls
+    ?? DEFAULT_AGENT_LOOP_SAFETY.maxIdenticalToolCalls;
+  if (count <= maximum) return null;
   return failureResult(
     call,
-    'This exact tool call has already run twice in this turn. Reuse the existing results, change the approach, or explain the limitation instead of repeating it.',
+    `This exact tool call has already run ${maximum} times in this turn. Reuse the existing results, change the approach, or explain the limitation instead of repeating it.`,
     'no_progress'
   );
+}
+
+function pollingBudgetResult(
+  call: ToolCall,
+  tool: Tool,
+  state: ToolExecutionState,
+  options: AgentRunOptions
+): ToolResult | null {
+  const now = Date.now();
+  const signature = `${call.name}:${canonicalJson(call.input)}`;
+  const previous = state.pollingCalls.get(signature);
+  const next: PollingCallState = previous
+    ? { count: previous.count + 1, firstAt: previous.firstAt, lastAt: now }
+    : { count: 1, firstAt: now, lastAt: now };
+  state.pollingCalls.set(signature, next);
+  const safety = options.loopSafety ?? DEFAULT_AGENT_LOOP_SAFETY;
+  const polling = tool.polling ?? tool.definition.polling;
+  const maxPolls = polling?.maxPollsPerInput ?? safety.maxPollsPerInput;
+  const maxDurationMs = polling?.maxDurationMs ?? safety.maxPollDurationMs;
+  const minIntervalMs = polling?.minIntervalMs ?? safety.minPollIntervalMs;
+  if (previous && minIntervalMs > 0 && now - previous.lastAt < minIntervalMs) {
+    return failureResult(
+      call,
+      `Polling this input again after ${now - previous.lastAt}ms is below the ${minIntervalMs}ms minimum interval.`,
+      'no_progress'
+    );
+  }
+  if (next.count > maxPolls || now - next.firstAt > maxDurationMs) {
+    return failureResult(
+      call,
+      `The polling budget for this tool input was exhausted (${next.count - 1}/${maxPolls} polls, ${now - next.firstAt}ms elapsed).`,
+      'no_progress'
+    );
+  }
+  return null;
 }
 
 function repeatedObservationResult(
@@ -55,13 +91,17 @@ function repeatedObservationResult(
   result: ToolResult,
   state: ToolExecutionState
 ): ToolResult {
-  if (!result.ok || !INFORMATION_ONLY_TOOLS.has(call.name)) return result;
-  const digest = createHash('sha256').update(result.content).digest('hex');
+  const observationOnly = INFORMATION_ONLY_TOOLS.has(call.name)
+    || (state.toolsByName.get(call.name)?.repeatPolicy
+      ?? state.toolsByName.get(call.name)?.definition.repeatPolicy) === 'idempotent-observation';
+  if (!result.ok || !observationOnly) return result;
+  const digest = sha256(normalizeObservation(result.content));
   const fingerprint = `${call.name}:${result.code ?? 'ok'}:${digest}`;
   if (!state.observationFingerprints.has(fingerprint)) {
     state.observationFingerprints.add(fingerprint);
     return result;
   }
+  state.duplicateObservations += 1;
   return {
     ...result,
     ok: false,
@@ -139,7 +179,7 @@ export async function executeToolCall(
     result = failureResult(call, `Unknown tool: ${call.name}`, 'unknown_tool');
   } else {
     state.executedCallIds.add(call.id);
-    result = repeatedCallResult(call, tool, state)
+    result = repeatedCallResult(call, tool, state, options)
       ?? repeatedObservationResult(call, await executeKnownTool(call, tool, options), state);
   }
 
@@ -164,7 +204,7 @@ export async function executeApprovedToolCall(
     result = failureResult(call, `Unknown tool: ${call.name}`, 'unknown_tool');
   } else {
     state.executedCallIds.add(call.id);
-    result = repeatedCallResult(call, tool, state)
+    result = repeatedCallResult(call, tool, state, options)
       ?? repeatedObservationResult(call, await executeApprovedTool(call, tool, options), state);
   }
 

@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { SessionMeta } from '@desktop-agent/contracts';
 import {
   COLLAPSED_SESSION_LIMIT,
+  NO_PROJECT_GROUP_PATH,
   deriveSidebar,
   formatRelativeTime,
   type SidebarGroupBy,
@@ -154,7 +155,8 @@ export function Sidebar({
 
   const openSession = (id: string) => {
     const session = byId.get(id);
-    if (session && collapsedProjects.includes(session.workingDirectory)) onToggleProject(session.workingDirectory);
+    const groupPath = session?.projectBound === false ? NO_PROJECT_GROUP_PATH : session?.workingDirectory;
+    if (groupPath !== undefined && collapsedProjects.includes(groupPath)) onToggleProject(groupPath);
     setQuery('');
     setSearchOpen(false);
     onSelectSession(id);
@@ -173,7 +175,7 @@ export function Sidebar({
   const searching = query.trim() !== '';
   const heading = groupBy === 'flat' ? '会话' : '项目';
 
-  return <aside className="sidebar">
+  return <aside className="sidebar" id="conversation-sidebar">
     <div className="brand"><span className="brand-mark">⌁</span><span>Desktop Agent</span></div>
     <button className="new-session" onClick={onCreateSession}><span aria-hidden="true">＋</span> 新对话</button>
     <div className={`projects-heading ${searchOpen ? 'searching' : ''}`}>
@@ -244,7 +246,8 @@ export function Sidebar({
           </button>
           <button className="project-new-chat" aria-label={`在 ${group.name} 中新建会话`} title="在此项目中新建会话" onClick={() => {
             if (!group.expanded) onToggleProject(group.path);
-            onCreateSessionForDirectory(group.path);
+            if (group.path === NO_PROJECT_GROUP_PATH) onCreateSession();
+            else onCreateSessionForDirectory(group.path);
           }}>＋</button>
         </div>
         {group.expanded && <div className="project-sessions">
@@ -259,7 +262,7 @@ export function Sidebar({
           >{group.userOverflow ? '收起' : `展开其余 ${group.hiddenCount} 个会话`}</button>}
         </div>}
       </section>)}
-      {!searching && snapshot.groups.length === 0 && <div className="projects-empty">还没有项目</div>}
+      {!searching && snapshot.groups.length === 0 && <div className="projects-empty">还没有对话</div>}
     </div>
     <div className="sidebar-settings">
       <button className="settings-button" onClick={onOpenSettings}>⚙ 设置</button>

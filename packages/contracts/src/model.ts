@@ -21,6 +21,8 @@ export type ModelEvent =
       outputTokens?: number;
       cacheReadInputTokens?: number;
       cacheWriteInputTokens?: number;
+      /** Optional provider-computed request cost. */
+      costUsd?: number;
     }
   | { type: 'response_completed'; stopReason: string }
   | { type: 'response_failed'; code: string; message: string };
