@@ -47,6 +47,7 @@ export type MemoryEntry = {
   sourceFile: string;
   sourceSessionId?: string;
   sourceOperationId?: string;
+  confirmedBy?: 'user';
   createdAt: number;
   updatedAt: number;
   contentHash: string;
@@ -102,6 +103,7 @@ export type MemoryStatusSnapshot = {
   ftsMode: 'trigram' | 'unicode61' | 'none';
   projectAvailable: boolean;
   scopes: MemoryScopeStatus[];
+  pendingCandidates?: import('./memory-candidate.js').MemoryCandidate[];
 };
 
 export type MemorySnapshot = {
@@ -121,6 +123,48 @@ export type MemoryRecall = {
   estimatedTokens: number;
 };
 
+export type MemoryWarning = {
+  code:
+    | 'memory_handoff_failed'
+    | 'memory_handoff_conflict'
+    | 'memory_snapshot_binding_missing'
+    | 'workflow_memory_snapshot_missing'
+    | 'memory_scope_version_invalid';
+  message: string;
+};
+
+export type MemoryHandoffItem = {
+  text: string;
+  source: 'scratchpad' | 'memory_tool' | 'compaction' | 'runtime';
+  sourceEntryId?: string;
+};
+
+export type MemoryHandoff = {
+  id: string;
+  sessionId: string;
+  operationId: string;
+  openTasks: MemoryHandoffItem[];
+  decisions: MemoryHandoffItem[];
+  memoryWrites: MemoryHandoffItem[];
+  createdAt: number;
+  contentHash: string;
+};
+
+export type SubAgentMemoryBinding = {
+  projectIdentity?: ProjectIdentity;
+  parentSnapshotId: string;
+  childSnapshotId: string;
+  mode: 'project-minimal' | 'none';
+};
+
+export type WorkflowMemoryBinding = {
+  projectIdentity?: ProjectIdentity;
+  memorySnapshotId: string;
+  contentHash: string;
+  scopeVersions: Record<string, number>;
+  createdAt: number;
+};
+
 export const MemorySettingsSchema = z.object({
   enabled: z.boolean().default(true),
   globalEnabled: z.boolean().default(true),
@@ -132,10 +176,20 @@ export const MemorySettingsSchema = z.object({
     enabled: z.boolean().default(true),
     maxResults: z.number().int().min(1).max(50).default(10)
   }).default({ enabled: true, maxResults: 10 }),
-  suggestions: z.object({
+  suggestions: z.preprocess((value) => {
+    if (value && typeof value === 'object' && !Array.isArray(value)
+      && (value as { maxPerTurn?: unknown }).maxPerTurn === 0) {
+      return { ...value, maxPerTurn: 3 };
+    }
+    return value;
+  }, z.object({
     enabled: z.boolean().default(false),
-    maxPerTurn: z.number().int().min(0).max(3).default(0)
-  }).default({ enabled: false, maxPerTurn: 0 }),
+    providerId: z.string().trim().min(1).optional(),
+    model: z.string().trim().min(1).optional(),
+    maxPerTurn: z.number().int().min(1).max(3).default(3),
+    evidenceMaxTokens: z.number().int().min(256).max(3_072).default(2_048),
+    minEligibilityScore: z.number().int().min(0).max(200).default(30)
+  })).default({ enabled: false, maxPerTurn: 3, evidenceMaxTokens: 2_048, minEligibilityScore: 30 }),
   autoRecall: z.boolean().default(true),
   recoveryRetentionDays: z.number().int().min(1).max(365).default(30),
   confirmDelete: z.boolean().default(true)

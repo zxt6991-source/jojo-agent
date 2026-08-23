@@ -65,6 +65,7 @@ export class AgentStepExecutor implements WorkflowStepExecutor {
         maxIterations: step.maxIterations ?? 8,
         timeoutMs: step.timeoutMs ?? 120_000,
         runtimeLane: { name: `workflow:${context.request.id}:${step.id}`, parentLane: 'main' },
+        ...(context.request.memory ? { memoryBinding: context.request.memory } : {}),
         ...(step.tools ? { tools: step.tools } : {}),
         ...(step.readOnly !== undefined ? { readOnly: step.readOnly } : {}),
         ...(step.outputSchema ? { outputSchema: step.outputSchema } : {})

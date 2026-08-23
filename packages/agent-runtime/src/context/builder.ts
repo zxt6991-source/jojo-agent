@@ -5,6 +5,8 @@ import { projectEntriesToMessages } from './projection.js';
 export type BuildContextInput = {
   store: AgentRuntimeStore;
   leafId: string | null;
+  memorySnapshotId?: string;
+  memoryMode?: 'full' | 'project-minimal' | 'none';
 };
 
 export type ModelContext = {
@@ -25,7 +27,11 @@ export class DefaultContextBuilder implements ContextBuilder {
   async build(input: BuildContextInput): Promise<ModelContext> {
     const entries = await input.store.readPath(input.leafId);
     const snapshots = entries.filter((entry) => entry.type === 'memory_snapshot');
-    const snapshot = snapshots.at(-1);
+    const snapshot = input.memoryMode === 'none'
+      ? undefined
+      : input.memorySnapshotId
+        ? snapshots.find((entry) => entry.snapshotId === input.memorySnapshotId)
+        : snapshots.at(-1);
     const recalls = entries.filter((entry) => entry.type === 'memory_recall');
     return {
       messages: projectEntriesToMessages(entries),

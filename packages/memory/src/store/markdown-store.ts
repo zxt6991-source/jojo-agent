@@ -5,6 +5,7 @@ import {
   MemoryError,
   type MemoryDocument,
   type MemoryEntry,
+  type MemoryHandoff,
   type MemoryKind,
   type MemoryMutationResult,
   type MemoryPatchRequest,
@@ -158,7 +159,9 @@ export class MarkdownMemoryStore {
 
   async rebuildIndex(scope: MemoryScope): Promise<number> {
     const { entries } = await this.listEntries(scope);
-    return this.index.rebuildScope(scope, entries, await this.scopeHash(scope), true);
+    const scopeHash = await this.scopeHash(scope);
+    const current = this.index.scopeStatus(scope.id);
+    return this.index.rebuildScope(scope, entries, scopeHash, Boolean(current && current.hash !== scopeHash));
   }
 
   async patch(request: MemoryPatchRequest): Promise<MemoryMutationResult> {
@@ -242,6 +245,7 @@ export class MarkdownMemoryStore {
     expectedRevision: string;
     sourceSessionId?: string;
     sourceOperationId?: string;
+    confirmedBy?: 'user';
     status?: MemoryEntry['status'];
     ruleMode?: 'always' | 'triggered';
     triggers?: string[];
@@ -267,9 +271,11 @@ export class MarkdownMemoryStore {
       const existing = found.entry;
       const replacement = serializeMemoryEntry({
         id: existing.id, kind: input.kind, title: input.title, content: input.content,
-        ...(input.tags ? { tags: input.tags } : {}), status: existing.status,
+        ...(input.tags ? { tags: input.tags } : {}),
+        status: input.confirmedBy ? input.status ?? existing.status : existing.status,
         ...(existing.sourceSessionId ? { sourceSessionId: existing.sourceSessionId } : {}),
         ...(existing.sourceOperationId ? { sourceOperationId: existing.sourceOperationId } : {}),
+        ...(input.confirmedBy ?? existing.confirmedBy ? { confirmedBy: input.confirmedBy ?? existing.confirmedBy } : {}),
         ...(input.ruleMode ?? existing.ruleMode ? { ruleMode: input.ruleMode ?? existing.ruleMode } : {}),
         ...(input.triggers ?? existing.triggers ? { triggers: input.triggers ?? existing.triggers } : {}),
         createdAt: existing.createdAt
@@ -281,6 +287,7 @@ export class MarkdownMemoryStore {
         ...(input.tags ? { tags: input.tags } : {}),
         ...(input.sourceSessionId ? { sourceSessionId: input.sourceSessionId } : {}),
         ...(input.sourceOperationId ? { sourceOperationId: input.sourceOperationId } : {}),
+        ...(input.confirmedBy ? { confirmedBy: input.confirmedBy } : {}),
         status: input.status ?? 'proposed',
         ...(input.kind === 'rule' ? { ruleMode: input.ruleMode ?? (input.triggers?.length ? 'triggered' : 'always') } : {}),
         ...(input.triggers?.length ? { triggers: input.triggers } : {})
@@ -294,6 +301,41 @@ export class MarkdownMemoryStore {
       patch
     });
     return { ...result, entryId, path: targetPath };
+  }
+
+  async appendDailyHandoff(scope: MemoryScope, handoff: MemoryHandoff): Promise<boolean> {
+    if (scope.kind !== 'project') {
+      throw new MemoryError('memory_permission_denied', 'Runtime handoffs may only be appended to project daily memory.');
+    }
+    const dailyPath = `daily/${new Date(handoff.createdAt).toISOString().slice(0, 10)}.md`;
+    const markerPrefix = `<!-- jojo-memory-handoff:${handoff.id}:`;
+    const marker = `<!-- jojo-memory-handoff:${handoff.id}:${handoff.contentHash} -->`;
+    const render = (title: string, items: MemoryHandoff['openTasks']) => items.length
+      ? `\n${title}\n${items.map((item) => `- ${item.text}`).join('\n')}`
+      : '';
+    const content = `${marker}\n## Session handoff ${handoff.id}`
+      + render('### Open tasks', handoff.openTasks)
+      + render('### Decisions', handoff.decisions)
+      + render('### Memory mutations', handoff.memoryWrites);
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const current = await this.read(scope, dailyPath);
+      if (current.content.includes(marker)) return false;
+      if (current.content.includes(markerPrefix)) {
+        throw new MemoryError('memory_handoff_conflict', `Handoff ${handoff.id} already exists with different content.`);
+      }
+      try {
+        const result = await this.patch({
+          scope,
+          path: dailyPath,
+          expectedRevision: current.revision,
+          patch: { type: 'append', content }
+        });
+        return result.changed;
+      } catch (error) {
+        if (!(error instanceof MemoryError) || error.code !== 'memory_conflict' || attempt === 1) throw error;
+      }
+    }
+    return false;
   }
 
   async forget(scope: MemoryScope, entryId: string, expectedRevision: string): Promise<MemoryMutationResult & { recoveryId: string }> {

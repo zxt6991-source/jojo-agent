@@ -5,6 +5,7 @@ export * from './extensions';
 export * from './hooks';
 export * from './messages';
 export * from './memory';
+export * from './memory-candidate';
 export * from './model';
 export * from './orchestration';
 export * from './persistence';

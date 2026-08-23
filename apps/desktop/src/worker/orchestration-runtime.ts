@@ -1,5 +1,5 @@
 import { AgentError } from '@desktop-agent/agent';
-import { runAgentTurn, type AgentRuntimeStore } from '@desktop-agent/agent-runtime';
+import { runAgentTurn, type AgentRuntimeStore, type MemoryRuntime } from '@desktop-agent/agent-runtime';
 import type { AgentEvent, HookRuntime, Message, ModelProvider, ProviderConfig } from '@desktop-agent/contracts';
 import {
   accrueUsage,
@@ -27,6 +27,7 @@ export type DesktopLeafAgentRunnerOptions = {
   trashDirectory: string;
   profileRegistry?: AgentProfileRegistry;
   runtimeStore?: AgentRuntimeStore;
+  memoryRuntime?: MemoryRuntime;
   createModelProvider?: (input: { runtime: ProviderRuntime; request: LeafAgentRunRequest }) => ModelProvider;
   resolveHooks?: (input: {
     sessionId: string;
@@ -111,6 +112,13 @@ export function createDesktopLeafAgentRunner(options: DesktopLeafAgentRunnerOpti
           history,
           userText: task,
           ...runtimeLane,
+          ...(request.memoryBinding ? {
+            memoryBinding: request.memoryBinding,
+            ...(request.memoryBinding.projectIdentity
+              ? { projectIdentity: request.memoryBinding.projectIdentity }
+              : {})
+          } : {}),
+          ...(options.memoryRuntime ? { memoryRuntime: options.memoryRuntime } : {}),
           ...(hooks ? {
             hooks,
             hookMeta: {

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { ProjectIdentitySchema } from './memory.js';
 
 export const UsageTotalsSchema = z.object({
   inputTokens: z.number().int().nonnegative().default(0),
@@ -7,6 +8,21 @@ export const UsageTotalsSchema = z.object({
   cacheWriteInputTokens: z.number().int().nonnegative().default(0)
 });
 export type UsageTotals = z.infer<typeof UsageTotalsSchema>;
+
+export const SubAgentMemoryBindingSchema = z.object({
+  projectIdentity: ProjectIdentitySchema.optional(),
+  parentSnapshotId: z.string().min(1),
+  childSnapshotId: z.string().min(1),
+  mode: z.enum(['project-minimal', 'none'])
+}).strict();
+
+export const WorkflowMemoryBindingSchema = z.object({
+  projectIdentity: ProjectIdentitySchema.optional(),
+  memorySnapshotId: z.string().min(1),
+  contentHash: z.string().min(1),
+  scopeVersions: z.record(z.string(), z.number().int().nonnegative()),
+  createdAt: z.number().int().nonnegative()
+}).strict();
 
 export const SubAgentProfileSchema = z.string().trim().min(1).max(64).regex(/^[a-z][a-z0-9-]*$/u);
 export type SubAgentProfile = z.infer<typeof SubAgentProfileSchema>;
@@ -145,6 +161,7 @@ export const SubAgentSnapshotSchema = z.object({
   incomplete: z.boolean().default(false),
   isolation: IsolationSnapshotSchema.optional(),
   resourceGroup: z.string().min(1).optional(),
+  memory: SubAgentMemoryBindingSchema.optional(),
   rounds: z.array(SubAgentRoundSchema).default([])
 });
 export type SubAgentSnapshot = z.infer<typeof SubAgentSnapshotSchema>;
@@ -154,7 +171,9 @@ export const WorkflowStepStateSchema = z.enum([
 ]);
 export type WorkflowStepState = z.infer<typeof WorkflowStepStateSchema>;
 
-export const WorkflowRunStateSchema = z.enum(['running', 'completed', 'failed', 'cancelled', 'timed_out', 'interrupted']);
+export const WorkflowRunStateSchema = z.enum([
+  'running', 'completed', 'failed', 'cancelled', 'timed_out', 'interrupted', 'suspended'
+]);
 export type WorkflowRunState = z.infer<typeof WorkflowRunStateSchema>;
 
 export const WorkflowStepErrorCodeSchema = z.enum([
@@ -195,7 +214,8 @@ export const WorkflowErrorCodeSchema = z.enum([
   'workflow_step_failed',
   'workflow_deadlock',
   'workflow_interrupted',
-  'workflow_persistence_failed'
+  'workflow_persistence_failed',
+  'workflow_memory_snapshot_missing'
 ]);
 export type WorkflowErrorCode = z.infer<typeof WorkflowErrorCodeSchema>;
 
@@ -623,6 +643,7 @@ export const WorkflowStepSnapshotSchema = z.object({
   usage: UsageTotalsSchema,
   isolation: IsolationSnapshotSchema.optional(),
   resourceGroup: z.string().min(1).optional(),
+  memorySnapshotId: z.string().min(1).optional(),
   dependsOn: z.array(z.string().min(1)).max(16).optional(),
   instances: z.array(z.object({
     id: z.string().min(1),
@@ -665,6 +686,7 @@ export const WorkflowRunSnapshotSchema = z.object({
   steps: z.array(WorkflowStepSnapshotSchema),
   usage: UsageTotalsSchema,
   budget: WorkflowBudgetSchema.optional(),
+  memory: WorkflowMemoryBindingSchema.optional(),
   result: z.string().optional(),
   error: z.string().optional(),
   errorCode: WorkflowErrorCodeSchema.optional(),
@@ -697,6 +719,7 @@ export const StoredWorkflowRequestSchema = z.object({
   args: WorkflowArgsSchema.default({}),
   definition: WorkflowDefinitionSchema,
   definitionHash: z.string().regex(/^[a-f0-9]{64}$/u),
+  memory: WorkflowMemoryBindingSchema.optional(),
   createdAt: z.string().datetime()
 });
 export type StoredWorkflowRequest = z.infer<typeof StoredWorkflowRequestSchema>;

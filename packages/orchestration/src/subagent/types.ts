@@ -1,4 +1,13 @@
-import type { AgentEvent, HookRuntime, IsolationConfig, SubAgentProfile, UsageTotals, WorkflowResourceGroup } from '@desktop-agent/contracts';
+import type {
+  AgentEvent,
+  HookRuntime,
+  IsolationConfig,
+  SubAgentMemoryBinding,
+  SubAgentProfile,
+  UsageTotals,
+  WorkflowMemoryBinding,
+  WorkflowResourceGroup
+} from '@desktop-agent/contracts';
 import type { AgentToolPolicy } from './tool-policy.js';
 
 export type LeafAgentRunRequest = {
@@ -21,6 +30,7 @@ export type LeafAgentRunRequest = {
     parentLane?: string;
   };
   hooks?: HookRuntime;
+  memoryBinding?: SubAgentMemoryBinding | WorkflowMemoryBinding;
 };
 
 export type LeafAgentRunResult = {
@@ -63,4 +73,5 @@ export type SubAgentStartRequest = {
   isolation?: IsolationConfig;
   resources?: WorkflowResourceGroup;
   depth?: number;
+  memoryBinding?: SubAgentMemoryBinding;
 };

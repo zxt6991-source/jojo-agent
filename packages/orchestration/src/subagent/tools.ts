@@ -1,4 +1,4 @@
-import type { SubAgentSnapshot, Tool, ToolResult } from '@desktop-agent/contracts';
+import type { SubAgentMemoryBinding, SubAgentSnapshot, Tool, ToolResult } from '@desktop-agent/contracts';
 import { z } from 'zod';
 import { orchestrationErrorCode } from '../errors.js';
 import { SubAgentManager } from './manager.js';
@@ -30,7 +30,15 @@ const WaitInput = z.object({
 const IdInput = z.object({ id: z.string().min(1) });
 const SendInput = z.object({ id: z.string().min(1), message: z.string().trim().min(1).max(40_000) });
 
-export type SubAgentToolOptions = { providerId: string; model: string };
+export type SubAgentToolOptions = {
+  providerId: string;
+  model: string;
+  resolveMemoryBinding?: (input: {
+    sessionId: string;
+    workingDirectory: string;
+    profile: string;
+  }) => Promise<SubAgentMemoryBinding | undefined>;
+};
 
 function result(ok: boolean, content: unknown, code?: string): ToolResult {
   return { callId: '', ok, content: typeof content === 'string' ? content : JSON.stringify(content), ...(code ? { code } : {}) };
@@ -82,6 +90,11 @@ export function createSubAgentTools(manager: SubAgentManager, options: SubAgentT
         const parsed = StartInput.safeParse(input);
         if (!parsed.success) return result(false, parsed.error.message, 'invalid_input');
         try {
+          const memoryBinding = await options.resolveMemoryBinding?.({
+            sessionId: context.sessionId,
+            workingDirectory: context.workingDirectory,
+            profile: parsed.data.profile
+          });
           const snapshot = manager.start({
             sessionId: context.sessionId,
             workingDirectory: context.workingDirectory,
@@ -100,6 +113,7 @@ export function createSubAgentTools(manager: SubAgentManager, options: SubAgentT
             ...(parsed.data.isolation ? { isolation: parsed.data.isolation } : {}),
             ...(parsed.data.resources ? { resources: parsed.data.resources } : {}),
             ...(parsed.data.outputSchema ? { outputSchema: parsed.data.outputSchema } : {}),
+            ...(memoryBinding ? { memoryBinding } : {}),
             depth: 0
           });
           return result(true, { id: snapshot.id, state: snapshot.state, label: snapshot.label });

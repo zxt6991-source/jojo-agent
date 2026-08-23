@@ -1,5 +1,13 @@
 import React, { useEffect, useState } from 'react';
-import type { MemoryScopeStatus, MemorySettings, MemoryStatusSnapshot } from '@desktop-agent/contracts';
+import type {
+  MemoryCandidate,
+  MemoryCandidateReviewEdit,
+  MemoryScopeStatus,
+  MemorySettings,
+  MemoryStatusSnapshot,
+  ModelSelection,
+  ProviderConfig
+} from '@desktop-agent/contracts';
 
 function SettingSwitch({
   id,
@@ -37,6 +45,47 @@ function ftsLabel(mode: MemoryStatusSnapshot['ftsMode']): string {
   if (mode === 'trigram') return 'FTS5 · Trigram';
   if (mode === 'unicode61') return 'FTS5 · Unicode61';
   return 'Markdown 回退';
+}
+
+function MemoryCandidateCard({
+  candidate,
+  busy,
+  canAccept,
+  onAccept,
+  onReject
+}: {
+  candidate: MemoryCandidate;
+  busy: boolean;
+  canAccept: boolean;
+  onAccept: (id: string, edit?: MemoryCandidateReviewEdit) => Promise<void>;
+  onReject: (id: string) => Promise<void>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [title, setTitle] = useState(candidate.title);
+  const [content, setContent] = useState(candidate.content);
+  const [scope, setScope] = useState(candidate.scope);
+  const accept = () => onAccept(candidate.id, editing ? { title, content, scope } : undefined);
+  return <article className={`memory-candidate-card ${candidate.kind === 'rule' ? 'is-rule' : ''}`}>
+    <header>
+      <div><span>{scope === 'global' ? 'Global' : 'Project'}</span><span>{candidate.kind}</span></div>
+      <span className={`memory-candidate-confidence ${candidate.confidence}`}>{candidate.confidence}</span>
+    </header>
+    {editing ? <div className="memory-candidate-editor">
+      <label>Scope<select value={scope} onChange={(event) => setScope(event.target.value as 'global' | 'project')}><option value="project">Project</option><option value="global">Global</option></select></label>
+      <label>标题<input maxLength={80} value={title} onChange={(event) => setTitle(event.target.value)} /></label>
+      <label>内容<textarea maxLength={2_048} value={content} onChange={(event) => setContent(event.target.value)} /></label>
+    </div> : <><strong>{candidate.title}</strong><p>{candidate.content}</p></>}
+    <div className="memory-candidate-rationale"><span>Why</span><p>{candidate.rationale}</p></div>
+    {candidate.kind === 'rule' && <div className="memory-candidate-rule-warning">建议启用长期规则 · 接受即表示由用户逐条确认{candidate.rule?.triggers?.length ? ` · 触发词：${candidate.rule.triggers.join('、')}` : ''}</div>}
+    <footer>
+      <span>来源 Session：{candidate.sessionId.slice(0, 12)} · {new Date(candidate.createdAt).toLocaleDateString()}</span>
+      <div>
+        <button type="button" disabled={busy} onClick={() => setEditing((value) => !value)}>{editing ? '取消编辑' : '编辑'}</button>
+        <button type="button" disabled={busy} onClick={() => { void onReject(candidate.id); }}>拒绝</button>
+        <button type="button" className="primary" disabled={busy || !canAccept || !title.trim() || !content.trim()} onClick={() => { void accept(); }}>接受</button>
+      </div>
+    </footer>
+  </article>;
 }
 
 export function MemoryScopeConfigDialog({
@@ -130,7 +179,11 @@ export function MemorySettingsPage({
   onSave,
   onRefresh,
   onRebuild,
-  onDelete
+  onDelete,
+  providers = [],
+  utilityModel,
+  onAcceptCandidate = async () => undefined,
+  onRejectCandidate = async () => undefined
 }: {
   draft: MemorySettings;
   saved: MemorySettings;
@@ -143,6 +196,10 @@ export function MemorySettingsPage({
   onRefresh: () => void;
   onRebuild: (scope: 'global' | 'project') => void;
   onDelete: (scope: 'global' | 'project', entryId: string) => Promise<boolean>;
+  providers?: ProviderConfig[];
+  utilityModel?: ModelSelection;
+  onAcceptCandidate?: (id: string, edit?: MemoryCandidateReviewEdit) => Promise<void>;
+  onRejectCandidate?: (id: string) => Promise<void>;
 }) {
   const [selectedScopeId, setSelectedScopeId] = useState<string | null>(null);
   const update = (value: Partial<MemorySettings>) => onChange({ ...draft, ...value });
@@ -157,6 +214,9 @@ export function MemorySettingsPage({
     return () => window.removeEventListener('keydown', closeOnEscape);
   }, [selectedScopeId]);
   const selectedScope = status?.scopes.find((scope) => scope.id === selectedScopeId);
+  const suggestionProvider = providers.find((provider) => provider.id === draft.suggestions.providerId)
+    ?? providers.find((provider) => provider.id === utilityModel?.providerId)
+    ?? providers[0];
   return <form className={`settings-content model-settings-page memory-settings-page ${inactive ? 'is-disabled' : ''}`} aria-labelledby="memory-settings-title" onSubmit={(event) => {
     event.preventDefault();
     void onSave();
@@ -195,6 +255,68 @@ export function MemorySettingsPage({
           onChange={(projectEnabled) => update({ projectEnabled })}
         />
       </div>
+    </section>
+
+    <section className="settings-section-card memory-suggestions-settings">
+      <div className="settings-section-title">
+        <h2>Memory Suggestions</h2>
+        <p>仅在本地高价值信号命中后调用 Utility Model；建议不会自动写入 Memory。</p>
+      </div>
+      <SettingSwitch
+        id="memory-suggestions-label"
+        title="自动提炼待审阅建议"
+        description="默认关闭。每个 Operation 最多提取一次，候选不会进入 Snapshot 或正式检索。"
+        checked={draft.suggestions.enabled}
+        disabled={inactive}
+        onChange={(enabled) => update({ suggestions: {
+          ...draft.suggestions,
+          enabled,
+          ...(enabled && !draft.suggestions.providerId && utilityModel ? utilityModel : {})
+        } })}
+      />
+      <div className="settings-fields memory-fields">
+        <div className="settings-grid">
+          <label>Provider
+            <select disabled={inactive || !draft.suggestions.enabled} value={draft.suggestions.providerId ?? utilityModel?.providerId ?? ''} onChange={(event) => {
+              const provider = providers.find((item) => item.id === event.target.value);
+              update({ suggestions: { ...draft.suggestions, providerId: event.target.value, model: provider?.model ?? provider?.models[0] ?? '' } });
+            }}>
+              <option value="">未配置</option>{providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}
+            </select>
+          </label>
+          <label>Model
+            <select disabled={inactive || !draft.suggestions.enabled || !suggestionProvider} value={draft.suggestions.model ?? utilityModel?.model ?? ''} onChange={(event) => update({ suggestions: { ...draft.suggestions, model: event.target.value } })}>
+              <option value="">未配置</option>{suggestionProvider?.models.map((model) => <option key={model} value={model}>{model}</option>)}
+            </select>
+          </label>
+          <label>每回合最多候选
+            <input type="number" min="1" max="3" step="1" disabled={inactive || !draft.suggestions.enabled} value={draft.suggestions.maxPerTurn} onChange={(event) => update({ suggestions: { ...draft.suggestions, maxPerTurn: Number(event.target.value) } })} />
+          </label>
+          <label>Evidence 最大 tokens
+            <input type="number" min="256" max="3072" step="1" disabled={inactive || !draft.suggestions.enabled} value={draft.suggestions.evidenceMaxTokens} onChange={(event) => update({ suggestions: { ...draft.suggestions, evidenceMaxTokens: Number(event.target.value) } })} />
+          </label>
+          <label>最低 Eligibility 分数
+            <input type="number" min="0" max="200" step="1" disabled={inactive || !draft.suggestions.enabled} value={draft.suggestions.minEligibilityScore} onChange={(event) => update({ suggestions: { ...draft.suggestions, minEligibilityScore: Number(event.target.value) } })} />
+          </label>
+        </div>
+      </div>
+    </section>
+
+    <section className="settings-section-card memory-candidates-panel">
+      <div className="settings-section-title with-meta">
+        <div><h2>Pending Suggestions</h2><p>逐条接受、编辑或拒绝；没有批量接受入口。</p></div>
+        <span className="browser-status-pill">{status?.pendingCandidates?.length ?? 0} 条</span>
+      </div>
+      {status?.pendingCandidates?.length ? <div className="memory-candidate-list">
+        {status.pendingCandidates.map((candidate) => <MemoryCandidateCard
+          key={candidate.id}
+          candidate={candidate}
+          busy={busy}
+          canAccept={candidate.scope === 'global' || Boolean(workingDirectory)}
+          onAccept={onAcceptCandidate}
+          onReject={onRejectCandidate}
+        />)}
+      </div> : <p className="memory-config-scope-empty">暂无待审阅建议。</p>}
     </section>
 
     <section className="settings-section-card">

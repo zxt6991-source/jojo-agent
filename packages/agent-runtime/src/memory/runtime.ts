@@ -1,18 +1,42 @@
-import type { MemoryRecall, MemorySnapshot, ProjectIdentity } from '@desktop-agent/contracts';
+import type {
+  MemoryHandoff,
+  MemoryRecall,
+  MemorySnapshot,
+  MemoryWarning,
+  Message,
+  ProjectIdentity
+} from '@desktop-agent/contracts';
+
+export type MemoryToolEvent = {
+  toolCallId: string;
+  toolName: 'memory_write' | 'memory_forget' | 'memory_restore';
+  scope: 'global' | 'project';
+  entryId?: string;
+  result: 'success' | 'failed';
+};
 
 export type MemoryCompactInput = {
   sessionId: string;
   operationId: string;
-  snapshotId?: string;
-  scopeVersions?: Record<string, number>;
-  openTasks: string[];
-  decisions: string[];
-  memoryWrites: string[];
+  lane: string;
+  compactionOrdinal?: number;
+  currentSnapshotId: string;
+  projectIdentity?: ProjectIdentity;
+  messagesToSummarize: Message[];
+  retainedTail: Message[];
+  previousCompactionSummary?: string;
+  memoryToolEvents: MemoryToolEvent[];
+  currentSnapshotScopeVersions?: Record<string, number>;
+  runtimeOpenTasks?: string[];
+  runtimeDecisions?: string[];
+  signal: AbortSignal;
 };
 
 export type MemoryCompactResult = {
-  handoff?: { openTasks: string[]; decisions: string[]; memoryWrites: string[] };
+  handoff?: MemoryHandoff;
   refreshSnapshot: boolean;
+  currentScopeVersions?: Record<string, number>;
+  warnings?: MemoryWarning[];
 };
 
 export type MemoryTurnSettledInput = {
@@ -20,6 +44,9 @@ export type MemoryTurnSettledInput = {
   operationId: string;
   userText: string;
   assistantText?: string;
+  messages?: Message[];
+  projectIdentity?: ProjectIdentity;
+  signal?: AbortSignal;
 };
 
 export interface MemoryRuntime {
@@ -60,6 +87,8 @@ export class NoopMemoryRuntime implements MemoryRuntime {
     };
   }
   async recallTriggered(): Promise<MemoryRecall[]> { return []; }
-  async beforeCompact(): Promise<MemoryCompactResult> { return { refreshSnapshot: false }; }
+  async beforeCompact(): Promise<MemoryCompactResult> {
+    return { refreshSnapshot: false, currentScopeVersions: {} };
+  }
   async onTurnSettled(): Promise<void> {}
 }

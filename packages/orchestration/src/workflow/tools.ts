@@ -1,4 +1,4 @@
-import type { Tool, ToolResult, WorkflowRunSnapshot } from '@desktop-agent/contracts';
+import type { Tool, ToolResult, WorkflowMemoryBinding, WorkflowRunSnapshot } from '@desktop-agent/contracts';
 import { z } from 'zod';
 import { orchestrationErrorCode } from '../errors.js';
 import { WorkflowManager } from './manager.js';
@@ -18,7 +18,14 @@ const WaitInput = z.object({
 });
 const IdInput = z.object({ id: z.string().min(1) });
 
-export type WorkflowToolOptions = { providerId: string; model: string };
+export type WorkflowToolOptions = {
+  providerId: string;
+  model: string;
+  resolveMemoryBinding?: (input: {
+    sessionId: string;
+    workingDirectory: string;
+  }) => Promise<WorkflowMemoryBinding | undefined>;
+};
 
 function result(ok: boolean, content: unknown, code?: string): ToolResult {
   return { callId: '', ok, content: typeof content === 'string' ? content : JSON.stringify(content), ...(code ? { code } : {}) };
@@ -321,11 +328,16 @@ const definitionSchema = {
         const parsed = StartInput.safeParse(input);
         if (!parsed.success) return result(false, parsed.error.message, 'invalid_input');
         try {
+          const memory = await options.resolveMemoryBinding?.({
+            sessionId: context.sessionId,
+            workingDirectory: context.workingDirectory
+          });
           const workflow = manager.start({
             sessionId: context.sessionId,
             workingDirectory: context.workingDirectory,
             providerId: options.providerId,
             model: options.model,
+            ...(memory ? { memory } : {}),
             ...(parsed.data.args !== undefined ? { args: parsed.data.args } : {}),
             ...(parsed.data.definition !== undefined ? { definition: parsed.data.definition } : {}),
             ...(parsed.data.name !== undefined ? { name: parsed.data.name } : {})

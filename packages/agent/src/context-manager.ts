@@ -16,7 +16,12 @@ export type ContextPreparationOptions = {
   contextWindowTokens: number;
   maxOutputTokens: number;
   summarize?: (source: string, signal: AbortSignal) => Promise<string>;
-  beforeCompact?: (info: { estimatedTokens: number; messageCount: number }) => Promise<void>;
+  beforeCompact?: (info: {
+    estimatedTokens: number;
+    messageCount: number;
+    messagesToSummarize: Message[];
+    retainedTail: Message[];
+  }) => Promise<void>;
   signal: AbortSignal;
 };
 
@@ -306,7 +311,12 @@ export async function prepareModelContext(options: ContextPreparationOptions): P
     };
   }
 
-  await options.beforeCompact?.({ estimatedTokens: tokensBefore, messageCount: compacted.length });
+  await options.beforeCompact?.({
+    estimatedTokens: tokensBefore,
+    messageCount: compacted.length,
+    messagesToSummarize: structuredClone(compacted),
+    retainedTail: structuredClone(kept.flat())
+  });
 
   const source = sourceForSummary(compacted);
   let summary: string;

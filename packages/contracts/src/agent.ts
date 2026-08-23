@@ -64,6 +64,41 @@ export type AgentEvent =
   | { type: 'turn.completed'; stopReason: string }
   | { type: 'turn.cancelled' }
   | { type: 'turn.failed'; code: string; message: string }
+  | {
+      type: 'memory.lifecycle';
+      event:
+        | 'memory.handoff.started'
+        | 'memory.handoff.completed'
+        | 'memory.handoff.reused'
+        | 'memory.handoff.failed'
+        | 'memory.snapshot.refresh.requested'
+        | 'memory.snapshot.refreshed'
+        | 'memory.snapshot.refresh.failed'
+        | 'memory.subagent.bound'
+        | 'memory.workflow.bound'
+        | 'memory.workflow.binding.restored';
+      handoffId?: string;
+      snapshotId?: string;
+      previousSnapshotId?: string;
+      warning?: string;
+    }
+  | {
+      type: 'memory.candidate';
+      event:
+        | 'memory.candidate.eligibility_matched'
+        | 'memory.candidate.extraction_started'
+        | 'memory.candidate.created'
+        | 'memory.candidate.deduplicated'
+        | 'memory.candidate.rejected'
+        | 'memory.candidate.expired'
+        | 'memory.candidate.accept.requested'
+        | 'memory.candidate.accepted'
+        | 'memory.candidate.write_failed';
+      operationId?: string;
+      candidateId?: string;
+      count?: number;
+      warning?: string;
+    }
   | { type: 'hook.started'; eventId: string; hookId: string; hookEvent: HookEventName }
   | {
       type: 'hook.finished'; eventId: string; hookId: string; durationMs: number;

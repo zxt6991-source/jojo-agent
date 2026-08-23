@@ -14,7 +14,9 @@ import type { SavedWorkflowRegistry } from './saved/registry.js';
 import type { SavedWorkflowSummary } from './saved/types.js';
 import type { WorkflowExecutionRequest, WorkflowStartRequest } from './types.js';
 
-const TERMINAL_STATES = new Set<WorkflowRunState>(['completed', 'failed', 'cancelled', 'timed_out', 'interrupted']);
+const TERMINAL_STATES = new Set<WorkflowRunState>([
+  'completed', 'failed', 'cancelled', 'timed_out', 'interrupted', 'suspended'
+]);
 const MAX_SERIALIZED_DEFINITION_CHARACTERS = 120_000;
 
 type LiveWorkflow = {
@@ -36,12 +38,14 @@ export type WorkflowManagerOptions = {
   retention?: number;
   persistence?: WorkflowPersistence;
   savedWorkflows?: SavedWorkflowRegistry;
+  memorySnapshotExists?: (snapshotId: string) => Promise<boolean>;
 };
 
 function cloneSnapshot(snapshot: WorkflowRunSnapshot): WorkflowRunSnapshot {
   return {
     ...snapshot,
     ...(snapshot.budget ? { budget: { ...snapshot.budget } } : {}),
+    ...(snapshot.memory ? { memory: structuredClone(snapshot.memory) } : {}),
     usage: { ...snapshot.usage },
     steps: snapshot.steps.map((step) => ({
       ...step,
@@ -86,6 +90,7 @@ export class WorkflowManager {
   private readonly retention: number;
   private readonly persistence: WorkflowPersistence | undefined;
   private readonly savedWorkflows: SavedWorkflowRegistry | undefined;
+  private readonly memorySnapshotExists: WorkflowManagerOptions['memorySnapshotExists'];
 
   constructor(
     private readonly engine: WorkflowEngine,
@@ -96,6 +101,7 @@ export class WorkflowManager {
     this.retention = options.retention ?? 32;
     this.persistence = options.persistence;
     this.savedWorkflows = options.savedWorkflows;
+    this.memorySnapshotExists = options.memorySnapshotExists;
   }
 
   start(input: WorkflowStartRequest): WorkflowRunSnapshot {
@@ -115,6 +121,7 @@ export class WorkflowManager {
       model: input.model,
       args,
       definition: materialized,
+      ...(input.memory ? { memory: structuredClone(input.memory) } : {}),
       createdAt: new Date().toISOString()
     };
     let resolveDone: () => void = () => undefined;
@@ -144,7 +151,20 @@ export class WorkflowManager {
       if (this.workflows.has(persisted.snapshot.id)) continue;
       const previous = persisted.snapshot;
       let snapshot = previous;
-      if (!TERMINAL_STATES.has(previous.state)) {
+      const memoryMissing = Boolean(previous.memory && this.memorySnapshotExists
+        && !await this.memorySnapshotExists(previous.memory.memorySnapshotId));
+      if (memoryMissing) {
+        snapshot = {
+          ...previous,
+          state: 'suspended',
+          revision: previous.revision + 1,
+          finishedAt: new Date().toISOString(),
+          incomplete: true,
+          error: `Frozen Memory snapshot is missing: ${previous.memory!.memorySnapshotId}`,
+          errorCode: 'workflow_memory_snapshot_missing'
+        };
+        await this.persistence.appendTransition(previous, snapshot);
+      } else if (!TERMINAL_STATES.has(previous.state)) {
         snapshot = {
           ...previous,
           state: 'interrupted',
@@ -159,8 +179,18 @@ export class WorkflowManager {
         };
         await this.persistence.appendTransition(previous, snapshot);
       }
+      const { memory: persistedMemory, ...persistedRequest } = persisted.request;
       const live: LiveWorkflow = {
-        request: persisted.request,
+        request: {
+          ...persistedRequest,
+          ...(persistedMemory ? { memory: {
+            memorySnapshotId: persistedMemory.memorySnapshotId,
+            contentHash: persistedMemory.contentHash,
+            scopeVersions: persistedMemory.scopeVersions,
+            createdAt: persistedMemory.createdAt,
+            ...(persistedMemory.projectIdentity ? { projectIdentity: persistedMemory.projectIdentity } : {})
+          } } : {})
+        },
         snapshot,
         controller: undefined,
         done: Promise.resolve(),

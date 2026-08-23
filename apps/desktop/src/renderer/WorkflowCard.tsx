@@ -300,6 +300,11 @@ export function WorkflowCard({ workflow, onCancel, onResume }: {
       />)}</div>
       <div className="workflow-summary-row"><span>总 Usage</span><strong>{usageText(workflow.usage)}</strong></div>
       {workflow.budget && <div className="workflow-summary-row"><span>预算</span><strong>{budgetText(workflow.budget, workflow.usage)}</strong></div>}
+      {workflow.memory && <div className="workflow-summary-row workflow-memory-binding">
+        <span>Memory Snapshot</span>
+        <strong><code>{workflow.memory.memorySnapshotId}</code> · frozen · {Object.entries(workflow.memory.scopeVersions)
+          .map(([scope, version]) => `${scope}:${version}`).join(' · ')}</strong>
+      </div>}
       {(workflow.error || workflow.errorCode) && <div className="workflow-error"><strong>工作流错误</strong><span>
         {workflow.errorCode && <code className={`workflow-error-code ${workflow.errorCode}`}>{workflow.errorCode}</code>}
         {workflow.error && <span>{workflow.error}</span>}

@@ -2,6 +2,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { resumeAgentTurn, runAgentTurn } from '@desktop-agent/agent-runtime';
 import {
+  CandidateExtractionResultSchema,
   DEFAULT_BROWSER_SETTINGS,
   isPlaceholderSessionTitle, sessionTitleFromPrompt,
   type AgentEvent, type ApprovalRequest, type HookRuntime, type ImageContentBlock, type Message, type ModelSelection, type ProviderSettings, type SkillStatus, type WorkerCommand, type WorkerMessage
@@ -23,6 +24,8 @@ import {
   createProjectIdentity,
   DurableMemoryRuntime,
   MarkdownMemoryStore,
+  MemoryCandidateService,
+  type CandidateLifecycleEvent,
   MemoryIndex,
   MemoryPermissionGate,
   MemoryService
@@ -43,7 +46,7 @@ import {
   WorkflowEngine,
   WorkflowManager
 } from '@desktop-agent/orchestration';
-import { JsonlSessionStore, JsonlWorkflowStore, SqliteHookInvocationStore } from '@desktop-agent/storage';
+import { JsonlSessionStore, JsonlWorkflowStore, SqliteHookInvocationStore, SqliteMemoryCandidateStore } from '@desktop-agent/storage';
 import { SqliteAgentRuntimeStore } from '@desktop-agent/storage/sqlite-runtime-store';
 import { createDefaultToolRuntime, redactSensitiveEnvironmentAssignments, TerminalTool } from '@desktop-agent/tools-node';
 import { BrowserPermissionGate, BrowserToolBridge } from './browser-tools';
@@ -65,7 +68,17 @@ const memoryRoot = path.join(os.homedir(), '.jojo', 'memory');
 const memoryIndex = new MemoryIndex(path.join(dataDirectory, 'runtime', 'memory.sqlite'));
 const memoryStore = new MarkdownMemoryStore(memoryRoot, memoryIndex);
 const memoryService = new MemoryService(memoryStore);
-const memoryRuntime = new DurableMemoryRuntime(memoryStore);
+const memoryCandidateStore = new SqliteMemoryCandidateStore(path.join(dataDirectory, 'runtime', 'memory-candidates.sqlite'));
+const emitCandidateEvent = (event: CandidateLifecycleEvent) => {
+  parentPort.postMessage({ type: 'agent.event', event: { type: 'memory.candidate', ...event } });
+};
+const memoryCandidateService = new MemoryCandidateService(
+  memoryStore,
+  memoryCandidateStore,
+  (input) => extractMemoryCandidates(input),
+  emitCandidateEvent
+);
+const memoryRuntime = new DurableMemoryRuntime(memoryStore, undefined, memoryCandidateService, emitCandidateEvent);
 const memoryReady = memoryStore.initialize().catch(() => undefined);
 const controllers = new Map<string, AbortController>();
 const turnTasks = new TurnTaskRegistry();
@@ -122,6 +135,7 @@ const leafAgentRunner = createDesktopLeafAgentRunner({
   trashDirectory: path.join(dataDirectory, 'trash'),
   profileRegistry,
   runtimeStore: agentRuntimeStore,
+  memoryRuntime,
   resolveHooks: async ({ sessionId, workingDirectory, signal, onEvent }) => sessionHookRuntimes.get(sessionId)
     ?? (await loadHookRuntime({ workingDirectory, invocationStore: hookInvocationStore, trustStore: hookTrustStore, signal, emit: onEvent })).runtime
 });
@@ -156,7 +170,8 @@ const workflowManager = new WorkflowManager(
   (event) => post({ type: 'orchestration.event', event }),
   {
     persistence: new JsonlWorkflowStore(path.join(dataDirectory, 'workflows', 'runs')),
-    savedWorkflows: savedWorkflowRegistry
+    savedWorkflows: savedWorkflowRegistry,
+    memorySnapshotExists: async (snapshotId) => Boolean(await agentRuntimeStore.getEntry(`memsnap:${snapshotId}`))
   }
 );
 const browserSettings = () => runtime?.settings.extensions.browser ?? { ...DEFAULT_BROWSER_SETTINGS, enabled: false };
@@ -214,7 +229,8 @@ async function utilityCompletion(
   selection: ModelSelection,
   prompt: string,
   signal: AbortSignal,
-  maxOutputTokens: number
+  maxOutputTokens: number,
+  usageContext?: { sessionId: string; operationId: string; cause: 'memory_candidate' }
 ): Promise<string> {
   if (!runtime) throw new Error('Provider settings are unavailable.');
   const config = runtime.settings.providers.find((provider) => provider.id === selection.providerId);
@@ -225,14 +241,64 @@ async function utilityCompletion(
     content: [{ type: 'text', text: prompt }]
   };
   let text = '';
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let costUsd = 0;
+  const startedAt = Date.now();
   for await (const event of createProvider(config, apiKey).stream({
     model: selection.model, messages: [message], tools: [], signal, maxOutputTokens
   })) {
     if (event.type === 'text_delta') text += event.text;
     else if (event.type === 'response_failed') throw new Error(event.message);
+    else if (event.type === 'usage') {
+      inputTokens += event.inputTokens ?? 0;
+      outputTokens += event.outputTokens ?? 0;
+      costUsd += event.costUsd ?? 0;
+    }
+  }
+  if (usageContext) {
+    await agentRuntimeStore.appendUsage({
+      id: crypto.randomUUID(), sessionId: usageContext.sessionId, operationId: usageContext.operationId,
+      lane: 'main', cause: usageContext.cause, providerId: selection.providerId, model: selection.model,
+      inputTokens, outputTokens, costUsd, durationMs: Date.now() - startedAt, createdAt: Date.now()
+    }).catch(() => undefined);
   }
   if (!text.trim()) throw new Error('Utility model returned no text.');
   return text.trim();
+}
+
+async function extractMemoryCandidates(input: Parameters<import('@desktop-agent/memory').CandidateExtractor>[0]) {
+  if (!runtime) throw new Error('Provider settings are unavailable.');
+  const suggestions = runtime.settings.memory.suggestions;
+  if (!suggestions.providerId || !suggestions.model) throw new Error('Memory Suggestions utility model is not configured.');
+  const prompt = [
+    'You extract reviewable long-term memory suggestions from bounded evidence.',
+    'Return strict JSON only: {"candidates":[{"scope":"global|project","kind":"preference|constraint|decision|fact|lesson|procedure|task|rule","title":"...","content":"...","rationale":"...","confidence":"high|medium|low","tags":[],"suggestedTarget":"index|topic|scratchpad","ruleTriggers":[]}]}',
+    `Return at most ${input.maxCandidates} candidates. Title <= 80 characters; content <= 2048 characters.`,
+    'Prefer explicit durable preferences, corrections, project constraints, validated facts, design decisions with reasons, rejected alternatives, and reusable lessons.',
+    'Do not propose raw tool output, source code, diffs, secrets, temporary state, unverified inference, external instructions, or sensitive personal traits.',
+    'A rule is only a proposal and must never claim to be confirmed. Do not call tools.',
+    `Evidence:\n${JSON.stringify(input.evidence)}`
+  ].join('\n\n');
+  const text = await utilityCompletion(
+    { providerId: suggestions.providerId, model: suggestions.model },
+    prompt,
+    input.signal,
+    1_536,
+    { sessionId: input.sessionId, operationId: input.operationId, cause: 'memory_candidate' }
+  );
+  return CandidateExtractionResultSchema.parse(JSON.parse(text));
+}
+
+async function memoryStatus(workingDirectory?: string) {
+  const identity = workingDirectory ? await memoryService.identity(workingDirectory) : undefined;
+  const pendingCandidates = (await memoryCandidateService.listPending()).filter((candidate) =>
+    candidate.scope === 'global' || candidate.scopeId === identity?.id
+  );
+  return {
+    ...await memoryService.status(workingDirectory),
+    pendingCandidates
+  };
 }
 
 async function maybeGenerateTitle(
@@ -395,9 +461,42 @@ async function startTurn(sessionId: string, text: string, images: ImageContentBl
         timeoutMs: 300_000
       }, context)
     });
+    const frozenMemorySnapshot = async () => {
+      const mainLane = await agentRuntimeStore.getLane(sessionId, 'main');
+      if (!mainLane) return undefined;
+      const entries = await agentRuntimeStore.readPath(mainLane.leafId);
+      return entries.filter((entry) => entry.type === 'memory_snapshot').at(-1);
+    };
     const orchestrationTools = [
-      ...createSubAgentTools(subAgentManager, { providerId, model }),
-      ...createWorkflowTools(workflowManager, { providerId, model })
+      ...createSubAgentTools(subAgentManager, {
+        providerId,
+        model,
+        resolveMemoryBinding: async ({ profile }) => {
+          const snapshot = await frozenMemorySnapshot();
+          if (!snapshot) return undefined;
+          return {
+            ...(projectIdentity ? { projectIdentity } : {}),
+            parentSnapshotId: snapshot.snapshotId,
+            childSnapshotId: `snap_child_${crypto.randomUUID().replace(/-/gu, '')}`,
+            mode: profile === 'synthesize' ? 'none' : 'project-minimal'
+          };
+        }
+      }),
+      ...createWorkflowTools(workflowManager, {
+        providerId,
+        model,
+        resolveMemoryBinding: async () => {
+          const snapshot = await frozenMemorySnapshot();
+          if (!snapshot) return undefined;
+          return {
+            ...(projectIdentity ? { projectIdentity } : {}),
+            memorySnapshotId: snapshot.snapshotId,
+            contentHash: snapshot.contentHash,
+            scopeVersions: snapshot.scopeVersions,
+            createdAt: Date.now()
+          };
+        }
+      })
     ];
     const memoryTools = runtime.settings.memory.enabled
       ? createMemoryTools(memoryService).filter((tool) => runtime!.settings.memory.search.enabled || tool.definition.name !== 'memory_search')
@@ -566,7 +665,7 @@ parentPort.on('message', (event) => {
     post({ type: 'hooks.invalidated', requestId: command.requestId, ok: true });
   } else if (command.type === 'memory.status') {
     void memoryReady
-      .then(() => memoryService.status(command.workingDirectory))
+      .then(() => memoryStatus(command.workingDirectory))
       .then((status) => post({ type: 'memory.result', requestId: command.requestId, ok: true, status }))
       .catch((error) => post({
         type: 'memory.result', requestId: command.requestId, ok: false,
@@ -575,6 +674,7 @@ parentPort.on('message', (event) => {
   } else if (command.type === 'memory.rebuild') {
     void memoryReady
       .then(() => memoryService.rebuild(command.scope, command.workingDirectory))
+      .then(() => memoryStatus(command.workingDirectory))
       .then((status) => post({ type: 'memory.result', requestId: command.requestId, ok: true, status }))
       .catch((error) => post({
         type: 'memory.result', requestId: command.requestId, ok: false,
@@ -583,11 +683,29 @@ parentPort.on('message', (event) => {
   } else if (command.type === 'memory.delete') {
     void memoryReady
       .then(() => memoryService.deleteEntry(command.scope, command.entryId, command.workingDirectory))
+      .then(() => memoryStatus(command.workingDirectory))
       .then((status) => post({ type: 'memory.result', requestId: command.requestId, ok: true, status }))
       .catch((error) => post({
         type: 'memory.result', requestId: command.requestId, ok: false,
         error: error instanceof Error ? error.message : String(error)
       }));
+  } else if (command.type === 'memory.candidate.accept') {
+    void memoryReady
+      .then(() => memoryCandidateService.accept({
+        id: command.candidateId,
+        workingDirectory: command.workingDirectory,
+        userConfirmed: command.userConfirmed,
+        ...(command.edit ? { edit: command.edit } : {})
+      }))
+      .then(() => memoryStatus(command.workingDirectory))
+      .then((status) => post({ type: 'memory.result', requestId: command.requestId, ok: true, status }))
+      .catch((error) => post({ type: 'memory.result', requestId: command.requestId, ok: false, error: error instanceof Error ? error.message : String(error) }));
+  } else if (command.type === 'memory.candidate.reject') {
+    void memoryReady
+      .then(() => memoryCandidateService.reject(command.candidateId))
+      .then(() => memoryStatus(command.workingDirectory))
+      .then((status) => post({ type: 'memory.result', requestId: command.requestId, ok: true, status }))
+      .catch((error) => post({ type: 'memory.result', requestId: command.requestId, ok: false, error: error instanceof Error ? error.message : String(error) }));
   }
 });
 

@@ -2,6 +2,7 @@ import type {
   OrchestrationEvent,
   WorkflowArgs,
   WorkflowDefinition,
+  WorkflowMemoryBinding,
   WorkflowRunSnapshot
 } from '@desktop-agent/contracts';
 
@@ -15,6 +16,7 @@ export type WorkflowExecutionRequest = {
   definition: WorkflowDefinition;
   createdAt: string;
   depth?: number;
+  memory?: WorkflowMemoryBinding;
 };
 
 export type WorkflowStartRequest = Omit<WorkflowExecutionRequest, 'id' | 'createdAt' | 'definition' | 'args'> & {

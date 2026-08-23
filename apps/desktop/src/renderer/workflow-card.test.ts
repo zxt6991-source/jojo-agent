@@ -12,6 +12,10 @@ describe('WorkflowCard', () => {
       createdAt, startedAt: createdAt, usage: {
         inputTokens: 1, outputTokens: 2, cacheReadInputTokens: 0, cacheWriteInputTokens: 0
       },
+      memory: {
+        memorySnapshotId: 'snap_frozen', contentHash: 'hash',
+        scopeVersions: { global: 2, prj_test: 5 }, createdAt: Date.parse(createdAt)
+      },
       steps: Array.from({ length: 32 }, (_, index) => ({
         id: `step_${index + 1}`,
         ...(index === 0 ? { profile: 'code-review', model: 'review-model' } : {}),
@@ -53,6 +57,9 @@ describe('WorkflowCard', () => {
     expect(html).toContain('jojo/edit-abc');
     expect(html).toContain('待审查');
     expect(html).toContain('不自动合并');
+    expect(html).toContain('Memory Snapshot');
+    expect(html).toContain('snap_frozen');
+    expect(html).toContain('frozen');
     expect(html.match(/class="workflow-step /gu)).toHaveLength(32);
   });
 

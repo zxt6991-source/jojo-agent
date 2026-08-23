@@ -45,7 +45,7 @@ export function workflowsByConversationTurn(
 export function workflowStateLabel(state: WorkflowRunState): string {
   return {
     running: '运行中', completed: '已完成', failed: '失败', cancelled: '已取消',
-    timed_out: '已超时', interrupted: '已中断'
+    timed_out: '已超时', interrupted: '已中断', suspended: '待人工恢复'
   }[state];
 }
 

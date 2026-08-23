@@ -16,6 +16,13 @@ describe('MemorySettingsPage', () => {
         scopes: [{
           id: 'global', kind: 'global', displayName: 'Global', version: 3,
           directory: '/tmp/memory/global', contentHash: 'abc', dirty: false, entryCount: 7, warningCount: 0, entries: []
+        }],
+        pendingCandidates: [{
+          id: 'memcand_1', sessionId: 'session-1', operationId: 'operation-1', scopeId: 'global',
+          scope: 'global', kind: 'decision', title: 'Use node:sqlite', content: 'Use node:sqlite for Memory.',
+          rationale: 'Avoid another native binding.', confidence: 'high', tags: [], suggestedTarget: 'index',
+          state: 'pending', fingerprint: 'a'.repeat(64), provenance: [{ source: 'user', verified: true }],
+          suggestedMutation: { type: 'create' }, createdAt: 1_000, expiresAt: Date.now() + 1_000
         }]
       },
       error: '',
@@ -34,6 +41,10 @@ describe('MemorySettingsPage', () => {
     expect(html).toContain('7 条 · v3');
     expect(html).toContain('保存 Memory 设置');
     expect(html).toContain('查看配置');
+    expect(html).toContain('Pending Suggestions');
+    expect(html).toContain('Use node:sqlite');
+    expect(html).toContain('接受');
+    expect(html).not.toContain('Accept All');
   });
 
   it('shows the saved configuration and unsaved-change warning', () => {

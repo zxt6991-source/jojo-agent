@@ -1,7 +1,7 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import type {
-  AgentEvent, ApprovalRequest, BrowserDockState, ExtensionSettings, ExtensionStatus, HookSettingsSnapshot, ImageContentBlock, MemorySettings, MemoryStatusSnapshot, Message, ProviderConfig, ProviderSettings, SessionCompactionRecord, SessionMeta, SkillDetail, SkillStatus, WorkflowRunSnapshot, WorkspaceChanges
+  AgentEvent, ApprovalRequest, BrowserDockState, ExtensionSettings, ExtensionStatus, HookSettingsSnapshot, ImageContentBlock, MemoryCandidateReviewEdit, MemorySettings, MemoryStatusSnapshot, Message, ProviderConfig, ProviderSettings, SessionCompactionRecord, SessionMeta, SkillDetail, SkillStatus, WorkflowRunSnapshot, WorkspaceChanges
 } from '@desktop-agent/contracts';
 import { DEFAULT_BROWSER_SETTINGS, DEFAULT_MEMORY_SETTINGS, DEFAULT_PROVIDERS, DEFAULT_SESSION_TITLE, projectNameFromDirectory } from '@desktop-agent/contracts';
 import {
@@ -605,6 +605,35 @@ function App() {
     }
   };
 
+  const acceptMemoryCandidate = async (candidateId: string, edit?: MemoryCandidateReviewEdit): Promise<void> => {
+    setMemoryBusy(true);
+    setMemoryError('');
+    try {
+      setMemoryStatus(await window.desktopAgent.acceptMemoryCandidate({
+        candidateId,
+        userConfirmed: true,
+        ...memoryDirectoryInput(),
+        ...(edit ? { edit } : {})
+      }));
+    } catch (cause) {
+      setMemoryError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setMemoryBusy(false);
+    }
+  };
+
+  const rejectMemoryCandidate = async (candidateId: string): Promise<void> => {
+    setMemoryBusy(true);
+    setMemoryError('');
+    try {
+      setMemoryStatus(await window.desktopAgent.rejectMemoryCandidate({ candidateId, ...memoryDirectoryInput() }));
+    } catch (cause) {
+      setMemoryError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setMemoryBusy(false);
+    }
+  };
+
   const saveExtensionDraft = async (): Promise<ExtensionSettings> => {
     let mcpServers = extensionDraft.mcpServers;
     if (settingsSection === 'mcp') {
@@ -717,6 +746,9 @@ function App() {
         maxIterations: event.maxIterations ?? 0,
         finalResponseOnly: event.finalResponseOnly === true
       });
+      else if (event.type === 'memory.candidate' && event.event === 'memory.candidate.created') {
+        void window.desktopAgent.getMemoryStatus(memoryDirectoryInput()).then(setMemoryStatus).catch(() => undefined);
+      }
       else if (event.type === 'turn.failed') { setError(event.message); runningRef.current = false; setRunningSessionId(null); setTurnStartedAt(null); setApproval(null); void reloadActive(); }
       else if (event.type === 'turn.completed' || event.type === 'turn.cancelled') { runningRef.current = false; setRunningSessionId(null); setTurnStartedAt(null); setApproval(null); void reloadActive(); }
     });
@@ -1349,6 +1381,10 @@ function App() {
       onRefresh={() => { void refreshMemoryStatus(); }}
       onRebuild={(scope) => { void rebuildMemoryIndex(scope); }}
       onDelete={deleteMemoryEntry}
+      providers={settings.providers}
+      utilityModel={settings.utilityModel}
+      onAcceptCandidate={acceptMemoryCandidate}
+      onRejectCandidate={rejectMemoryCandidate}
       onSave={async () => {
         setMemoryBusy(true);
         setMemoryError('');

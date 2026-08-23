@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  ApprovalInputSchema, BindSessionProjectInputSchema, BrowserDockActionSchema, BrowserDockLayoutSchema, CreateSessionInputSchema, CreateSkillInputSchema, DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS, DEFAULT_MODEL_MAX_OUTPUT_TOKENS, DeleteMemoryEntryInputSchema, GetExtensionStatusInputSchema, GetHookStatusInputSchema, GetMemoryStatusInputSchema, HookProjectActionInputSchema, ImportSkillInputSchema, IPC, ListModelsInputSchema, MAX_IMAGE_ATTACHMENTS, MAX_IMAGE_BYTES, McpServerIdInputSchema, OpenHookConfigInputSchema, RebuildMemoryIndexInputSchema, RenameSessionInputSchema, SaveExtensionSettingsInputSchema, SaveMemorySettingsInputSchema, SaveSettingsInputSchema,
+  AcceptMemoryCandidateInputSchema, ApprovalInputSchema, BindSessionProjectInputSchema, BrowserDockActionSchema, BrowserDockLayoutSchema, CreateSessionInputSchema, CreateSkillInputSchema, DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS, DEFAULT_MODEL_MAX_OUTPUT_TOKENS, DeleteMemoryEntryInputSchema, GetExtensionStatusInputSchema, GetHookStatusInputSchema, GetMemoryStatusInputSchema, HookProjectActionInputSchema, ImportSkillInputSchema, IPC, ListModelsInputSchema, MAX_IMAGE_ATTACHMENTS, MAX_IMAGE_BYTES, McpServerIdInputSchema, OpenHookConfigInputSchema, RebuildMemoryIndexInputSchema, RejectMemoryCandidateInputSchema, RenameSessionInputSchema, SaveExtensionSettingsInputSchema, SaveMemorySettingsInputSchema, SaveSettingsInputSchema,
   SessionIdInputSchema, SkillPathInputSchema, StartTurnInputSchema, UpdateSkillInputSchema, WorkflowRunActionInputSchema,
   type ExtensionStatus, type MemoryStatusSnapshot, type ProviderSettings, type SessionCompactionRecord, type WorkerCommand, type WorkerMessage, type WorkflowRunSnapshot
 } from '@desktop-agent/contracts';
@@ -159,7 +159,7 @@ function finishWorkerRequest(requestId: string, error?: Error): void {
   if (error) request.reject(error); else request.resolve();
 }
 
-function requestMemoryStatus(command: Extract<WorkerCommand, { type: 'memory.status' | 'memory.rebuild' | 'memory.delete' }>): Promise<MemoryStatusSnapshot> {
+function requestMemoryStatus(command: Extract<WorkerCommand, { type: 'memory.status' | 'memory.rebuild' | 'memory.delete' | 'memory.candidate.accept' | 'memory.candidate.reject' }>): Promise<MemoryStatusSnapshot> {
   if (!worker) return Promise.reject(new Error('Agent runtime is not available.'));
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -741,6 +741,30 @@ function registerIpc(): void {
       type: 'memory.delete',
       scope: input.scope,
       entryId: input.entryId,
+      ...(input.workingDirectory ? { workingDirectory: input.workingDirectory } : {})
+    });
+  });
+  ipcMain.handle(IPC.acceptMemoryCandidate, async (event, raw) => {
+    assertTrusted(event);
+    const input = AcceptMemoryCandidateInputSchema.parse(raw);
+    const requestId = crypto.randomUUID();
+    return requestMemoryStatus({
+      requestId,
+      type: 'memory.candidate.accept',
+      candidateId: input.candidateId,
+      userConfirmed: true,
+      ...(input.workingDirectory ? { workingDirectory: input.workingDirectory } : {}),
+      ...(input.edit ? { edit: input.edit } : {})
+    });
+  });
+  ipcMain.handle(IPC.rejectMemoryCandidate, async (event, raw) => {
+    assertTrusted(event);
+    const input = RejectMemoryCandidateInputSchema.parse(raw);
+    const requestId = crypto.randomUUID();
+    return requestMemoryStatus({
+      requestId,
+      type: 'memory.candidate.reject',
+      candidateId: input.candidateId,
       ...(input.workingDirectory ? { workingDirectory: input.workingDirectory } : {})
     });
   });

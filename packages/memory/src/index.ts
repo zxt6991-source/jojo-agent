@@ -1,5 +1,18 @@
 export { createProjectIdentity, projectScopeDirectoryName } from './identity.js';
 export { DurableMemoryRuntime } from './runtime.js';
+export { evaluateCandidateEligibility } from './candidates/eligibility.js';
+export { buildCandidateEvidence, redactCandidateText, summarizeTurnTools } from './candidates/evidence.js';
+export {
+  candidateFingerprint,
+  MemoryCandidateService,
+  type CandidateAcceptInput,
+  type CandidateExtractor,
+  type CandidateLifecycleEvent,
+  type MemoryCandidateStore
+} from './candidates/service.js';
+export { buildMemoryHandoff, memoryHandoffId } from './compaction/handoff.js';
+export { extractMemoryToolHandoff, extractScratchpadHandoff, runtimeItems } from './compaction/extractor.js';
+export { evaluateSnapshotRefresh } from './compaction/refresh-policy.js';
 export { MemoryIndex } from './recall/index.js';
 export { matchTriggeredRules } from './recall/trigger-matcher.js';
 export { buildMemorySnapshot } from './snapshot/builder.js';

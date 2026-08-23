@@ -12,6 +12,7 @@ import {
   IPC,
   ListModelsInputSchema,
   MessageSchema,
+  MemorySettingsSchema,
   ProviderSettingsSchema,
   ExtensionSettingsSchema,
   SaveSettingsInputSchema,
@@ -61,6 +62,13 @@ describe('contracts', () => {
       utilityModel: { providerId: 'custom', model: 'model' }
     })).toMatchObject({ activeProviderId: 'custom', provider: { model: 'model' } });
     expect(() => SaveSettingsInputSchema.parse({})).toThrow();
+  });
+
+  it('keeps suggestions disabled by default and migrates the legacy zero candidate limit', () => {
+    expect(DEFAULT_MEMORY_SETTINGS.suggestions).toMatchObject({
+      enabled: false, maxPerTurn: 3, evidenceMaxTokens: 2_048, minEligibilityScore: 30
+    });
+    expect(MemorySettingsSchema.parse({ suggestions: { enabled: false, maxPerTurn: 0 } }).suggestions.maxPerTurn).toBe(3);
   });
 
   it('validates MCP transports and rejects duplicate server ids', () => {

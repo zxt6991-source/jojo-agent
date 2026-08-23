@@ -48,6 +48,7 @@ export type SubAgentManagerOptions = {
 function copySnapshot(snapshot: SubAgentSnapshot): SubAgentSnapshot {
   return {
     ...snapshot,
+    ...(snapshot.memory ? { memory: structuredClone(snapshot.memory) } : {}),
     ...(snapshot.structuredResult !== undefined ? { structuredResult: structuredClone(snapshot.structuredResult) } : {}),
     ...(snapshot.isolation ? { isolation: copyIsolationSnapshot(snapshot.isolation) } : {}),
     usage: { ...snapshot.usage },
@@ -142,6 +143,7 @@ export class SubAgentManager {
         usage: emptyUsage(),
         incomplete: false,
         ...(effectiveRequest.resources ? { resourceGroup: effectiveRequest.resources.group } : {}),
+        ...(effectiveRequest.memoryBinding ? { memory: structuredClone(effectiveRequest.memoryBinding) } : {}),
         rounds: [{ index: 1, input: request.task, usage: emptyUsage(), incomplete: false }]
       },
       request: effectiveRequest,
@@ -343,6 +345,7 @@ export class SubAgentManager {
             timeoutMs: request.timeoutMs,
             continuable: true,
             runtimeLane: { name: `agent:${live.snapshot.id}`, parentLane: 'main' },
+            ...(request.memoryBinding ? { memoryBinding: request.memoryBinding } : {}),
             ...(live.hooks ? { hooks: live.hooks } : {}),
             ...(request.tools ? { tools: request.tools } : {}),
             ...(request.readOnly !== undefined ? { readOnly: request.readOnly } : {}),

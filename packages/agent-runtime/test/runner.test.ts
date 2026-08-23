@@ -453,4 +453,68 @@ describe('runtime runner', () => {
     const lane = await store.getLane('session-1', 'main');
     expect((await store.readPath(lane?.leafId ?? null)).filter((entry) => entry.type === 'memory_snapshot')).toHaveLength(1);
   });
+
+  it('persists the M4 handoff and refreshes ambient Memory before a compaction request', async () => {
+    const store = new MemoryAgentRuntimeStore();
+    const snapshot = vi.fn()
+      .mockResolvedValueOnce({
+        id: 'snapshot-old', version: 1, scope: { globalScopeId: 'global' as const },
+        content: 'old memory', sourceEntryIds: ['mem-old'], scopeVersions: { global: 1 },
+        estimatedTokens: 3, contentHash: 'old-hash'
+      })
+      .mockResolvedValueOnce({
+        id: 'snapshot-new', version: 2, scope: { globalScopeId: 'global' as const },
+        content: 'refreshed memory', sourceEntryIds: ['mem-new'], scopeVersions: { global: 2 },
+        estimatedTokens: 4, contentHash: 'new-hash'
+      });
+    const beforeCompact = vi.fn<MemoryRuntime['beforeCompact']>(async () => ({
+      handoff: {
+        id: 'mhf_test', sessionId: 'session-1', operationId: 'memory-compact-op',
+        openTasks: [{ text: 'finish tests', source: 'runtime' }],
+        decisions: [], memoryWrites: [], createdAt: 1, contentHash: 'handoff-hash'
+      },
+      refreshSnapshot: true,
+      currentScopeVersions: { global: 2 }
+    }));
+    const memoryRuntime: MemoryRuntime = {
+      snapshot,
+      recallTriggered: async () => [],
+      beforeCompact,
+      onTurnSettled: async () => undefined
+    };
+    const requests: ModelRequest[] = [];
+    const provider: ModelProvider = {
+      async *stream(request) {
+        requests.push(request);
+        yield { type: 'text_delta', text: 'done' };
+        yield { type: 'response_completed', stopReason: 'stop' };
+      }
+    };
+    const old: Message = {
+      id: 'memory-old-message', role: 'user', createdAt: '2026-08-23T00:00:00.000Z',
+      content: [{ type: 'text', text: 'old context '.repeat(2_000) }]
+    };
+    await runAgentTurn(options(provider, {
+      runtimeStore: store,
+      operationId: 'memory-compact-op',
+      history: [old],
+      tools: [],
+      memoryRuntime,
+      contextWindowTokens: 2_048,
+      maxOutputTokens: 256,
+      summarize: async () => 'summary'
+    }));
+
+    expect(beforeCompact).toHaveBeenCalledOnce();
+    expect(beforeCompact.mock.calls[0]?.[0]).toMatchObject({
+      lane: 'main', currentSnapshotId: 'snapshot-old', currentSnapshotScopeVersions: { global: 1 }
+    });
+    expect(requests[0]?.instructions).toContainEqual(expect.stringContaining('refreshed memory'));
+    expect(requests[0]?.instructions).not.toContainEqual(expect.stringContaining('old memory'));
+    const lane = await store.getLane('session-1', 'main');
+    const entries = await store.readPath(lane?.leafId ?? null);
+    expect(entries.filter((entry) => entry.type === 'memory_handoff')).toHaveLength(1);
+    expect(entries.filter((entry) => entry.type === 'memory_snapshot').map((entry) =>
+      entry.type === 'memory_snapshot' ? entry.snapshotId : '')).toEqual(['snapshot-old', 'snapshot-new']);
+  });
 });

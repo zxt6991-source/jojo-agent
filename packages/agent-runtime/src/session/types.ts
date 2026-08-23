@@ -1,4 +1,4 @@
-import type { InjectingHookEvent, Message } from '@desktop-agent/contracts';
+import type { InjectingHookEvent, MemoryHandoffItem, Message } from '@desktop-agent/contracts';
 import type { UsageRecord } from '../usage/types.js';
 
 export type JsonPrimitive = string | number | boolean | null;
@@ -70,6 +70,17 @@ export type MemorySnapshotEntry = EntryBase & {
   scopeVersions: Record<string, number>;
   estimatedTokens: number;
   refreshedBy: 'session_start' | 'compaction' | 'manual';
+  derivedFromSnapshotId?: string;
+};
+
+export type MemoryHandoffEntry = EntryBase & {
+  type: 'memory_handoff';
+  handoffId: string;
+  compactionOperationId: string;
+  openTasks: MemoryHandoffItem[];
+  decisions: MemoryHandoffItem[];
+  memoryWrites: MemoryHandoffItem[];
+  contentHash: string;
 };
 
 export type MemoryRecallEntry = EntryBase & {
@@ -89,6 +100,7 @@ export type SessionEntry =
   | ActiveToolsChangeEntry
   | HookContextEntry
   | MemorySnapshotEntry
+  | MemoryHandoffEntry
   | MemoryRecallEntry
   | CustomEntry;
 

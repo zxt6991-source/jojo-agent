@@ -12,6 +12,7 @@ export { NoopMemoryRuntime } from './memory/runtime.js';
 export type {
   MemoryCompactInput,
   MemoryCompactResult,
+  MemoryToolEvent,
   MemoryRuntime,
   MemoryTurnSettledInput
 } from './memory/runtime.js';
@@ -32,6 +33,7 @@ export type {
   MessageEntry,
   ModelChangeEntry,
   MemoryRecallEntry,
+  MemoryHandoffEntry,
   MemorySnapshotEntry,
   Session,
   SessionEntry

@@ -69,7 +69,7 @@ export function parseMemoryDocument(
     }
     const known = new Set([
       'id', 'kind', 'status', 'title', 'tags', 'createdAt', 'updatedAt', 'sourceSessionId',
-      'sourceOperationId', 'ruleMode', 'triggers'
+      'sourceOperationId', 'confirmedBy', 'ruleMode', 'triggers'
     ]);
     const unknownMetadata = Object.fromEntries(Object.entries(metadata).filter(([key]) => !known.has(key)));
     const title = metadata.title || titleBefore(content, start);
@@ -85,6 +85,7 @@ export function parseMemoryDocument(
       sourceFile,
       ...(metadata.sourceSessionId ? { sourceSessionId: metadata.sourceSessionId } : {}),
       ...(metadata.sourceOperationId ? { sourceOperationId: metadata.sourceOperationId } : {}),
+      ...(metadata.confirmedBy === 'user' ? { confirmedBy: 'user' as const } : {}),
       createdAt,
       updatedAt: dateMillis(metadata.updatedAt, createdAt),
       contentHash: hash(body),
@@ -111,6 +112,7 @@ export function serializeMemoryEntry(input: {
   status?: MemoryEntry['status'];
   sourceSessionId?: string;
   sourceOperationId?: string;
+  confirmedBy?: 'user';
   ruleMode?: 'always' | 'triggered';
   triggers?: string[];
   createdAt?: number;
@@ -129,6 +131,7 @@ export function serializeMemoryEntry(input: {
     ...(input.tags?.length ? [`tags: ${JSON.stringify(input.tags)}`] : []),
     ...(input.sourceSessionId ? [`sourceSessionId: ${input.sourceSessionId}`] : []),
     ...(input.sourceOperationId ? [`sourceOperationId: ${input.sourceOperationId}`] : []),
+    ...(input.confirmedBy ? [`confirmedBy: ${input.confirmedBy}`] : []),
     ...(input.ruleMode ? [`ruleMode: ${input.ruleMode}`] : []),
     ...(input.triggers?.length ? [`triggers: ${JSON.stringify(input.triggers)}`] : []),
     '-->',

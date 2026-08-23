@@ -66,15 +66,27 @@ function effectiveStepModel(step: WorkflowAgentStep, workflowModel: string): str
   return step.model && step.model !== 'inherit' ? step.model : workflowModel;
 }
 
-function stepSnapshotIdentity(step: WorkflowStep, workflowModel: string): Pick<WorkflowStepSnapshot, 'type' | 'profile' | 'tool' | 'model' | 'workflow' | 'resourceGroup' | 'dependsOn'> {
+function stepSnapshotIdentity(
+  step: WorkflowStep,
+  workflowModel: string,
+  memorySnapshotId?: string
+): Pick<WorkflowStepSnapshot,
+  'type' | 'profile' | 'tool' | 'model' | 'workflow' | 'resourceGroup' | 'dependsOn' | 'memorySnapshotId'
+> {
   const dependsOn = { dependsOn: [...step.dependsOn] };
   const resourceGroup = workflowStepResources(step)?.group;
   const group = resourceGroup ? { resourceGroup } : {};
+  const memory = memorySnapshotId ? { memorySnapshotId } : {};
   if (step.type === 'tool') return { type: 'tool', tool: step.tool, ...dependsOn };
-  if (step.type === 'foreach') return { type: 'foreach', ...group, ...dependsOn };
+  if (step.type === 'foreach') return {
+    type: 'foreach', ...group, ...(step.template.type === 'agent' ? memory : {}), ...dependsOn
+  };
   if (step.type === 'condition') return { type: 'condition', ...dependsOn };
-  if (step.type === 'workflow') return { type: 'workflow', workflow: step.name, ...dependsOn };
-  return { type: 'agent', profile: step.profile, model: effectiveStepModel(step, workflowModel), ...group, ...dependsOn };
+  if (step.type === 'workflow') return { type: 'workflow', workflow: step.name, ...memory, ...dependsOn };
+  return {
+    type: 'agent', profile: step.profile, model: effectiveStepModel(step, workflowModel),
+    ...group, ...memory, ...dependsOn
+  };
 }
 
 function cloneInstanceSnapshot(instance: WorkflowInstanceSnapshot): WorkflowInstanceSnapshot {
@@ -184,7 +196,7 @@ export function createResumedWorkflowSnapshot(
       if (!prior) {
         return {
           id: definition.id,
-          ...stepSnapshotIdentity(definition, request.model),
+          ...stepSnapshotIdentity(definition, request.model, request.memory?.memorySnapshotId),
           state: 'pending',
           attempt: 1,
           createdAt: previous.createdAt,
@@ -195,13 +207,13 @@ export function createResumedWorkflowSnapshot(
       if (prior.state === 'completed' || prior.state === 'skipped') {
         return cloneStepSnapshot({
           ...prior,
-          ...stepSnapshotIdentity(definition, request.model)
+          ...stepSnapshotIdentity(definition, request.model, request.memory?.memorySnapshotId)
         });
       }
       if (definition.type === 'foreach') {
         return {
           id: prior.id,
-          ...stepSnapshotIdentity(definition, request.model),
+          ...stepSnapshotIdentity(definition, request.model, request.memory?.memorySnapshotId),
           state: 'pending' as const,
           attempt: prior.state === 'pending' ? prior.attempt : prior.attempt + 1,
           createdAt: prior.createdAt,
@@ -234,7 +246,7 @@ export function createResumedWorkflowSnapshot(
       if (definition.type === 'workflow') {
         return {
           id: prior.id,
-          ...stepSnapshotIdentity(definition, request.model),
+          ...stepSnapshotIdentity(definition, request.model, request.memory?.memorySnapshotId),
           state: 'pending' as const,
           attempt: prior.state === 'pending' ? prior.attempt : prior.attempt + 1,
           createdAt: prior.createdAt,
@@ -245,7 +257,7 @@ export function createResumedWorkflowSnapshot(
       }
       return {
         id: prior.id,
-        ...stepSnapshotIdentity(definition, request.model),
+        ...stepSnapshotIdentity(definition, request.model, request.memory?.memorySnapshotId),
         state: 'pending',
         attempt: prior.state === 'pending' ? prior.attempt : prior.attempt + 1,
         createdAt: prior.createdAt,
@@ -254,6 +266,7 @@ export function createResumedWorkflowSnapshot(
       };
     }),
     usage: { ...previous.usage },
+    ...(previous.memory ? { memory: structuredClone(previous.memory) } : {}),
     ...copyBudget(request.definition.budget),
     failedStepIds: [],
     blockedStepIds: [],
@@ -272,7 +285,7 @@ export function createInitialWorkflowSnapshot(request: WorkflowExecutionRequest)
     startedAt: request.createdAt,
     steps: request.definition.steps.map((step) => ({
       id: step.id,
-      ...stepSnapshotIdentity(step, request.model),
+      ...stepSnapshotIdentity(step, request.model, request.memory?.memorySnapshotId),
       state: 'pending' as const,
       attempt: 1,
       createdAt: request.createdAt,
@@ -280,6 +293,7 @@ export function createInitialWorkflowSnapshot(request: WorkflowExecutionRequest)
       usage: emptyUsage()
     })),
     usage: emptyUsage(),
+    ...(request.memory ? { memory: structuredClone(request.memory) } : {}),
     ...copyBudget(request.definition.budget),
     failedStepIds: [],
     blockedStepIds: [],
@@ -351,6 +365,7 @@ export class WorkflowEngine {
             ...(step.tool ? { tool: step.tool } : {}),
             ...(step.model ? { model: step.model } : {}),
             ...(step.resourceGroup ? { resourceGroup: step.resourceGroup } : {}),
+            ...(step.memorySnapshotId ? { memorySnapshotId: step.memorySnapshotId } : {}),
             state: 'queued' as const,
             attempt,
             createdAt: step.createdAt,
@@ -844,6 +859,7 @@ export class WorkflowEngine {
           args: nestedArgs,
           definition: materializeWorkflowDefinition(saved.definition, nestedArgs),
           createdAt: previousChild?.createdAt ?? new Date().toISOString(),
+          ...(request.memory ? { memory: request.memory } : {}),
           depth
         };
         stepTimer = setTimeout(() => {
