@@ -17,6 +17,18 @@ export { MemoryIndex } from './recall/index.js';
 export { matchTriggeredRules } from './recall/trigger-matcher.js';
 export { buildMemorySnapshot } from './snapshot/builder.js';
 export { estimateTokens, snapshotTokenBudget, truncateToTokens } from './snapshot/budget.js';
+export { memoryChunks, MEMORY_CHUNKING_VERSION, MEMORY_NORMALIZATION_VERSION } from './semantic/chunker.js';
+export { fuseMemoryResults } from './semantic/hybrid.js';
+export { evaluateMemoryRetrieval, type MemoryRetrievalEvalCase, type MemoryRetrievalEvalResult } from './semantic/eval.js';
+export { SemanticMemoryService, type SemanticProviderResolver } from './semantic/service.js';
+export type {
+  SemanticIndexRequest,
+  SemanticIndexResult,
+  SemanticLifecycleEvent,
+  SemanticMemoryBackend,
+  SemanticSearchRequest,
+  SemanticSkippedChunk
+} from './semantic/types.js';
 export { scanSecrets } from './security/secret-scanner.js';
 export { sanitizeMemoryContent } from './security/sanitizer.js';
 export { guardedMemoryPath } from './security/path-guard.js';

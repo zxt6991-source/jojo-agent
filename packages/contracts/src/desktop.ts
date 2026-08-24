@@ -215,6 +215,9 @@ export const RebuildMemoryIndexInputSchema = z.object({
     context.addIssue({ code: 'custom', message: 'Project Memory requires a working directory.' });
   }
 });
+export const RebuildSemanticMemoryIndexInputSchema = z.object({
+  workingDirectory: z.string().trim().min(1).max(4_096).optional()
+});
 export const DeleteMemoryEntryInputSchema = z.object({
   scope: z.enum(['global', 'project']),
   entryId: z.string().trim().min(1).max(512),
@@ -305,6 +308,7 @@ export type DesktopApi = {
   saveMemorySettings(input: z.input<typeof SaveMemorySettingsInputSchema>): Promise<MemorySettings>;
   getMemoryStatus(input?: z.input<typeof GetMemoryStatusInputSchema>): Promise<MemoryStatusSnapshot>;
   rebuildMemoryIndex(input: z.input<typeof RebuildMemoryIndexInputSchema>): Promise<MemoryStatusSnapshot>;
+  rebuildSemanticMemoryIndex(input?: z.input<typeof RebuildSemanticMemoryIndexInputSchema>): Promise<MemoryStatusSnapshot>;
   deleteMemoryEntry(input: z.input<typeof DeleteMemoryEntryInputSchema>): Promise<MemoryStatusSnapshot>;
   acceptMemoryCandidate(input: z.input<typeof AcceptMemoryCandidateInputSchema>): Promise<MemoryStatusSnapshot>;
   rejectMemoryCandidate(input: z.input<typeof RejectMemoryCandidateInputSchema>): Promise<MemoryStatusSnapshot>;
@@ -344,6 +348,7 @@ export type WorkerCommand =
   | { type: 'hooks.invalidate'; requestId: string }
   | { type: 'memory.status'; requestId: string; workingDirectory?: string }
   | { type: 'memory.rebuild'; requestId: string; scope: 'global' | 'project'; workingDirectory?: string }
+  | { type: 'memory.semantic.rebuild'; requestId: string; workingDirectory?: string }
   | { type: 'memory.delete'; requestId: string; scope: 'global' | 'project'; entryId: string; workingDirectory?: string }
   | { type: 'memory.candidate.accept'; requestId: string; candidateId: string; workingDirectory?: string; userConfirmed: true; edit?: z.input<typeof MemoryCandidateReviewEditSchema> }
   | { type: 'memory.candidate.reject'; requestId: string; candidateId: string; workingDirectory?: string };
@@ -396,6 +401,7 @@ export const IPC = {
   saveMemorySettings: 'memory:settings-save',
   getMemoryStatus: 'memory:status',
   rebuildMemoryIndex: 'memory:rebuild-index',
+  rebuildSemanticMemoryIndex: 'memory:semantic-rebuild-index',
   deleteMemoryEntry: 'memory:entry-delete',
   acceptMemoryCandidate: 'memory:candidate-accept',
   rejectMemoryCandidate: 'memory:candidate-reject',

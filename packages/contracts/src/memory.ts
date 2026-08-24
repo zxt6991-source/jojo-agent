@@ -104,6 +104,7 @@ export type MemoryStatusSnapshot = {
   projectAvailable: boolean;
   scopes: MemoryScopeStatus[];
   pendingCandidates?: import('./memory-candidate.js').MemoryCandidate[];
+  semantic?: import('./memory-semantic.js').SemanticIndexStatus;
 };
 
 export type MemorySnapshot = {
@@ -176,6 +177,27 @@ export const MemorySettingsSchema = z.object({
     enabled: z.boolean().default(true),
     maxResults: z.number().int().min(1).max(50).default(10)
   }).default({ enabled: true, maxResults: 10 }),
+  semantic: z.object({
+    enabled: z.boolean().default(false),
+    mode: z.enum(['local-linear', 'plugin-vector']).default('local-linear'),
+    providerId: z.string().trim().min(1).optional(),
+    model: z.string().trim().min(1).optional(),
+    remoteAllowed: z.boolean().default(false),
+    searchMode: z.enum(['fts', 'semantic', 'hybrid']).default('hybrid'),
+    maxSemanticCandidates: z.number().int().min(100).max(100_000).default(10_000),
+    indexDaily: z.boolean().default(false),
+    indexScratchpad: z.boolean().default(false),
+    rerankEnabled: z.boolean().default(false)
+  }).default({
+    enabled: false,
+    mode: 'local-linear',
+    remoteAllowed: false,
+    searchMode: 'hybrid',
+    maxSemanticCandidates: 10_000,
+    indexDaily: false,
+    indexScratchpad: false,
+    rerankEnabled: false
+  }),
   suggestions: z.preprocess((value) => {
     if (value && typeof value === 'object' && !Array.isArray(value)
       && (value as { maxPerTurn?: unknown }).maxPerTurn === 0) {
@@ -232,7 +254,8 @@ export const MemorySearchInputSchema = z.object({
   query: z.string().trim().min(1).max(500),
   scope: z.enum(['global', 'project', 'all']).default('all'),
   kinds: z.array(MemoryKindSchema).optional(),
-  limit: z.number().int().min(1).max(50).default(10)
+  limit: z.number().int().min(1).max(50).default(10),
+  mode: z.enum(['fts', 'semantic', 'hybrid']).optional()
 });
 
 export const MemoryForgetInputSchema = z.object({

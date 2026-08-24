@@ -586,6 +586,18 @@ function App() {
     }
   };
 
+  const rebuildSemanticMemoryIndex = async (): Promise<void> => {
+    setMemoryBusy(true);
+    setMemoryError('');
+    try {
+      setMemoryStatus(await window.desktopAgent.rebuildSemanticMemoryIndex(memoryDirectoryInput()));
+    } catch (cause) {
+      setMemoryError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setMemoryBusy(false);
+    }
+  };
+
   const deleteMemoryEntry = async (scope: 'global' | 'project', entryId: string): Promise<boolean> => {
     const directory = memoryDirectoryInput();
     if (scope === 'project' && !directory) {
@@ -747,6 +759,10 @@ function App() {
         finalResponseOnly: event.finalResponseOnly === true
       });
       else if (event.type === 'memory.candidate' && event.event === 'memory.candidate.created') {
+        void window.desktopAgent.getMemoryStatus(memoryDirectoryInput()).then(setMemoryStatus).catch(() => undefined);
+      }
+      else if (event.type === 'memory.semantic'
+        && (event.event === 'memory.embedding.completed' || event.event === 'memory.embedding.failed')) {
         void window.desktopAgent.getMemoryStatus(memoryDirectoryInput()).then(setMemoryStatus).catch(() => undefined);
       }
       else if (event.type === 'turn.failed') { setError(event.message); runningRef.current = false; setRunningSessionId(null); setTurnStartedAt(null); setApproval(null); void reloadActive(); }
@@ -1380,6 +1396,7 @@ function App() {
       onChange={(next) => { setMemoryDraft(next); setMemoryError(''); }}
       onRefresh={() => { void refreshMemoryStatus(); }}
       onRebuild={(scope) => { void rebuildMemoryIndex(scope); }}
+      onRebuildSemantic={() => { void rebuildSemanticMemoryIndex(); }}
       onDelete={deleteMemoryEntry}
       providers={settings.providers}
       utilityModel={settings.utilityModel}

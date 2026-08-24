@@ -558,6 +558,18 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .memory-scope-status-list .memory-view-scope-button:hover { border-color: #aebbe1; background: #edf1ff; }
 .memory-status-hint, .memory-status-empty { margin: 0; padding: 17px 24px; background: #ffffff; color: #8a8e95; font-size: 11px; line-height: 1.5; }
 .memory-settings-error { margin: 14px 24px 18px; }
+.memory-semantic-privacy { border-top: 1px solid #ecd9b8; border-bottom: 1px solid #ecd9b8; background: #fffaf0; }
+.memory-semantic-privacy > strong, .memory-semantic-privacy > p { display: block; margin-right: 24px; margin-left: 24px; }
+.memory-semantic-privacy > strong { margin-top: 16px; color: #825d24; font-size: 12px; }
+.memory-semantic-privacy > p { margin-top: 6px; margin-bottom: 0; color: #947349; font-size: 10px; line-height: 1.55; }
+.memory-semantic-privacy .memory-setting-row { margin-top: 12px; background: transparent; }
+.memory-semantic-status { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)) auto; gap: 1px; align-items: stretch; border-top: 1px solid #e7e7e9; background: #e7e7e9; }
+.memory-semantic-status article { min-width: 0; padding: 13px 12px; background: #fafafa; }
+.memory-semantic-status span, .memory-semantic-status strong { display: block; }
+.memory-semantic-status span { color: #8a8e95; font-size: 9px; }
+.memory-semantic-status strong { margin-top: 4px; color: #35383e; font-size: 13px; }
+.memory-semantic-status button { margin: 10px 14px; padding: 0 12px; border: 1px solid #cfd6e8; border-radius: 9px; background: #f6f8ff; color: #4d64b5; font-size: 10px; font-weight: 650; }
+.memory-semantic-status button:disabled { opacity: .45; }
 .memory-candidates-panel > .memory-config-scope-empty { margin: 18px 24px 22px; }
 .memory-candidate-list { display: grid; gap: 12px; padding: 18px 24px 24px; background: #fff; }
 .memory-candidate-card { padding: 16px; border: 1px solid #dde0e6; border-radius: 12px; background: #fbfbfc; }
@@ -882,6 +894,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   .workspace-content.reviewing .conversation, .workspace-content.browsing .conversation { padding-left: 20px; padding-right: 20px; }
   .workspace-content.browsing .composer-wrap, .workspace-content.reviewing .composer-wrap { padding-left: 16px; padding-right: 16px; }
   .memory-scope-grid { grid-template-columns: 1fr; }
+  .memory-semantic-status { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .memory-semantic-status button { min-height: 36px; grid-column: 1 / -1; }
   .memory-scope-config-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 

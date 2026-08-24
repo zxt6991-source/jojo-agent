@@ -180,6 +180,7 @@ export function MemorySettingsPage({
   onRefresh,
   onRebuild,
   onDelete,
+  onRebuildSemantic = () => undefined,
   providers = [],
   utilityModel,
   onAcceptCandidate = async () => undefined,
@@ -196,6 +197,7 @@ export function MemorySettingsPage({
   onRefresh: () => void;
   onRebuild: (scope: 'global' | 'project') => void;
   onDelete: (scope: 'global' | 'project', entryId: string) => Promise<boolean>;
+  onRebuildSemantic?: () => void;
   providers?: ProviderConfig[];
   utilityModel?: ModelSelection;
   onAcceptCandidate?: (id: string, edit?: MemoryCandidateReviewEdit) => Promise<void>;
@@ -217,6 +219,11 @@ export function MemorySettingsPage({
   const suggestionProvider = providers.find((provider) => provider.id === draft.suggestions.providerId)
     ?? providers.find((provider) => provider.id === utilityModel?.providerId)
     ?? providers[0];
+  const semanticProvider = draft.semantic.providerId
+    ? providers.find((provider) => provider.id === draft.semantic.providerId)
+    : undefined;
+  const semanticProviderRemote = semanticProvider ? !['localhost', '127.0.0.1', '0.0.0.0', '::1']
+    .includes(new URL(semanticProvider.baseUrl).hostname.toLocaleLowerCase()) : false;
   return <form className={`settings-content model-settings-page memory-settings-page ${inactive ? 'is-disabled' : ''}`} aria-labelledby="memory-settings-title" onSubmit={(event) => {
     event.preventDefault();
     void onSave();
@@ -300,6 +307,81 @@ export function MemorySettingsPage({
           </label>
         </div>
       </div>
+    </section>
+
+    <section className="settings-section-card memory-semantic-settings">
+      <div className="settings-section-title with-meta">
+        <div><h2>Semantic Search</h2><p>语义向量只是 FTS 的召回扩展；Markdown 仍是唯一真源。</p></div>
+        <span className={`browser-status-pill ${draft.semantic.enabled ? 'on' : ''}`}>{draft.semantic.enabled ? 'On' : 'Off'}</span>
+      </div>
+      <SettingSwitch
+        id="memory-semantic-label"
+        title="启用语义检索"
+        description="默认关闭。Provider 不可用、容量超限或查询失败时自动降级为 FTS。"
+        checked={draft.semantic.enabled}
+        disabled={inactive}
+        onChange={(enabled) => update({ semantic: {
+          ...draft.semantic,
+          enabled,
+          ...(enabled && !draft.semantic.providerId && utilityModel ? utilityModel : {})
+        } })}
+      />
+      <div className="settings-fields memory-fields">
+        <div className="settings-grid">
+          <label>Backend
+            <select disabled={inactive || !draft.semantic.enabled} value={draft.semantic.mode} onChange={(event) => update({ semantic: { ...draft.semantic, mode: event.target.value as 'local-linear' | 'plugin-vector' } })}>
+              <option value="local-linear">SQLite Linear Cosine</option><option value="plugin-vector">Plugin Vector（未安装时降级）</option>
+            </select>
+          </label>
+          <label>Provider
+            <select disabled={inactive || !draft.semantic.enabled} value={draft.semantic.providerId ?? ''} onChange={(event) => {
+              const provider = providers.find((item) => item.id === event.target.value);
+              update({ semantic: { ...draft.semantic, providerId: event.target.value, model: provider?.model ?? provider?.models[0] ?? '', remoteAllowed: false } });
+            }}>
+              <option value="">未配置</option>{providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}
+            </select>
+          </label>
+          <label>Embedding Model
+            <select disabled={inactive || !draft.semantic.enabled || !semanticProvider} value={draft.semantic.model ?? ''} onChange={(event) => update({ semantic: { ...draft.semantic, model: event.target.value } })}>
+              <option value="">未配置</option>{semanticProvider?.models.map((model) => <option key={model} value={model}>{model}</option>)}
+            </select>
+          </label>
+          <label>Search Mode
+            <select disabled={inactive || !draft.semantic.enabled} value={draft.semantic.searchMode} onChange={(event) => update({ semantic: { ...draft.semantic, searchMode: event.target.value as 'fts' | 'semantic' | 'hybrid' } })}>
+              <option value="hybrid">Hybrid · RRF</option><option value="semantic">Semantic（失败降级 FTS）</option><option value="fts">FTS only</option>
+            </select>
+          </label>
+          <label>最大候选向量
+            <input type="number" min="100" max="100000" step="100" disabled={inactive || !draft.semantic.enabled} value={draft.semantic.maxSemanticCandidates} onChange={(event) => update({ semantic: { ...draft.semantic, maxSemanticCandidates: Number(event.target.value) } })} />
+          </label>
+        </div>
+      </div>
+      {semanticProviderRemote && <div className="memory-semantic-privacy">
+        <strong>远程 Embedding 隐私确认</strong>
+        <p>启用后只把需要索引的 Memory Chunk 和搜索字符串发送给 {semanticProvider?.name}；不会发送完整 Session 或仓库全文。Secret Chunk 会被跳过。</p>
+        <SettingSwitch
+          id="memory-semantic-remote-label"
+          title="允许发送到远程 Embedding Provider"
+          description="必须由用户明确开启；切换 Provider 后会自动重置。"
+          checked={draft.semantic.remoteAllowed}
+          disabled={inactive || !draft.semantic.enabled}
+          onChange={(remoteAllowed) => update({ semantic: { ...draft.semantic, remoteAllowed } })}
+        />
+      </div>}
+      <div className="memory-scope-grid">
+        <SettingSwitch id="memory-semantic-daily-label" title="索引 Daily Memory" description="默认不索引日常 handoff。" checked={draft.semantic.indexDaily} disabled={inactive || !draft.semantic.enabled} onChange={(indexDaily) => update({ semantic: { ...draft.semantic, indexDaily } })} />
+        <SettingSwitch id="memory-semantic-scratch-label" title="索引 Scratchpad" description="默认不索引临时任务状态。" checked={draft.semantic.indexScratchpad} disabled={inactive || !draft.semantic.enabled} onChange={(indexScratchpad) => update({ semantic: { ...draft.semantic, indexScratchpad } })} />
+      </div>
+      <div className="memory-semantic-status">
+        <article><span>Provider</span><strong>{semanticProvider ? (semanticProviderRemote ? 'Remote' : 'Local') : '—'}</strong></article>
+        <article><span>Indexed</span><strong>{status?.semantic?.indexedChunks ?? 0}</strong></article>
+        <article><span>Pending</span><strong>{status?.semantic?.pending ?? 0}</strong></article>
+        <article><span>Failed</span><strong>{status?.semantic?.failed ?? 0}</strong></article>
+        <article><span>Skipped Secret</span><strong>{status?.semantic?.skippedSecret ?? 0}</strong></article>
+        <article><span>Stale</span><strong>{status?.semantic?.stale ?? 0}</strong></article>
+        <button type="button" disabled={busy || !draft.semantic.enabled || !draft.semantic.providerId || !draft.semantic.model || (semanticProviderRemote && !draft.semantic.remoteAllowed)} onClick={onRebuildSemantic}>重建 Semantic Index</button>
+      </div>
+      {status?.semantic?.warning && <div className="settings-error memory-settings-error" role="alert">{status.semantic.warning}</div>}
     </section>
 
     <section className="settings-section-card memory-candidates-panel">

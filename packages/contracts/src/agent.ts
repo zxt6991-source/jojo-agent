@@ -99,6 +99,22 @@ export type AgentEvent =
       count?: number;
       warning?: string;
     }
+  | {
+      type: 'memory.semantic';
+      event:
+        | 'memory.embedding.job.queued'
+        | 'memory.embedding.completed'
+        | 'memory.embedding.failed'
+        | 'memory.semantic.search.started'
+        | 'memory.semantic.search.completed'
+        | 'memory.semantic.search.fallback'
+        | 'memory.semantic.rebuild.started'
+        | 'memory.semantic.rebuild.progress'
+        | 'memory.semantic.rebuild.completed'
+        | 'memory.semantic.model.changed';
+      count?: number;
+      warning?: string;
+    }
   | { type: 'hook.started'; eventId: string; hookId: string; hookEvent: HookEventName }
   | {
       type: 'hook.finished'; eventId: string; hookId: string; durationMs: number;

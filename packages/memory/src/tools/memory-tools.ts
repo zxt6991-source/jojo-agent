@@ -26,6 +26,8 @@ import { createProjectIdentity } from '../identity.js';
 import { scanSecrets } from '../security/secret-scanner.js';
 import { sanitizeMemoryContent } from '../security/sanitizer.js';
 import type { MarkdownMemoryStore } from '../store/markdown-store.js';
+import { fuseMemoryResults } from '../semantic/hybrid.js';
+import type { SemanticMemoryService } from '../semantic/service.js';
 
 function result(ok: boolean, value: unknown, code?: string): ToolResult {
   return {
@@ -38,10 +40,11 @@ function result(ok: boolean, value: unknown, code?: string): ToolResult {
 export class MemoryService {
   private settings: MemorySettings = DEFAULT_MEMORY_SETTINGS;
 
-  constructor(readonly store: MarkdownMemoryStore) {}
+  constructor(readonly store: MarkdownMemoryStore, readonly semantic?: SemanticMemoryService) {}
 
   updateSettings(settings: MemorySettings): void {
     this.settings = structuredClone(settings);
+    this.semantic?.updateSettings(settings);
   }
 
   async identity(workingDirectory: string): Promise<ProjectIdentity | undefined> {
@@ -89,7 +92,8 @@ export class MemoryService {
       root: this.store.root,
       ftsMode: this.store.index.ftsMode,
       projectAvailable: Boolean(identity),
-      scopes: statuses
+      scopes: statuses,
+      ...(this.semantic ? { semantic: await this.semantic.status() } : {})
     };
   }
 
@@ -114,7 +118,10 @@ export class MemoryService {
     query: string,
     scope: 'global' | 'project' | 'all',
     kinds: Parameters<MarkdownMemoryStore['search']>[3],
-    limit: number
+    limit: number,
+    mode?: 'fts' | 'semantic' | 'hybrid',
+    sessionId?: string,
+    signal?: AbortSignal
   ) {
     const identity = await this.identity(workingDirectory);
     if (scope === 'global' && !this.settings.globalEnabled) {
@@ -132,7 +139,48 @@ export class MemoryService {
         : this.settings.projectEnabled ? 'project' : 'global'
       : scope;
     if (scope === 'all' && !this.settings.globalEnabled && !this.settings.projectEnabled) return [];
-    return this.store.search(identity, query, enabledScope, kinds, Math.min(limit, this.settings.search.maxResults));
+    const scopes = (await this.store.scopes(identity)).filter((candidate) =>
+      (enabledScope === 'all' || candidate.kind === enabledScope)
+      && (candidate.kind === 'global' ? this.settings.globalEnabled : this.settings.projectEnabled)
+    );
+    const selectedMode = mode ?? (this.settings.semantic.enabled ? this.settings.semantic.searchMode : 'fts');
+    const resultLimit = Math.min(limit, this.settings.search.maxResults);
+    const fts = selectedMode === 'semantic'
+      ? []
+      : await this.store.search(identity, query, enabledScope, kinds, 20);
+    let semantic: Awaited<ReturnType<SemanticMemoryService['search']>> = [];
+    if (selectedMode !== 'fts' && this.settings.semantic.enabled && this.semantic) {
+      try {
+        semantic = await this.semantic.search({
+          query,
+          scopes,
+          ...(kinds ? { kinds } : {}),
+          ...(sessionId ? { sessionId } : {}),
+          ...(signal ? { signal } : {})
+        });
+      } catch {
+        if (selectedMode === 'semantic') {
+          return fuseMemoryResults({
+            query,
+            fts: await this.store.search(identity, query, enabledScope, kinds, 20),
+            semantic: [], scopes, limit: resultLimit
+          });
+        }
+      }
+    } else if (selectedMode === 'semantic') {
+      return fuseMemoryResults({
+        query,
+        fts: await this.store.search(identity, query, enabledScope, kinds, 20),
+        semantic: [], scopes, limit: resultLimit
+      });
+    }
+    return fuseMemoryResults({ query, fts, semantic, scopes, limit: resultLimit });
+  }
+
+  async rebuildSemantic(workingDirectory?: string, signal?: AbortSignal) {
+    if (!this.semantic) throw new MemoryError('memory_semantic_disabled', 'Semantic Memory backend is unavailable.');
+    const identity = workingDirectory ? await this.identity(workingDirectory) : undefined;
+    return this.semantic.rebuild({ ...(identity ? { projectIdentity: identity } : {}), ...(signal ? { signal } : {}) });
   }
 }
 
@@ -183,18 +231,19 @@ class MemorySearchTool extends MemoryTool {
         query: { type: 'string' },
         scope: { type: 'string', enum: ['global', 'project', 'all'], default: 'all' },
         kinds: { type: 'array', items: { type: 'string' } },
-        limit: { type: 'integer', minimum: 1, maximum: 50, default: 10 }
+        limit: { type: 'integer', minimum: 1, maximum: 50, default: 10 },
+        mode: { type: 'string', enum: ['fts', 'semantic', 'hybrid'] }
       },
       required: ['query'], additionalProperties: false
     }
   };
   async execute(input: unknown, context: ToolContext): Promise<ToolResult> {
     const parsed = MemorySearchInputSchema.parse(input);
-    const found = await this.service.search(context.workingDirectory, parsed.query, parsed.scope, parsed.kinds, parsed.limit);
-    return result(true, found.map(({ entry, score, snippet }) => ({
-      id: entry.id, scopeId: entry.scopeId, kind: entry.kind, status: entry.status,
-      title: entry.title, sourceFile: entry.sourceFile, score, snippet
-    })));
+    const found = await this.service.search(
+      context.workingDirectory, parsed.query, parsed.scope, parsed.kinds, parsed.limit,
+      parsed.mode, context.sessionId, context.signal
+    );
+    return result(true, found);
   }
 }
 

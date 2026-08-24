@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createChatCompletionBody } from '../src/chat-completions-request.js';
 import { parseChatCompletionStream } from '../src/chat-completions-stream.js';
-import { OpenAICompatibleProvider, PROVIDER_REGISTRY, createProvider } from '../src/index.js';
+import { OpenAICompatibleEmbeddingProvider, OpenAICompatibleProvider, PROVIDER_REGISTRY, createProvider } from '../src/index.js';
 
 function request(overrides: Partial<ModelRequest> = {}): ModelRequest {
   return {
@@ -448,5 +448,40 @@ describe('provider registry', () => {
       id: 'compatible', name: 'Compatible', protocol: 'openai_chat_completions', baseUrl: 'https://provider.example/v1',
       model: 'model-a', models: ['model-a'], contextWindowTokens: 32_000, maxOutputTokens: 2_000, hasApiKey: true
     }, 'secret')).toBeInstanceOf(OpenAICompatibleProvider);
+  });
+});
+
+describe('OpenAI-compatible embeddings', () => {
+  it('uses the dedicated embeddings endpoint and returns Float32 vectors with usage', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      data: [
+        { index: 1, embedding: [0, 1] },
+        { index: 0, embedding: [1, 0] }
+      ],
+      usage: { prompt_tokens: 7 }
+    })));
+    vi.stubGlobal('fetch', fetchMock);
+    const provider = new OpenAICompatibleEmbeddingProvider({
+      id: 'remote', model: 'text-embedding', apiKey: 'secret', baseUrl: 'https://provider.example/v1///'
+    });
+    const result = await provider.embed(['one', 'two']);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('https://provider.example/v1/embeddings');
+    expect(JSON.parse(String((fetchMock.mock.calls[0]?.[1] as RequestInit).body))).toEqual({
+      model: 'text-embedding', input: ['one', 'two'], encoding_format: 'float'
+    });
+    expect([...result.vectors[0]!]).toEqual([1, 0]);
+    expect(result.usage).toEqual({ inputTokens: 7 });
+    expect(provider.remote).toBe(true);
+  });
+
+  it('classifies localhost as local and rejects inconsistent dimensions', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      data: [{ index: 0, embedding: [1] }, { index: 1, embedding: [1, 2] }]
+    }))));
+    const provider = new OpenAICompatibleEmbeddingProvider({
+      id: 'local', model: 'embed', apiKey: '', baseUrl: 'http://127.0.0.1:11434/v1'
+    });
+    expect(provider.remote).toBe(false);
+    await expect(provider.embed(['one', 'two'])).rejects.toThrow('inconsistent dimensions');
   });
 });

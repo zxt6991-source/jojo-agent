@@ -13,6 +13,10 @@ describe('MemorySettingsPage', () => {
         root: '/tmp/memory',
         ftsMode: 'trigram',
         projectAvailable: true,
+        semantic: {
+          enabled: false, mode: 'local-linear', indexedChunks: 12, pending: 1,
+          failed: 0, skippedSecret: 2, stale: 0
+        },
         scopes: [{
           id: 'global', kind: 'global', displayName: 'Global', version: 3,
           directory: '/tmp/memory/global', contentHash: 'abc', dirty: false, entryCount: 7, warningCount: 0, entries: []
@@ -42,6 +46,10 @@ describe('MemorySettingsPage', () => {
     expect(html).toContain('保存 Memory 设置');
     expect(html).toContain('查看配置');
     expect(html).toContain('Pending Suggestions');
+    expect(html).toContain('Semantic Search');
+    expect(html).toContain('SQLite Linear Cosine');
+    expect(html).toContain('Skipped Secret');
+    expect(html).toContain('重建 Semantic Index');
     expect(html).toContain('Use node:sqlite');
     expect(html).toContain('接受');
     expect(html).not.toContain('Accept All');
@@ -72,5 +80,38 @@ describe('MemorySettingsPage', () => {
     expect(html).toContain('所有回答默认使用中文');
     expect(html).toContain('always');
     expect(html).toContain('删除');
+  });
+
+  it('requires an explicit remote embedding privacy opt-in', () => {
+    const memory = {
+      ...DEFAULT_MEMORY_SETTINGS,
+      semantic: {
+        ...DEFAULT_MEMORY_SETTINGS.semantic,
+        enabled: true,
+        providerId: 'remote',
+        model: 'embed-model',
+        remoteAllowed: false
+      }
+    };
+    const html = renderToStaticMarkup(React.createElement(MemorySettingsPage, {
+      draft: memory,
+      saved: memory,
+      status: null,
+      error: '',
+      busy: false,
+      providers: [{
+        id: 'remote', name: 'Remote Embeddings', protocol: 'openai_chat_completions',
+        baseUrl: 'https://embed.example/v1', model: 'embed-model', models: ['embed-model'],
+        contextWindowTokens: 32_000, maxOutputTokens: 2_000, hasApiKey: true
+      }],
+      onChange: () => undefined,
+      onSave: async () => undefined,
+      onRefresh: () => undefined,
+      onRebuild: () => undefined,
+      onDelete: async () => true
+    }));
+    expect(html).toContain('远程 Embedding 隐私确认');
+    expect(html).toContain('不会发送完整 Session 或仓库全文');
+    expect(html).toContain('允许发送到远程 Embedding Provider');
   });
 });

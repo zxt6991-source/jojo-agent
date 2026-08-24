@@ -17,7 +17,7 @@ import {
   type SkillDirectory,
   userSkillDirectories
 } from '@desktop-agent/extensions';
-import { createProvider } from '@desktop-agent/providers';
+import { createProvider, OpenAICompatibleEmbeddingProvider } from '@desktop-agent/providers';
 import { FileHookTrustStore, loadHookRuntime } from '@desktop-agent/hooks';
 import {
   createMemoryTools,
@@ -28,7 +28,9 @@ import {
   type CandidateLifecycleEvent,
   MemoryIndex,
   MemoryPermissionGate,
-  MemoryService
+  MemoryService,
+  SemanticMemoryService,
+  type SemanticLifecycleEvent
 } from '@desktop-agent/memory';
 import {
   AgentExecutionScheduler,
@@ -46,7 +48,13 @@ import {
   WorkflowEngine,
   WorkflowManager
 } from '@desktop-agent/orchestration';
-import { JsonlSessionStore, JsonlWorkflowStore, SqliteHookInvocationStore, SqliteMemoryCandidateStore } from '@desktop-agent/storage';
+import {
+  JsonlSessionStore,
+  JsonlWorkflowStore,
+  SqliteHookInvocationStore,
+  SqliteMemoryCandidateStore,
+  SqliteSemanticMemoryBackend
+} from '@desktop-agent/storage';
 import { SqliteAgentRuntimeStore } from '@desktop-agent/storage/sqlite-runtime-store';
 import { createDefaultToolRuntime, redactSensitiveEnvironmentAssignments, TerminalTool } from '@desktop-agent/tools-node';
 import { BrowserPermissionGate, BrowserToolBridge } from './browser-tools';
@@ -60,6 +68,7 @@ if (!parentPort) throw new Error('Agent worker must run as an Electron utility p
 const configuredDataDirectory = process.env.DESKTOP_AGENT_DATA_DIR;
 if (!configuredDataDirectory) throw new Error('DESKTOP_AGENT_DATA_DIR is required.');
 const dataDirectory: string = configuredDataDirectory;
+let runtime: { settings: ProviderSettings; apiKeys: Record<string, string> } | null = null;
 const store = new JsonlSessionStore(path.join(dataDirectory, 'sessions'));
 const agentRuntimeStore = new SqliteAgentRuntimeStore(path.join(dataDirectory, 'runtime', 'agent-runtime.sqlite'));
 const hookInvocationStore = new SqliteHookInvocationStore(path.join(dataDirectory, 'runtime', 'hooks.sqlite'));
@@ -67,7 +76,39 @@ const hookTrustStore = new FileHookTrustStore(path.join(os.homedir(), '.jojo', '
 const memoryRoot = path.join(os.homedir(), '.jojo', 'memory');
 const memoryIndex = new MemoryIndex(path.join(dataDirectory, 'runtime', 'memory.sqlite'));
 const memoryStore = new MarkdownMemoryStore(memoryRoot, memoryIndex);
-const memoryService = new MemoryService(memoryStore);
+const semanticBackend = new SqliteSemanticMemoryBackend(path.join(dataDirectory, 'runtime', 'memory-semantic.sqlite'));
+const emitSemanticEvent = (event: SemanticLifecycleEvent) => {
+  parentPort.postMessage({ type: 'agent.event', event: { type: 'memory.semantic', ...event } });
+};
+const semanticMemoryService = new SemanticMemoryService(
+  memoryStore,
+  semanticBackend,
+  ({ providerId, model }) => {
+    const config = runtime?.settings.providers.find((provider) => provider.id === providerId);
+    if (!config) return undefined;
+    const hostname = new URL(config.baseUrl).hostname.toLocaleLowerCase();
+    const local = hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '0.0.0.0' || hostname === '::1';
+    const apiKey = runtime?.apiKeys[providerId];
+    if (!apiKey && !local) return undefined;
+    return new OpenAICompatibleEmbeddingProvider({ id: providerId, model, baseUrl: config.baseUrl, apiKey: apiKey ?? '' });
+  },
+  emitSemanticEvent,
+  (usage) => {
+    if (!usage.sessionId) return;
+    void agentRuntimeStore.appendUsage({
+      id: crypto.randomUUID(),
+      sessionId: usage.sessionId,
+      cause: 'memory_embedding',
+      providerId: usage.providerId,
+      model: usage.model,
+      ...(usage.inputTokens !== undefined ? { inputTokens: usage.inputTokens } : {}),
+      ...(usage.costUsd !== undefined ? { costUsd: usage.costUsd } : {}),
+      createdAt: Date.now()
+    }).catch(() => undefined);
+  }
+);
+semanticMemoryService.attach();
+const memoryService = new MemoryService(memoryStore, semanticMemoryService);
 const memoryCandidateStore = new SqliteMemoryCandidateStore(path.join(dataDirectory, 'runtime', 'memory-candidates.sqlite'));
 const emitCandidateEvent = (event: CandidateLifecycleEvent) => {
   parentPort.postMessage({ type: 'agent.event', event: { type: 'memory.candidate', ...event } });
@@ -84,7 +125,6 @@ const controllers = new Map<string, AbortController>();
 const turnTasks = new TurnTaskRegistry();
 const approvals = new Map<string, { resolve: (allowed: boolean) => void; sessionId: string }>();
 const sessionHookRuntimes = new Map<string, HookRuntime>();
-let runtime: { settings: ProviderSettings; apiKeys: Record<string, string> } | null = null;
 let skillStatuses: SkillStatus[] = [];
 let extensionReady: Promise<void> = Promise.resolve();
 let mcpConfigSignature = '';
@@ -680,6 +720,15 @@ parentPort.on('message', (event) => {
         type: 'memory.result', requestId: command.requestId, ok: false,
         error: error instanceof Error ? error.message : String(error)
       }));
+  } else if (command.type === 'memory.semantic.rebuild') {
+    void memoryReady
+      .then(() => memoryService.rebuildSemantic(command.workingDirectory))
+      .then(() => memoryStatus(command.workingDirectory))
+      .then((status) => post({ type: 'memory.result', requestId: command.requestId, ok: true, status }))
+      .catch((error) => post({
+        type: 'memory.result', requestId: command.requestId, ok: false,
+        error: error instanceof Error ? error.message : String(error)
+      }));
   } else if (command.type === 'memory.delete') {
     void memoryReady
       .then(() => memoryService.deleteEntry(command.scope, command.entryId, command.workingDirectory))
@@ -709,7 +758,16 @@ parentPort.on('message', (event) => {
   }
 });
 
-process.once('SIGTERM', () => { void mcpManager.close().finally(() => process.exit(0)); });
+process.once('SIGTERM', () => {
+  void Promise.allSettled([mcpManager.close(), semanticMemoryService.idle()]).finally(() => {
+    semanticBackend.close();
+    memoryCandidateStore.close();
+    memoryIndex.close();
+    hookInvocationStore.close();
+    agentRuntimeStore.close();
+    process.exit(0);
+  });
+});
 
 void workflowManager.restore()
   .catch((error) => post({ type: 'worker.error', message: `Workflow restore failed: ${error instanceof Error ? error.message : String(error)}` }))

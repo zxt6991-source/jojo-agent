@@ -59,8 +59,17 @@ async function exists(filename: string): Promise<boolean> {
 
 export class MarkdownMemoryStore {
   private readonly queue = new ScopeWriteQueue();
+  private projectionRefresher: ((scope: MemoryScope) => Promise<void>) | undefined;
 
   constructor(readonly root: string, readonly index: MemoryIndex, private recoveryRetentionDays = 30) {}
+
+  setDerivedProjectionRefresher(refresher: ((scope: MemoryScope) => Promise<void>) | undefined): void {
+    this.projectionRefresher = refresher;
+  }
+
+  private refreshDerivedProjection(scope: MemoryScope): void {
+    if (this.projectionRefresher) void this.projectionRefresher(scope).catch(() => undefined);
+  }
 
   updateRecoveryRetentionDays(days: number): void {
     this.recoveryRetentionDays = Math.max(1, Math.min(365, Math.trunc(days)));
@@ -224,9 +233,11 @@ export class MarkdownMemoryStore {
       try {
         const { entries } = await this.listEntries(request.scope);
         const version = this.index.rebuildScope(request.scope, entries, await this.scopeHash(request.scope), true);
+        this.refreshDerivedProjection(request.scope);
         return { previousRevision: current.revision, revision, changed: true, scopeVersion: version };
       } catch {
         try { this.index.markDirty(request.scope.id); } catch { /* Index may be unavailable. */ }
+        this.refreshDerivedProjection(request.scope);
         return {
           previousRevision: current.revision, revision, changed: true,
           scopeVersion: this.index.scopeVersion(request.scope.id), warning: 'memory_index_stale'

@@ -71,6 +71,19 @@ describe('contracts', () => {
     expect(MemorySettingsSchema.parse({ suggestions: { enabled: false, maxPerTurn: 0 } }).suggestions.maxPerTurn).toBe(3);
   });
 
+  it('keeps Semantic Memory disabled with bounded hybrid defaults', () => {
+    expect(DEFAULT_MEMORY_SETTINGS.semantic).toEqual({
+      enabled: false,
+      mode: 'local-linear',
+      remoteAllowed: false,
+      searchMode: 'hybrid',
+      maxSemanticCandidates: 10_000,
+      indexDaily: false,
+      indexScratchpad: false,
+      rerankEnabled: false
+    });
+  });
+
   it('validates MCP transports and rejects duplicate server ids', () => {
     expect(ExtensionSettingsSchema.parse({
       mcpServers: [

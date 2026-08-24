@@ -33,6 +33,7 @@ const api: DesktopApi = {
   saveMemorySettings: (input) => ipcRenderer.invoke(IPC.saveMemorySettings, input),
   getMemoryStatus: (input) => ipcRenderer.invoke(IPC.getMemoryStatus, input),
   rebuildMemoryIndex: (input) => ipcRenderer.invoke(IPC.rebuildMemoryIndex, input),
+  rebuildSemanticMemoryIndex: (input) => ipcRenderer.invoke(IPC.rebuildSemanticMemoryIndex, input),
   deleteMemoryEntry: (input) => ipcRenderer.invoke(IPC.deleteMemoryEntry, input),
   acceptMemoryCandidate: (input) => ipcRenderer.invoke(IPC.acceptMemoryCandidate, input),
   rejectMemoryCandidate: (input) => ipcRenderer.invoke(IPC.rejectMemoryCandidate, input),
