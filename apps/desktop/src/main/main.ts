@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import {
   AcceptMemoryCandidateInputSchema, ApprovalInputSchema, BindSessionProjectInputSchema, BrowserDockActionSchema, BrowserDockLayoutSchema, CreateSessionInputSchema, CreateSkillInputSchema, DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS, DEFAULT_MODEL_MAX_OUTPUT_TOKENS, DeleteMemoryEntryInputSchema, GetExtensionStatusInputSchema, GetHookStatusInputSchema, GetMemoryStatusInputSchema, HookProjectActionInputSchema, ImportSkillInputSchema, IPC, ListModelsInputSchema, MAX_IMAGE_ATTACHMENTS, MAX_IMAGE_BYTES, McpServerIdInputSchema, OpenHookConfigInputSchema, RebuildMemoryIndexInputSchema, RebuildSemanticMemoryIndexInputSchema, RejectMemoryCandidateInputSchema, RenameSessionInputSchema, SaveExtensionSettingsInputSchema, SaveMemorySettingsInputSchema, SaveSettingsInputSchema,
   SessionIdInputSchema, SkillPathInputSchema, StartTurnInputSchema, UpdateSkillInputSchema, WorkflowRunActionInputSchema,
+  WorkerCommandSchema, WorkerMessageSchema, serializedIpcBytes,
   type ExtensionStatus, type MemoryStatusSnapshot, type ProviderSettings, type SessionCompactionRecord, type WorkerCommand, type WorkerMessage, type WorkflowRunSnapshot
 } from '@desktop-agent/contracts';
 import { z } from 'zod';
@@ -20,11 +21,14 @@ import { collectWorkspaceChanges } from './workspace-changes';
 import { renderConversationTrajectoryMarkdown, trajectoryExportFilename } from './conversation-export';
 import { BrowserRuntime } from './browser-runtime';
 import { mapChromeCdpError, probeChromeCdp } from './browser-backends/chrome-cdp-client';
+import { SessionLifecycleManager } from './session-lifecycle';
 
 declare const MAIN_WINDOW_VITE_DEV_SERVER_URL: string | undefined;
 declare const MAIN_WINDOW_VITE_NAME: string;
 
 const currentDirectory = path.dirname(fileURLToPath(import.meta.url));
+const e2eDataDirectory = process.env.JOJO_E2E === '1' ? process.env.JOJO_E2E_DATA_DIR : undefined;
+if (e2eDataDirectory) app.setPath('userData', e2eDataDirectory);
 let mainWindow: BrowserWindow | null = null;
 let worker: UtilityProcess | null = null;
 let quitting = false;
@@ -58,6 +62,28 @@ const memoryRequests = new Map<string, {
 const workflowRuns = new Map<string, WorkflowRunSnapshot>();
 const browserSecretPrompts = new Map<string, { resolve: (value: string | undefined) => void }>();
 let mcpOAuthCredentialWrite: Promise<void> = Promise.resolve();
+const sessionLifecycle = new SessionLifecycleManager();
+
+function protocolViolation(direction: 'main_to_worker' | 'worker_to_main', raw: unknown, issues: readonly { path: PropertyKey[] }[]): void {
+  const messageType = raw && typeof raw === 'object' && 'type' in raw && typeof raw.type === 'string' ? raw.type : 'unknown';
+  console.warn('IPC protocol violation', {
+    direction,
+    messageType,
+    issuePaths: issues.slice(0, 5).map((issue) => issue.path.map(String).join('.')),
+    serializedSize: serializedIpcBytes(raw)
+  });
+}
+
+function postWorkerCommand(command: WorkerCommand): boolean {
+  const parsed = WorkerCommandSchema.safeParse(command);
+  if (!parsed.success) {
+    protocolViolation('main_to_worker', command, parsed.error.issues);
+    throw new Error('Main produced an invalid worker command.');
+  }
+  if (!worker) return false;
+  worker.postMessage(parsed.data);
+  return true;
+}
 
 function assertTrusted(event: IpcMainInvokeEvent): void {
   if (!mainWindow || event.sender.id !== mainWindow.webContents.id) throw new Error('Untrusted IPC sender.');
@@ -138,7 +164,7 @@ async function pushConfig(): Promise<void> {
   const apiKeys = await readApiKeys();
   const settings = await configStore.get(apiKeys);
   const mcpOAuthCredentials = await readMcpOAuthCredentials();
-  worker?.postMessage({ type: 'config.update', settings, apiKeys, mcpOAuthCredentials } satisfies WorkerCommand);
+  postWorkerCommand({ type: 'config.update', settings, apiKeys, mcpOAuthCredentials });
 }
 
 function waitForWorker(requestId: string, timeoutMs = 120_000): Promise<void> {
@@ -167,7 +193,7 @@ function requestMemoryStatus(command: Extract<WorkerCommand, { type: 'memory.sta
       reject(new Error('Memory status request timed out.'));
     }, 30_000);
     memoryRequests.set(command.requestId, { resolve, reject, timer });
-    worker!.postMessage(command);
+    postWorkerCommand(command);
   });
 }
 
@@ -177,14 +203,14 @@ function finishMemoryRequest(message: Extract<WorkerMessage, { type: 'memory.res
   memoryRequests.delete(message.requestId);
   clearTimeout(request.timer);
   if (!message.ok || !message.status) request.reject(new Error(message.error ?? 'Memory request failed.'));
-  else request.resolve(message.status);
+  else request.resolve(message.status as MemoryStatusSnapshot);
 }
 
 async function stopSessionRuntime(sessionId: string): Promise<void> {
   if (!worker) return;
   const requestId = crypto.randomUUID();
   const completion = waitForWorker(requestId);
-  worker.postMessage({ type: 'session.stop', requestId, sessionId } satisfies WorkerCommand);
+  postWorkerCommand({ type: 'session.stop', requestId, sessionId });
   await completion;
 }
 
@@ -223,13 +249,13 @@ async function beginMcpOAuth(serverId: string): Promise<void> {
         return;
       }
       callbackServer.close();
-      worker?.postMessage({
+      postWorkerCommand({
         type: 'mcp.oauth.callback', requestId, serverId,
         callbackParams: callback.searchParams.toString()
-      } satisfies WorkerCommand);
+      });
     })().catch((error) => finishMcpOAuth(requestId, error instanceof Error ? error : new Error(String(error))));
   });
-  worker.postMessage({ type: 'mcp.oauth.start', requestId, serverId, redirectUrl, state } satisfies WorkerCommand);
+  postWorkerCommand({ type: 'mcp.oauth.start', requestId, serverId, redirectUrl, state });
   await completion;
 }
 
@@ -315,7 +341,7 @@ async function invalidateHookRuntimes(): Promise<void> {
   if (!worker) return;
   const requestId = crypto.randomUUID();
   const completion = waitForWorker(requestId);
-  worker.postMessage({ type: 'hooks.invalidate', requestId } satisfies WorkerCommand);
+  postWorkerCommand({ type: 'hooks.invalidate', requestId });
   await completion;
 }
 
@@ -339,7 +365,13 @@ function startWorker(): void {
     serviceName: 'Desktop Agent Runtime',
     env: { ...process.env, DESKTOP_AGENT_DATA_DIR: app.getPath('userData') }
   });
-  worker.on('message', (message: WorkerMessage) => {
+  worker.on('message', (raw: unknown) => {
+    const parsed = WorkerMessageSchema.safeParse(raw);
+    if (!parsed.success) {
+      protocolViolation('worker_to_main', raw, parsed.error.issues);
+      return;
+    }
+    const message = parsed.data;
     if (message.type === 'ready') void pushConfig();
     else if (message.type === 'agent.event') sendToRenderer(IPC.agentEvent, message.event);
     else if (message.type === 'orchestration.event') {
@@ -383,6 +415,7 @@ function startWorker(): void {
     else if (message.type === 'browser.request') {
       void (async () => {
         if (!worker) return;
+        sessionLifecycle.assertMutable(message.sessionId);
         if (!browserRuntime) throw new Error('Browser runtime is not available.');
         const settings = await configStore.get(await readApiKeys());
         if (!settings.extensions.browser.enabled) throw new Error('Browser tools are disabled in Settings.');
@@ -396,18 +429,18 @@ function startWorker(): void {
             settings.extensions.browser,
             session.workingDirectory
           );
-          worker?.postMessage({ type: 'browser.result', requestId: message.requestId, result } satisfies WorkerCommand);
+          postWorkerCommand({ type: 'browser.result', requestId: message.requestId, result });
         } catch (error) {
-          worker?.postMessage({
+          postWorkerCommand({
             type: 'browser.result',
             requestId: message.requestId,
             error: mapChromeCdpError(error, settings.extensions.browser.chromeDebugPort).message
-          } satisfies WorkerCommand);
+          });
         }
-      })().catch((error) => worker?.postMessage({
+      })().catch((error) => postWorkerCommand({
         type: 'browser.result', requestId: message.requestId,
         error: error instanceof Error ? error.message : String(error)
-      } satisfies WorkerCommand));
+      }));
     }
     else if (message.type === 'worker.error') sendToRenderer(IPC.agentEvent, { type: 'turn.failed', code: 'worker_error', message: message.message });
     else if (message.type === 'hooks.invalidated') {
@@ -443,10 +476,12 @@ function registerIpc(): void {
       projectBound ? await createProjectIdentity(workingDirectory) : undefined,
       projectBound
     );
+    sessionLifecycle.markActive(session.id);
     sendToRenderer(IPC.sessionsChanged); return session;
   });
   ipcMain.handle(IPC.bindSessionProject, async (event, raw) => {
     assertTrusted(event); const input = BindSessionProjectInputSchema.parse(raw);
+    sessionLifecycle.assertMutable(input.sessionId);
     const projectIdentity = await createProjectIdentity(input.workingDirectory);
     if (!projectIdentity) throw new Error('所选项目目录不存在或无法访问。');
     const session = await sessionStore.bindProject(
@@ -458,12 +493,24 @@ function registerIpc(): void {
   });
   ipcMain.handle(IPC.renameSession, async (event, raw) => {
     assertTrusted(event); const input = RenameSessionInputSchema.parse(raw);
+    sessionLifecycle.assertMutable(input.sessionId);
     await sessionStore.rename(input.sessionId, input.title); sendToRenderer(IPC.sessionsChanged);
   });
   ipcMain.handle(IPC.deleteSession, async (event, raw) => {
     assertTrusted(event); const { sessionId } = SessionIdInputSchema.parse({ sessionId: raw });
-    await stopSessionRuntime(sessionId);
-    await sessionStore.delete(sessionId); sendToRenderer(IPC.sessionsChanged);
+    const lease = sessionLifecycle.beginDelete(sessionId);
+    try {
+      await stopSessionRuntime(sessionId);
+      await sessionStore.delete(sessionId);
+      for (const [workflowId, workflow] of workflowRuns) {
+        if (workflow.sessionId === sessionId) workflowRuns.delete(workflowId);
+      }
+      lease.commit();
+      sendToRenderer(IPC.sessionsChanged);
+    } catch (error) {
+      lease.rollback();
+      throw error;
+    }
   });
   ipcMain.handle(IPC.loadMessages, async (event, raw) => {
     assertTrusted(event); const { sessionId } = SessionIdInputSchema.parse({ sessionId: raw });
@@ -501,17 +548,18 @@ function registerIpc(): void {
   });
   ipcMain.handle(IPC.startTurn, async (event, raw) => {
     assertTrusted(event); const payload = StartTurnInputSchema.parse(raw);
+    sessionLifecycle.assertMutable(payload.sessionId);
     for (const image of payload.images) {
       if (Buffer.byteLength(image.data, 'base64') > MAX_IMAGE_BYTES) throw new Error(`图片必须小于 10 MB：${image.name ?? 'image'}`);
     }
     if (!worker) throw new Error('Agent runtime is not available.');
     const session = await sessionStore.get(payload.sessionId);
     if (!session) throw new Error('Session not found.');
-    worker.postMessage({ type: 'turn.start', payload } satisfies WorkerCommand);
+    postWorkerCommand({ type: 'turn.start', payload });
   });
   ipcMain.handle(IPC.cancelTurn, async (event, raw) => {
     assertTrusted(event); const { sessionId } = SessionIdInputSchema.parse({ sessionId: raw });
-    worker?.postMessage({ type: 'turn.cancel', sessionId } satisfies WorkerCommand);
+    postWorkerCommand({ type: 'turn.cancel', sessionId });
   });
   ipcMain.handle(IPC.listWorkflowRuns, async (event, raw) => {
     assertTrusted(event); const { sessionId } = SessionIdInputSchema.parse({ sessionId: raw });
@@ -521,19 +569,20 @@ function registerIpc(): void {
   });
   ipcMain.handle(IPC.cancelWorkflow, async (event, raw) => {
     assertTrusted(event); const input = WorkflowRunActionInputSchema.parse(raw);
-    worker?.postMessage({ type: 'workflow.cancel', ...input } satisfies WorkerCommand);
+    postWorkerCommand({ type: 'workflow.cancel', ...input });
   });
   ipcMain.handle(IPC.resumeWorkflow, async (event, raw) => {
     assertTrusted(event); const input = WorkflowRunActionInputSchema.parse(raw);
+    sessionLifecycle.assertMutable(input.sessionId);
     if (!worker) throw new Error('Agent runtime is not available.');
     const requestId = crypto.randomUUID();
     const completion = waitForWorker(requestId);
-    worker.postMessage({ type: 'workflow.resume', requestId, ...input } satisfies WorkerCommand);
+    postWorkerCommand({ type: 'workflow.resume', requestId, ...input });
     await completion;
   });
   ipcMain.handle(IPC.resolveApproval, async (event, raw) => {
     assertTrusted(event); const input = ApprovalInputSchema.parse(raw);
-    worker?.postMessage({ type: 'approval.resolve', ...input } satisfies WorkerCommand);
+    postWorkerCommand({ type: 'approval.resolve', ...input });
   });
   ipcMain.handle(IPC.chooseDirectory, async (event) => {
     assertTrusted(event); const result = await dialog.showOpenDialog(mainWindow!, { properties: ['openDirectory', 'createDirectory'] });
@@ -780,11 +829,15 @@ function registerIpc(): void {
   });
   ipcMain.handle(IPC.browserDockLayout, async (event, raw) => {
     assertTrusted(event);
-    browserRuntime?.setDockLayout(BrowserDockLayoutSchema.parse(raw));
+    const input = BrowserDockLayoutSchema.parse(raw);
+    sessionLifecycle.assertMutable(input.sessionId);
+    browserRuntime?.setDockLayout(input);
   });
   ipcMain.handle(IPC.browserDockAction, async (event, raw) => {
     assertTrusted(event);
-    await browserRuntime?.handleDockAction(BrowserDockActionSchema.parse(raw));
+    const input = BrowserDockActionSchema.parse(raw);
+    sessionLifecycle.assertMutable(input.sessionId);
+    await browserRuntime?.handleDockAction(input);
   });
   ipcMain.handle(IPC.probeChromeBrowser, async (event, raw) => {
     assertTrusted(event);
@@ -816,7 +869,7 @@ function registerIpc(): void {
     if (!worker) throw new Error('Agent runtime is not available.');
     const requestId = crypto.randomUUID();
     const completion = waitForWorker(requestId);
-    worker.postMessage({ type: 'mcp.oauth.disconnect', requestId, serverId } satisfies WorkerCommand);
+    postWorkerCommand({ type: 'mcp.oauth.disconnect', requestId, serverId });
     await completion;
   });
   ipcMain.handle(IPC.reconnectMcp, async (event, raw) => {
@@ -825,7 +878,7 @@ function registerIpc(): void {
     if (!worker) throw new Error('Agent runtime is not available.');
     const requestId = crypto.randomUUID();
     const completion = waitForWorker(requestId);
-    worker.postMessage({ type: 'mcp.reconnect', requestId, serverId } satisfies WorkerCommand);
+    postWorkerCommand({ type: 'mcp.reconnect', requestId, serverId });
     await completion;
   });
   ipcMain.handle(IPC.getHookStatus, async (event, raw) => {

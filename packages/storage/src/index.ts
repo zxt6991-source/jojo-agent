@@ -1,4 +1,4 @@
-import { appendFile, copyFile, mkdir, readFile, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises';
+import { appendFile, copyFile, mkdir, readFile, readdir, rename, rmdir, stat, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import {
@@ -62,9 +62,45 @@ export class JsonlSessionStore {
     if (!/^[a-zA-Z0-9_-]+$/.test(sessionId)) throw new Error('Invalid session id.');
     return path.join(this.directory, `${sessionId}.jsonl`);
   }
-  private async append(sessionId: string, record: SessionRecord): Promise<void> {
+  private tombstone(sessionId: string): string { return path.join(this.directory, '.tombstones', sessionId); }
+  private mutationLock(sessionId: string): string { return path.join(this.directory, '.locks', sessionId); }
+  private async exists(filePath: string): Promise<boolean> {
+    try { await stat(filePath); return true; }
+    catch (error: any) { if (error?.code === 'ENOENT') return false; throw error; }
+  }
+  private async withMutationLock<T>(sessionId: string, action: () => Promise<T>): Promise<T> {
     await this.ensureDirectory();
-    await appendFile(this.file(sessionId), `${JSON.stringify(record)}\n`, { encoding: 'utf8', flag: 'a' });
+    await mkdir(path.join(this.directory, '.locks'), { recursive: true });
+    const lockPath = this.mutationLock(sessionId);
+    const deadline = Date.now() + 30_000;
+    while (true) {
+      try { await mkdir(lockPath); break; }
+      catch (error: any) {
+        if (error?.code !== 'EEXIST') throw error;
+        if (Date.now() >= deadline) throw new Error(`Timed out waiting for session mutation lock: ${sessionId}`);
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    }
+    let result: T;
+    try { result = await action(); }
+    catch (actionError) {
+      try { await rmdir(lockPath); } catch { /* preserve the mutation error */ }
+      throw actionError;
+    }
+    try { await rmdir(lockPath); }
+    catch (error: any) { if (error?.code !== 'ENOENT') throw error; }
+    return result;
+  }
+  private async assertWritable(sessionId: string): Promise<void> {
+    if (await this.exists(this.tombstone(sessionId))) {
+      throw new Error(`session_unavailable: Session ${sessionId} has been deleted.`);
+    }
+  }
+  private async append(sessionId: string, record: SessionRecord): Promise<void> {
+    await this.withMutationLock(sessionId, async () => {
+      await this.assertWritable(sessionId);
+      await appendFile(this.file(sessionId), `${JSON.stringify(record)}\n`, { encoding: 'utf8', flag: 'a' });
+    });
   }
   async create(
     title: string,
@@ -168,8 +204,20 @@ export class JsonlSessionStore {
     return (await this.get(sessionId))!;
   }
   async delete(sessionId: string): Promise<void> {
-    try { await unlink(this.file(sessionId)); }
-    catch (error: any) { if (error?.code !== 'ENOENT') throw error; }
+    await this.withMutationLock(sessionId, async () => {
+      const tombstone = this.tombstone(sessionId);
+      await mkdir(path.dirname(tombstone), { recursive: true });
+      try { await writeFile(tombstone, new Date().toISOString(), { encoding: 'utf8', flag: 'wx', mode: 0o600 }); }
+      catch (error: any) { if (error?.code !== 'EEXIST') throw error; }
+
+      const trashDirectory = path.join(this.directory, '.trash');
+      const trashed = path.join(trashDirectory, `${sessionId}.${crypto.randomUUID()}.jsonl`);
+      await mkdir(trashDirectory, { recursive: true });
+      try { await rename(this.file(sessionId), trashed); }
+      catch (error: any) { if (error?.code !== 'ENOENT') throw error; }
+      try { await unlink(trashed); }
+      catch (error: any) { if (error?.code !== 'ENOENT') throw error; }
+    });
   }
   acquire(sessionId: string): () => void {
     if (this.locks.has(sessionId)) throw new Error('A turn is already running for this session.');

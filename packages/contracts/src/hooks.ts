@@ -158,10 +158,12 @@ export const HookSettingsSnapshotSchema = z.object({
 });
 export type HookSettingsSnapshot = z.infer<typeof HookSettingsSnapshotSchema>;
 
-export type HookErrorCode =
-  | 'hook_timeout' | 'hook_spawn_failed' | 'hook_exit_nonzero'
-  | 'hook_invalid_output' | 'hook_output_too_large' | 'hook_config_invalid'
-  | 'hook_untrusted' | 'hook_cancelled' | 'hook_internal_error';
+export const HookErrorCodeSchema = z.enum([
+  'hook_timeout', 'hook_spawn_failed', 'hook_exit_nonzero',
+  'hook_invalid_output', 'hook_output_too_large', 'hook_config_invalid',
+  'hook_untrusted', 'hook_cancelled', 'hook_internal_error'
+]);
+export type HookErrorCode = z.infer<typeof HookErrorCodeSchema>;
 
 export type HookFailure = { code: HookErrorCode; message: string };
 export type HookInvocationRecord = {

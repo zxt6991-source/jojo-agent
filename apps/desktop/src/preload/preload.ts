@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import { IPC, type AgentEvent, type BrowserDockState, type DesktopApi, type OrchestrationEvent } from '@desktop-agent/contracts';
+import { IPC, type DesktopApi } from '@desktop-agent/contracts';
+import { parseAgentPush, parseBrowserDockPush, parseBrowserSecretPush, parseOrchestrationPush } from './push-validation';
 
 const api: DesktopApi = {
   listSessions: () => ipcRenderer.invoke(IPC.listSessions),
@@ -50,12 +51,18 @@ const api: DesktopApi = {
   disableProjectHooks: (input) => ipcRenderer.invoke(IPC.disableProjectHooks, input),
   openHookConfig: (input) => ipcRenderer.invoke(IPC.openHookConfig, input),
   onAgentEvent: (listener) => {
-    const handler = (_event: Electron.IpcRendererEvent, value: AgentEvent) => listener(value);
+    const handler = (_event: Electron.IpcRendererEvent, raw: unknown) => {
+      const value = parseAgentPush(raw);
+      if (value) listener(value);
+    };
     ipcRenderer.on(IPC.agentEvent, handler);
     return () => ipcRenderer.removeListener(IPC.agentEvent, handler);
   },
   onOrchestrationEvent: (listener) => {
-    const handler = (_event: Electron.IpcRendererEvent, value: OrchestrationEvent) => listener(value);
+    const handler = (_event: Electron.IpcRendererEvent, raw: unknown) => {
+      const value = parseOrchestrationPush(raw);
+      if (value) listener(value);
+    };
     ipcRenderer.on(IPC.orchestrationEvent, handler);
     return () => ipcRenderer.removeListener(IPC.orchestrationEvent, handler);
   },
@@ -70,12 +77,18 @@ const api: DesktopApi = {
     return () => ipcRenderer.removeListener(IPC.extensionsChanged, handler);
   },
   onBrowserSecretRequest: (listener) => {
-    const handler = (_event: Electron.IpcRendererEvent, request: { requestId: string; name: string; description?: string }) => listener(request);
+    const handler = (_event: Electron.IpcRendererEvent, raw: unknown) => {
+      const request = parseBrowserSecretPush(raw);
+      if (request) listener(request);
+    };
     ipcRenderer.on(IPC.browserSecretRequest, handler);
     return () => ipcRenderer.removeListener(IPC.browserSecretRequest, handler);
   },
   onBrowserDockState: (listener) => {
-    const handler = (_event: Electron.IpcRendererEvent, state: BrowserDockState | null) => listener(state);
+    const handler = (_event: Electron.IpcRendererEvent, raw: unknown) => {
+      const state = parseBrowserDockPush(raw);
+      if (state !== undefined) listener(state);
+    };
     ipcRenderer.on(IPC.browserDockState, handler);
     return () => ipcRenderer.removeListener(IPC.browserDockState, handler);
   }

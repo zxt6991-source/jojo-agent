@@ -80,34 +80,28 @@ export const DEFAULT_EXTENSION_SETTINGS: ExtensionSettings = {
   browser: { ...DEFAULT_BROWSER_SETTINGS }
 };
 
-export type McpConnectionState = 'disabled' | 'connecting' | 'auth_required' | 'authorizing' | 'connected' | 'error';
-export type McpServerStatus = {
-  serverId: string;
-  name: string;
-  state: McpConnectionState;
-  toolCount: number;
-  resourceCount?: number;
-  promptCount?: number;
-  authType?: 'oauth';
-  error?: string;
-};
+export const McpConnectionStateSchema = z.enum(['disabled', 'connecting', 'auth_required', 'authorizing', 'connected', 'error']);
+export type McpConnectionState = z.infer<typeof McpConnectionStateSchema>;
+export const McpServerStatusSchema = z.object({
+  serverId: z.string().min(1).max(64), name: z.string().min(1).max(120), state: McpConnectionStateSchema,
+  toolCount: z.number().int().nonnegative(), resourceCount: z.number().int().nonnegative().optional(),
+  promptCount: z.number().int().nonnegative().optional(), authType: z.literal('oauth').optional(),
+  error: z.string().max(20_000).optional()
+}).strict();
+export type McpServerStatus = z.infer<typeof McpServerStatusSchema>;
 
-export type SkillStatus = {
-  id: string;
-  name: string;
-  description: string;
-  path: string;
-  rootPath: string;
-  origin: 'project' | 'user' | 'custom' | 'default';
-  resources: {
-    scripts: string[];
-    templates: string[];
-    references: string[];
-  };
-  enabled: boolean;
-  error?: string;
-  overriddenBy?: string;
-};
+export const SkillStatusSchema = z.object({
+  id: z.string().min(1).max(256), name: z.string().min(1).max(120), description: z.string().max(4_000),
+  path: z.string().min(1).max(4_096), rootPath: z.string().min(1).max(4_096),
+  origin: z.enum(['project', 'user', 'custom', 'default']),
+  resources: z.object({
+    scripts: z.array(z.string().max(4_096)).max(1_000),
+    templates: z.array(z.string().max(4_096)).max(1_000),
+    references: z.array(z.string().max(4_096)).max(1_000)
+  }).strict(),
+  enabled: z.boolean(), error: z.string().max(20_000).optional(), overriddenBy: z.string().max(4_096).optional()
+}).strict();
+export type SkillStatus = z.infer<typeof SkillStatusSchema>;
 
 export type SkillDetail = SkillStatus & { content: string };
 
@@ -116,7 +110,8 @@ export type SkillOperationResult = {
   path?: string;
 };
 
-export type ExtensionStatus = {
-  mcpServers: McpServerStatus[];
-  skills: SkillStatus[];
-};
+export const ExtensionStatusSchema = z.object({
+  mcpServers: z.array(McpServerStatusSchema).max(50),
+  skills: z.array(SkillStatusSchema).max(2_000)
+}).strict();
+export type ExtensionStatus = z.infer<typeof ExtensionStatusSchema>;

@@ -6,7 +6,9 @@
   "scripts": {
     "start": "electron-forge start",
     "package": "electron-forge package",
-    "make": "electron-forge make"
+    "make": "electron-forge make",
+    "build:e2e": "node scripts/build-e2e.mjs",
+    "test:e2e": "pnpm build:e2e && playwright test -c playwright.electron.config.ts"
   },
   "dependencies": {
     "@desktop-agent/agent": "workspace:*",
@@ -35,6 +37,7 @@
     "@electron-forge/plugin-fuses": "^7.10.2",
     "@electron-forge/plugin-vite": "^7.10.2",
     "@electron/fuses": "^1.8.0",
+    "@playwright/test": "^1.62.1",
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.1.1",

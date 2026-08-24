@@ -8,7 +8,7 @@ import type { WorkspaceChanges } from './workspace';
 import { ExtensionSettingsSchema } from './extensions';
 import type { ExtensionSettings, ExtensionStatus, SkillDetail, SkillOperationResult } from './extensions';
 import { ImageContentBlockSchema } from './messages';
-import type { ImageContentBlock, ToolResult } from './messages';
+import type { ImageContentBlock } from './messages';
 import { BROWSER_RECORDING_PARAM_NAME_PATTERN, BrowserRecordingIdSchema } from './browser-recording';
 import type { HookSettingsSnapshot } from './hooks';
 import { MemorySettingsSchema } from './memory';
@@ -39,7 +39,7 @@ export const StartTurnInputSchema = z.object({
   providerId: z.string().trim().min(1),
   model: z.string().trim().min(1),
   images: z.array(ImageContentBlockSchema).max(MAX_IMAGE_ATTACHMENTS).default([])
-}).refine((input) => input.text.trim().length > 0 || input.images.length > 0, {
+}).strict().refine((input) => input.text.trim().length > 0 || input.images.length > 0, {
   message: 'A turn must contain text or at least one image.'
 });
 
@@ -255,19 +255,20 @@ export const BrowserDockActionSchema = z.object({
   pageId: z.number().int().positive().optional()
 });
 
-export type BrowserDockTab = {
-  pageId: number;
-  title: string;
-  url: string;
-  active: boolean;
-};
+export const BrowserDockTabSchema = z.object({
+  pageId: z.number().int().positive(), title: z.string().max(2_000), url: z.string().max(20_000), active: z.boolean()
+}).strict();
+export type BrowserDockTab = z.infer<typeof BrowserDockTabSchema>;
 
-export type BrowserDockState = {
-  sessionId: string;
-  pages: BrowserDockTab[];
-  canGoBack: boolean;
-  canGoForward: boolean;
-};
+export const BrowserDockStateSchema = z.object({
+  sessionId: z.string().min(1).max(256), pages: z.array(BrowserDockTabSchema).max(500),
+  canGoBack: z.boolean(), canGoForward: z.boolean()
+}).strict();
+export type BrowserDockState = z.infer<typeof BrowserDockStateSchema>;
+
+export const BrowserSecretRequestSchema = z.object({
+  requestId: z.string().min(1).max(256), name: z.string().min(1).max(256), description: z.string().max(4_000).optional()
+}).strict();
 
 export type SessionCompactionRecord = {
   id: string;
@@ -331,43 +332,6 @@ export type DesktopApi = {
   onBrowserSecretRequest(listener: (request: { requestId: string; name: string; description?: string }) => void): () => void;
   onBrowserDockState(listener: (state: BrowserDockState | null) => void): () => void;
 };
-
-export type WorkerCommand =
-  | { type: 'turn.start'; payload: z.input<typeof StartTurnInputSchema> }
-  | { type: 'turn.cancel'; sessionId: string }
-  | { type: 'session.stop'; requestId: string; sessionId: string }
-  | { type: 'workflow.cancel'; sessionId: string; workflowId: string }
-  | { type: 'workflow.resume'; requestId: string; sessionId: string; workflowId: string }
-  | { type: 'approval.resolve'; requestId: string; allow: boolean }
-  | { type: 'config.update'; settings: ProviderSettings; apiKeys: Record<string, string>; mcpOAuthCredentials: Record<string, unknown> }
-  | { type: 'mcp.oauth.start'; requestId: string; serverId: string; redirectUrl: string; state: string }
-  | { type: 'mcp.oauth.callback'; requestId: string; serverId: string; callbackParams: string }
-  | { type: 'mcp.oauth.disconnect'; requestId: string; serverId: string }
-  | { type: 'mcp.reconnect'; requestId: string; serverId: string }
-  | { type: 'browser.result'; requestId: string; result?: ToolResult; error?: string }
-  | { type: 'hooks.invalidate'; requestId: string }
-  | { type: 'memory.status'; requestId: string; workingDirectory?: string }
-  | { type: 'memory.rebuild'; requestId: string; scope: 'global' | 'project'; workingDirectory?: string }
-  | { type: 'memory.semantic.rebuild'; requestId: string; workingDirectory?: string }
-  | { type: 'memory.delete'; requestId: string; scope: 'global' | 'project'; entryId: string; workingDirectory?: string }
-  | { type: 'memory.candidate.accept'; requestId: string; candidateId: string; workingDirectory?: string; userConfirmed: true; edit?: z.input<typeof MemoryCandidateReviewEditSchema> }
-  | { type: 'memory.candidate.reject'; requestId: string; candidateId: string; workingDirectory?: string };
-
-export type WorkerMessage =
-  | { type: 'ready' }
-  | { type: 'agent.event'; event: AgentEvent }
-  | { type: 'orchestration.event'; event: OrchestrationEvent }
-  | { type: 'session.stopped'; requestId: string; sessionId: string; ok: boolean; error?: string }
-  | { type: 'workflow.action.result'; requestId: string; ok: boolean; error?: string }
-  | { type: 'sessions.changed' }
-  | { type: 'extensions.status'; status: ExtensionStatus }
-  | { type: 'mcp.oauth.authorization'; requestId: string; url: string }
-  | { type: 'mcp.oauth.credentials'; serverId: string; credentials: unknown }
-  | { type: 'mcp.oauth.result'; requestId: string; ok: boolean; error?: string }
-  | { type: 'browser.request'; requestId: string; sessionId: string; action: BrowserAction; approved: boolean }
-  | { type: 'hooks.invalidated'; requestId: string; ok: boolean; error?: string }
-  | { type: 'memory.result'; requestId: string; ok: boolean; status?: MemoryStatusSnapshot; error?: string }
-  | { type: 'worker.error'; message: string };
 
 export const IPC = {
   listSessions: 'sessions:list',

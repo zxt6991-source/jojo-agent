@@ -9,6 +9,7 @@
     "lint": "eslint . --max-warnings=0",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:e2e:electron": "pnpm --filter @desktop-agent/desktop test:e2e",
     "test:watch": "vitest"
   },
   "devDependencies": {

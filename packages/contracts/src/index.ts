@@ -1,6 +1,7 @@
 export * from './agent';
 export * from './browser-recording';
 export * from './desktop';
+export * from './desktop-ipc';
 export * from './extensions';
 export * from './hooks';
 export * from './messages';

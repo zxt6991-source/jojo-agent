@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import type { MemoryKind, MemoryScopeKind } from './memory.js';
 
 export type EmbeddingUsage = {
@@ -54,19 +55,15 @@ export type SemanticSearchHit = {
   similarity: number;
 };
 
-export type SemanticIndexStatus = {
-  enabled: boolean;
-  mode: 'local-linear' | 'plugin-vector';
-  providerId?: string;
-  model?: string;
-  indexedChunks: number;
-  pending: number;
-  failed: number;
-  skippedSecret: number;
-  stale: number;
-  lastRebuildAt?: number;
-  warning?: string;
-};
+export const SemanticIndexStatusSchema = z.object({
+  enabled: z.boolean(), mode: z.enum(['local-linear', 'plugin-vector']),
+  providerId: z.string().max(256).optional(), model: z.string().max(256).optional(),
+  indexedChunks: z.number().int().nonnegative(), pending: z.number().int().nonnegative(),
+  failed: z.number().int().nonnegative(), skippedSecret: z.number().int().nonnegative(),
+  stale: z.number().int().nonnegative(), lastRebuildAt: z.number().int().nonnegative().optional(),
+  warning: z.string().max(20_000).optional()
+}).strict();
+export type SemanticIndexStatus = z.infer<typeof SemanticIndexStatusSchema>;
 
 export type MemorySearchHit = {
   id: string;

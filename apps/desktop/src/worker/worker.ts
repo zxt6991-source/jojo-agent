@@ -5,7 +5,8 @@ import {
   CandidateExtractionResultSchema,
   DEFAULT_BROWSER_SETTINGS,
   isPlaceholderSessionTitle, sessionTitleFromPrompt,
-  type AgentEvent, type ApprovalRequest, type HookRuntime, type ImageContentBlock, type Message, type ModelSelection, type ProviderSettings, type SkillStatus, type WorkerCommand, type WorkerMessage
+  WorkerCommandSchema, WorkerMessageSchema, serializedIpcBytes,
+  type AgentEvent, type ApprovalRequest, type HookRuntime, type ImageContentBlock, type Message, type ModelProvider, type ModelRequest, type ModelSelection, type ProviderSettings, type SkillStatus, type WorkerMessage
 } from '@desktop-agent/contracts';
 import {
   createInstallSkillTool,
@@ -61,13 +62,14 @@ import { BrowserPermissionGate, BrowserToolBridge } from './browser-tools';
 import { createDesktopLeafAgentRunner, createDesktopWorkflowToolRuntime } from './orchestration-runtime';
 import { TurnTaskRegistry } from './turn-task-registry';
 
-type ParentPort = { on(event: 'message', listener: (event: { data: WorkerCommand }) => void): void; postMessage(message: WorkerMessage): void };
+type ParentPort = { on(event: 'message', listener: (event: { data: unknown }) => void): void; postMessage(message: WorkerMessage): void };
 const parentPort = (process as typeof process & { parentPort?: ParentPort }).parentPort;
 if (!parentPort) throw new Error('Agent worker must run as an Electron utility process.');
 
 const configuredDataDirectory = process.env.DESKTOP_AGENT_DATA_DIR;
 if (!configuredDataDirectory) throw new Error('DESKTOP_AGENT_DATA_DIR is required.');
 const dataDirectory: string = configuredDataDirectory;
+const e2eMode = process.env.JOJO_E2E === '1';
 let runtime: { settings: ProviderSettings; apiKeys: Record<string, string> } | null = null;
 const store = new JsonlSessionStore(path.join(dataDirectory, 'sessions'));
 const agentRuntimeStore = new SqliteAgentRuntimeStore(path.join(dataDirectory, 'runtime', 'agent-runtime.sqlite'));
@@ -157,7 +159,19 @@ function loadedSkillIdsFromHistory(messages: Message[]): Set<string> {
   })));
 }
 
-const post = (message: WorkerMessage) => parentPort.postMessage(message);
+const post = (message: WorkerMessage) => {
+  const parsed = WorkerMessageSchema.safeParse(message);
+  if (!parsed.success) {
+    console.warn('IPC protocol violation', {
+      direction: 'worker_to_main',
+      messageType: message.type,
+      issuePaths: parsed.error.issues.slice(0, 5).map((issue) => issue.path.map(String).join('.')),
+      serializedSize: serializedIpcBytes(message)
+    });
+    return;
+  }
+  parentPort.postMessage(parsed.data);
+};
 const executionScheduler = new AgentExecutionScheduler(4);
 const resourceGroups = new ResourceGroupLimiter();
 const providerSemaphore = new ProviderSemaphore();
@@ -272,6 +286,7 @@ async function utilityCompletion(
   maxOutputTokens: number,
   usageContext?: { sessionId: string; operationId: string; cause: 'memory_candidate' }
 ): Promise<string> {
+  if (e2eMode) return prompt.includes('strict JSON') ? '{"candidates":[]}' : 'E2E Session';
   if (!runtime) throw new Error('Provider settings are unavailable.');
   const config = runtime.settings.providers.find((provider) => provider.id === selection.providerId);
   const apiKey = runtime.apiKeys[selection.providerId];
@@ -305,6 +320,39 @@ async function utilityCompletion(
   }
   if (!text.trim()) throw new Error('Utility model returned no text.');
   return text.trim();
+}
+
+function latestUserText(request: ModelRequest): string {
+  return [...request.messages].reverse().find((message) => message.role === 'user')?.content
+    .filter((block) => block.type === 'text').map((block) => block.text).join('') ?? '';
+}
+
+function createE2eProvider(): ModelProvider {
+  return {
+    async *stream(request) {
+      const prompt = latestUserText(request);
+      if (prompt.includes('E2E: slow')) {
+        await new Promise<void>((resolve) => {
+          if (request.signal.aborted) { resolve(); return; }
+          const timer = setTimeout(resolve, 60_000);
+          request.signal.addEventListener('abort', () => { clearTimeout(timer); resolve(); }, { once: true });
+        });
+        return;
+      }
+      const hasToolResult = request.messages.some((message) => message.content.some((block) => block.type === 'tool_result'));
+      if (prompt.includes('E2E: approval') && !hasToolResult) {
+        const target = prompt.includes('deny') ? 'e2e-denied.txt' : 'e2e-approved.txt';
+        yield {
+          type: 'tool_call_completed' as const,
+          call: { id: `e2e-write-${crypto.randomUUID()}`, name: 'write_file', input: { path: target, content: 'approved' } }
+        };
+        yield { type: 'response_completed' as const, stopReason: 'tool_calls' };
+        return;
+      }
+      yield { type: 'text_delta' as const, text: prompt.includes('E2E: approval') ? 'approval handled' : 'hello from offline e2e' };
+      yield { type: 'response_completed' as const, stopReason: 'stop' };
+    }
+  };
 }
 
 async function extractMemoryCandidates(input: Parameters<import('@desktop-agent/memory').CandidateExtractor>[0]) {
@@ -397,7 +445,7 @@ async function startTurn(sessionId: string, text: string, images: ImageContentBl
     if (!runtime) throw new Error('模型配置尚未加载。');
     const providerConfig = runtime.settings.providers.find((provider) => provider.id === providerId);
     if (!providerConfig) throw new Error(`Provider“${providerId}”不存在。`);
-    const apiKey = runtime.apiKeys[providerId];
+    const apiKey = e2eMode ? 'e2e-offline-key' : runtime.apiKeys[providerId];
     if (!apiKey) throw new Error(`请先在设置中配置 ${providerConfig.name} API Key。`);
     if (!providerConfig.models.includes(model)) throw new Error(`模型“${model}”不在 ${providerConfig.name} 的可用模型中。`);
     const session = await store.get(sessionId);
@@ -558,7 +606,7 @@ async function startTurn(sessionId: string, text: string, images: ImageContentBl
       runtimeStore: agentRuntimeStore,
       hooks: loadedHooks.runtime,
       hookMeta: { transport: 'desktop' as const, agent: { kind: 'main' as const } },
-      provider: createProvider(providerConfig, apiKey),
+      provider: e2eMode ? createE2eProvider() : createProvider(providerConfig, apiKey),
       tools: [...toolRuntime.tools, ...memoryTools, ...browserBridge.tools(), ...orchestrationTools],
       memoryRuntime,
       ...(projectIdentity ? {
@@ -642,7 +690,18 @@ async function stopSession(sessionId: string): Promise<void> {
 }
 
 parentPort.on('message', (event) => {
-  const command = event.data;
+  const parsed = WorkerCommandSchema.safeParse(event.data);
+  if (!parsed.success) {
+    const raw = event.data;
+    console.warn('IPC protocol violation', {
+      direction: 'main_to_worker',
+      messageType: raw && typeof raw === 'object' && 'type' in raw && typeof raw.type === 'string' ? raw.type : 'unknown',
+      issuePaths: parsed.error.issues.slice(0, 5).map((issue) => issue.path.map(String).join('.')),
+      serializedSize: serializedIpcBytes(raw)
+    });
+    return;
+  }
+  const command = parsed.data;
   if (command.type === 'config.update') extensionReady = extensionReady.then(
     () => applyRuntimeConfig(command.settings, command.apiKeys, command.mcpOAuthCredentials)
   ).catch((error) => {
@@ -742,8 +801,8 @@ parentPort.on('message', (event) => {
     void memoryReady
       .then(() => memoryCandidateService.accept({
         id: command.candidateId,
-        workingDirectory: command.workingDirectory,
         userConfirmed: command.userConfirmed,
+        ...(command.workingDirectory ? { workingDirectory: command.workingDirectory } : {}),
         ...(command.edit ? { edit: command.edit } : {})
       }))
       .then(() => memoryStatus(command.workingDirectory))

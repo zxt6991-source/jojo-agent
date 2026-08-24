@@ -27,6 +27,8 @@ jobs:
       - run: pnpm lint
       - run: pnpm typecheck
       - run: pnpm test
+      - name: Electron E2E smoke
+        run: xvfb-run -a pnpm test:e2e:electron
       - name: Package desktop app
         run: |
           set -euo pipefail
