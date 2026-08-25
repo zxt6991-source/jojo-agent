@@ -13,7 +13,7 @@ const aliases = {
   '@desktop-agent/hooks': path.join(repositoryRoot, 'packages/hooks/src/index.ts'),
   '@desktop-agent/memory': path.join(repositoryRoot, 'packages/memory/src/index.ts')
 };
-const external = ['electron', ...builtinModules, ...builtinModules.map((module) => `node:${module}`)];
+const external = ['electron', /^node:/u, ...builtinModules];
 const define = {
   MAIN_WINDOW_VITE_DEV_SERVER_URL: 'undefined',
   MAIN_WINDOW_VITE_NAME: JSON.stringify('main_window')

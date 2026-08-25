@@ -27,8 +27,10 @@ declare const MAIN_WINDOW_VITE_DEV_SERVER_URL: string | undefined;
 declare const MAIN_WINDOW_VITE_NAME: string;
 
 const currentDirectory = path.dirname(fileURLToPath(import.meta.url));
-const e2eDataDirectory = process.env.JOJO_E2E === '1' ? process.env.JOJO_E2E_DATA_DIR : undefined;
+const e2eMode = process.env.JOJO_E2E === '1';
+const e2eDataDirectory = e2eMode ? process.env.JOJO_E2E_DATA_DIR : undefined;
 if (e2eDataDirectory) app.setPath('userData', e2eDataDirectory);
+if (e2eMode) app.disableHardwareAcceleration();
 let mainWindow: BrowserWindow | null = null;
 let worker: UtilityProcess | null = null;
 let quitting = false;
@@ -1028,9 +1030,11 @@ function createWindow(): void {
   else void mainWindow.loadFile(path.join(currentDirectory, `../renderer/${MAIN_WINDOW_VITE_NAME}/index.html`));
 }
 
-if (!app.requestSingleInstanceLock()) app.quit();
+if (!e2eMode && !app.requestSingleInstanceLock()) app.quit();
 else {
-  app.on('second-instance', () => { if (mainWindow) { if (mainWindow.isMinimized()) mainWindow.restore(); mainWindow.focus(); } });
+  if (!e2eMode) {
+    app.on('second-instance', () => { if (mainWindow) { if (mainWindow.isMinimized()) mainWindow.restore(); mainWindow.focus(); } });
+  }
   void app.whenReady().then(() => {
     const dataDirectory = app.getPath('userData');
     sessionStore = new JsonlSessionStore(path.join(dataDirectory, 'sessions'));
