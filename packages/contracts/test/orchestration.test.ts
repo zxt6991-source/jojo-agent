@@ -320,6 +320,33 @@ describe('WorkflowDefinitionSchema', () => {
     }).success).toBe(false);
   });
 
+  it('accepts first-class recording steps and bounded output references', () => {
+    const parsed = WorkflowDefinitionSchema.parse({
+      schemaVersion: 1,
+      name: 'monthly report',
+      steps: [
+        {
+          id: 'export', type: 'recording', recording: 'export-monthly-report',
+          params: { format: 'xlsx' },
+          inputs: { month: { valueFrom: '$workflow.args.month' } },
+          retry: { maxAttempts: 2, retryOn: ['browser_replay_failed'] }
+        },
+        {
+          id: 'analyze', type: 'agent', task: 'Analyze', dependsOn: ['export'],
+          inputs: { report: { valueFrom: '$steps.export.outputs.report.path' } }
+        }
+      ]
+    });
+    expect(parsed.steps[0]).toMatchObject({
+      type: 'recording', recording: 'export-monthly-report', maxRetries: 2, retryDelayMs: 250
+    });
+    expect(WorkflowDefinitionSchema.safeParse({
+      schemaVersion: 1,
+      name: 'legacy mismatch',
+      steps: [{ id: 'export', type: 'browser', recordingId: 'export-monthly-report' }]
+    }).success).toBe(false);
+  });
+
   it('accepts workflow and step budgets and rejects empty or unpriced cost budgets', () => {
     const parsed = WorkflowDefinitionSchema.parse({
       schemaVersion: 1,

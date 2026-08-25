@@ -204,7 +204,9 @@ export const WorkflowStepErrorCodeSchema = z.enum([
   'saved_workflow_not_found',
   'workflow_invalid_args',
   'resource_group_conflict',
-  'workflow_budget_exceeded'
+  'workflow_budget_exceeded',
+  'browser_replay_failed',
+  'browser_resume_unsafe'
 ]);
 export type WorkflowStepErrorCode = z.infer<typeof WorkflowStepErrorCodeSchema>;
 
@@ -236,7 +238,8 @@ export const WorkflowRetryableErrorCodeSchema = z.enum([
   'step_timeout',
   'provider_timeout',
   'provider_error',
-  'output_schema_validation_failed'
+  'output_schema_validation_failed',
+  'browser_replay_failed'
 ]);
 export type WorkflowRetryableErrorCode = z.infer<typeof WorkflowRetryableErrorCodeSchema>;
 
@@ -289,7 +292,7 @@ export const WorkflowInputDefinitionsSchema = z.record(
 export type WorkflowInputDefinitions = z.infer<typeof WorkflowInputDefinitionsSchema>;
 
 export const WorkflowStepInputSchema = z.object({
-  valueFrom: z.string().regex(/^\$(?:workflow\.args\.[A-Za-z][A-Za-z0-9_-]{0,63}|steps\.[A-Za-z][A-Za-z0-9_-]{0,63}\.(?:output|structuredResult(?:\.[A-Za-z0-9_-]+)*))$/u)
+  valueFrom: z.string().regex(/^\$(?:workflow\.args\.[A-Za-z][A-Za-z0-9_-]{0,63}|steps\.[A-Za-z][A-Za-z0-9_-]{0,63}\.(?:output|outputs(?:\.[A-Za-z0-9_-]+)+|structuredResult(?:\.[A-Za-z0-9_-]+)*))$/u)
 }).strict();
 export type WorkflowStepInput = z.infer<typeof WorkflowStepInputSchema>;
 
@@ -359,6 +362,21 @@ export const WorkflowToolStepSchema = WorkflowStepBaseSchema.extend({
   outputSchema: z.record(z.string(), z.unknown()).optional()
 });
 export type WorkflowToolStep = z.infer<typeof WorkflowToolStepSchema>;
+
+export const WorkflowRecordingStepSchema = WorkflowStepBaseSchema.extend({
+  type: z.literal('recording'),
+  recording: z.string().regex(/^(?:r[1-9][0-9]*|[a-z0-9][a-z0-9-]{0,79})$/u),
+  params: z.record(
+    z.string().regex(/^[A-Za-z_][A-Za-z0-9_]{0,63}$/u),
+    z.union([z.string().max(4_000), z.number().finite(), z.boolean()])
+  ).default({}),
+  inputs: WorkflowStepInputsSchema.optional(),
+  retry: WorkflowRetryPolicySchema.optional(),
+  maxRetries: z.number().int().min(0).max(3).default(2),
+  retryDelayMs: z.number().int().min(100).max(2_000).default(250),
+  outputSchema: z.record(z.string(), z.unknown()).optional()
+});
+export type WorkflowRecordingStep = z.infer<typeof WorkflowRecordingStepSchema>;
 
 export const WorkflowForeachAgentTemplateSchema = WorkflowAgentStepSchema.omit({
   id: true,
@@ -439,6 +457,7 @@ export type WorkflowCallStep = z.infer<typeof WorkflowCallStepSchema>;
 export const WorkflowStepSchema = z.discriminatedUnion('type', [
   WorkflowAgentStepSchema,
   WorkflowToolStepSchema,
+  WorkflowRecordingStepSchema,
   WorkflowForeachStepSchema,
   WorkflowConditionStepSchema,
   WorkflowCallStepSchema
@@ -471,7 +490,7 @@ export const WorkflowDefinitionSchema = z.object({
         context.addIssue({ code: 'custom', path: ['steps', index, 'dependsOn'], message: `Unknown dependency: ${dependency}` });
       }
     }
-    const declaredInputs = step.type === 'agent' || step.type === 'tool'
+    const declaredInputs = step.type === 'agent' || step.type === 'tool' || step.type === 'recording'
       ? step.inputs
       : step.type === 'foreach'
         ? step.template.inputs
@@ -620,9 +639,10 @@ export type WorkflowDefinition = z.infer<typeof WorkflowDefinitionSchema>;
 
 export const WorkflowStepSnapshotSchema = z.object({
   id: z.string().min(1),
-  type: z.enum(['agent', 'tool', 'foreach', 'condition', 'workflow']).optional(),
+  type: z.enum(['agent', 'tool', 'recording', 'foreach', 'condition', 'workflow']).optional(),
   profile: SubAgentProfileSchema.optional(),
   tool: WorkflowToolStepNameSchema.optional(),
+  recording: z.string().min(1).optional(),
   workflow: z.string().min(1).optional(),
   model: z.string().min(1).optional(),
   parentId: z.string().min(1).optional(),
@@ -720,6 +740,7 @@ export const StoredWorkflowRequestSchema = z.object({
   definition: WorkflowDefinitionSchema,
   definitionHash: z.string().regex(/^[a-f0-9]{64}$/u),
   memory: WorkflowMemoryBindingSchema.optional(),
+  browserApproved: z.boolean().optional(),
   createdAt: z.string().datetime()
 });
 export type StoredWorkflowRequest = z.infer<typeof StoredWorkflowRequestSchema>;

@@ -34,8 +34,9 @@ import { evaluateWorkflowCondition } from './condition.js';
 import { resolveWorkflowReference, resolveWorkflowStepInputs } from './data/references.js';
 import { materializeWorkflowDefinition, resolveWorkflowArgs } from './data/args.js';
 import { AgentStepExecutor } from './executors/agent-step.js';
+import { RecordingStepExecutor } from './executors/browser-step.js';
 import { ToolStepExecutor } from './executors/tool-step.js';
-import type { WorkflowStepExecutionResult, WorkflowStepExecutor, WorkflowToolRuntime } from './executors/types.js';
+import type { WorkflowRecordingRuntime, WorkflowStepExecutionResult, WorkflowStepExecutor, WorkflowToolRuntime } from './executors/types.js';
 import {
   buildForeachVirtualStep,
   createForeachInstanceSnapshot,
@@ -53,6 +54,7 @@ export type WorkflowEngineOptions = {
   isolation?: IsolationManager;
   profileRegistry?: AgentProfileRegistry;
   toolRuntime?: WorkflowToolRuntime;
+  recordingRuntime?: WorkflowRecordingRuntime;
   savedWorkflows?: SavedWorkflowRegistry;
   maxWorkflowDepth?: number;
   resourceGroups?: ResourceGroupLimiter;
@@ -71,13 +73,14 @@ function stepSnapshotIdentity(
   workflowModel: string,
   memorySnapshotId?: string
 ): Pick<WorkflowStepSnapshot,
-  'type' | 'profile' | 'tool' | 'model' | 'workflow' | 'resourceGroup' | 'dependsOn' | 'memorySnapshotId'
+  'type' | 'profile' | 'tool' | 'recording' | 'model' | 'workflow' | 'resourceGroup' | 'dependsOn' | 'memorySnapshotId'
 > {
   const dependsOn = { dependsOn: [...step.dependsOn] };
   const resourceGroup = workflowStepResources(step)?.group;
   const group = resourceGroup ? { resourceGroup } : {};
   const memory = memorySnapshotId ? { memorySnapshotId } : {};
   if (step.type === 'tool') return { type: 'tool', tool: step.tool, ...dependsOn };
+  if (step.type === 'recording') return { type: 'recording', recording: step.recording, ...dependsOn };
   if (step.type === 'foreach') return {
     type: 'foreach', ...group, ...(step.template.type === 'agent' ? memory : {}), ...dependsOn
   };
@@ -304,6 +307,7 @@ export function createInitialWorkflowSnapshot(request: WorkflowExecutionRequest)
 export class WorkflowEngine {
   private readonly agentExecutor: AgentStepExecutor;
   private readonly toolExecutor: ToolStepExecutor;
+  private readonly recordingExecutor: RecordingStepExecutor;
   private readonly savedWorkflows: SavedWorkflowRegistry | undefined;
   private readonly maxWorkflowDepth: number;
   private readonly resourceGroups: ResourceGroupLimiter;
@@ -317,6 +321,7 @@ export class WorkflowEngine {
     const profileRegistry = options.profileRegistry ?? createBuiltinAgentProfileRegistry();
     this.agentExecutor = new AgentStepExecutor(runner, profileRegistry, options.isolation);
     this.toolExecutor = new ToolStepExecutor(options.toolRuntime);
+    this.recordingExecutor = new RecordingStepExecutor(options.recordingRuntime);
     this.savedWorkflows = options.savedWorkflows;
     this.maxWorkflowDepth = options.maxWorkflowDepth ?? MAX_WORKFLOW_DEPTH;
     this.resourceGroups = options.resourceGroups ?? new ResourceGroupLimiter();
@@ -857,6 +862,7 @@ export class WorkflowEngine {
           providerId: request.providerId,
           model: request.model,
           args: nestedArgs,
+          browserApproved: request.browserApproved === true,
           definition: materializeWorkflowDefinition(saved.definition, nestedArgs),
           createdAt: previousChild?.createdAt ?? new Date().toISOString(),
           ...(request.memory ? { memory: request.memory } : {}),
@@ -997,7 +1003,7 @@ export class WorkflowEngine {
             state: 'running',
             ...(current.startedAt ? {} : { startedAt: new Date().toISOString() })
           });
-          const kind = step.type === 'tool' ? `tool ${step.tool}` : 'agent';
+          const kind = step.type === 'tool' ? `tool ${step.tool}` : step.type === 'recording' ? `recording ${step.recording}` : 'agent';
           log('info', `Started workflow ${kind} step attempt ${current.attempt}.`, step.id);
           const baseUsage = { ...current.usage };
           stepTimer = setTimeout(() => {
@@ -1175,6 +1181,7 @@ export class WorkflowEngine {
   private executorFor(step: WorkflowStep): WorkflowStepExecutor {
     if (step.type === 'agent') return this.agentExecutor;
     if (step.type === 'tool') return this.toolExecutor;
+    if (step.type === 'recording') return this.recordingExecutor;
     throw new OrchestrationError('workflow_step_type_unsupported', `Unsupported workflow step type: ${(step as WorkflowStep).type}`);
   }
 
@@ -1225,7 +1232,7 @@ export class WorkflowEngine {
         ...(result.stopReason === 'max_iterations' ? { errorCode: 'max_iterations' as const } : {}),
         incomplete: result.incomplete || output.truncated, finishedAt, ...isolation
       });
-      const kind = step.type === 'tool' ? 'tool' : 'agent';
+      const kind = step.type === 'tool' ? 'tool' : step.type === 'recording' ? 'recording' : 'agent';
       log(result.incomplete || output.truncated ? 'warning' : 'info', `Completed workflow ${kind} step.`, step.id);
     }
   }

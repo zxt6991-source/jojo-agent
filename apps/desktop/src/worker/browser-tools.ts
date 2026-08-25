@@ -2,6 +2,7 @@ import { z } from 'zod';
 import {
   BrowserActionSchema,
   BROWSER_RECORDING_PARAM_NAME_PATTERN,
+  BrowserFramePathSchema,
   BrowserRecordingIdSchema,
   type ApprovalRequest,
   type BrowserAction,
@@ -15,14 +16,17 @@ import {
   type WorkerMessage
 } from '@desktop-agent/contracts';
 
-type BrowserRequestPost = (message: Extract<WorkerMessage, { type: 'browser.request' }>) => void;
+type BrowserRequestPost = (message: Extract<WorkerMessage, { type: 'browser.request' | 'browser.cancel' }>) => void;
 
 const BrowserOpenInput = z.object({ url: z.string().url() });
 const BrowserNewPageInput = z.object({ url: z.string().url() });
 const BrowserPagesInput = z.object({});
 const BrowserSelectPageInput = z.object({ pageId: z.number().int().positive() });
 const BrowserClosePageInput = z.object({ pageId: z.number().int().positive() });
-const BrowserRecordStartInput = z.object({ name: z.string().trim().min(1).max(120).optional() });
+const BrowserRecordStartInput = z.object({
+  name: z.string().trim().min(1).max(120).optional(),
+  mode: z.enum(['agent_trace', 'user_demo']).default('agent_trace')
+});
 const BrowserRecordStopInput = z.object({});
 const BrowserRecordCancelInput = z.object({});
 const BrowserRecordingsInput = z.object({});
@@ -35,15 +39,18 @@ const BrowserReplayInput = z.object({
     z.union([z.string().max(4_000), z.number(), z.boolean()])
   ).default({}),
   maxRetries: z.number().int().min(0).max(3).default(2),
-  retryDelayMs: z.number().int().min(100).max(2_000).default(250)
-});
-const BrowserReadInput = z.object({ maxNodes: z.number().int().min(20).max(2_000).default(300) });
+  retryDelayMs: z.number().int().min(100).max(2_000).default(250),
+  runId: z.string().regex(/^brun_[a-zA-Z0-9_-]{8,100}$/u).optional(),
+  resumeRunId: z.string().regex(/^brun_[a-zA-Z0-9_-]{8,100}$/u).optional(),
+  confirmUnsafeResume: z.boolean().default(false)
+}).refine((input) => !(input.runId && input.resumeRunId), { message: 'Provide either runId or resumeRunId, not both.' });
+const BrowserReadInput = z.object({ maxNodes: z.number().int().min(20).max(2_000).default(300), frame: BrowserFramePathSchema.optional() });
 const BrowserEvalInput = z.object({ js: z.string().trim().min(1).max(20_000) });
 const BrowserSelector = z.string().trim().min(1).max(2_000);
 const BrowserElementRef = z.string().regex(/^e[1-9][0-9]*$/u);
 
 function targetInput<T extends z.ZodRawShape>(shape: T, required: boolean) {
-  return z.object({ selector: BrowserSelector.optional(), ref: BrowserElementRef.optional(), ...shape }).superRefine((input, context) => {
+  return z.object({ selector: BrowserSelector.optional(), ref: BrowserElementRef.optional(), frame: BrowserFramePathSchema.optional(), ...shape }).superRefine((input, context) => {
     const target = input as { selector?: string; ref?: string };
     if (target.selector && target.ref) context.addIssue({ code: 'custom', message: 'Provide either selector or ref, not both.' });
     if (required && !target.selector && !target.ref) context.addIssue({ code: 'custom', message: 'Provide selector or ref.' });
@@ -106,14 +113,14 @@ const ACTIONS = {
   browser_pages: { schema: BrowserPagesInput, action: 'pages', description: 'List controlled browser pages and identify the active page.' },
   browser_select_page: { schema: BrowserSelectPageInput, action: 'select_page', description: 'Select and focus a controlled browser page.' },
   browser_close_page: { schema: BrowserClosePageInput, action: 'close_page', description: 'Close a controlled browser page by id.' },
-  browser_record_start: { schema: BrowserRecordStartInput, action: 'record_start', description: 'Start recording successful browser workflow steps. Stopping saves a YAML file under userData/browser-recordings that survives app restart.' },
+  browser_record_start: { schema: BrowserRecordStartInput, action: 'record_start', description: 'Start an agent_trace recording, or a user_demo recording that captures the user’s own Chrome interactions. Password-like values are never captured.' },
   browser_record_stop: { schema: BrowserRecordStopInput, action: 'record_stop', description: 'Stop the active browser workflow recording and persist it as YAML.' },
   browser_record_cancel: { schema: BrowserRecordCancelInput, action: 'record_cancel', description: 'Cancel the active browser workflow recording without saving.' },
   browser_recordings: { schema: BrowserRecordingsInput, action: 'recordings', description: 'List persisted browser workflow recordings without exposing typed text or secret values.' },
   browser_record_get: { schema: BrowserRecordGetInput, action: 'record_get', description: 'Read a persisted browser recording as YAML. Typed text is replaced with character counts.' },
   browser_record_delete: { schema: BrowserRecordDeleteInput, action: 'record_delete', description: 'Delete a persisted browser recording YAML file. Requires approval.' },
   browser_replay: { schema: BrowserReplayInput, action: 'replay', description: 'Replay a persisted browser workflow. Pass non-secret params here; secret params must come from JOJO_BROWSER_SECRET_<NAME> or the password prompt, never from this object.' },
-  browser_read: { schema: BrowserReadInput, action: 'read', description: 'Read visible semantic page nodes and stable element refs for later actions. Use web_fetch for public pages that only need to be read as text.' },
+  browser_read: { schema: BrowserReadInput, action: 'read', description: 'Read visible semantic nodes and stable element refs from the page or a same-origin/cross-origin iframe. Use web_fetch for public pages that only need to be read as text.' },
   browser_eval: { schema: BrowserEvalInput, action: 'eval', description: 'Evaluate JavaScript in the active page and return a JSON-safe result. Requires approval. Use for extracting structured DOM data, Shadow DOM, or SPA state. Do not use this to bypass domain or file permissions.' },
   browser_wait: { schema: BrowserWaitInput, action: 'wait', description: 'Wait until an element selected by ref or CSS selector is attached, detached, visible, or hidden.' },
   browser_scroll: { schema: BrowserScrollInput, action: 'scroll', description: 'Scroll by an offset or bring an element selected by ref or CSS selector into view.' },
@@ -149,7 +156,13 @@ const SAFE_REPLAY_BROWSER_TOOLS = new Set<BrowserToolName>([
 
 const TARGET_PROPERTIES = {
   selector: { type: 'string', description: 'CSS selector. Pass either selector or ref, not both. Prefer ref from browser_read when available.' },
-  ref: { type: 'string', pattern: '^e[1-9][0-9]*$', description: 'Stable element ref from browser_read. Pass either ref or selector, not both.' }
+  ref: { type: 'string', pattern: '^e[1-9][0-9]*$', description: 'Stable element ref from browser_read. Pass either ref or selector, not both.' },
+  frame: {
+    type: 'object',
+    properties: { selectors: { type: 'array', items: { type: 'string', minLength: 1, maxLength: 2_000 }, minItems: 1, maxItems: 16 } },
+    required: ['selectors'], additionalProperties: false,
+    description: 'Optional outer-to-inner iframe selector path. Refs returned by browser_read already retain it.'
+  }
 } as const;
 
 function targetObjectSchema(properties: Record<string, unknown> = {}, required: string[] = []): Record<string, unknown> {
@@ -169,7 +182,12 @@ function inputSchemaFor(name: BrowserToolName): Record<string, unknown> {
     type: 'object', properties: { pageId: { type: 'integer', minimum: 1 } }, required: ['pageId'], additionalProperties: false
   };
   if (name === 'browser_record_start') return {
-    type: 'object', properties: { name: { type: 'string', minLength: 1, maxLength: 120 } }, additionalProperties: false
+    type: 'object',
+    properties: {
+      name: { type: 'string', minLength: 1, maxLength: 120 },
+      mode: { type: 'string', enum: ['agent_trace', 'user_demo'], default: 'agent_trace' }
+    },
+    additionalProperties: false
   };
   if (name === 'browser_record_stop' || name === 'browser_record_cancel' || name === 'browser_recordings') return { type: 'object', properties: {}, additionalProperties: false };
   if (name === 'browser_record_get' || name === 'browser_record_delete') return {
@@ -188,11 +206,30 @@ function inputSchemaFor(name: BrowserToolName): Record<string, unknown> {
         description: 'Non-secret recording parameters. Values must be string, number, or boolean. Never put passwords or tokens here.'
       },
       maxRetries: { type: 'integer', minimum: 0, maximum: 3, default: 2 },
-      retryDelayMs: { type: 'integer', minimum: 100, maximum: 2000, default: 250 }
+      retryDelayMs: { type: 'integer', minimum: 100, maximum: 2000, default: 250 },
+      runId: {
+        type: 'string', pattern: '^brun_[a-zA-Z0-9_-]{8,100}$',
+        description: 'Stable run id for a new replay, used by workflow recovery.'
+      },
+      resumeRunId: {
+        type: 'string', pattern: '^brun_[a-zA-Z0-9_-]{8,100}$',
+        description: 'Continue an interrupted replay run. Already verified steps are skipped.'
+      },
+      confirmUnsafeResume: {
+        type: 'boolean', default: false,
+        description: 'Explicitly allow retrying a step whose external effect may already have happened.'
+      }
     },
     required: ['recordingId'], additionalProperties: false
   };
-  if (name === 'browser_read') return { type: 'object', properties: { maxNodes: { type: 'integer', minimum: 20, maximum: 2000, default: 300 } }, additionalProperties: false };
+  if (name === 'browser_read') return {
+    type: 'object',
+    properties: {
+      maxNodes: { type: 'integer', minimum: 20, maximum: 2000, default: 300 },
+      frame: TARGET_PROPERTIES.frame
+    },
+    additionalProperties: false
+  };
   if (name === 'browser_eval') return {
     type: 'object',
     properties: { js: { type: 'string', minLength: 1, maxLength: 20000, description: 'JavaScript expression or statement to evaluate in the page.' } },
@@ -282,7 +319,11 @@ function hostAllowed(urlValue: string, rules: string[]): boolean {
 type BrowserToolSettings = Pick<BrowserSettings, 'enabled' | 'allowedDomains'> & Partial<Pick<BrowserSettings, 'mode'>>;
 
 export class BrowserToolBridge {
-  private readonly pending = new Map<string, { resolve: (result: ToolResult) => void; reject: (error: Error) => void }>();
+  private readonly pending = new Map<string, {
+    resolve: (result: ToolResult) => void;
+    reject: (error: Error) => void;
+    progress: (text: string) => void;
+  }>();
 
   constructor(private readonly post: BrowserRequestPost, private readonly settings: () => BrowserToolSettings) {}
 
@@ -303,19 +344,25 @@ export class BrowserToolBridge {
     else pending.resolve(result);
   }
 
+  progress(requestId: string, text: string): void {
+    this.pending.get(requestId)?.progress(text);
+  }
+
   private execute(name: BrowserToolName, input: unknown, context: ToolContext): Promise<ToolResult> {
     const action = toAction(name, input);
     const requestId = crypto.randomUUID();
     return new Promise((resolve, reject) => {
       const finish = () => {
         this.pending.delete(requestId);
+        this.post({ type: 'browser.cancel', requestId });
         reject(new DOMException('Cancelled', 'AbortError'));
       };
       if (context.signal.aborted) { finish(); return; }
       context.signal.addEventListener('abort', finish, { once: true });
       this.pending.set(requestId, {
         resolve: (result) => { context.signal.removeEventListener('abort', finish); resolve(result); },
-        reject: (error) => { context.signal.removeEventListener('abort', finish); reject(error); }
+        reject: (error) => { context.signal.removeEventListener('abort', finish); reject(error); },
+        progress: context.onProgress
       });
       this.post({
         type: 'browser.request', requestId, sessionId: context.sessionId, action,
@@ -326,7 +373,11 @@ export class BrowserToolBridge {
 }
 
 export class BrowserPermissionGate implements PermissionGate {
-  constructor(private readonly base: PermissionGate, private readonly settings: () => BrowserToolSettings) {}
+  constructor(
+    private readonly base: PermissionGate,
+    private readonly settings: () => BrowserToolSettings,
+    private readonly describeRecording?: (recordingId: string, workingDirectory: string) => Promise<string>
+  ) {}
 
   async check(call: ToolCall, context: { sessionId: string; workingDirectory: string }): Promise<PermissionDecision> {
     if (!Object.hasOwn(ACTIONS, call.name)) return this.base.check(call, context);
@@ -344,9 +395,17 @@ export class BrowserPermissionGate implements PermissionGate {
     else if (action.action === 'new_page') reason = `Open browser domain ${new URL(action.url).hostname} in a new page`;
     else if (action.action === 'select_page') reason = `Attach Chrome tab ${action.pageId}`;
     else if (action.action === 'close_page') reason = `Close browser page ${action.pageId}`;
-    else if (action.action === 'record_start') reason = 'Start a browser workflow recording; typed text is saved to YAML when recording stops';
+    else if (action.action === 'record_start') reason = action.mode === 'user_demo'
+      ? 'Start capturing your own Chrome interactions as an automation; password-like values are excluded'
+      : 'Start recording successful Agent browser actions; typed text is saved to YAML when recording stops';
     else if (action.action === 'record_delete') reason = `Delete persisted browser recording ${action.recordingId}`;
-    else if (action.action === 'replay') reason = `Replay browser workflow ${action.recordingId}`;
+    else if (action.action === 'replay') {
+      const summary = await this.describeRecording?.(action.recordingId, context.workingDirectory).catch(() => undefined);
+      reason = action.resumeRunId
+        ? `Resume browser workflow ${action.recordingId} from ${action.resumeRunId}${action.confirmUnsafeResume ? ', including its unverified external-effect step' : ''}`
+        : `Replay browser workflow ${action.recordingId}`;
+      if (summary) reason += `\n${summary}`;
+    }
     else if (action.action === 'download') reason = `Download from ${new URL(action.url).hostname}`;
     else if (action.action === 'click') reason = `Click browser element ${action.ref ?? action.selector}`;
     else if (action.action === 'hover') reason = `Hover browser element ${action.ref ?? action.selector}`;

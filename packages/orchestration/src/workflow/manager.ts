@@ -120,6 +120,7 @@ export class WorkflowManager {
       providerId: input.providerId,
       model: input.model,
       args,
+      browserApproved: input.browserApproved === true,
       definition: materialized,
       ...(input.memory ? { memory: structuredClone(input.memory) } : {}),
       createdAt: new Date().toISOString()
@@ -179,10 +180,11 @@ export class WorkflowManager {
         };
         await this.persistence.appendTransition(previous, snapshot);
       }
-      const { memory: persistedMemory, ...persistedRequest } = persisted.request;
+      const { memory: persistedMemory, browserApproved: persistedBrowserApproved, ...persistedRequest } = persisted.request;
       const live: LiveWorkflow = {
         request: {
           ...persistedRequest,
+          ...(persistedBrowserApproved === undefined ? {} : { browserApproved: persistedBrowserApproved }),
           ...(persistedMemory ? { memory: {
             memorySnapshotId: persistedMemory.memorySnapshotId,
             contentHash: persistedMemory.contentHash,

@@ -1,4 +1,5 @@
-import type { PermissionDecision, PermissionGate, ToolCall } from '@desktop-agent/contracts';
+import { WorkflowDefinitionSchema, type PermissionDecision, type PermissionGate, type ToolCall } from '@desktop-agent/contracts';
+import { parse as parseYaml } from 'yaml';
 
 export const ORCHESTRATION_TOOL_NAMES = new Set([
   'sub_agent_start',
@@ -20,12 +21,41 @@ const WORKSPACE_BOUNDED_MUTATION_TOOLS = new Set(['write_file', 'edit_file', 'de
 type PermissionContext = { sessionId: string; workingDirectory: string };
 
 export class OrchestrationPermissionGate implements PermissionGate {
-  constructor(private readonly inner: PermissionGate) {}
+  constructor(
+    private readonly inner: PermissionGate,
+    private readonly describeBrowserWorkflow?: (call: ToolCall, context: PermissionContext) => Promise<string | undefined>
+  ) {}
 
-  check(call: ToolCall, context: PermissionContext): Promise<PermissionDecision> {
-    if (ORCHESTRATION_TOOL_NAMES.has(call.name)) return Promise.resolve({ decision: 'allow' });
+  async check(call: ToolCall, context: PermissionContext): Promise<PermissionDecision> {
+    if (call.name === 'workflow_start' && workflowMayUseBrowser(call.input)) {
+      const detail = await this.describeBrowserWorkflow?.(call, context).catch(() => undefined);
+      return {
+        decision: 'ask',
+        request: {
+          requestId: crypto.randomUUID(),
+          sessionId: context.sessionId,
+          call,
+          reason: 'Start a workflow that may replay approved Browser Recordings and produce external effects'
+            + (detail ? `\n${detail}` : '')
+        }
+      };
+    }
+    if (ORCHESTRATION_TOOL_NAMES.has(call.name)) return { decision: 'allow' };
     return this.inner.check(call, context);
   }
+}
+
+function workflowMayUseBrowser(input: unknown): boolean {
+  if (!input || typeof input !== 'object') return false;
+  const value = input as { name?: unknown; definition?: unknown };
+  if (typeof value.name === 'string') return true;
+  let definition: unknown = value.definition;
+  if (typeof definition === 'string') {
+    try { definition = parseYaml(definition, { maxAliasCount: 0 }); }
+    catch { return false; }
+  }
+  const parsed = WorkflowDefinitionSchema.safeParse(definition);
+  return parsed.success && parsed.data.steps.some((step) => step.type === 'recording' || step.type === 'workflow');
 }
 
 export class NonInteractivePermissionGate implements PermissionGate {

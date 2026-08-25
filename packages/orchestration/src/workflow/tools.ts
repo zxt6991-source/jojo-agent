@@ -60,7 +60,7 @@ const sharedStepProperties = {
         type: 'array', minItems: 1, maxItems: 4, uniqueItems: true,
         items: {
           type: 'string',
-          enum: ['step_timeout', 'provider_timeout', 'provider_error', 'output_schema_validation_failed']
+          enum: ['step_timeout', 'provider_timeout', 'provider_error', 'output_schema_validation_failed', 'browser_replay_failed']
         }
       }
     },
@@ -136,6 +136,25 @@ const toolStepSchema = {
     }
   },
   required: ['id', 'type', 'tool'],
+  additionalProperties: false
+};
+
+const recordingStepSchema = {
+  type: 'object',
+  properties: {
+    ...sharedStepProperties,
+    type: { type: 'string', enum: ['recording'] },
+    recording: { type: 'string', description: 'Persisted Browser Recording id.' },
+    params: {
+      type: 'object',
+      maxProperties: 64,
+      additionalProperties: { type: ['string', 'number', 'boolean'] },
+      description: 'Static non-secret recording params. Typed inputs overlay these values.'
+    },
+    maxRetries: { type: 'integer', minimum: 0, maximum: 3 },
+    retryDelayMs: { type: 'integer', minimum: 100, maximum: 2000 }
+  },
+  required: ['id', 'type', 'recording'],
   additionalProperties: false
 };
 
@@ -298,7 +317,7 @@ const definitionSchema = {
     outputStepId: { type: 'string' },
     steps: {
       type: 'array', minItems: 1, maxItems: 32,
-      items: { oneOf: [agentStepSchema, toolStepSchema, foreachStepSchema, conditionStepSchema, workflowCallStepSchema] }
+      items: { oneOf: [agentStepSchema, toolStepSchema, recordingStepSchema, foreachStepSchema, conditionStepSchema, workflowCallStepSchema] }
     }
   },
   required: ['schemaVersion', 'name', 'steps'],
@@ -309,7 +328,7 @@ const definitionSchema = {
       replay: 'never',
       definition: {
         name: 'workflow_start',
-        description: 'Start a validated declarative DAG of agent, allowlisted read-only tool, foreach, condition, and nested saved-workflow steps. Pass either an inline definition or a saved workflow name (project > user > builtin), plus optional bounded args. Returns immediately with a workflow id.',
+        description: 'Start a validated declarative DAG of agent, allowlisted read-only tool, browser recording, foreach, condition, and nested saved-workflow steps. Browser workflows require approval at start. Pass either an inline definition or a saved workflow name (project > user > builtin), plus optional bounded args. Returns immediately with a workflow id.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -337,6 +356,7 @@ const definitionSchema = {
             workingDirectory: context.workingDirectory,
             providerId: options.providerId,
             model: options.model,
+            browserApproved: context.approved,
             ...(memory ? { memory } : {}),
             ...(parsed.data.args !== undefined ? { args: parsed.data.args } : {}),
             ...(parsed.data.definition !== undefined ? { definition: parsed.data.definition } : {}),

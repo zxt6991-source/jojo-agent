@@ -165,7 +165,7 @@ export async function closeChromeTarget(
 
 export class ChromeCdpClient {
   private readonly pending = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
-  private readonly listeners = new Map<string, Set<(params: Record<string, unknown>) => void>>();
+  private readonly listeners = new Map<string, Set<(params: Record<string, unknown>, sessionId?: string) => void>>();
   private readonly disconnectListeners = new Set<() => void>();
   private nextId = 1;
   private closed = false;
@@ -186,7 +186,7 @@ export class ChromeCdpClient {
     }
   }
 
-  on(method: string, listener: (params: Record<string, unknown>) => void): () => void {
+  on(method: string, listener: (params: Record<string, unknown>, sessionId?: string) => void): () => void {
     const set = this.listeners.get(method) ?? new Set();
     set.add(listener);
     this.listeners.set(method, set);
@@ -198,7 +198,7 @@ export class ChromeCdpClient {
     return () => this.disconnectListeners.delete(listener);
   }
 
-  send(method: string, params?: Record<string, unknown>, timeoutMs = 30_000): Promise<unknown> {
+  send(method: string, params?: Record<string, unknown>, timeoutMs = 30_000, sessionId?: string): Promise<unknown> {
     if (this.closed || !this.transport) {
       return Promise.reject(new Error('Chrome debugger connection is closed.'));
     }
@@ -213,7 +213,7 @@ export class ChromeCdpClient {
         reject: (error) => { clearTimeout(timeout); reject(error); }
       });
       try {
-        this.transport!.send(JSON.stringify({ id, method, ...(params ? { params } : {}) }));
+        this.transport!.send(JSON.stringify({ id, method, ...(params ? { params } : {}), ...(sessionId ? { sessionId } : {}) }));
       } catch (error) {
         this.pending.delete(id);
         clearTimeout(timeout);
@@ -230,7 +230,7 @@ export class ChromeCdpClient {
   }
 
   private onMessage(raw: string): void {
-    let message: { id?: number; method?: string; params?: Record<string, unknown>; result?: unknown; error?: { message?: string } };
+    let message: { id?: number; method?: string; params?: Record<string, unknown>; result?: unknown; error?: { message?: string }; sessionId?: string };
     try { message = JSON.parse(raw) as typeof message; }
     catch { return; }
     if (typeof message.id === 'number') {
@@ -242,7 +242,7 @@ export class ChromeCdpClient {
       return;
     }
     if (message.method) {
-      for (const listener of this.listeners.get(message.method) ?? []) listener(message.params ?? {});
+      for (const listener of this.listeners.get(message.method) ?? []) listener(message.params ?? {}, message.sessionId);
     }
   }
 

@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { AgentEventSchema, BoundedJsonValueSchema, serializedIpcBytes } from './agent.js';
 import { BrowserActionSchema, StartTurnInputSchema } from './desktop.js';
+import { BrowserHealProposalSchema, BrowserHealRequestSchema } from './browser-recording.js';
 import { ExtensionStatusSchema } from './extensions.js';
 import { ToolResultSchema } from './messages.js';
 import { MemoryKindSchema, MemoryStatusSchema } from './memory.js';
@@ -58,6 +59,8 @@ const WorkerCommandBaseSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('mcp.oauth.callback'), requestId: IdSchema, serverId: IdSchema, callbackParams: z.string().max(100_000) }).strict(),
   z.object({ type: z.literal('mcp.oauth.disconnect'), requestId: IdSchema, serverId: IdSchema }).strict(),
   z.object({ type: z.literal('mcp.reconnect'), requestId: IdSchema, serverId: IdSchema }).strict(),
+  z.object({ type: z.literal('browser.heal.request'), requestId: IdSchema, sessionId: IdSchema, request: BrowserHealRequestSchema }).strict(),
+  z.object({ type: z.literal('browser.progress'), requestId: IdSchema, text: z.string().min(1).max(20_000) }).strict(),
   z.object({ type: z.literal('browser.result'), requestId: IdSchema, result: ToolResultSchema.optional(), error: ErrorSchema.optional() }).strict(),
   z.object({ type: z.literal('hooks.invalidate'), requestId: IdSchema }).strict(),
   z.object({ type: z.literal('memory.status'), requestId: IdSchema, workingDirectory: WorkingDirectorySchema.optional() }).strict(),
@@ -96,6 +99,8 @@ const WorkerMessageBaseSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('mcp.oauth.credentials'), serverId: IdSchema, credentials: BoundedJsonValueSchema }).strict(),
   z.object({ type: z.literal('mcp.oauth.result'), requestId: IdSchema, ok: z.boolean(), error: ErrorSchema.optional() }).strict(),
   z.object({ type: z.literal('browser.request'), requestId: IdSchema, sessionId: IdSchema, action: BrowserActionSchema, approved: z.boolean() }).strict(),
+  z.object({ type: z.literal('browser.cancel'), requestId: IdSchema }).strict(),
+  z.object({ type: z.literal('browser.heal.result'), requestId: IdSchema, proposal: BrowserHealProposalSchema.optional(), error: ErrorSchema.optional() }).strict(),
   z.object({ type: z.literal('hooks.invalidated'), requestId: IdSchema, ok: z.boolean(), error: ErrorSchema.optional() }).strict(),
   z.object({ type: z.literal('memory.result'), requestId: IdSchema, ok: z.boolean(), status: MemoryStatusSnapshotIpcSchema.optional(), error: ErrorSchema.optional() }).strict(),
   z.object({ type: z.literal('worker.error'), message: ErrorSchema }).strict()

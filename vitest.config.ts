@@ -13,6 +13,7 @@ export default defineConfig({
       '@desktop-agent/storage': path.resolve('packages/storage/src/index.ts')
       ,'@desktop-agent/memory': path.resolve('packages/memory/src/index.ts')
       ,'@desktop-agent/extensions': path.resolve('packages/extensions/src/index.ts')
+      ,'@desktop-agent/browser-automation': path.resolve('packages/browser-automation/src/index.ts')
     }
   },
   test: { environment: 'node', include: ['packages/**/test/**/*.test.ts', 'apps/**/src/**/*.test.ts'] }

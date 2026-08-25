@@ -22,6 +22,7 @@ export const ToolResultSchema = z.object({
   callId: z.string().min(1),
   ok: z.boolean(),
   content: z.string(),
+  structuredResult: z.unknown().optional(),
   contentBlocks: z.array(ToolResultContentBlockSchema).optional(),
   truncated: z.boolean().optional(),
   code: z.string().optional()

@@ -1,5 +1,5 @@
-import type { PermissionGate, ToolCall } from '@desktop-agent/contracts';
-import { describe, expect, it } from 'vitest';
+import type { PermissionGate, ToolCall, WorkerMessage } from '@desktop-agent/contracts';
+import { describe, expect, it, vi } from 'vitest';
 import { BrowserPermissionGate, BrowserToolBridge } from './browser-tools';
 
 const base: PermissionGate = {
@@ -64,6 +64,18 @@ describe('BrowserPermissionGate', () => {
     await expect(gate.check(call('browser_pages', {}), context)).resolves.toEqual({ decision: 'allow' });
   });
 
+  it('includes the resolved recording source, domains, and effects in replay approval', async () => {
+    const gate = new BrowserPermissionGate(
+      base,
+      () => ({ enabled: true, allowedDomains: [] }),
+      async () => 'Source: project (untrusted)\nDomains: example.com\nEffects: type credentials, download report'
+    );
+    await expect(gate.check(call('browser_replay', { recordingId: 'monthly-report' }), context)).resolves.toMatchObject({
+      decision: 'ask',
+      request: { reason: expect.stringContaining('Effects: type credentials, download report') }
+    });
+  });
+
   it('denies browser calls when disabled and delegates non-browser tools', async () => {
     const gate = new BrowserPermissionGate(base, () => ({ enabled: false, allowedDomains: [] }));
     await expect(gate.check(call('browser_read', {}), context)).resolves.toMatchObject({ decision: 'deny', code: 'browser_disabled' });
@@ -89,14 +101,56 @@ describe('BrowserPermissionGate', () => {
     expect(bridge.tools().find((tool) => tool.definition.name === 'browser_wait')?.definition.inputSchema)
       .toMatchObject({
         type: 'object',
-        properties: { ref: { type: 'string' }, selector: { type: 'string' } },
+        properties: {
+          ref: { type: 'string' }, selector: { type: 'string' },
+          frame: { type: 'object', properties: { selectors: { type: 'array', maxItems: 16 } } }
+        },
         additionalProperties: false
       });
+    expect(bridge.tools().find((tool) => tool.definition.name === 'browser_read')?.definition.inputSchema)
+      .toMatchObject({ properties: { frame: { type: 'object' } }, additionalProperties: false });
     expect(bridge.tools().find((tool) => tool.definition.name === 'browser_replay')?.definition.inputSchema)
       .toMatchObject({ required: ['recordingId'], additionalProperties: false });
+    expect(bridge.tools().find((tool) => tool.definition.name === 'browser_record_start')?.definition.inputSchema)
+      .toMatchObject({ properties: { mode: { enum: ['agent_trace', 'user_demo'] } }, additionalProperties: false });
     expect(bridge.tools().find((tool) => tool.definition.name === 'browser_console')?.definition.inputSchema)
       .toMatchObject({ additionalProperties: false });
     expect(bridge.tools().find((tool) => tool.definition.name === 'browser_network')?.definition.inputSchema)
       .toMatchObject({ additionalProperties: false });
+  });
+
+  it('forwards browser replay progress through the active tool context', async () => {
+    let request: Extract<WorkerMessage, { type: 'browser.request' }> | undefined;
+    const bridge = new BrowserToolBridge((message) => {
+      if (message.type === 'browser.request') request = message;
+    }, () => ({ enabled: true, allowedDomains: [] }));
+    const progress = vi.fn();
+    const replay = bridge.tools().find((tool) => tool.definition.name === 'browser_replay');
+    const pending = replay!.execute({ recordingId: 'r1' }, {
+      sessionId: 'session-1', workingDirectory: '/workspace', approved: true,
+      signal: new AbortController().signal, onProgress: progress
+    });
+    expect(request).toBeDefined();
+    bridge.progress(request!.requestId, '→ 1/2 open login');
+    bridge.resolve(request!.requestId, { callId: 'browser', ok: true, content: 'done' });
+    await expect(pending).resolves.toMatchObject({ ok: true });
+    expect(progress).toHaveBeenCalledWith('→ 1/2 open login');
+  });
+
+  it('cancels the main-process browser request when its tool signal aborts', async () => {
+    const messages: Array<Extract<WorkerMessage, { type: 'browser.request' | 'browser.cancel' }>> = [];
+    const bridge = new BrowserToolBridge((message) => messages.push(message), () => ({ enabled: true, allowedDomains: [] }));
+    const replay = bridge.tools().find((tool) => tool.definition.name === 'browser_replay')!;
+    const controller = new AbortController();
+    const pending = replay.execute({ recordingId: 'r1' }, {
+      sessionId: 'session-1', workingDirectory: '/workspace', approved: true,
+      signal: controller.signal, onProgress: () => undefined
+    });
+
+    controller.abort();
+
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    expect(messages).toHaveLength(2);
+    expect(messages[1]).toEqual({ type: 'browser.cancel', requestId: messages[0]!.requestId });
   });
 });

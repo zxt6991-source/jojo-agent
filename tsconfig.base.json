@@ -22,6 +22,7 @@
       ,"@desktop-agent/memory": ["packages/memory/src/index.ts"]
       ,"@desktop-agent/extensions": ["packages/extensions/src/index.ts"]
       ,"@desktop-agent/orchestration": ["packages/orchestration/src/index.ts"]
+      ,"@desktop-agent/browser-automation": ["packages/browser-automation/src/index.ts"]
     }
   }
 }

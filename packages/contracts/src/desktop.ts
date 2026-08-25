@@ -9,7 +9,7 @@ import { ExtensionSettingsSchema } from './extensions';
 import type { ExtensionSettings, ExtensionStatus, SkillDetail, SkillOperationResult } from './extensions';
 import { ImageContentBlockSchema } from './messages';
 import type { ImageContentBlock } from './messages';
-import { BROWSER_RECORDING_PARAM_NAME_PATTERN, BrowserRecordingIdSchema } from './browser-recording';
+import { BROWSER_RECORDING_PARAM_NAME_PATTERN, BrowserFramePathSchema, BrowserRecordingIdSchema } from './browser-recording';
 import type { HookSettingsSnapshot } from './hooks';
 import { MemorySettingsSchema } from './memory';
 import type { MemorySettings, MemoryStatusSnapshot } from './memory';
@@ -49,7 +49,11 @@ export const BrowserActionSchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('pages') }),
   z.object({ action: z.literal('select_page'), pageId: z.number().int().positive() }),
   z.object({ action: z.literal('close_page'), pageId: z.number().int().positive() }),
-  z.object({ action: z.literal('record_start'), name: z.string().trim().min(1).max(120).optional() }),
+  z.object({
+    action: z.literal('record_start'),
+    name: z.string().trim().min(1).max(120).optional(),
+    mode: z.enum(['agent_trace', 'user_demo']).default('agent_trace')
+  }),
   z.object({ action: z.literal('record_stop') }),
   z.object({ action: z.literal('record_cancel') }),
   z.object({ action: z.literal('recordings') }),
@@ -63,14 +67,18 @@ export const BrowserActionSchema = z.discriminatedUnion('action', [
       z.union([z.string().max(4_000), z.number(), z.boolean()])
     ).default({}),
     maxRetries: z.number().int().min(0).max(3).default(2),
-    retryDelayMs: z.number().int().min(100).max(2_000).default(250)
+    retryDelayMs: z.number().int().min(100).max(2_000).default(250),
+    runId: z.string().regex(/^brun_[a-zA-Z0-9_-]{8,100}$/u).optional(),
+    resumeRunId: z.string().regex(/^brun_[a-zA-Z0-9_-]{8,100}$/u).optional(),
+    confirmUnsafeResume: z.boolean().default(false)
   }),
-  z.object({ action: z.literal('read'), maxNodes: z.number().int().min(20).max(2_000).default(300) }),
+  z.object({ action: z.literal('read'), maxNodes: z.number().int().min(20).max(2_000).default(300), frame: BrowserFramePathSchema.optional() }),
   z.object({ action: z.literal('eval'), js: z.string().trim().min(1).max(20_000) }),
   z.object({
     action: z.literal('wait'),
     selector: z.string().trim().min(1).max(2_000).optional(),
     ref: z.string().regex(/^e[1-9][0-9]*$/u).optional(),
+    frame: BrowserFramePathSchema.optional(),
     state: z.enum(['attached', 'detached', 'visible', 'hidden']).default('visible'),
     timeoutMs: z.number().int().min(100).max(30_000).default(5_000)
   }),
@@ -78,16 +86,18 @@ export const BrowserActionSchema = z.discriminatedUnion('action', [
     action: z.literal('scroll'),
     selector: z.string().trim().min(1).max(2_000).optional(),
     ref: z.string().regex(/^e[1-9][0-9]*$/u).optional(),
+    frame: BrowserFramePathSchema.optional(),
     deltaX: z.number().int().min(-100_000).max(100_000).default(0),
     deltaY: z.number().int().min(-100_000).max(100_000).default(600)
   }),
-  z.object({ action: z.literal('click'), selector: z.string().trim().min(1).max(2_000).optional(), ref: z.string().regex(/^e[1-9][0-9]*$/u).optional() }),
-  z.object({ action: z.literal('hover'), selector: z.string().trim().min(1).max(2_000).optional(), ref: z.string().regex(/^e[1-9][0-9]*$/u).optional() }),
-  z.object({ action: z.literal('type'), selector: z.string().trim().min(1).max(2_000).optional(), ref: z.string().regex(/^e[1-9][0-9]*$/u).optional(), text: z.string().max(100_000), submit: z.boolean().default(false) }),
+  z.object({ action: z.literal('click'), selector: z.string().trim().min(1).max(2_000).optional(), ref: z.string().regex(/^e[1-9][0-9]*$/u).optional(), frame: BrowserFramePathSchema.optional() }),
+  z.object({ action: z.literal('hover'), selector: z.string().trim().min(1).max(2_000).optional(), ref: z.string().regex(/^e[1-9][0-9]*$/u).optional(), frame: BrowserFramePathSchema.optional() }),
+  z.object({ action: z.literal('type'), selector: z.string().trim().min(1).max(2_000).optional(), ref: z.string().regex(/^e[1-9][0-9]*$/u).optional(), frame: BrowserFramePathSchema.optional(), text: z.string().max(100_000), submit: z.boolean().default(false) }),
   z.object({
     action: z.literal('press'),
     selector: z.string().trim().min(1).max(2_000).optional(),
     ref: z.string().regex(/^e[1-9][0-9]*$/u).optional(),
+    frame: BrowserFramePathSchema.optional(),
     key: z.union([
       z.enum(['Enter', 'Tab', 'Escape', 'Backspace', 'Delete', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown', 'Space']),
       z.string().length(1)
@@ -97,12 +107,14 @@ export const BrowserActionSchema = z.discriminatedUnion('action', [
     action: z.literal('select'),
     selector: z.string().trim().min(1).max(2_000).optional(),
     ref: z.string().regex(/^e[1-9][0-9]*$/u).optional(),
+    frame: BrowserFramePathSchema.optional(),
     values: z.array(z.string().max(1_000)).min(1).max(20)
   }),
   z.object({
     action: z.literal('upload'),
     selector: z.string().trim().min(1).max(2_000).optional(),
     ref: z.string().regex(/^e[1-9][0-9]*$/u).optional(),
+    frame: BrowserFramePathSchema.optional(),
     paths: z.array(z.string().trim().min(1).max(4_096)).min(1).max(10)
   }),
   z.object({ action: z.literal('back') }),
@@ -135,6 +147,9 @@ export const BrowserActionSchema = z.discriminatedUnion('action', [
   }),
   z.object({ action: z.literal('cookies'), includeValues: z.boolean().default(false) })
 ]).superRefine((action, context) => {
+  if (action.action === 'replay' && action.runId && action.resumeRunId) {
+    context.addIssue({ code: 'custom', message: 'Provide either runId or resumeRunId, not both.' });
+  }
   if (!['wait', 'scroll', 'click', 'hover', 'type', 'press', 'select', 'upload'].includes(action.action)) return;
   const target = action as { action: string; selector?: string; ref?: string };
   if (target.selector && target.ref) {
@@ -266,6 +281,39 @@ export const BrowserDockStateSchema = z.object({
 }).strict();
 export type BrowserDockState = z.infer<typeof BrowserDockStateSchema>;
 
+export const BrowserRecordingRegistryInputSchema = z.object({
+  workingDirectory: z.string().trim().min(1).max(4_096).optional()
+}).strict();
+
+export const BrowserRecordingRegistryActionInputSchema = z.object({
+  recordingId: BrowserRecordingIdSchema,
+  workingDirectory: z.string().trim().min(1).max(4_096)
+}).strict();
+
+export const BrowserRecordingRegistryItemSchema = z.object({
+  id: BrowserRecordingIdSchema,
+  name: z.string().min(1).max(120),
+  description: z.string().max(2_000).optional(),
+  source: z.enum(['builtin', 'user', 'project']),
+  trust: z.enum(['not_required', 'trusted', 'untrusted']),
+  overriddenSources: z.array(z.enum(['builtin', 'user', 'project'])).max(3),
+  domains: z.array(z.string().max(253)).max(64),
+  effects: z.array(z.string().max(200)).max(32),
+  highRisk: z.boolean(),
+  stepCount: z.number().int().nonnegative().max(200),
+  revision: z.number().int().positive(),
+  contentHash: z.string().max(128),
+  updatedAt: z.string().datetime()
+}).strict();
+export type BrowserRecordingRegistryItem = z.infer<typeof BrowserRecordingRegistryItemSchema>;
+
+export const BrowserRecordingRegistrySnapshotSchema = z.object({
+  userDirectory: z.string().min(1).max(4_096),
+  projectDirectory: z.string().min(1).max(4_096).optional(),
+  recordings: z.array(BrowserRecordingRegistryItemSchema).max(1_000)
+}).strict();
+export type BrowserRecordingRegistrySnapshot = z.infer<typeof BrowserRecordingRegistrySnapshotSchema>;
+
 export const BrowserSecretRequestSchema = z.object({
   requestId: z.string().min(1).max(256), name: z.string().min(1).max(256), description: z.string().max(4_000).optional()
 }).strict();
@@ -316,6 +364,10 @@ export type DesktopApi = {
   probeChromeBrowser(port?: number): Promise<{ ok: true; browser: string } | { ok: false; error: string }>;
   setBrowserDockLayout(input: z.input<typeof BrowserDockLayoutSchema>): Promise<void>;
   browserDockAction(input: z.input<typeof BrowserDockActionSchema>): Promise<void>;
+  listBrowserRecordings(input?: z.input<typeof BrowserRecordingRegistryInputSchema>): Promise<BrowserRecordingRegistrySnapshot>;
+  trustProjectBrowserRecording(input: z.input<typeof BrowserRecordingRegistryActionInputSchema>): Promise<BrowserRecordingRegistrySnapshot>;
+  revokeProjectBrowserRecordingTrust(input: z.input<typeof BrowserRecordingRegistryActionInputSchema>): Promise<BrowserRecordingRegistrySnapshot>;
+  deleteBrowserRecording(input: z.input<typeof BrowserRecordingRegistryActionInputSchema>): Promise<BrowserRecordingRegistrySnapshot>;
   resolveBrowserSecret(input: { requestId: string; value?: string }): Promise<void>;
   connectMcpOAuth(input: z.input<typeof McpServerIdInputSchema>): Promise<void>;
   disconnectMcpOAuth(input: z.input<typeof McpServerIdInputSchema>): Promise<void>;
@@ -373,6 +425,10 @@ export const IPC = {
   browserDockLayout: 'browser:dock-layout',
   browserDockAction: 'browser:dock-action',
   browserDockState: 'browser:dock-state',
+  listBrowserRecordings: 'browser:recordings-list',
+  trustProjectBrowserRecording: 'browser:recording-trust',
+  revokeProjectBrowserRecordingTrust: 'browser:recording-revoke',
+  deleteBrowserRecording: 'browser:recording-delete',
   browserSecretRequest: 'browser:secret-request',
   browserSecretResolve: 'browser:secret-resolve',
   connectMcpOAuth: 'extensions:mcp-oauth-connect',

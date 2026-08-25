@@ -5,10 +5,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  AcceptMemoryCandidateInputSchema, ApprovalInputSchema, BindSessionProjectInputSchema, BrowserDockActionSchema, BrowserDockLayoutSchema, CreateSessionInputSchema, CreateSkillInputSchema, DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS, DEFAULT_MODEL_MAX_OUTPUT_TOKENS, DeleteMemoryEntryInputSchema, GetExtensionStatusInputSchema, GetHookStatusInputSchema, GetMemoryStatusInputSchema, HookProjectActionInputSchema, ImportSkillInputSchema, IPC, ListModelsInputSchema, MAX_IMAGE_ATTACHMENTS, MAX_IMAGE_BYTES, McpServerIdInputSchema, OpenHookConfigInputSchema, RebuildMemoryIndexInputSchema, RebuildSemanticMemoryIndexInputSchema, RejectMemoryCandidateInputSchema, RenameSessionInputSchema, SaveExtensionSettingsInputSchema, SaveMemorySettingsInputSchema, SaveSettingsInputSchema,
+  AcceptMemoryCandidateInputSchema, ApprovalInputSchema, BindSessionProjectInputSchema, BrowserDockActionSchema, BrowserDockLayoutSchema, BrowserRecordingRegistryActionInputSchema, BrowserRecordingRegistryInputSchema, CreateSessionInputSchema, CreateSkillInputSchema, DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS, DEFAULT_MODEL_MAX_OUTPUT_TOKENS, DeleteMemoryEntryInputSchema, GetExtensionStatusInputSchema, GetHookStatusInputSchema, GetMemoryStatusInputSchema, HookProjectActionInputSchema, ImportSkillInputSchema, IPC, ListModelsInputSchema, MAX_IMAGE_ATTACHMENTS, MAX_IMAGE_BYTES, McpServerIdInputSchema, OpenHookConfigInputSchema, RebuildMemoryIndexInputSchema, RebuildSemanticMemoryIndexInputSchema, RejectMemoryCandidateInputSchema, RenameSessionInputSchema, SaveExtensionSettingsInputSchema, SaveMemorySettingsInputSchema, SaveSettingsInputSchema,
   SessionIdInputSchema, SkillPathInputSchema, StartTurnInputSchema, UpdateSkillInputSchema, WorkflowRunActionInputSchema,
   WorkerCommandSchema, WorkerMessageSchema, serializedIpcBytes,
-  type ExtensionStatus, type MemoryStatusSnapshot, type ProviderSettings, type SessionCompactionRecord, type WorkerCommand, type WorkerMessage, type WorkflowRunSnapshot
+  type BrowserHealProposal, type BrowserHealRequest, type ExtensionStatus, type MemoryStatusSnapshot, type ProviderSettings, type SessionCompactionRecord, type WorkerCommand, type WorkerMessage, type WorkflowRunSnapshot
 } from '@desktop-agent/contracts';
 import { z } from 'zod';
 import { createProvider } from '@desktop-agent/providers';
@@ -61,6 +61,12 @@ const memoryRequests = new Map<string, {
 }>();
 const workflowRuns = new Map<string, WorkflowRunSnapshot>();
 const browserSecretPrompts = new Map<string, { resolve: (value: string | undefined) => void }>();
+const browserHealRequests = new Map<string, {
+  resolve: (proposal: BrowserHealProposal) => void;
+  reject: (error: Error) => void;
+  cleanup: () => void;
+}>();
+const browserRequestControllers = new Map<string, AbortController>();
 let mcpOAuthCredentialWrite: Promise<void> = Promise.resolve();
 const sessionLifecycle = new SessionLifecycleManager();
 
@@ -83,6 +89,35 @@ function postWorkerCommand(command: WorkerCommand): boolean {
   if (!worker) return false;
   worker.postMessage(parsed.data);
   return true;
+}
+
+function requestBrowserHeal(
+  sessionId: string,
+  request: BrowserHealRequest,
+  signal: AbortSignal
+): Promise<BrowserHealProposal> {
+  const requestId = crypto.randomUUID();
+  return new Promise((resolve, reject) => {
+    const onAbort = () => finish(new Error('Browser self-heal was cancelled.'));
+    const finish = (error?: Error, proposal?: BrowserHealProposal) => {
+      const pending = browserHealRequests.get(requestId);
+      if (!pending) return;
+      browserHealRequests.delete(requestId);
+      pending.cleanup();
+      if (error || !proposal) reject(error ?? new Error('Browser self-heal returned no proposal.'));
+      else resolve(proposal);
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+    browserHealRequests.set(requestId, {
+      resolve: (proposal) => finish(undefined, proposal),
+      reject: (error) => finish(error),
+      cleanup: () => signal.removeEventListener('abort', onAbort)
+    });
+    if (signal.aborted) { onAbort(); return; }
+    if (!postWorkerCommand({ type: 'browser.heal.request', requestId, sessionId, request })) {
+      finish(new Error('Agent runtime is not available for browser self-heal.'));
+    }
+  });
 }
 
 function assertTrusted(event: IpcMainInvokeEvent): void {
@@ -413,6 +448,8 @@ function startWorker(): void {
       }).catch((error) => finishMcpOAuth(message.requestId, error instanceof Error ? error : new Error(String(error))));
     }
     else if (message.type === 'browser.request') {
+      const controller = new AbortController();
+      browserRequestControllers.set(message.requestId, controller);
       void (async () => {
         if (!worker) return;
         sessionLifecycle.assertMutable(message.sessionId);
@@ -427,7 +464,9 @@ function startWorker(): void {
             message.action,
             message.approved,
             settings.extensions.browser,
-            session.workingDirectory
+            session.workingDirectory,
+            (text) => postWorkerCommand({ type: 'browser.progress', requestId: message.requestId, text }),
+            controller.signal
           );
           postWorkerCommand({ type: 'browser.result', requestId: message.requestId, result });
         } catch (error) {
@@ -437,10 +476,20 @@ function startWorker(): void {
             error: mapChromeCdpError(error, settings.extensions.browser.chromeDebugPort).message
           });
         }
-      })().catch((error) => postWorkerCommand({
+      })().finally(() => browserRequestControllers.delete(message.requestId)).catch((error) => postWorkerCommand({
         type: 'browser.result', requestId: message.requestId,
         error: error instanceof Error ? error.message : String(error)
       }));
+    }
+    else if (message.type === 'browser.cancel') {
+      browserRequestControllers.get(message.requestId)?.abort(new DOMException('Cancelled', 'AbortError'));
+    }
+    else if (message.type === 'browser.heal.result') {
+      const pending = browserHealRequests.get(message.requestId);
+      if (pending) {
+        if (message.error || !message.proposal) pending.reject(new Error(message.error ?? 'Browser self-heal returned no proposal.'));
+        else pending.resolve(message.proposal);
+      }
     }
     else if (message.type === 'worker.error') sendToRenderer(IPC.agentEvent, { type: 'turn.failed', code: 'worker_error', message: message.message });
     else if (message.type === 'hooks.invalidated') {
@@ -457,6 +506,9 @@ function startWorker(): void {
       clearTimeout(request.timer);
       request.reject(new Error(`Agent runtime exited (${code}).`));
     }
+    for (const request of browserHealRequests.values()) request.reject(new Error(`Agent runtime exited (${code}).`));
+    for (const controller of browserRequestControllers.values()) controller.abort(new Error(`Agent runtime exited (${code}).`));
+    browserRequestControllers.clear();
     sendToRenderer(IPC.agentEvent, { type: 'turn.failed', code: 'worker_exit', message: `Agent runtime exited (${code}).` });
     worker = null;
     if (!quitting) setTimeout(startWorker, 1_000);
@@ -839,6 +891,30 @@ function registerIpc(): void {
     sessionLifecycle.assertMutable(input.sessionId);
     await browserRuntime?.handleDockAction(input);
   });
+  ipcMain.handle(IPC.listBrowserRecordings, async (event, raw) => {
+    assertTrusted(event);
+    const input = BrowserRecordingRegistryInputSchema.parse(raw ?? {});
+    if (!browserRuntime) throw new Error('Browser runtime is not available.');
+    return browserRuntime.recordingRegistrySnapshot(input.workingDirectory);
+  });
+  ipcMain.handle(IPC.trustProjectBrowserRecording, async (event, raw) => {
+    assertTrusted(event);
+    const input = BrowserRecordingRegistryActionInputSchema.parse(raw);
+    if (!browserRuntime) throw new Error('Browser runtime is not available.');
+    return browserRuntime.trustProjectRecording(input.recordingId, input.workingDirectory);
+  });
+  ipcMain.handle(IPC.revokeProjectBrowserRecordingTrust, async (event, raw) => {
+    assertTrusted(event);
+    const input = BrowserRecordingRegistryActionInputSchema.parse(raw);
+    if (!browserRuntime) throw new Error('Browser runtime is not available.');
+    return browserRuntime.revokeProjectRecordingTrust(input.recordingId, input.workingDirectory);
+  });
+  ipcMain.handle(IPC.deleteBrowserRecording, async (event, raw) => {
+    assertTrusted(event);
+    const input = BrowserRecordingRegistryActionInputSchema.parse(raw);
+    if (!browserRuntime) throw new Error('Browser runtime is not available.');
+    return browserRuntime.deleteManagedRecording(input.recordingId, input.workingDirectory);
+  });
   ipcMain.handle(IPC.probeChromeBrowser, async (event, raw) => {
     assertTrusted(event);
     const settings = await configStore.get(await readApiKeys());
@@ -962,7 +1038,7 @@ else {
     browserRuntime = new BrowserRuntime(dataDirectory, promptBrowserSecret, {
       window: () => mainWindow,
       onDock: (state) => sendToRenderer(IPC.browserDockState, state)
-    });
+    }, (sessionId) => ({ heal: (request, signal) => requestBrowserHeal(sessionId, request, signal) }));
     secretPath = path.join(dataDirectory, 'secrets', 'provider-keys.bin');
     legacySecretPath = path.join(dataDirectory, 'secrets', 'provider-key.bin');
     mcpOAuthSecretPath = path.join(dataDirectory, 'secrets', 'mcp-oauth.bin');
@@ -976,6 +1052,9 @@ else {
     for (const requestId of oauthRequests.keys()) finishMcpOAuth(requestId, new Error('Application is closing.'));
     for (const pending of browserSecretPrompts.values()) pending.resolve(undefined);
     browserSecretPrompts.clear();
+    for (const request of browserHealRequests.values()) request.reject(new Error('Application is closing.'));
+    for (const controller of browserRequestControllers.values()) controller.abort(new Error('Application is closing.'));
+    browserRequestControllers.clear();
     browserRuntime?.close();
     worker?.kill();
   });

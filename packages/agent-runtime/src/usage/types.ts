@@ -1,4 +1,4 @@
-export type UsageCause = 'model' | 'tool' | 'compaction' | 'recovery' | 'memory_candidate' | 'memory_embedding';
+export type UsageCause = 'model' | 'tool' | 'compaction' | 'recovery' | 'memory_candidate' | 'memory_embedding' | 'browser_heal';
 
 export type UsageRecord = {
   id: string;

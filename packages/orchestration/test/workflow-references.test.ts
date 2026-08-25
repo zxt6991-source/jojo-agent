@@ -10,7 +10,10 @@ import {
 function dependency(): WorkflowStepSnapshot {
   return {
     id: 'source', state: 'completed', attempt: 1, createdAt: new Date().toISOString(),
-    output: 'raw output', structuredResult: { files: ['a.ts', 'b.ts'], nested: { count: 2 } },
+    output: 'raw output', structuredResult: {
+      files: ['a.ts', 'b.ts'], nested: { count: 2 },
+      outputs: { report: { type: 'file', path: '/workspace/report.xlsx' } }
+    },
     schemaValid: true, incomplete: false, usage: emptyUsage()
   };
 }
@@ -22,6 +25,7 @@ describe('workflow input references', () => {
     expect(resolveWorkflowReference('$steps.source.output', dependencies, {})).toBe('raw output');
     expect(resolveWorkflowReference('$steps.source.structuredResult.nested.count', dependencies, {})).toBe(2);
     expect(resolveWorkflowReference('$steps.source.structuredResult.files.1', dependencies, {})).toBe('b.ts');
+    expect(resolveWorkflowReference('$steps.source.outputs.report.path', dependencies, {})).toBe('/workspace/report.xlsx');
   });
 
   it('returns stable errors for invalid and missing references', () => {

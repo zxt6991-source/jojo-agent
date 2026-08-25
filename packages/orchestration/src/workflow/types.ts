@@ -13,6 +13,7 @@ export type WorkflowExecutionRequest = {
   providerId: string;
   model: string;
   args: WorkflowArgs;
+  browserApproved?: boolean;
   definition: WorkflowDefinition;
   createdAt: string;
   depth?: number;

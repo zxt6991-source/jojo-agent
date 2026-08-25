@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   ChromeCdpClient,
   chromeCdpOrigin,
@@ -119,6 +119,52 @@ describe('chrome cdp websocket client', () => {
     const client = await ChromeCdpClient.connect(`ws://127.0.0.1:${port}/devtools/page/1`);
     try {
       await expect(client.send('Page.enable')).resolves.toEqual({ ok: true });
+    } finally {
+      client.close();
+      server.closeAllConnections();
+      server.close();
+    }
+  });
+
+  it('routes flattened OOPIF commands and events by session id', async () => {
+    const server = http.createServer();
+    server.on('upgrade', (request, socket) => {
+      const key = String(request.headers['sec-websocket-key'] ?? '');
+      const accept = crypto.createHash('sha1').update(`${key}${WS_GUID}`).digest('base64');
+      socket.write(
+        `HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`
+      );
+      let buffer: Buffer<ArrayBufferLike> = Buffer.alloc(0);
+      socket.on('data', (chunk) => {
+        buffer = Buffer.concat([buffer, chunk]);
+        const parsed = consumeChromeCdpFrames(buffer);
+        buffer = parsed.rest;
+        for (const message of parsed.messages) {
+          const payload = JSON.parse(message) as { id: number; sessionId?: string };
+          socket.write(encodeChromeCdpFrame(0x1, Buffer.from(JSON.stringify({
+            id: payload.id, sessionId: payload.sessionId, result: { sessionId: payload.sessionId }
+          })), false));
+          socket.write(encodeChromeCdpFrame(0x1, Buffer.from(JSON.stringify({
+            method: 'Runtime.bindingCalled', sessionId: payload.sessionId, params: { name: 'binding', payload: '{}' }
+          })), false));
+        }
+      });
+      socket.resume();
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.listen(0, '127.0.0.1', resolve);
+      server.on('error', reject);
+    });
+    const port = (server.address() as AddressInfo).port;
+    const client = await ChromeCdpClient.connect(`ws://127.0.0.1:${port}/devtools/page/1`);
+    const events: Array<{ payload: Record<string, unknown>; sessionId?: string }> = [];
+    client.on('Runtime.bindingCalled', (payload, sessionId) => events.push({ payload, ...(sessionId ? { sessionId } : {}) }));
+    try {
+      await expect(client.send('Runtime.evaluate', { expression: '1' }, 30_000, 'oopif-session'))
+        .resolves.toEqual({ sessionId: 'oopif-session' });
+      await vi.waitFor(() => expect(events).toEqual([
+        { payload: { name: 'binding', payload: '{}' }, sessionId: 'oopif-session' }
+      ]));
     } finally {
       client.close();
       server.closeAllConnections();

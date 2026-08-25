@@ -1,8 +1,45 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { WebContentsView, type BrowserWindow, type DownloadItem, type Session, type WebContents } from 'electron';
-import { BrowserActionSchema, BrowserRecordingStepSchema, type BrowserAction, type BrowserDockState, type BrowserRecordingDocument, type BrowserRecordingStep, type BrowserSettings, type ToolResult } from '@desktop-agent/contracts';
+import {
+  BrowserActionSchema,
+  BrowserRecordingStepSchema,
+  type BrowserAction,
+  type BrowserDockState,
+  type BrowserFramePath,
+  type BrowserHealCandidate,
+  type BrowserHealProposal,
+  type BrowserRecordingDocument,
+  type BrowserRecordingRegistrySnapshot,
+  type BrowserRecordingStep,
+  type BrowserSettings,
+  type BrowserTarget,
+  type BrowserVerify,
+  type ToolResult
+} from '@desktop-agent/contracts';
+import {
+  BROWSER_RECORDER_BINDING_NAME,
+  BROWSER_RECORDER_GUARD_NAME,
+  BrowserRecordingRegistry,
+  BrowserReplayJournalStore,
+  FileBrowserRecordingTrustStore,
+  MAX_RAW_BROWSER_EVENTS,
+  compileUserDemoRecording,
+  analyzeBrowserReplayResume,
+  createBrowserReplayJournalEntry,
+  createBrowserRecorderCaptureScript,
+  isReplaySafeBrowserStep,
+  parseBrowserRecorderBindingPayload,
+  sanitizeRawBrowserEvent,
+  type BrowserRecorderBindingPayload,
+  type BrowserHealRecord,
+  type BrowserHealingPort,
+  type BrowserRecordingRegistryEntry,
+  type BrowserReplayJournalOutputValue,
+  type RawBrowserEvent
+} from '@desktop-agent/browser-automation';
 import {
   createBrowserConsoleRecord,
   createBrowserNetworkRecord,
@@ -41,7 +78,14 @@ import {
   type BrowserElementCandidate,
   type BrowserElementFingerprint
 } from './browser-security';
-import { BrowserRecordingStore, stringifyBrowserRecording } from './browser-recording-store';
+import { stringifyBrowserRecording } from './browser-recording-store';
+import {
+  expressionInBrowserFrame,
+  mergeBrowserFramePaths,
+  resolveBrowserFrameRoute,
+  type BrowserFrameRoute,
+  type BrowserFrameSession
+} from './browser-frame-routing';
 import {
   applyRecordingParams,
   browserSecretEnvName,
@@ -85,7 +129,12 @@ type BrowserState = {
   draftRecording: {
     name: string;
     createdAt: string;
+    mode: 'agent_trace' | 'user_demo';
     steps: BrowserRecordingStep[];
+    rawEvents: RawBrowserEvent[];
+    nextRawEventId: number;
+    rawEventLimitReached: boolean;
+    lastInteractionByPage: Map<number, { timestamp: number; target?: RawBrowserEvent['target'] }>;
   } | undefined;
   networkObserved: boolean;
 };
@@ -100,6 +149,7 @@ type BrowserPageState = {
     port: number;
     owned: boolean;
     webSocketDebuggerUrl?: string;
+    frameSessions: Map<string, BrowserFrameSession>;
   };
   url: string;
   title: string;
@@ -109,11 +159,19 @@ type BrowserPageState = {
   console: BrowserConsoleRecord[];
   network: BrowserNetworkRecord[];
   errors: BrowserPageErrorRecord[];
+  pendingNetworkRequests: Set<string>;
+  recorderScriptId?: string;
 };
 
-type BrowserElementTarget = { selector?: string | undefined; ref?: string | undefined; fingerprint?: BrowserElementFingerprint };
-type ResolvedElementTarget = { selector: string; label: string; relocated: boolean };
-type BrowserDomNode = Omit<BrowserElementFingerprint, 'origin'> & { value?: string };
+type BrowserElementTarget = {
+  selector?: string | undefined;
+  ref?: string | undefined;
+  frame?: BrowserFramePath | undefined;
+  fingerprint?: BrowserElementFingerprint;
+};
+type ResolvedElementTarget = { selector: string; label: string; relocated: boolean; frame?: BrowserFramePath };
+type BrowserDomNode = Omit<BrowserElementFingerprint, 'origin'> & { value?: string; frameUrl?: string };
+type CdpFrameTree = { frame: { id?: string }; childFrames?: CdpFrameTree[] };
 
 const COMMAND_TIMEOUT_MS = 30_000;
 const MAX_RECORDING_STEPS = 100;
@@ -139,9 +197,48 @@ function resultValue<T>(response: unknown): T {
   return (response as { result?: { value?: T } }).result?.value as T;
 }
 
+function collectCdpFrameIds(tree: CdpFrameTree): string[] {
+  const ids = tree.frame.id ? [tree.frame.id] : [];
+  for (const child of tree.childFrames ?? []) ids.push(...collectCdpFrameIds(child));
+  return ids;
+}
+
+function frameUrlsMatch(left: string, right: string): boolean {
+  try {
+    const leftUrl = new URL(left, right);
+    const rightUrl = new URL(right);
+    leftUrl.hash = '';
+    rightUrl.hash = '';
+    return leftUrl.href === rightUrl.href;
+  } catch { return left === right; }
+}
+
+function assertReplayActive(signal?: AbortSignal): void {
+  signal?.throwIfAborted();
+}
+
+function replayDelay(ms: number, signal?: AbortSignal): Promise<void> {
+  assertReplayActive(signal);
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(finish, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+      reject(signal?.reason ?? new DOMException('Cancelled', 'AbortError'));
+    };
+    function finish() {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }
+    signal?.addEventListener('abort', onAbort, { once: true });
+    if (signal?.aborted) onAbort();
+  });
+}
+
 export class BrowserRuntime {
   private readonly states = new Map<string, BrowserState>();
-  private readonly recordingStore: BrowserRecordingStore;
+  private readonly recordingRegistry: BrowserRecordingRegistry;
+  private readonly replayJournal: BrowserReplayJournalStore;
   private readonly secrets = new Map<string, Map<string, string>>();
   private dockSessionId: string | undefined;
   private dockBounds: { x: number; y: number; width: number; height: number } | undefined;
@@ -154,9 +251,15 @@ export class BrowserRuntime {
     private readonly host?: {
       window: () => BrowserWindow | null;
       onDock: (state: BrowserDockState | null) => void;
-    }
+    },
+    private readonly healingPortForSession?: (sessionId: string) => BrowserHealingPort
   ) {
-    this.recordingStore = new BrowserRecordingStore(path.join(dataDirectory, 'browser-recordings'));
+    this.recordingRegistry = new BrowserRecordingRegistry({
+      userDirectory: path.join(os.homedir(), '.jojo', 'browser-recordings'),
+      legacyUserDirectory: path.join(dataDirectory, 'browser-recordings'),
+      trustStore: new FileBrowserRecordingTrustStore(path.join(os.homedir(), '.jojo', 'browser-recording-trust.json'))
+    });
+    this.replayJournal = new BrowserReplayJournalStore(path.join(dataDirectory, 'browser-replay-journal'));
   }
 
   async execute(
@@ -164,23 +267,70 @@ export class BrowserRuntime {
     rawAction: BrowserAction,
     approved: boolean,
     settings: BrowserSettings,
-    workingDirectory: string
+    workingDirectory: string,
+    onProgress?: (text: string) => void,
+    signal?: AbortSignal
   ): Promise<ToolResult> {
+    assertReplayActive(signal);
     const action = BrowserActionSchema.parse(rawAction);
     if (requiresBrowserApproval(action) && !approved) {
       throw new Error(`Browser action requires explicit approval: ${action.action}`);
     }
-    const state = await this.getState(sessionId, settings, needsBrowserPage(action));
+    const state = await this.getState(
+      sessionId,
+      settings,
+      needsBrowserPage(action) || (action.action === 'record_start' && action.mode === 'user_demo')
+    );
     if (state.mode === 'chrome' && action.action === 'select_page' && !approved) {
       throw new Error('Browser action requires explicit approval: select_page');
     }
     for (const domain of settings.allowedDomains) state.grantedDomains.add(normalizeDomain(domain));
     const allowedDomains = new Set([...settings.allowedDomains, ...state.grantedDomains].map(normalizeDomain));
     try {
-      return await this.executeAction(sessionId, state, action, approved, allowedDomains, workingDirectory, true);
+      const result = await this.executeAction(sessionId, state, action, approved, allowedDomains, workingDirectory, true, onProgress, signal);
+      assertReplayActive(signal);
+      return result;
     } finally {
       this.presentSession(sessionId);
     }
+  }
+
+  async recordingRegistrySnapshot(workingDirectory?: string): Promise<BrowserRecordingRegistrySnapshot> {
+    const entries = await this.recordingRegistry.list(workingDirectory);
+    return {
+      userDirectory: this.recordingRegistry.userDirectory,
+      ...(workingDirectory ? { projectDirectory: this.recordingRegistry.projectDirectoryFor(workingDirectory) } : {}),
+      recordings: entries.map((entry) => ({
+        id: entry.recording.id,
+        name: entry.recording.name,
+        ...(entry.recording.description ? { description: entry.recording.description } : {}),
+        source: entry.source,
+        trust: entry.trust,
+        overriddenSources: entry.overriddenSources,
+        domains: entry.effectSummary.domains,
+        effects: entry.effectSummary.effects,
+        highRisk: entry.effectSummary.highRisk,
+        stepCount: entry.recording.steps.length,
+        revision: entry.recording.revision,
+        contentHash: entry.recording.contentHash,
+        updatedAt: entry.recording.updatedAt
+      }))
+    };
+  }
+
+  async trustProjectRecording(recordingId: string, workingDirectory: string): Promise<BrowserRecordingRegistrySnapshot> {
+    await this.recordingRegistry.trustProject(recordingId, workingDirectory);
+    return this.recordingRegistrySnapshot(workingDirectory);
+  }
+
+  async revokeProjectRecordingTrust(recordingId: string, workingDirectory: string): Promise<BrowserRecordingRegistrySnapshot> {
+    await this.recordingRegistry.revokeProjectTrust(recordingId, workingDirectory);
+    return this.recordingRegistrySnapshot(workingDirectory);
+  }
+
+  async deleteManagedRecording(recordingId: string, workingDirectory: string): Promise<BrowserRecordingRegistrySnapshot> {
+    await this.recordingRegistry.delete(recordingId, workingDirectory);
+    return this.recordingRegistrySnapshot(workingDirectory);
   }
 
   private async executeAction(
@@ -190,23 +340,29 @@ export class BrowserRuntime {
     approved: boolean,
     allowedDomains: Set<string>,
     workingDirectory: string,
-    record: boolean
+    record: boolean,
+    onProgress?: (text: string) => void,
+    signal?: AbortSignal
   ): Promise<ToolResult> {
+    assertReplayActive(signal);
     let result: ToolResult;
     if (action.action === 'open') result = await this.open(state, action.url, approved, allowedDomains);
     else if (action.action === 'new_page') result = await this.newPage(sessionId, state, action.url, approved, allowedDomains);
     else if (action.action === 'pages') result = await this.pages(state);
     else if (action.action === 'select_page') result = await this.selectPage(state, action.pageId);
     else if (action.action === 'close_page') result = this.closePage(sessionId, state, action.pageId);
-    else if (action.action === 'record_start') result = this.startRecording(state, action.name);
-    else if (action.action === 'record_stop') result = await this.stopRecording(state);
-    else if (action.action === 'record_cancel') result = this.cancelRecording(state);
-    else if (action.action === 'recordings') result = await this.listRecordings(state);
-    else if (action.action === 'record_get') result = await this.getRecording(action.recordingId);
-    else if (action.action === 'record_delete') result = await this.deleteRecording(action.recordingId);
+    else if (action.action === 'record_start') result = await this.startRecording(state, action.name, action.mode);
+    else if (action.action === 'record_stop') result = await this.stopRecording(state, workingDirectory);
+    else if (action.action === 'record_cancel') result = await this.cancelRecording(state);
+    else if (action.action === 'recordings') result = await this.listRecordings(state, workingDirectory);
+    else if (action.action === 'record_get') result = await this.getRecording(action.recordingId, workingDirectory);
+    else if (action.action === 'record_delete') result = await this.deleteRecording(action.recordingId, workingDirectory);
     else if (action.action === 'replay') {
-      return this.replay(sessionId, state, action.recordingId, action.params, action.maxRetries, action.retryDelayMs, allowedDomains, workingDirectory);
-    } else if (action.action === 'read') result = await this.read(state, action.maxNodes);
+      return this.replay(
+        sessionId, state, action.recordingId, action.params, action.maxRetries, action.retryDelayMs,
+        action.runId, action.resumeRunId, action.confirmUnsafeResume, allowedDomains, workingDirectory, onProgress, signal
+      );
+    } else if (action.action === 'read') result = await this.read(state, action.maxNodes, action.frame);
     else if (action.action === 'eval') result = await this.evaluate(state, action.js);
     else if (action.action === 'wait') result = await this.wait(state, action, action.state, action.timeoutMs);
     else if (action.action === 'scroll') result = await this.scroll(state, action, action.deltaX, action.deltaY);
@@ -373,7 +529,8 @@ export class BrowserRuntime {
       elementRefs: new Map(),
       console: [],
       network: [],
-      errors: []
+      errors: [],
+      pendingNetworkRequests: new Set()
     };
     state.pages.set(pageId, page);
     state.activePageId = pageId;
@@ -679,7 +836,7 @@ export class BrowserRuntime {
     owned: boolean
   ): Promise<BrowserPageState> {
     const page = this.registerChromePage(state, target, owned, true);
-    await this.connectChromeClient(page);
+    await this.connectChromeClient(state, page);
     return page;
   }
 
@@ -697,6 +854,7 @@ export class BrowserRuntime {
         targetId: target.id,
         port: state.chromeDebugPort,
         owned,
+        frameSessions: new Map(),
         ...(target.webSocketDebuggerUrl ? { webSocketDebuggerUrl: target.webSocketDebuggerUrl } : {})
       },
       url: target.url || 'about:blank',
@@ -706,7 +864,8 @@ export class BrowserRuntime {
       elementRefs: new Map(),
       console: [],
       network: [],
-      errors: []
+      errors: [],
+      pendingNetworkRequests: new Set()
     };
     state.pages.set(pageId, page);
     if (activate || state.activePageId === 0) state.activePageId = pageId;
@@ -740,7 +899,7 @@ export class BrowserRuntime {
     }
   }
 
-  private async connectChromeClient(page: BrowserPageState): Promise<void> {
+  private async connectChromeClient(state: BrowserState, page: BrowserPageState): Promise<void> {
     if (page.kind !== 'chrome' || !page.chrome) throw new Error('Not a Chrome page.');
     if (page.chrome.client) return;
     let websocket = page.chrome.webSocketDebuggerUrl;
@@ -753,13 +912,24 @@ export class BrowserRuntime {
     const client = await ChromeCdpClient.connect(websocket);
     page.chrome.client = client;
     client.onDisconnect(() => { page.destroyed = true; });
-    this.wireChromeClient(page, client);
+    this.wireChromeClient(state, page, client);
     await client.send('Page.enable').catch(() => undefined);
     await client.send('Runtime.enable').catch(() => undefined);
+    await client.send('Target.setAutoAttach', {
+      autoAttach: true,
+      waitForDebuggerOnStart: false,
+      flatten: true,
+      filter: [{ type: 'iframe', exclude: false }]
+    }).catch(() => client.send('Target.setAutoAttach', {
+      autoAttach: true,
+      waitForDebuggerOnStart: false,
+      flatten: true
+    }).catch(() => undefined));
     this.enablePageDiagnostics(page);
+    if (state.draftRecording?.mode === 'user_demo') await this.instrumentUserDemoPage(state, page);
   }
 
-  private wireChromeClient(page: BrowserPageState, client: ChromeCdpClient): void {
+  private wireChromeClient(state: BrowserState, page: BrowserPageState, client: ChromeCdpClient): void {
     client.on('Runtime.exceptionThrown', (params) => {
       const record = exceptionRecordFromCdp(params);
       if (record) pushBounded(page.errors, record, MAX_BROWSER_ERROR_ENTRIES);
@@ -777,36 +947,421 @@ export class BrowserRuntime {
         url: page.url
       }), MAX_BROWSER_CONSOLE_ENTRIES);
     });
+    client.on('Runtime.bindingCalled', (params, frameSessionId) => {
+      if (params.name !== BROWSER_RECORDER_BINDING_NAME || typeof params.payload !== 'string') return;
+      const payload = parseBrowserRecorderBindingPayload(params.payload);
+      if (payload) void this.captureCdpUserDemoEvent(state, page, payload, frameSessionId);
+    });
+    client.on('Target.attachedToTarget', (params) => {
+      const sessionId = typeof params.sessionId === 'string' ? params.sessionId : undefined;
+      const targetInfo = params.targetInfo as { targetId?: string; type?: string; url?: string } | undefined;
+      if (!sessionId || targetInfo?.type !== 'iframe' || !targetInfo.targetId || !page.chrome) return;
+      const frameSession: BrowserFrameSession = {
+        sessionId,
+        targetId: targetInfo.targetId,
+        url: targetInfo.url ?? 'about:blank'
+      };
+      page.chrome.frameSessions.set(sessionId, frameSession);
+      void this.initializeChromeFrameSession(state, page, frameSession);
+    });
+    client.on('Target.detachedFromTarget', (params) => {
+      if (typeof params.sessionId === 'string') page.chrome?.frameSessions.delete(params.sessionId);
+    });
     client.on('Network.requestWillBeSent', (params) => {
+      const requestId = String(params.requestId ?? '');
+      const resourceType = String(params.type ?? 'other');
+      if (requestId && ['Document', 'Fetch', 'XHR'].includes(resourceType)) page.pendingNetworkRequests.add(requestId);
       const request = params.request as { method?: string; url?: string } | undefined;
       upsertBrowserNetworkRecord(page.network, createBrowserNetworkRecord({
-        id: String(params.requestId ?? ''),
+        id: requestId,
         method: request?.method ?? 'GET',
         url: request?.url ?? '',
-        resourceType: String(params.type ?? 'other'),
+        resourceType,
         pending: true
       }));
     });
     client.on('Network.loadingFinished', (params) => {
+      const requestId = String(params.requestId ?? '');
+      const tracked = requestId ? page.pendingNetworkRequests.delete(requestId) : false;
       upsertBrowserNetworkRecord(page.network, createBrowserNetworkRecord({
-        id: String(params.requestId ?? ''),
+        id: requestId,
         method: 'GET',
         url: page.url,
         pending: false
       }));
+      if (tracked && page.pendingNetworkRequests.size === 0) this.captureUserDemoWait(state, page, { type: 'network_idle', idleMs: 500 });
     });
     client.on('Network.loadingFailed', (params) => {
+      const requestId = String(params.requestId ?? '');
+      const tracked = requestId ? page.pendingNetworkRequests.delete(requestId) : false;
       upsertBrowserNetworkRecord(page.network, createBrowserNetworkRecord({
-        id: String(params.requestId ?? ''),
+        id: requestId,
         method: 'GET',
         url: page.url,
         error: String(params.errorText ?? 'net::ERR_FAILED'),
         pending: false
       }));
+      if (tracked && page.pendingNetworkRequests.size === 0) this.captureUserDemoWait(state, page, { type: 'network_idle', idleMs: 500 });
     });
-    client.on('Page.frameNavigated', (params) => {
-      const frame = params.frame as { url?: string } | undefined;
-      if (frame?.url) page.url = frame.url;
+    client.on('Page.frameNavigated', (params, frameSessionId) => {
+      const frame = params.frame as { url?: string; parentId?: string } | undefined;
+      if (frameSessionId && frame?.url) {
+        const attached = page.chrome?.frameSessions.get(frameSessionId);
+        if (attached) {
+          attached.url = frame.url;
+          if (attached.framePath) {
+            this.captureUserDemoEvent(state, page, {
+              type: 'navigate', timestamp: Date.now(), url: frame.url, frame: attached.framePath
+            });
+          }
+        }
+      }
+      if (!frameSessionId && frame?.url && !frame.parentId) {
+        page.url = frame.url;
+        this.captureUserDemoEvent(state, page, { type: 'navigate', timestamp: Date.now(), url: frame.url });
+      }
+    });
+    client.on('Page.windowOpen', (params) => {
+      this.captureUserDemoWait(state, page, { type: 'new_page' });
+      void this.instrumentOpenedUserDemoPage(state, typeof params.url === 'string' ? params.url : undefined);
+    });
+    client.on('Browser.downloadWillBegin', (params) => {
+      const id = String(params.guid ?? crypto.randomUUID());
+      const filename = safeDownloadFilename(typeof params.suggestedFilename === 'string' ? params.suggestedFilename : 'download');
+      const directory = path.join(this.dataDirectory, 'browser-downloads', state.partition);
+      state.downloads.set(id, {
+        id,
+        url: typeof params.url === 'string' ? params.url : this.pageUrl(page),
+        filename,
+        path: path.join(directory, filename),
+        state: 'progressing',
+        receivedBytes: 0,
+        totalBytes: 0
+      });
+      const interaction = state.draftRecording?.lastInteractionByPage.get(page.id);
+      if (!interaction?.target) return;
+      this.captureUserDemoEvent(state, page, {
+        type: 'download',
+        timestamp: Date.now(),
+        url: typeof params.url === 'string' ? params.url : this.pageUrl(page),
+        target: interaction.target,
+        ...(typeof params.suggestedFilename === 'string'
+          ? { download: { suggestedFilename: params.suggestedFilename } }
+          : {})
+      });
+    });
+    client.on('Browser.downloadProgress', (params) => {
+      const id = String(params.guid ?? '');
+      const record = state.downloads.get(id);
+      if (!record) return;
+      record.receivedBytes = typeof params.receivedBytes === 'number' ? params.receivedBytes : record.receivedBytes;
+      record.totalBytes = typeof params.totalBytes === 'number' ? params.totalBytes : record.totalBytes;
+      if (typeof params.filePath === 'string' && params.filePath) record.path = params.filePath;
+      if (params.state === 'completed' || params.state === 'canceled') {
+        record.state = params.state === 'completed' ? 'completed' : 'cancelled';
+      }
+    });
+  }
+
+  private async initializeChromeFrameSession(
+    state: BrowserState,
+    page: BrowserPageState,
+    frameSession: BrowserFrameSession
+  ): Promise<void> {
+    const client = page.chrome?.client;
+    if (!client || !page.chrome?.frameSessions.has(frameSession.sessionId)) return;
+    await client.send('Runtime.enable', undefined, COMMAND_TIMEOUT_MS, frameSession.sessionId).catch(() => undefined);
+    await client.send('Page.enable', undefined, COMMAND_TIMEOUT_MS, frameSession.sessionId).catch(() => undefined);
+    await client.send('Target.setAutoAttach', {
+      autoAttach: true,
+      waitForDebuggerOnStart: false,
+      flatten: true,
+      filter: [{ type: 'iframe', exclude: false }]
+    }, COMMAND_TIMEOUT_MS, frameSession.sessionId).catch(() => client.send('Target.setAutoAttach', {
+      autoAttach: true,
+      waitForDebuggerOnStart: false,
+      flatten: true
+    }, COMMAND_TIMEOUT_MS, frameSession.sessionId).catch(() => undefined));
+    if (!frameSession.framePath) {
+      const framePath = await this.findChromeFrameSessionPath(page, frameSession).catch(() => undefined);
+      if (framePath) frameSession.framePath = framePath;
+    }
+    if (state.draftRecording?.mode === 'user_demo') {
+      await this.instrumentUserDemoCdpSession(page, frameSession.sessionId, frameSession).catch(() => undefined);
+    }
+  }
+
+  private async captureCdpUserDemoEvent(
+    state: BrowserState,
+    page: BrowserPageState,
+    payload: BrowserRecorderBindingPayload,
+    frameSessionId: string | undefined
+  ): Promise<void> {
+    if (!frameSessionId) {
+      this.captureUserDemoEvent(state, page, payload);
+      return;
+    }
+    const frameSession = page.chrome?.frameSessions.get(frameSessionId);
+    if (!frameSession) return;
+    const outer = frameSession.framePath ?? await this.findChromeFrameSessionPath(page, frameSession);
+    if (!outer) return;
+    frameSession.framePath = outer;
+    const eventFrame = mergeBrowserFramePaths(outer, payload.frame);
+    const targetFrame = mergeBrowserFramePaths(outer, payload.target?.frame);
+    this.captureUserDemoEvent(state, page, {
+      ...payload,
+      ...(eventFrame ? { frame: eventFrame } : {}),
+      ...(payload.target ? {
+        target: {
+          ...payload.target,
+          ...(targetFrame ? { frame: targetFrame } : {})
+        }
+      } : {})
+    });
+  }
+
+  private async findChromeFrameSessionPath(
+    page: BrowserPageState,
+    target: BrowserFrameSession
+  ): Promise<BrowserFramePath | undefined> {
+    const client = page.chrome?.client;
+    const sessions = page.chrome?.frameSessions;
+    if (!client || !sessions) return undefined;
+    const known = new Map<string | undefined, BrowserFramePath | undefined>([[undefined, undefined]]);
+    for (const session of sessions.values()) if (session.framePath) known.set(session.sessionId, session.framePath);
+    for (let round = 0; round <= sessions.size; round += 1) {
+      let changed = false;
+      for (const [sessionId, prefix] of known) {
+        const owners = await this.listLocalFrameOwners(client, sessionId).catch(() => []);
+        for (const candidate of sessions.values()) {
+          if (candidate.framePath || known.has(candidate.sessionId)) continue;
+          const matches = owners.filter((owner) => frameUrlsMatch(owner.src, candidate.url));
+          if (matches.length !== 1) continue;
+          const framePath = mergeBrowserFramePaths(prefix, { selectors: matches[0]!.selectors });
+          if (!framePath) continue;
+          candidate.framePath = framePath;
+          known.set(candidate.sessionId, framePath);
+          changed = true;
+        }
+      }
+      if (target.framePath) return target.framePath;
+      if (!changed) break;
+    }
+    return target.framePath;
+  }
+
+  private async listLocalFrameOwners(
+    client: ChromeCdpClient,
+    sessionId: string | undefined
+  ): Promise<Array<{ selectors: string[]; src: string }>> {
+    const expression = `(() => {
+      const escape = globalThis.CSS && typeof CSS.escape === 'function'
+        ? CSS.escape.bind(CSS) : (value) => String(value).replace(/[^a-zA-Z0-9_-]/g, (char) => '\\\\' + char);
+      const selectorFor = (el) => {
+        if (el.id) return '#' + escape(el.id);
+        const name = el.getAttribute('name');
+        if (name) return el.tagName.toLowerCase() + '[name="' + escape(name) + '"]';
+        const parts = [];
+        let current = el;
+        while (current && current !== current.ownerDocument.documentElement && parts.length < 6) {
+          let part = current.tagName.toLowerCase();
+          const parent = current.parentElement;
+          if (parent) {
+            const peers = Array.from(parent.children).filter((child) => child.tagName === current.tagName);
+            if (peers.length > 1) part += ':nth-of-type(' + (peers.indexOf(current) + 1) + ')';
+          }
+          parts.unshift(part);
+          current = parent;
+        }
+        return parts.join(' > ');
+      };
+      const result = [];
+      const visit = (doc, prefix) => {
+        for (const owner of doc.querySelectorAll('iframe,frame')) {
+          const selector = selectorFor(owner);
+          if (!selector) continue;
+          const selectors = prefix.concat(selector);
+          result.push({ selectors, src: owner.src || owner.getAttribute('src') || 'about:blank' });
+          try { if (owner.contentDocument) visit(owner.contentDocument, selectors); } catch {}
+        }
+      };
+      visit(document, []);
+      return result.slice(0, 256);
+    })()`;
+    const response = await client.send(
+      'Runtime.evaluate',
+      { expression, returnByValue: true, awaitPromise: true },
+      COMMAND_TIMEOUT_MS,
+      sessionId
+    );
+    return resultValue<Array<{ selectors: string[]; src: string }>>(response) ?? [];
+  }
+
+  private async instrumentUserDemoPage(state: BrowserState, page: BrowserPageState): Promise<void> {
+    const client = page.chrome?.client;
+    const chrome = page.chrome;
+    if (!client || !chrome || page.recorderScriptId) return;
+    const downloadDirectory = path.join(this.dataDirectory, 'browser-downloads', state.partition);
+    await mkdir(downloadDirectory, { recursive: true });
+    await client.send('Browser.setDownloadBehavior', {
+      behavior: 'allow',
+      downloadPath: downloadDirectory,
+      eventsEnabled: true
+    }).catch(() => undefined);
+    const installed = await this.instrumentUserDemoCdpSession(page, undefined);
+    if (installed) page.recorderScriptId = installed;
+    await Promise.all([...chrome.frameSessions.values()].map(async (frameSession) => {
+      await this.instrumentUserDemoCdpSession(page, frameSession.sessionId, frameSession).catch(() => undefined);
+    }));
+    if (state.draftRecording?.mode === 'user_demo') {
+      this.captureUserDemoEvent(state, page, { type: 'navigate', timestamp: Date.now(), url: this.pageUrl(page) });
+    }
+  }
+
+  private async instrumentUserDemoCdpSession(
+    page: BrowserPageState,
+    sessionId: string | undefined,
+    frameSession?: BrowserFrameSession
+  ): Promise<string | undefined> {
+    const client = page.chrome?.client;
+    if (!client || frameSession?.recorderScriptId) return frameSession?.recorderScriptId;
+    const source = createBrowserRecorderCaptureScript();
+    await client.send(
+      'Runtime.addBinding',
+      { name: BROWSER_RECORDER_BINDING_NAME },
+      COMMAND_TIMEOUT_MS,
+      sessionId
+    ).catch((error) => {
+      if (!/already exists/iu.test(error instanceof Error ? error.message : String(error))) throw error;
+    });
+    const installed = await client.send(
+      'Page.addScriptToEvaluateOnNewDocument',
+      { source },
+      COMMAND_TIMEOUT_MS,
+      sessionId
+    ) as { identifier?: string };
+    await this.instrumentExistingCdpFrames(client, source, sessionId);
+    if (frameSession && installed.identifier) frameSession.recorderScriptId = installed.identifier;
+    return installed.identifier;
+  }
+
+  private async instrumentExistingCdpFrames(
+    client: ChromeCdpClient,
+    source: string,
+    sessionId: string | undefined
+  ): Promise<void> {
+    const tree = await client.send('Page.getFrameTree', undefined, COMMAND_TIMEOUT_MS, sessionId)
+      .catch(() => undefined) as { frameTree?: CdpFrameTree } | undefined;
+    const frameIds = tree?.frameTree ? collectCdpFrameIds(tree.frameTree) : [];
+    if (frameIds.length === 0) {
+      await client.send('Runtime.evaluate', { expression: source, returnByValue: true }, COMMAND_TIMEOUT_MS, sessionId)
+        .catch(() => undefined);
+      return;
+    }
+    await Promise.all(frameIds.map(async (frameId) => {
+      const world = await client.send('Page.createIsolatedWorld', {
+        frameId,
+        worldName: 'jojo-browser-recorder-v2',
+        grantUniveralAccess: false
+      }, COMMAND_TIMEOUT_MS, sessionId).catch(() => undefined) as { executionContextId?: number } | undefined;
+      if (!world?.executionContextId) return;
+      await client.send('Runtime.evaluate', {
+        expression: source,
+        contextId: world.executionContextId,
+        returnByValue: true
+      }, COMMAND_TIMEOUT_MS, sessionId).catch(() => undefined);
+    }));
+  }
+
+  private async instrumentOpenedUserDemoPage(state: BrowserState, expectedUrl: string | undefined): Promise<void> {
+    for (let attempt = 0; attempt < 3 && state.draftRecording?.mode === 'user_demo'; attempt += 1) {
+      if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, attempt * 100));
+      await this.refreshChromePages(state).catch(() => undefined);
+      const candidates = [...state.pages.values()].filter((page) => (
+        page.kind === 'chrome'
+        && !page.destroyed
+        && !page.chrome?.client
+        && (!expectedUrl || page.url === expectedUrl || page.url === 'about:blank')
+      ));
+      const candidate = candidates.at(-1);
+      if (!candidate) continue;
+      await this.connectChromeClient(state, candidate).catch(() => undefined);
+      if (candidate.chrome?.client) return;
+    }
+  }
+
+  private async stopUserDemoInstrumentation(state: BrowserState): Promise<void> {
+    await Promise.all([...state.pages.values()].map(async (page) => {
+      const client = page.chrome?.client;
+      if (!client) return;
+      const scriptId = page.recorderScriptId;
+      delete page.recorderScriptId;
+      const stopSession = async (sessionId: string | undefined, installedId: string | undefined) => {
+        await client.send('Runtime.evaluate', {
+          expression: `(() => { const state = globalThis[${JSON.stringify(BROWSER_RECORDER_GUARD_NAME)}]; if (state && typeof state === 'object') state.active = false; })()`,
+          returnByValue: true
+        }, COMMAND_TIMEOUT_MS, sessionId).catch(() => undefined);
+        if (installedId) {
+          await client.send(
+            'Page.removeScriptToEvaluateOnNewDocument',
+            { identifier: installedId },
+            COMMAND_TIMEOUT_MS,
+            sessionId
+          ).catch(() => undefined);
+        }
+        await client.send(
+          'Runtime.removeBinding',
+          { name: BROWSER_RECORDER_BINDING_NAME },
+          COMMAND_TIMEOUT_MS,
+          sessionId
+        ).catch(() => undefined);
+      };
+      await stopSession(undefined, scriptId);
+      await Promise.all([...(page.chrome?.frameSessions.values() ?? [])].map(async (frameSession) => {
+        const installedId = frameSession.recorderScriptId;
+        delete frameSession.recorderScriptId;
+        await stopSession(frameSession.sessionId, installedId);
+      }));
+      await client.send('Browser.setDownloadBehavior', { behavior: 'default', eventsEnabled: false }).catch(() => undefined);
+    }));
+  }
+
+  private captureUserDemoEvent(
+    state: BrowserState,
+    page: BrowserPageState,
+    payload: BrowserRecorderBindingPayload
+  ): void {
+    const draft = state.draftRecording;
+    if (!draft || draft.mode !== 'user_demo') return;
+    if (draft.rawEvents.length >= MAX_RAW_BROWSER_EVENTS) {
+      draft.rawEventLimitReached = true;
+      return;
+    }
+    const event = sanitizeRawBrowserEvent({
+      ...payload,
+      id: `raw-${draft.nextRawEventId++}`,
+      pageId: String(page.id),
+      url: payload.url || this.pageUrl(page)
+    });
+    draft.rawEvents.push(event);
+    if (['click', 'change', 'key', 'select', 'upload', 'download'].includes(event.type)) {
+      draft.lastInteractionByPage.set(page.id, {
+        timestamp: event.timestamp,
+        ...(event.target ? { target: event.target } : {})
+      });
+    }
+  }
+
+  private captureUserDemoWait(state: BrowserState, page: BrowserPageState, wait: NonNullable<RawBrowserEvent['wait']>): void {
+    const draft = state.draftRecording;
+    if (!draft || draft.mode !== 'user_demo') return;
+    const interaction = draft.lastInteractionByPage.get(page.id);
+    if (!interaction || Date.now() - interaction.timestamp > 10_000) return;
+    this.captureUserDemoEvent(state, page, {
+      type: 'wait',
+      timestamp: Date.now(),
+      url: this.pageUrl(page),
+      wait
     });
   }
 
@@ -1009,7 +1564,7 @@ export class BrowserRuntime {
   private async selectPage(state: BrowserState, pageId: number): Promise<ToolResult> {
     const page = state.pages.get(pageId);
     if (!page || this.isPageDestroyed(page)) throw new Error(`Browser page does not exist: ${pageId}`);
-    if (page.kind === 'chrome' && page.chrome && !page.chrome.client) await this.connectChromeClient(page);
+    if (page.kind === 'chrome' && page.chrome && !page.chrome.client) await this.connectChromeClient(state, page);
     state.activePageId = pageId;
     this.showPage(page);
     return ok(`Selected page ${pageId}: ${this.pageUrl(page)}\nTitle: ${this.pageTitle(page)}`);
@@ -1025,86 +1580,159 @@ export class BrowserRuntime {
     return ok(`Closed page ${pageId}: ${description}`);
   }
 
-  private startRecording(state: BrowserState, requestedName: string | undefined): ToolResult {
+  private async startRecording(
+    state: BrowserState,
+    requestedName: string | undefined,
+    mode: 'agent_trace' | 'user_demo'
+  ): Promise<ToolResult> {
     if (state.draftRecording) throw new Error('A browser recording is already active.');
+    if (mode === 'user_demo' && state.mode !== 'chrome') {
+      throw new Error('User Demo recording requires Chrome mode. Select Chrome in Browser Settings and retry.');
+    }
     state.draftRecording = {
       name: requestedName ?? 'Workflow',
       createdAt: new Date().toISOString(),
-      steps: []
+      mode,
+      steps: [],
+      rawEvents: [],
+      nextRawEventId: 1,
+      rawEventLimitReached: false,
+      lastInteractionByPage: new Map()
     };
-    return ok(`Started browser recording ${state.draftRecording.name}. Successful workflow actions will be saved as YAML when recording stops, including typed text.`);
+    if (mode === 'user_demo') {
+      const active = this.activePage(state);
+      const connected = [...state.pages.values()].filter((page) => page.chrome?.client);
+      if (!connected.includes(active)) connected.push(active);
+      await Promise.all(connected.map((page) => this.instrumentUserDemoPage(state, page)));
+      return ok(`Started User Demo recording ${state.draftRecording.name}. Use Chrome normally, then call browser_record_stop. Password-like field values are excluded before capture.`);
+    }
+    return ok(`Started Agent Trace recording ${state.draftRecording.name}. Successful Agent browser actions will be saved as YAML when recording stops, including typed text.`);
   }
 
-  private async stopRecording(state: BrowserState): Promise<ToolResult> {
+  private async stopRecording(state: BrowserState, workingDirectory: string): Promise<ToolResult> {
     const draft = state.draftRecording;
     if (!draft) throw new Error('There is no active browser recording.');
     state.draftRecording = undefined;
-    const id = await this.recordingStore.allocateId(draft.name);
-    const document = await this.recordingStore.save({
-      version: 1,
-      id,
-      name: draft.name,
-      createdAt: draft.createdAt,
-      params: listedRecordingParams(draft.steps),
-      steps: draft.steps
-    });
-    return ok(`Saved browser recording ${document.id}: ${document.name} (${document.steps.length} steps) to userData/browser-recordings/${document.id}.yaml.`);
+    if (draft.mode === 'user_demo') await this.stopUserDemoInstrumentation(state);
+    const id = await this.recordingRegistry.allocateUserId(draft.name, workingDirectory);
+    const source = draft.mode === 'user_demo'
+      ? compileUserDemoRecording({
+          id,
+          name: draft.name,
+          createdAt: draft.createdAt,
+          events: draft.rawEvents,
+          domains: [...state.grantedDomains]
+        })
+      : {
+          version: 2 as const,
+          id,
+          name: draft.name,
+          scope: 'user' as const,
+          domains: [...state.grantedDomains].sort(),
+          createdAt: draft.createdAt,
+          updatedAt: draft.createdAt,
+          params: listedRecordingParams(draft.steps),
+          outputs: [],
+          steps: draft.steps,
+          revision: 1,
+          contentHash: ''
+        };
+    const document = await this.recordingRegistry.save(source, workingDirectory);
+    const limitNotice = draft.rawEventLimitReached ? ` Raw trace was capped at ${MAX_RAW_BROWSER_EVENTS} events.` : '';
+    return ok(`Saved ${draft.mode} browser recording ${document.id}: ${document.name} (${document.steps.length} steps) to ~/.jojo/browser-recordings/${document.id}.yaml.${limitNotice}`);
   }
 
-  private cancelRecording(state: BrowserState): ToolResult {
+  private async cancelRecording(state: BrowserState): Promise<ToolResult> {
     const draft = state.draftRecording;
     if (!draft) throw new Error('There is no active browser recording.');
     state.draftRecording = undefined;
-    return ok(`Cancelled browser recording ${draft.name} without saving (${draft.steps.length} steps discarded).`);
+    if (draft.mode === 'user_demo') await this.stopUserDemoInstrumentation(state);
+    const discarded = draft.mode === 'user_demo' ? `${draft.rawEvents.length} raw events` : `${draft.steps.length} steps`;
+    return ok(`Cancelled ${draft.mode} browser recording ${draft.name} without saving (${discarded} discarded).`);
   }
 
-  private async listRecordings(state: BrowserState): Promise<ToolResult> {
-    const stored = await this.recordingStore.list();
-    const items = stored.map((recording) => ({
-      id: recording.id,
-      name: recording.name,
-      createdAt: recording.createdAt,
-      updatedAt: recording.updatedAt,
+  private async listRecordings(state: BrowserState, workingDirectory: string): Promise<ToolResult> {
+    const stored = await this.recordingRegistry.list(workingDirectory);
+    const items: Array<Record<string, unknown>> = stored.map((entry) => ({
+      source: entry.source,
+      trust: entry.trust,
+      overriddenSources: entry.overriddenSources,
+      effectSummary: entry.effectSummary,
+      id: entry.recording.id,
+      name: entry.recording.name,
+      createdAt: entry.recording.createdAt,
+      updatedAt: entry.recording.updatedAt,
+      revision: entry.recording.revision,
+      contentHash: entry.recording.contentHash,
       persisted: true,
       active: false,
-      stepCount: recording.steps.length,
-      params: recording.params.map((param) => param.secret ? { name: param.name, secret: true } : { name: param.name, type: param.type }),
-      steps: recording.steps.map((step, index) => `${index + 1}. ${this.describeRecordedStep(step)}`)
+      stepCount: entry.recording.steps.length,
+      params: entry.recording.params.map((param) => param.secret ? { name: param.name, secret: true } : { name: param.name, type: param.type }),
+      steps: entry.trust === 'untrusted' && entry.effectSummary.highRisk
+        ? undefined
+        : entry.recording.steps.map((step, index) => `${index + 1}. ${this.describeRecordedStep(step)}`)
     }));
     if (state.draftRecording) {
+      const draft = state.draftRecording;
+      const preview = draft.mode === 'user_demo'
+        ? compileUserDemoRecording({
+            id: 'draft-preview',
+            name: draft.name,
+            createdAt: draft.createdAt,
+            events: draft.rawEvents,
+            domains: [...state.grantedDomains]
+          })
+        : undefined;
+      const previewSteps = preview?.steps ?? draft.steps;
+      const previewParams = preview?.params ?? listedRecordingParams(draft.steps);
       items.unshift({
         id: 'draft',
-        name: state.draftRecording.name,
-        createdAt: state.draftRecording.createdAt,
-        updatedAt: undefined,
+        name: draft.name,
+        createdAt: draft.createdAt,
+        updatedAt: draft.createdAt,
         persisted: false,
         active: true,
-        stepCount: state.draftRecording.steps.length,
-        params: listedRecordingParams(state.draftRecording.steps).map((param) => (
+        stepCount: previewSteps.length,
+        params: previewParams.map((param) => (
           param.secret ? { name: param.name, secret: true } : { name: param.name, type: param.type }
         )),
-        steps: state.draftRecording.steps.map((step, index) => `${index + 1}. ${this.describeRecordedStep(step)}`)
+        steps: previewSteps.map((step, index) => `${index + 1}. ${this.describeRecordedStep(step)}`)
       });
     }
     return ok(JSON.stringify(items, null, 2));
   }
 
-  private async getRecording(recordingId: string): Promise<ToolResult> {
-    const document = await this.recordingStore.get(recordingId);
+  private async getRecording(recordingId: string, workingDirectory: string): Promise<ToolResult> {
+    const entry = await this.recordingRegistry.get(recordingId, workingDirectory);
+    const document = entry.recording;
+    if (entry.source === 'project' && entry.trust === 'untrusted' && entry.effectSummary.highRisk) {
+      return ok(JSON.stringify({
+        id: document.id,
+        name: document.name,
+        description: document.description,
+        source: entry.source,
+        trust: entry.trust,
+        revision: document.revision,
+        contentHash: document.contentHash,
+        effectSummary: entry.effectSummary,
+        message: 'High-risk project recording steps are hidden until this exact content hash is trusted in Desktop Settings.'
+      }, null, 2));
+    }
     return ok(stringifyBrowserRecording({
       ...document,
-      steps: document.steps.map((step) => step.action === 'type' ? { ...step, text: `[${step.text?.length ?? 0} characters]` } : step)
+      steps: document.steps.map((step) => step.action === 'type' ? { ...step, value: `[${step.value?.length ?? 0} characters]` } : step)
     }));
   }
 
-  private async deleteRecording(recordingId: string): Promise<ToolResult> {
-    await this.recordingStore.delete(recordingId);
-    return ok(`Deleted browser recording ${recordingId}.`);
+  private async deleteRecording(recordingId: string, workingDirectory: string): Promise<ToolResult> {
+    const source = await this.recordingRegistry.delete(recordingId, workingDirectory);
+    return ok(`Deleted ${source} browser recording ${recordingId}.`);
   }
 
   private recordSuccessfulAction(state: BrowserState, action: BrowserAction): string | undefined {
     const draft = state.draftRecording;
     if (!draft) return undefined;
+    if (draft.mode !== 'agent_trace') return undefined;
     if (draft.steps.length >= MAX_RECORDING_STEPS) {
       state.draftRecording = undefined;
       return `Recording reached the ${MAX_RECORDING_STEPS}-step limit and stopped without saving. Use browser_record_stop before the limit.`;
@@ -1121,17 +1749,30 @@ export class BrowserRuntime {
   private compileRecordedAction(state: BrowserState, action: BrowserAction): BrowserRecordingStep | undefined {
     const page = state.pages.get(state.activePageId);
     const ref = 'ref' in action ? action.ref : undefined;
-    const raw: Record<string, unknown> = { ...action };
-    delete raw.ref;
+    const raw: Record<string, unknown> = {
+      id: `step-${(state.draftRecording?.steps.length ?? 0) + 1}`,
+      action: action.action === 'open' ? 'navigate' : action.action
+    };
+    if ('url' in action) raw.url = action.url;
+    if ('text' in action) raw.value = action.text;
+    if ('values' in action) raw.values = action.values;
+    if ('key' in action) raw.key = action.key;
+    if ('state' in action) raw.timeoutMs = action.timeoutMs;
+    if ('deltaX' in action) {
+      raw.deltaX = action.deltaX;
+      raw.deltaY = action.deltaY;
+    }
+    if ('submit' in action) raw.submit = action.submit;
+    const selector = 'selector' in action ? action.selector : undefined;
+    let recordingFingerprint: Record<string, unknown> | undefined;
     if (ref && page) {
       const fingerprint = page.elementRefs.get(ref);
       if (!fingerprint) return undefined;
-      raw.selector = fingerprint.selector;
-      raw.fingerprint = {
-        selector: fingerprint.selector,
+      recordingFingerprint = {
+        primarySelector: fingerprint.selector,
         tag: fingerprint.tag,
         ...(fingerprint.role ? { role: fingerprint.role } : {}),
-        ...(fingerprint.name ? { name: fingerprint.name } : {}),
+        ...(fingerprint.name ? { accessibleName: fingerprint.name } : {}),
         ...(fingerprint.id ? { id: fingerprint.id } : {}),
         ...(fingerprint.testId ? { testId: fingerprint.testId } : {}),
         ...(fingerprint.fieldName ? { fieldName: fingerprint.fieldName } : {}),
@@ -1140,21 +1781,40 @@ export class BrowserRuntime {
         ...(fingerprint.href ? { href: fingerprint.href } : {})
       };
     }
+    const targetSelector = selector ?? (recordingFingerprint?.primarySelector as string | undefined);
+    const frame = ('frame' in action ? action.frame : undefined)
+      ?? (ref && page ? page.elementRefs.get(ref)?.frame : undefined);
+    const target = targetSelector || recordingFingerprint ? {
+      ...(targetSelector ? { selector: targetSelector } : {}),
+      ...(recordingFingerprint ? { fingerprint: recordingFingerprint } : {}),
+      ...(frame ? { frame } : {})
+    } : undefined;
+    if (target) raw.target = target;
+    if (action.action === 'wait' && target) {
+      raw.condition = { type: 'element_state', target, state: action.state };
+    }
     const parsed = BrowserRecordingStepSchema.safeParse(raw);
     return parsed.success ? parsed.data : undefined;
   }
 
   private describeRecordedStep(action: BrowserRecordingStep | BrowserAction): string {
-    if (action.action === 'open') {
+    if (action.action === 'open' || action.action === 'navigate') {
       try { return `open ${new URL(action.url ?? '').hostname}`; } catch { return 'open'; }
     }
-    if (action.action === 'wait') return `wait for ${action.selector} to be ${action.state ?? 'visible'}`;
-    if (action.action === 'scroll') return action.selector ? `scroll to ${action.selector}` : `scroll by (${action.deltaX ?? 0}, ${action.deltaY ?? 0})`;
-    if (action.action === 'click') return `click ${action.selector}`;
-    if (action.action === 'hover') return `hover ${action.selector}`;
-    if (action.action === 'type') return `type ${action.text?.length ?? 0} characters into ${action.selector}`;
-    if (action.action === 'press') return `press ${action.key}${action.selector ? ` on ${action.selector}` : ''}`;
-    if (action.action === 'select') return `select ${(action.values?.length ?? 0)} value(s) in ${action.selector}`;
+    const selector = 'target' in action ? action.target?.selector : ('selector' in action ? action.selector : undefined);
+    if (action.action === 'wait') {
+      const state = 'condition' in action && action.condition?.type === 'element_state' ? action.condition.state : ('state' in action ? action.state : 'visible');
+      return `wait for ${selector ?? 'condition'} to be ${state}`;
+    }
+    if (action.action === 'scroll') return selector ? `scroll to ${selector}` : `scroll by (${action.deltaX ?? 0}, ${action.deltaY ?? 0})`;
+    if (action.action === 'click') return `click ${selector}`;
+    if (action.action === 'hover') return `hover ${selector}`;
+    if (action.action === 'type') {
+      const value = 'id' in action ? action.value : action.text;
+      return `type ${value?.length ?? 0} characters into ${selector}`;
+    }
+    if (action.action === 'press') return `press ${action.key}${selector ? ` on ${selector}` : ''}`;
+    if (action.action === 'select') return `select ${(action.values?.length ?? 0)} value(s) in ${selector}`;
     if (action.action === 'back') return 'navigate back';
     if (action.action === 'reload') return 'reload page';
     return action.action;
@@ -1167,37 +1827,612 @@ export class BrowserRuntime {
     supplied: Record<string, RecordingParamValue>,
     maxRetries: number,
     retryDelayMs: number,
+    newRunId: string | undefined,
+    resumeRunId: string | undefined,
+    confirmUnsafeResume: boolean,
     allowedDomains: Set<string>,
-    workingDirectory: string
+    workingDirectory: string,
+    onProgress?: (text: string) => void,
+    signal?: AbortSignal
   ): Promise<ToolResult> {
+    assertReplayActive(signal);
     if (state.draftRecording) throw new Error('Stop the active browser recording before replaying a workflow.');
-    const recording = await this.recordingStore.get(recordingId);
+    let registryEntry: BrowserRecordingRegistryEntry;
+    try {
+      registryEntry = await this.recordingRegistry.getExecutable(recordingId, workingDirectory);
+    } catch (error) {
+      if (error && typeof error === 'object' && 'code' in error && error.code === 'browser_recording_untrusted') {
+        return {
+          callId: 'browser',
+          ok: false,
+          code: 'permission_denied',
+          content: error instanceof Error ? error.message : String(error)
+        };
+      }
+      throw error;
+    }
+    const recording = registryEntry.recording;
     const secrets = await this.resolveRecordingSecrets(sessionId, recording);
-    const report = [`Replaying ${recording.id}: ${recording.name} (${recording.steps.length} steps)`];
-    for (const [index, step] of recording.steps.entries()) {
-      const prepared = applyRecordingParams(step, recording, supplied, secrets);
-      const action = await this.recordingStepToAction(state, prepared);
-      let attempt = 0;
-      while (true) {
-        attempt += 1;
-        try {
-          const result = await this.executeAction(sessionId, state, action, true, allowedDomains, workingDirectory, false);
-          if (!result.ok) throw new Error(result.content);
-          report.push(`✓ ${index + 1}. ${this.describeRecordedStep(prepared)}${attempt > 1 ? ` (${attempt} attempts)` : ''}`);
-          break;
-        } catch (error) {
-          if (attempt <= maxRetries && isRetryableBrowserStepError(error)) {
-            await new Promise((resolve) => setTimeout(resolve, Math.min(2_000, retryDelayMs * attempt)));
-            continue;
-          }
-          const detail = error instanceof Error ? error.message : String(error);
-          report.push(`✗ ${index + 1}. ${this.describeRecordedStep(prepared)}: ${detail}`);
-          return { callId: 'browser', ok: false, content: report.join('\n') };
-        }
+    const runId = resumeRunId ?? newRunId ?? `brun_${randomUUID()}`;
+    const healingPort = this.healingPortForSession?.(sessionId);
+    const healRecords: BrowserHealRecord[] = [];
+    const healedSelectors = new Map<number, string>();
+    const outputs: Record<string, { type: 'file'; path: string }> = {};
+    let verifiedStepIds: ReadonlySet<string> = new Set();
+    if (resumeRunId) {
+      const entries = await this.replayJournal.read(runId);
+      if (entries.length === 0) throw new Error(`Browser replay run does not exist: ${runId}`);
+      const resume = analyzeBrowserReplayResume(recording, entries);
+      Object.assign(outputs, resume.outputs);
+      if (resume.unsafePendingStep && !confirmUnsafeResume) {
+        return {
+          callId: 'browser',
+          ok: false,
+          code: 'browser_resume_unsafe',
+          content: `Browser replay ${runId} stopped after dispatching step ${resume.unsafePendingStep.stepId}. `
+            + 'Confirm the external effect before retrying it.'
+        };
+      }
+      const verified = new Set(resume.verifiedStepIds);
+      if (resume.unsafePendingStep) verified.delete(resume.unsafePendingStep.stepId);
+      verifiedStepIds = verified;
+    } else if (newRunId && (await this.replayJournal.read(runId)).length > 0) {
+      throw new Error(`Browser replay run already exists: ${runId}. Resume it instead of starting again.`);
+    }
+    const report = [`Replay run ${runId}`, `Replaying ${recording.id}: ${recording.name} (${recording.steps.length} steps)`];
+    onProgress?.(`${resumeRunId ? 'Resuming' : 'Starting'} browser replay ${runId} (${recording.steps.length} steps).`);
+    if (recording.start?.url && !verifiedStepIds.has('$start')) {
+      assertReplayActive(signal);
+      const startStep: BrowserRecordingStep = { id: '$start', action: 'navigate', url: recording.start.url };
+      if (!isAllowedBrowserUrl(recording.start.url, recording.domains)) {
+        return { callId: 'browser', ok: false, code: 'browser_replay_failed', content: `${report.join('\n')}\n✗ Recording start domain violation: ${recording.start.url}` };
+      }
+      onProgress?.(`→ Preparing replay at ${recording.start.url}`);
+      await this.appendReplayJournal(runId, recording, startStep, 0, 'step_started', 1);
+      try {
+        await this.appendReplayJournal(runId, recording, startStep, 0, 'step_effect_dispatched', 1);
+        const startResult = await this.executeAction(
+          sessionId,
+          state,
+          BrowserActionSchema.parse({ action: 'open', url: recording.start.url }),
+          true,
+          allowedDomains,
+          workingDirectory,
+          false,
+          undefined,
+          signal
+        );
+        if (!startResult.ok) throw new Error(startResult.content);
+        await this.appendReplayJournal(runId, recording, startStep, 0, 'step_verified', 1);
+      } catch (error) {
+        if (signal?.aborted) throw error;
+        await this.appendReplayJournal(runId, recording, startStep, 0, 'step_failed', 1);
+        const detail = error instanceof Error ? error.message : String(error);
+        report.push(`✗ Recording start: ${detail}`);
+        onProgress?.(`✗ Replay preparation failed: ${detail}`);
+        return { callId: 'browser', ok: false, code: 'browser_replay_failed', content: report.join('\n') };
       }
     }
+    for (const [index, step] of recording.steps.entries()) {
+      assertReplayActive(signal);
+      const prepared = applyRecordingParams(step, recording, supplied, secrets);
+      if (verifiedStepIds.has(prepared.id)) {
+        report.push(`↷ ${index + 1}. ${this.describeRecordedStep(prepared)} (already verified)`);
+        onProgress?.(`↷ ${index + 1}/${recording.steps.length} already verified; skipping.`);
+        continue;
+      }
+      if (prepared.action === 'navigate' && prepared.url && !isAllowedBrowserUrl(prepared.url, recording.domains)) {
+        return { callId: 'browser', ok: false, code: 'browser_replay_failed', content: `${report.join('\n')}\n✗ ${index + 1}. Recording domain violation: ${prepared.url}` };
+      }
+      onProgress?.(`→ ${index + 1}/${recording.steps.length} ${this.describeRecordedStep(prepared)}`);
+      await this.appendReplayJournal(runId, recording, prepared, index + 1, 'step_started', 1);
+      let effectivePrepared = prepared;
+      let healedRecord: BrowserHealRecord | undefined;
+      let action: BrowserAction;
+      try {
+        await this.assertRecordingStepFramesAllowed(state, prepared, recording.domains);
+        if (this.isDesktopHealableStep(prepared) && !await this.waitForRecordingTargetRecovery(
+          state, prepared.target!, maxRetries, retryDelayMs, onProgress, signal
+        )) {
+          throw new Error(`Recording target was not found: ${prepared.target?.selector ?? prepared.target?.fingerprint?.accessibleName ?? prepared.id}`);
+        }
+        action = await this.recordingStepToAction(state, effectivePrepared, onProgress);
+      } catch (error) {
+        if (signal?.aborted) throw error;
+        if (healingPort && this.isDesktopHealableStep(prepared)
+          && !(error instanceof Error && error.message.startsWith('Recording frame domain violation:'))) {
+          try {
+            onProgress?.('  Deterministic target recovery exhausted; requesting constrained self-heal.');
+            const proposal = await this.proposeDesktopHeal(state, prepared, healingPort, signal);
+            effectivePrepared = {
+              ...prepared,
+              target: { selector: proposal.selector, ...(prepared.target?.frame ? { frame: prepared.target.frame } : {}) }
+            };
+            action = await this.recordingStepToAction(state, effectivePrepared, onProgress);
+            healedRecord = {
+              stepId: prepared.id,
+              ...(prepared.target?.selector ? { previousSelector: prepared.target.selector } : {}),
+              selector: proposal.selector,
+              confidence: proposal.confidence,
+              ...(proposal.reason ? { reason: proposal.reason } : {}),
+              persisted: false
+            };
+            await this.appendReplayJournal(
+              runId, recording, prepared, index + 1, 'step_heal_proposed', 1,
+              { selector: proposal.selector, confidence: proposal.confidence }
+            );
+          } catch (healError) {
+            if (signal?.aborted) throw healError;
+            await this.appendReplayJournal(runId, recording, prepared, index + 1, 'step_failed', 1);
+            const detail = healError instanceof Error ? healError.message : String(healError);
+            report.push(`✗ ${index + 1}. ${this.describeRecordedStep(prepared)} self-heal: ${detail}`);
+            onProgress?.(`✗ ${index + 1}/${recording.steps.length} self-heal: ${detail}`);
+            return { callId: 'browser', ok: false, code: 'browser_replay_failed', content: report.join('\n') };
+          }
+        } else {
+          await this.appendReplayJournal(runId, recording, prepared, index + 1, 'step_failed', 1);
+          const detail = error instanceof Error ? error.message : String(error);
+          report.push(`✗ ${index + 1}. ${this.describeRecordedStep(prepared)}: ${detail}`);
+          onProgress?.(`✗ ${index + 1}/${recording.steps.length} ${detail}`);
+          return { callId: 'browser', ok: false, code: 'browser_replay_failed', content: report.join('\n') };
+        }
+      }
+      const downloadsBefore = new Set(state.downloads.keys());
+      const pagesBefore = new Set([...state.pages.values()].flatMap((page) => page.chrome ? [page.chrome.targetId] : []));
+      if (prepared.action === 'download') await this.prepareChromeDownloadCapture(state);
+      let attempt = 0;
+      while (true) {
+        assertReplayActive(signal);
+        attempt += 1;
+        try {
+          if (attempt > 1) await this.appendReplayJournal(runId, recording, prepared, index + 1, 'step_started', attempt);
+          if (!isReplaySafeBrowserStep(prepared)) {
+            await this.appendReplayJournal(runId, recording, prepared, index + 1, 'step_effect_dispatched', attempt);
+          }
+          const result = await this.executeAction(sessionId, state, action, true, allowedDomains, workingDirectory, false, undefined, signal);
+          assertReplayActive(signal);
+          if (!result.ok) throw new Error(result.content);
+          break;
+        } catch (error) {
+          if (signal?.aborted) throw error;
+          if (attempt <= maxRetries && isRetryableBrowserStepError(error)) {
+            onProgress?.(`  Recovery: retrying step ${index + 1} (attempt ${attempt + 1}/${maxRetries + 1}).`);
+            await replayDelay(Math.min(2_000, retryDelayMs * attempt), signal);
+            continue;
+          }
+          await this.appendReplayJournal(runId, recording, prepared, index + 1, 'step_failed', attempt);
+          const detail = error instanceof Error ? error.message : String(error);
+          report.push(`✗ ${index + 1}. ${this.describeRecordedStep(prepared)}: ${detail}`);
+          onProgress?.(`✗ ${index + 1}/${recording.steps.length} ${detail}`);
+          return { callId: 'browser', ok: false, code: 'browser_replay_failed', content: report.join('\n') };
+        }
+      }
+      try {
+        const completedDownload = prepared.action === 'download'
+          ? await this.waitForNewDownload(state, downloadsBefore, prepared.timeoutMs ?? 30_000, signal)
+          : undefined;
+        await this.applyRecordingWaitPolicy(state, effectivePrepared, pagesBefore, onProgress, signal);
+        assertReplayActive(signal);
+        await this.verifyRecordingState(state, effectivePrepared.verify, effectivePrepared.target, completedDownload);
+        const currentUrl = this.pageUrl(this.activePage(state));
+        if (currentUrl !== 'about:blank' && !isAllowedBrowserUrl(currentUrl, recording.domains)) {
+          throw new Error(`Recording domain violation after step: ${currentUrl}`);
+        }
+        if (completedDownload) {
+          report.push(`  ↓ ${prepared.bind ?? 'download'}: ${completedDownload.path}`);
+          if (prepared.bind) outputs[prepared.bind] = { type: 'file', path: completedDownload.path };
+          onProgress?.(`  ↓ Download completed: ${completedDownload.path}`);
+        }
+        await this.appendReplayJournal(
+          runId, recording, prepared, index + 1, 'step_verified', attempt, undefined,
+          prepared.bind && outputs[prepared.bind] ? { name: prepared.bind, value: outputs[prepared.bind]! } : undefined
+        );
+        if (healedRecord) {
+          await this.appendReplayJournal(
+            runId, recording, prepared, index + 1, 'step_heal_verified', attempt,
+            { selector: healedRecord.selector, confidence: healedRecord.confidence }
+          );
+          healRecords.push(healedRecord);
+          healedSelectors.set(index, healedRecord.selector);
+          report.push(`  ⚕ selector healed to ${healedRecord.selector} (${healedRecord.confidence.toFixed(2)})`);
+          onProgress?.(`  ⚕ Self-heal verified: ${healedRecord.selector}`);
+        }
+        report.push(`✓ ${index + 1}. ${this.describeRecordedStep(prepared)}${attempt > 1 ? ` (${attempt} attempts)` : ''}`);
+        onProgress?.(`✓ ${index + 1}/${recording.steps.length} verified.`);
+      } catch (error) {
+        if (signal?.aborted) throw error;
+        await this.appendReplayJournal(runId, recording, prepared, index + 1, 'step_failed', attempt);
+        const detail = error instanceof Error ? error.message : String(error);
+        report.push(`✗ ${index + 1}. ${this.describeRecordedStep(prepared)} verification: ${detail}`);
+        onProgress?.(`✗ ${index + 1}/${recording.steps.length} verification: ${detail}`);
+        return { callId: 'browser', ok: false, code: 'browser_replay_failed', content: report.join('\n') };
+      }
+    }
+    try {
+      await this.verifyRecordingState(state, recording.end, undefined, undefined);
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      report.push(`✗ Final verification: ${error instanceof Error ? error.message : String(error)}`);
+      return { callId: 'browser', ok: false, code: 'browser_replay_failed', content: report.join('\n') };
+    }
+    if (healRecords.length > 0) {
+      try {
+        const saved = await this.recordingRegistry.save({
+          ...recording,
+          steps: recording.steps.map((step, index) => {
+            const selector = healedSelectors.get(index);
+            return selector ? { ...step, target: { ...step.target!, selector } } : step;
+          })
+        }, workingDirectory, { expectedRevision: recording.revision, expectedHash: recording.contentHash });
+        for (const record of healRecords) record.persisted = true;
+        report.push(`Persisted ${healRecords.length} verified selector heal(s) as recording revision ${saved.revision}.`);
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        for (const record of healRecords) record.persistenceError = detail;
+        report.push(`⚠ Replay succeeded, but healed selectors were not persisted: ${detail}`);
+      }
+    }
+    const lastStep = recording.steps.at(-1);
+    if (lastStep) await this.appendReplayJournal(runId, recording, lastStep, recording.steps.length, 'run_completed');
     report.push('Replay completed.');
-    return ok(report.join('\n'));
+    onProgress?.(`✓ Browser replay ${runId} completed.`);
+    return {
+      callId: 'browser', ok: true, content: report.join('\n'),
+      structuredResult: {
+        runId,
+        recordingId: recording.id,
+        success: true,
+        outputs,
+        finalUrl: this.pageUrl(this.activePage(state)),
+        selfHealed: healRecords.length > 0,
+        ...(healRecords.length > 0 ? { healRecords } : {})
+      }
+    };
+  }
+
+  private async appendReplayJournal(
+    runId: string,
+    recording: BrowserRecordingDocument,
+    step: BrowserRecordingStep,
+    stepIndex: number,
+    state: Parameters<typeof createBrowserReplayJournalEntry>[0]['state'],
+    attempt?: number,
+    heal?: { selector: string; confidence: number },
+    output?: { name: string; value: BrowserReplayJournalOutputValue }
+  ): Promise<void> {
+    await this.replayJournal.append(createBrowserReplayJournalEntry({
+      runId,
+      recordingId: recording.id,
+      revision: recording.revision,
+      stepId: step.id,
+      stepIndex,
+      action: step.action,
+      state,
+      ...(attempt === undefined ? {} : { attempt }),
+      ...(heal ?? {}),
+      ...(output ? { output } : {})
+    }));
+  }
+
+  private isDesktopHealableStep(step: BrowserRecordingStep): boolean {
+    return Boolean(step.target && ['click', 'hover', 'type', 'press', 'select', 'upload', 'download'].includes(step.action));
+  }
+
+  private async assertRecordingStepFramesAllowed(
+    state: BrowserState,
+    step: BrowserRecordingStep,
+    domains: string[]
+  ): Promise<void> {
+    const paths = [
+      step.target?.frame,
+      step.condition?.type === 'element_state' ? step.condition.target.frame : undefined,
+      step.wait?.elementVisible?.frame,
+      step.verify?.exists?.frame,
+      step.verify?.notExists?.frame
+    ].filter((frame): frame is BrowserFramePath => Boolean(frame));
+    const seen = new Set<string>();
+    for (const frame of paths) {
+      const key = JSON.stringify(frame.selectors);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const response = (await this.evaluateInFrame(state, frame, 'location.href')).response;
+      const url = resultValue<string>(response);
+      if (!url || !isAllowedBrowserUrl(url, domains)) {
+        throw new Error(`Recording frame domain violation: ${url ?? frame.selectors.join(' -> ')}`);
+      }
+    }
+  }
+
+  private async waitForRecordingTargetRecovery(
+    state: BrowserState,
+    target: BrowserTarget,
+    maxRetries: number,
+    retryDelayMs: number,
+    onProgress?: (text: string) => void,
+    signal?: AbortSignal
+  ): Promise<boolean> {
+    for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+      assertReplayActive(signal);
+      if (await this.recordingTargetExists(state, target)) return true;
+      if (attempt === maxRetries) return false;
+      onProgress?.(`  Target unavailable; deterministic retry ${attempt + 1}/${maxRetries}.`);
+      await replayDelay(Math.min(2_000, retryDelayMs * (attempt + 1)), signal);
+    }
+    return false;
+  }
+
+  private async proposeDesktopHeal(
+    state: BrowserState,
+    step: BrowserRecordingStep,
+    healingPort: BrowserHealingPort,
+    signal?: AbortSignal
+  ): Promise<BrowserHealProposal> {
+    assertReplayActive(signal);
+    const candidates = await this.browserHealCandidates(state, step.target?.frame);
+    if (candidates.length === 0) throw new Error('Browser self-heal has no visible interactable candidates.');
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(new Error('Browser self-heal timed out.')), 30_000);
+    const onAbort = () => controller.abort(signal?.reason);
+    signal?.addEventListener('abort', onAbort, { once: true });
+    if (signal?.aborted) onAbort();
+    try {
+      const frameUrl = step.target?.frame
+        ? resultValue<string>((await this.evaluateInFrame(state, step.target.frame, 'location.href')).response)
+        : undefined;
+      const proposal = await healingPort.heal({
+        action: step.action,
+        ...(step.target?.selector ? { failedSelector: step.target.selector } : {}),
+        ...(step.target?.fingerprint ? { fingerprint: step.target.fingerprint } : {}),
+        url: frameUrl ?? this.pageUrl(this.activePage(state)),
+        candidates
+      }, controller.signal);
+      if (proposal.confidence < 0.8) throw new Error(`Browser self-heal confidence ${proposal.confidence} is below 0.8.`);
+      if (candidates.filter((candidate) => candidate.selector === proposal.selector).length !== 1) {
+        throw new Error('Browser self-heal proposed a selector outside the unique candidate set.');
+      }
+      return {
+        selector: proposal.selector,
+        confidence: proposal.confidence,
+        ...(proposal.reason ? { reason: proposal.reason } : {})
+      };
+    } finally {
+      clearTimeout(timeout);
+      signal?.removeEventListener('abort', onAbort);
+    }
+  }
+
+  private async browserHealCandidates(state: BrowserState, frame?: BrowserFramePath): Promise<BrowserHealCandidate[]> {
+    const expression = `(() => {
+      const selectorFor = (el) => {
+        if (el.id) return '#' + CSS.escape(el.id);
+        const testId = el.getAttribute('data-testid');
+        if (testId) return '[data-testid="' + CSS.escape(testId) + '"]';
+        const name = el.getAttribute('name');
+        if (name) return el.tagName.toLowerCase() + '[name="' + CSS.escape(name) + '"]';
+        const parts = [];
+        let current = el;
+        while (current && current !== document.body && parts.length < 5) {
+          let part = current.tagName.toLowerCase();
+          const siblings = current.parentElement ? Array.from(current.parentElement.children).filter((child) => child.tagName === current.tagName) : [];
+          if (siblings.length > 1) part += ':nth-of-type(' + (siblings.indexOf(current) + 1) + ')';
+          parts.unshift(part);
+          current = current.parentElement;
+        }
+        return parts.join(' > ');
+      };
+      return Array.from(document.querySelectorAll('a,button,input,textarea,select,[role],[contenteditable="true"]'))
+        .filter((el) => el instanceof HTMLElement && el.offsetParent !== null)
+        .slice(0, 300)
+        .map((el) => ({
+          selector: selectorFor(el),
+          tag: el.tagName.toLowerCase(),
+          role: el.getAttribute('role') || undefined,
+          accessibleName: (el.getAttribute('aria-label') || el.getAttribute('title') || el.innerText || '').trim().slice(0, 500) || undefined,
+          visible: true
+        }));
+    })()`;
+    const response = (await this.evaluateInFrame(state, frame, expression)).response;
+    return resultValue<BrowserHealCandidate[]>(response) ?? [];
+  }
+
+  private async prepareChromeDownloadCapture(state: BrowserState): Promise<void> {
+    const page = this.activePage(state);
+    const client = page.chrome?.client;
+    if (!client) throw new Error('Recording download replay requires an attached Chrome page.');
+    const downloadDirectory = path.join(this.dataDirectory, 'browser-downloads', state.partition);
+    await mkdir(downloadDirectory, { recursive: true });
+    await client.send('Browser.setDownloadBehavior', {
+      behavior: 'allow',
+      downloadPath: downloadDirectory,
+      eventsEnabled: true
+    });
+  }
+
+  private async waitForNewDownload(
+    state: BrowserState,
+    previousIds: ReadonlySet<string>,
+    timeoutMs: number,
+    signal?: AbortSignal
+  ): Promise<DownloadRecord> {
+    const client = this.activePage(state).chrome?.client;
+    const startedAt = Date.now();
+    try {
+      while (Date.now() - startedAt < timeoutMs) {
+        assertReplayActive(signal);
+        const candidate = [...state.downloads.values()].find((record) => !previousIds.has(record.id));
+        if (candidate?.state === 'completed') return candidate;
+        if (candidate && ['cancelled', 'interrupted'].includes(candidate.state)) {
+          throw new Error(`Browser download ${candidate.state}: ${candidate.filename}`);
+        }
+        await replayDelay(100, signal);
+      }
+      throw new Error(`Timed out after ${timeoutMs} ms waiting for the browser download.`);
+    } finally {
+      await client?.send('Browser.setDownloadBehavior', { behavior: 'default', eventsEnabled: false }).catch(() => undefined);
+    }
+  }
+
+  private async applyRecordingWaitPolicy(
+    state: BrowserState,
+    step: BrowserRecordingStep,
+    pagesBefore: ReadonlySet<string>,
+    onProgress?: (text: string) => void,
+    signal?: AbortSignal
+  ): Promise<void> {
+    assertReplayActive(signal);
+    const policy = step.wait;
+    if (!policy) return;
+    const timeoutMs = policy.timeoutMs ?? 15_000;
+    if (policy.newPage) {
+      onProgress?.('  Waiting for a new browser page.');
+      await this.waitForRecordingNewPage(state, pagesBefore, timeoutMs, signal);
+    }
+    if (policy.networkIdle) {
+      onProgress?.('  Waiting for network idle.');
+      await this.waitForRecordingNetworkIdle(state, timeoutMs, signal);
+    }
+    if (policy.domStableMs) {
+      onProgress?.('  Waiting for DOM stability.');
+      await this.waitForRecordingDomStable(state, policy.domStableMs, timeoutMs, step.target?.frame);
+      assertReplayActive(signal);
+    }
+    if (policy.elementVisible) {
+      onProgress?.('  Waiting for the expected element to become visible.');
+      const selector = await this.resolveRecordingTargetSelector(state, policy.elementVisible);
+      await this.wait(state, { selector, ...(policy.elementVisible.frame ? { frame: policy.elementVisible.frame } : {}) }, 'visible', timeoutMs);
+    }
+  }
+
+  private async waitForRecordingNewPage(
+    state: BrowserState,
+    previousTargetIds: ReadonlySet<string>,
+    timeoutMs: number,
+    signal?: AbortSignal
+  ): Promise<void> {
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < timeoutMs) {
+      assertReplayActive(signal);
+      await this.refreshChromePages(state);
+      const page = [...state.pages.values()].find((candidate) => (
+        candidate.chrome && !previousTargetIds.has(candidate.chrome.targetId) && !candidate.destroyed
+      ));
+      if (page) {
+        if (!page.chrome?.client) await this.connectChromeClient(state, page);
+        state.activePageId = page.id;
+        return;
+      }
+      await replayDelay(100, signal);
+    }
+    throw new Error(`Timed out after ${timeoutMs} ms waiting for a new browser page.`);
+  }
+
+  private async waitForRecordingNetworkIdle(state: BrowserState, timeoutMs: number, signal?: AbortSignal): Promise<void> {
+    const startedAt = Date.now();
+    let idleSince: number | undefined;
+    while (Date.now() - startedAt < timeoutMs) {
+      assertReplayActive(signal);
+      const page = this.activePage(state);
+      const pending = page.kind === 'chrome'
+        ? page.pendingNetworkRequests.size
+        : page.network.filter((record) => record.pending).length;
+      if (pending === 0) {
+        idleSince ??= Date.now();
+        if (Date.now() - idleSince >= 500) return;
+      } else idleSince = undefined;
+      await replayDelay(100, signal);
+    }
+    throw new Error(`Timed out after ${timeoutMs} ms waiting for network idle.`);
+  }
+
+  private async waitForRecordingDomStable(
+    state: BrowserState,
+    stableMs: number,
+    timeoutMs: number,
+    frame?: BrowserFramePath
+  ): Promise<void> {
+    const expression = `new Promise((resolve) => {
+      let stable;
+      let hard;
+      const observer = new MutationObserver(() => {
+        clearTimeout(stable);
+        stable = setTimeout(done, ${JSON.stringify(stableMs)});
+      });
+      const done = () => {
+        clearTimeout(stable);
+        clearTimeout(hard);
+        observer.disconnect();
+        resolve(true);
+      };
+      observer.observe(document, { subtree: true, childList: true, attributes: true });
+      stable = setTimeout(done, ${JSON.stringify(stableMs)});
+      hard = setTimeout(done, ${JSON.stringify(timeoutMs)});
+    })`;
+    await this.evaluateInFrame(state, frame, expression);
+  }
+
+  private async verifyRecordingState(
+    state: BrowserState,
+    verify: BrowserVerify | undefined,
+    stepTarget: BrowserTarget | undefined,
+    download: DownloadRecord | undefined
+  ): Promise<void> {
+    if (!verify) return;
+    const currentUrl = this.pageUrl(this.activePage(state));
+    if (verify.urlContains && !currentUrl.includes(verify.urlContains)) {
+      throw new Error(`URL does not contain ${verify.urlContains}.`);
+    }
+    if (verify.urlMatches) {
+      let pattern: RegExp;
+      try { pattern = new RegExp(verify.urlMatches, 'u'); }
+      catch { throw new Error(`Invalid URL verification pattern: ${verify.urlMatches}`); }
+      if (!pattern.test(currentUrl)) throw new Error(`URL does not match ${verify.urlMatches}.`);
+    }
+    if (verify.exists && !await this.recordingTargetExists(state, verify.exists)) {
+      throw new Error('Expected element does not exist.');
+    }
+    if (verify.notExists && await this.recordingTargetExists(state, verify.notExists)) {
+      throw new Error('Unexpected element exists.');
+    }
+    if (verify.textContains) {
+      const response = (await this.evaluateInFrame(
+        state,
+        stepTarget?.frame,
+        `document.body?.innerText?.includes(${JSON.stringify(verify.textContains)}) === true`
+      )).response;
+      if (resultValue<boolean>(response) !== true) throw new Error(`Page text does not contain ${verify.textContains}.`);
+    }
+    if (verify.valueEquals !== undefined || verify.valueNotEmpty) {
+      if (!stepTarget) throw new Error('Value verification requires a step target.');
+      const selector = await this.resolveRecordingTargetSelector(state, stepTarget);
+      const response = (await this.evaluateInFrame(
+        state,
+        stepTarget.frame,
+        `(() => { const el = document.querySelector(${JSON.stringify(selector)}); return el && 'value' in el ? String(el.value) : el?.textContent ?? ''; })()`
+      )).response;
+      const value = resultValue<string>(response) ?? '';
+      if (verify.valueEquals !== undefined && value !== verify.valueEquals) throw new Error('Target value does not equal the expected value.');
+      if (verify.valueNotEmpty && !value) throw new Error('Target value is empty.');
+    }
+    if (verify.downloadCompleted && download?.state !== 'completed') throw new Error('Expected download did not complete.');
+  }
+
+  private async recordingTargetExists(state: BrowserState, target: BrowserTarget): Promise<boolean> {
+    try {
+      const selector = await this.resolveRecordingTargetSelector(state, target);
+      const response = (await this.evaluateInFrame(
+        state,
+        target.frame,
+        `Boolean(document.querySelector(${JSON.stringify(selector)}))`
+      )).response;
+      return resultValue<boolean>(response) === true;
+    } catch { return false; }
+  }
+
+  private async resolveRecordingTargetSelector(state: BrowserState, target: BrowserTarget): Promise<string> {
+    let selector = target.selector ?? target.fingerprint?.primarySelector ?? '';
+    if (target.fingerprint) selector = await this.relocateRecordedSelector(state, selector, target.fingerprint, target.frame);
+    if (!selector) throw new Error('Recording target has no resolvable selector.');
+    return selector;
   }
 
   private async resolveRecordingSecrets(sessionId: string, recording: BrowserRecordingDocument): Promise<Record<string, string>> {
@@ -1217,21 +2452,60 @@ export class BrowserRuntime {
     return secrets;
   }
 
-  private async recordingStepToAction(state: BrowserState, step: BrowserRecordingStep): Promise<BrowserAction> {
-    const raw: Record<string, unknown> = { ...step };
-    delete raw.fingerprint;
-    if (step.fingerprint) {
-      const fallback = step.selector ?? step.fingerprint.selector ?? '';
-      const relocated = await this.relocateRecordedSelector(state, fallback, step.fingerprint);
-      if (relocated) raw.selector = relocated;
+  private async recordingStepToAction(
+    state: BrowserState,
+    step: BrowserRecordingStep,
+    onProgress?: (text: string) => void
+  ): Promise<BrowserAction> {
+    let selector = step.target?.selector;
+    if (step.target?.fingerprint) {
+      const fallback = selector ?? step.target.fingerprint.primarySelector ?? '';
+      selector = await this.relocateRecordedSelector(state, fallback, step.target.fingerprint, step.target.frame);
+      if (fallback && selector !== fallback) onProgress?.(`  Selector relocated: ${fallback} → ${selector}`);
     }
-    return BrowserActionSchema.parse(raw);
+    const target = selector ? { selector, ...(step.target?.frame ? { frame: step.target.frame } : {}) } : {};
+    switch (step.action) {
+      case 'navigate': return BrowserActionSchema.parse({ action: 'open', url: step.url });
+      case 'click': return BrowserActionSchema.parse({ action: 'click', ...target });
+      case 'hover': return BrowserActionSchema.parse({ action: 'hover', ...target });
+      case 'type': return BrowserActionSchema.parse({ action: 'type', ...target, text: step.value, submit: step.submit ?? false });
+      case 'press': return BrowserActionSchema.parse({ action: 'press', ...target, key: step.key });
+      case 'select': return BrowserActionSchema.parse({ action: 'select', ...target, values: step.values });
+      case 'upload': return BrowserActionSchema.parse({ action: 'upload', ...target, paths: step.paths });
+      case 'wait': {
+        if (step.condition?.type !== 'element_state') throw new Error(`Desktop adapter does not yet support wait condition ${step.condition?.type ?? 'missing'}.`);
+        let waitSelector = step.condition.target.selector;
+        if (step.condition.target.fingerprint) {
+          const fallback = waitSelector ?? step.condition.target.fingerprint.primarySelector ?? '';
+          waitSelector = await this.relocateRecordedSelector(
+            state,
+            fallback,
+            step.condition.target.fingerprint,
+            step.condition.target.frame
+          );
+          if (fallback && waitSelector !== fallback) onProgress?.(`  Selector relocated: ${fallback} → ${waitSelector}`);
+        }
+        return BrowserActionSchema.parse({
+          action: 'wait', selector: waitSelector,
+          ...(step.condition.target.frame ? { frame: step.condition.target.frame } : {}),
+          state: step.condition.state,
+          timeoutMs: step.timeoutMs ?? 5_000
+        });
+      }
+      case 'scroll': return BrowserActionSchema.parse({ action: 'scroll', ...target, deltaX: step.deltaX ?? 0, deltaY: step.deltaY ?? 600 });
+      case 'back': return BrowserActionSchema.parse({ action: 'back' });
+      case 'reload': return BrowserActionSchema.parse({ action: 'reload' });
+      case 'download': return BrowserActionSchema.parse({ action: 'click', ...target });
+      case 'extract':
+        throw new Error(`Desktop adapter does not yet support Recording V2 action ${step.action}.`);
+    }
   }
 
   private async relocateRecordedSelector(
     state: BrowserState,
     selector: string,
-    fingerprint: NonNullable<BrowserRecordingStep['fingerprint']>
+    fingerprint: NonNullable<NonNullable<BrowserRecordingStep['target']>['fingerprint']>,
+    frame?: BrowserFramePath
   ): Promise<string> {
     try {
       this.assertOpenPage(state);
@@ -1239,21 +2513,26 @@ export class BrowserRuntime {
       return selector;
     }
     if (selector) {
-      const exists = resultValue<{ ok?: boolean }>(await this.sendCommand(state, 'Runtime.evaluate', {
-        expression: `({ ok: Boolean(document.querySelector(${JSON.stringify(selector)})) })`,
-        returnByValue: true
-      }));
+      const exists = resultValue<{ ok?: boolean }>((await this.evaluateInFrame(
+        state,
+        frame,
+        `({ ok: Boolean(document.querySelector(${JSON.stringify(selector)})) })`
+      )).response);
       if (exists?.ok) return selector;
     }
     const page = this.activePage(state);
-    const origin = new URL(this.pageUrl(page)).origin;
+    const location = resultValue<string>((await this.evaluateInFrame(state, frame, 'location.href')).response)
+      ?? this.pageUrl(page);
+    const origin = new URL(location).origin;
     const match = await this.resolveElementTarget(state, {
+      ...(frame ? { frame } : {}),
       fingerprint: {
         origin,
-        selector: fingerprint.selector ?? selector,
+        selector: fingerprint.primarySelector ?? selector,
         tag: fingerprint.tag,
+        ...(frame ? { frame } : {}),
         ...(fingerprint.role ? { role: fingerprint.role } : {}),
-        ...(fingerprint.name ? { name: fingerprint.name } : {}),
+        ...(fingerprint.accessibleName ? { name: fingerprint.accessibleName } : {}),
         ...(fingerprint.id ? { id: fingerprint.id } : {}),
         ...(fingerprint.testId ? { testId: fingerprint.testId } : {}),
         ...(fingerprint.fieldName ? { fieldName: fingerprint.fieldName } : {}),
@@ -1265,7 +2544,7 @@ export class BrowserRuntime {
     return match?.selector ?? selector;
   }
 
-  private async read(state: BrowserState, maxNodes: number): Promise<ToolResult> {
+  private async read(state: BrowserState, maxNodes: number, frame?: BrowserFramePath): Promise<ToolResult> {
     this.assertOpenPage(state);
     const page = this.activePage(state);
     const expression = `(() => {
@@ -1286,7 +2565,7 @@ export class BrowserRuntime {
         }
         return parts.join(' > ');
       };
-      return Array.from(document.querySelectorAll('a,button,input,textarea,select,[role],[contenteditable="true"],h1,h2,h3,main,article,p'))
+      return Array.from(document.querySelectorAll('a,button,input,textarea,select,iframe,frame,[role],[contenteditable="true"],h1,h2,h3,main,article,p'))
         .filter((el) => el instanceof HTMLElement && el.offsetParent !== null)
         .slice(0, ${JSON.stringify(maxNodes)})
         .map((el) => ({
@@ -1298,18 +2577,22 @@ export class BrowserRuntime {
           fieldName: el.getAttribute('name') || undefined,
           inputType: el instanceof HTMLInputElement ? el.type : undefined,
           placeholder: el.getAttribute('placeholder') || undefined,
-          href: el instanceof HTMLAnchorElement ? el.href : undefined
+          href: el instanceof HTMLAnchorElement ? el.href : undefined,
+          frameUrl: (el instanceof HTMLIFrameElement || el instanceof HTMLFrameElement) ? el.src : undefined
         }));
     })()`;
-    const domResponse = await this.sendCommand(state, 'Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
+    const domResponse = (await this.evaluateInFrame(state, frame, expression)).response;
     const domNodes = resultValue<BrowserDomNode[]>(domResponse) ?? [];
-    const origin = new URL(this.pageUrl(page)).origin;
+    const frameUrl = resultValue<string>((await this.evaluateInFrame(state, frame, 'location.href')).response)
+      ?? this.pageUrl(page);
+    const origin = new URL(frameUrl).origin;
     const referencedNodes = domNodes.map((node) => {
       const ref = `e${state.nextElementRef++}`;
       page.elementRefs.set(ref, {
         origin,
         selector: node.selector,
         tag: node.tag,
+        ...(frame ? { frame } : {}),
         ...(node.role ? { role: node.role } : {}),
         ...(node.name ? { name: node.name } : {}),
         ...(node.id ? { id: node.id } : {}),
@@ -1319,7 +2602,7 @@ export class BrowserRuntime {
         ...(node.placeholder ? { placeholder: node.placeholder } : {}),
         ...(node.href ? { href: node.href } : {})
       });
-      return { ref, ...node };
+      return { ref, ...node, ...(frame ? { frame } : {}) };
     });
     while (page.elementRefs.size > 4_000) {
       const oldest = page.elementRefs.keys().next().value;
@@ -1327,11 +2610,12 @@ export class BrowserRuntime {
       page.elementRefs.delete(oldest);
     }
     const domTree = referencedNodes.map((node) => JSON.stringify(node)).join('\n');
-    if (domTree) return ok(`Page: ${page.id}\nURL: ${this.pageUrl(page)}\nTitle: ${this.pageTitle(page)}\n\n[DOM structure; prefer ref for actions because it can survive DOM reordering; selector remains supported]\n${domTree}`);
-    const axResponse = await this.sendCommand(state, 'Accessibility.getFullAXTree');
+    if (domTree) return ok(`Page: ${page.id}\nURL: ${frameUrl}\nTitle: ${this.pageTitle(page)}${frame ? `\nFrame: ${frame.selectors.join(' -> ')}` : ''}\n\n[DOM structure; prefer ref for actions because it can survive DOM reordering; selector remains supported]\n${domTree}`);
+    const route = await this.resolveFrameRoute(state, frame);
+    const axResponse = await this.sendCommand(state, 'Accessibility.getFullAXTree', undefined, COMMAND_TIMEOUT_MS, route.sessionId);
     const nodes = (axResponse as { nodes?: AccessibilityNode[] }).nodes ?? [];
     const tree = formatAccessibilityTree(nodes, maxNodes);
-    return ok(`Page: ${page.id}\nURL: ${this.pageUrl(page)}\nTitle: ${this.pageTitle(page)}\n\n${tree || '[No accessible page content]'}`);
+    return ok(`Page: ${page.id}\nURL: ${frameUrl}\nTitle: ${this.pageTitle(page)}${frame ? `\nFrame: ${frame.selectors.join(' -> ')}` : ''}\n\n${tree || '[No accessible page content]'}`);
   }
 
   private async resolveElementTarget(
@@ -1339,15 +2623,28 @@ export class BrowserRuntime {
     target: BrowserElementTarget,
     allowMissing = false
   ): Promise<ResolvedElementTarget | undefined> {
-    if (target.selector && !target.fingerprint) return { selector: target.selector, label: target.selector, relocated: false };
+    if (target.selector && !target.fingerprint) return {
+      selector: target.selector,
+      label: target.selector,
+      relocated: false,
+      ...(target.frame ? { frame: target.frame } : {})
+    };
     const page = this.activePage(state);
     const fingerprint = target.fingerprint ?? (target.ref ? page.elementRefs.get(target.ref) : undefined);
     if (!fingerprint) {
-      if (target.selector) return { selector: target.selector, label: target.selector, relocated: false };
+      if (target.selector) return {
+        selector: target.selector,
+        label: target.selector,
+        relocated: false,
+        ...(target.frame ? { frame: target.frame } : {})
+      };
       if (allowMissing) return undefined;
       throw new Error(target.ref ? `Unknown or expired browser element ref: ${target.ref}. Run browser_read again.` : 'Browser element target requires selector or ref.');
     }
-    const currentOrigin = new URL(this.pageUrl(page)).origin;
+    const frame = target.frame ?? fingerprint.frame;
+    const currentUrl = resultValue<string>((await this.evaluateInFrame(state, frame, 'location.href')).response)
+      ?? this.pageUrl(page);
+    const currentOrigin = new URL(currentUrl).origin;
     if (currentOrigin !== fingerprint.origin) {
       throw new Error(`Browser element ${target.ref ?? 'fingerprint'} belongs to ${fingerprint.origin}, not ${currentOrigin}. Run browser_read again.`);
     }
@@ -1384,7 +2681,7 @@ export class BrowserRuntime {
         };
       });
     })()`;
-    const response = await this.sendCommand(state, 'Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
+    const response = (await this.evaluateInFrame(state, frame, expression)).response;
     const candidates = resultValue<BrowserElementCandidate[]>(response) ?? [];
     const match = chooseBrowserElementCandidate(fingerprint, candidates);
     if (match.ambiguous) {
@@ -1399,7 +2696,8 @@ export class BrowserRuntime {
     return {
       selector: match.candidate.selector,
       label: target.ref ?? match.candidate.selector,
-      relocated: previousSelector !== match.candidate.selector
+      relocated: previousSelector !== match.candidate.selector,
+      ...(frame ? { frame } : {})
     };
   }
 
@@ -1434,7 +2732,7 @@ export class BrowserRuntime {
           visible: style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0' && rect.width > 0 && rect.height > 0
         };
       })()`;
-      const response = await this.sendCommand(state, 'Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
+      const response = (await this.evaluateInFrame(state, resolved.frame, expression)).response;
       const value = resultValue<{ attached: boolean; visible: boolean }>(response) ?? { attached: false, visible: false };
       const matches = expectedState === 'attached' ? value.attached
         : expectedState === 'detached' ? !value.attached
@@ -1453,7 +2751,7 @@ export class BrowserRuntime {
     const expression = resolved
       ? `(() => { const el = document.querySelector(${JSON.stringify(resolved.selector)}); if (!(el instanceof Element)) return { ok: false, error: 'Element not found' }; el.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' }); return { ok: true, x: window.scrollX, y: window.scrollY }; })()`
       : `(() => { window.scrollBy({ left: ${JSON.stringify(deltaX)}, top: ${JSON.stringify(deltaY)}, behavior: 'instant' }); return { ok: true, x: window.scrollX, y: window.scrollY }; })()`;
-    const response = await this.sendCommand(state, 'Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
+    const response = (await this.evaluateInFrame(state, resolved?.frame ?? target.frame, expression)).response;
     const value = resultValue<{ ok: boolean; error?: string; x?: number; y?: number }>(response);
     if (!value?.ok) throw new Error(value?.error ?? 'Scroll failed.');
     return ok(resolved
@@ -1467,7 +2765,7 @@ export class BrowserRuntime {
     const resolved = await this.resolveElementTarget(state, target);
     if (!resolved) throw new Error('Browser click target was not found.');
     const expression = `(() => { const el = document.querySelector(${JSON.stringify(resolved.selector)}); if (!el) return { ok: false, error: 'Element not found' }; if (!(el instanceof HTMLElement)) return { ok: false, error: 'Element is not clickable' }; el.scrollIntoView({ block: 'center' }); el.click(); return { ok: true, tag: el.tagName, text: (el.innerText || el.getAttribute('aria-label') || '').slice(0, 500) }; })()`;
-    const response = await this.sendCommand(state, 'Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
+    const response = (await this.evaluateInFrame(state, resolved.frame, expression)).response;
     const value = resultValue<{ ok: boolean; error?: string; tag?: string; text?: string }>(response);
     if (!value?.ok) throw new Error(value?.error ?? 'Click failed.');
     const blockedPopup = state.lastBlockedPopup;
@@ -1493,12 +2791,13 @@ export class BrowserRuntime {
       };
     })()`;
     const located = resultValue<{ ok: boolean; error?: string; x?: number; y?: number; text?: string }>(
-      await this.sendCommand(state, 'Runtime.evaluate', { expression: locate, returnByValue: true, awaitPromise: true })
+      (await this.evaluateInFrame(state, resolved.frame, locate)).response
     );
     if (!located?.ok) throw new Error(located?.error ?? 'Hover failed.');
     const x = located.x ?? 0;
     const y = located.y ?? 0;
-    await this.sendCommand(state, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
+    const hoverRoute = await this.resolveFrameRoute(state, resolved.frame);
+    await this.sendCommand(state, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x, y }, COMMAND_TIMEOUT_MS, hoverRoute.sessionId);
     const fire = `(() => {
       const el = document.querySelector(${JSON.stringify(resolved.selector)});
       if (!(el instanceof Element)) return { ok: false, error: 'Element not found' };
@@ -1510,7 +2809,7 @@ export class BrowserRuntime {
       return { ok: true };
     })()`;
     const fired = resultValue<{ ok: boolean; error?: string }>(
-      await this.sendCommand(state, 'Runtime.evaluate', { expression: fire, returnByValue: true, awaitPromise: true })
+      (await this.evaluateInFrame(state, resolved.frame, fire)).response
     );
     if (!fired?.ok) throw new Error(fired?.error ?? 'Hover failed.');
     return ok(`Hovered ${this.targetDescription(resolved)}${located.text ? `: ${located.text}` : ''}`);
@@ -1602,7 +2901,7 @@ export class BrowserRuntime {
     const resolved = await this.resolveElementTarget(state, target);
     if (!resolved) throw new Error('Browser type target was not found.');
     const expression = `(() => { const el = document.querySelector(${JSON.stringify(resolved.selector)}); if (!(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el instanceof HTMLElement && el.isContentEditable)) return { ok: false, error: 'Editable element not found' }; el.focus(); if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) { const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'value')?.set; if (setter) setter.call(el, ${JSON.stringify(text)}); else el.value = ${JSON.stringify(text)}; } else { el.textContent = ${JSON.stringify(text)}; } el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: ${JSON.stringify(text)} })); el.dispatchEvent(new Event('change', { bubbles: true })); if (${JSON.stringify(submit)}) { const form = el.closest('form'); if (form instanceof HTMLFormElement) form.requestSubmit(); else el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true })); } return { ok: true }; })()`;
-    const response = await this.sendCommand(state, 'Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
+    const response = (await this.evaluateInFrame(state, resolved.frame, expression)).response;
     const value = resultValue<{ ok: boolean; error?: string }>(response);
     if (!value?.ok) throw new Error(value?.error ?? 'Typing failed.');
     return ok(`Entered ${text.length} characters into ${this.targetDescription(resolved)}${submit ? ' and submitted the form' : ''}.`);
@@ -1613,7 +2912,7 @@ export class BrowserRuntime {
     const resolved = target.selector || target.ref ? await this.resolveElementTarget(state, target) : undefined;
     if (resolved) {
       const expression = `(() => { const el = document.querySelector(${JSON.stringify(resolved.selector)}); if (!(el instanceof HTMLElement)) return { ok: false, error: 'Focusable element not found' }; el.scrollIntoView({ block: 'center', inline: 'nearest' }); el.focus(); return { ok: document.activeElement === el }; })()`;
-      const response = await this.sendCommand(state, 'Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
+      const response = (await this.evaluateInFrame(state, resolved.frame, expression)).response;
       const value = resultValue<{ ok: boolean; error?: string }>(response);
       if (!value?.ok) throw new Error(value?.error ?? `Could not focus ${resolved.label}.`);
     }
@@ -1624,11 +2923,12 @@ export class BrowserRuntime {
       windowsVirtualKeyCode: definition.windowsVirtualKeyCode,
       nativeVirtualKeyCode: definition.windowsVirtualKeyCode
     };
+    const keyRoute = await this.resolveFrameRoute(state, resolved?.frame ?? target.frame);
     await this.sendCommand(state, 'Input.dispatchKeyEvent', {
       type: 'keyDown', ...keyParams,
       ...(definition.text ? { text: definition.text, unmodifiedText: definition.text } : {})
-    });
-    await this.sendCommand(state, 'Input.dispatchKeyEvent', { type: 'keyUp', ...keyParams });
+    }, COMMAND_TIMEOUT_MS, keyRoute.sessionId);
+    await this.sendCommand(state, 'Input.dispatchKeyEvent', { type: 'keyUp', ...keyParams }, COMMAND_TIMEOUT_MS, keyRoute.sessionId);
     return ok(`Pressed ${key}${resolved ? ` on ${this.targetDescription(resolved)}` : ''}.`);
   }
 
@@ -1650,7 +2950,7 @@ export class BrowserRuntime {
       el.dispatchEvent(new Event('change', { bubbles: true }));
       return { ok: true, selected: Array.from(el.selectedOptions).map((option) => ({ value: option.value, label: option.label })) };
     })()`;
-    const response = await this.sendCommand(state, 'Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
+    const response = (await this.evaluateInFrame(state, resolved.frame, expression)).response;
     const value = resultValue<{ ok: boolean; error?: string; selected?: Array<{ value: string; label: string }> }>(response);
     if (!value?.ok) throw new Error(value?.error ?? 'Select failed.');
     return ok(`Selected options in ${this.targetDescription(resolved)}: ${JSON.stringify(value.selected ?? [])}`);
@@ -1661,21 +2961,34 @@ export class BrowserRuntime {
     const files = await resolveBrowserUploadPaths(workingDirectory, requestedPaths);
     const resolved = await this.resolveElementTarget(state, target);
     if (!resolved) throw new Error('Browser upload target was not found.');
-    const elementResponse = await this.sendCommand(state, 'Runtime.evaluate', {
-      expression: `(() => { const el = document.querySelector(${JSON.stringify(resolved.selector)}); if (!(el instanceof HTMLInputElement) || el.type !== 'file') return { ok: false, error: 'File input not found' }; return { ok: true, multiple: el.multiple }; })()`,
-      returnByValue: true,
-      awaitPromise: true
-    });
+    const elementExpression = `(() => { const el = document.querySelector(${JSON.stringify(resolved.selector)}); if (!(el instanceof HTMLInputElement) || el.type !== 'file') return { ok: false, error: 'File input not found' }; return { ok: true, multiple: el.multiple }; })()`;
+    const elementResponse = (await this.evaluateInFrame(state, resolved.frame, elementExpression)).response;
     const element = resultValue<{ ok: boolean; error?: string; multiple?: boolean }>(elementResponse);
     if (!element?.ok) throw new Error(element?.error ?? 'File input not found.');
     if (!element.multiple && files.length > 1) throw new Error('The file input does not allow multiple files.');
 
-    const documentResponse = await this.sendCommand(state, 'DOM.getDocument', { depth: 1, pierce: true }) as { root?: { nodeId?: number } };
-    const rootNodeId = documentResponse.root?.nodeId;
-    if (!rootNodeId) throw new Error('Could not inspect the browser document for file upload.');
-    const queryResponse = await this.sendCommand(state, 'DOM.querySelector', { nodeId: rootNodeId, selector: resolved.selector }) as { nodeId?: number };
-    if (!queryResponse.nodeId) throw new Error(`File input not found: ${resolved.selector}`);
-    await this.sendCommand(state, 'DOM.setFileInputFiles', { files, nodeId: queryResponse.nodeId });
+    const route = await this.resolveFrameRoute(state, resolved.frame);
+    const remote = await this.sendCommand(state, 'Runtime.evaluate', {
+      expression: expressionInBrowserFrame(route.localSelectors, `return document.querySelector(${JSON.stringify(resolved.selector)});`),
+      returnByValue: false
+    }, COMMAND_TIMEOUT_MS, route.sessionId) as { result?: { objectId?: string } };
+    const objectId = remote.result?.objectId;
+    if (!objectId) throw new Error(`File input not found: ${resolved.selector}`);
+    const requested = await this.sendCommand(
+      state,
+      'DOM.requestNode',
+      { objectId },
+      COMMAND_TIMEOUT_MS,
+      route.sessionId
+    ) as { nodeId?: number };
+    if (!requested.nodeId) throw new Error(`File input not found: ${resolved.selector}`);
+    await this.sendCommand(
+      state,
+      'DOM.setFileInputFiles',
+      { files, nodeId: requested.nodeId },
+      COMMAND_TIMEOUT_MS,
+      route.sessionId
+    );
     return ok(`Uploaded ${files.length} workspace file${files.length === 1 ? '' : 's'} to ${this.targetDescription(resolved)}: ${files.map((file) => path.basename(file)).join(', ')}`);
   }
 
@@ -1802,16 +3115,45 @@ export class BrowserRuntime {
     state: BrowserState,
     method: string,
     params?: Record<string, unknown>,
-    timeoutMs = COMMAND_TIMEOUT_MS
+    timeoutMs = COMMAND_TIMEOUT_MS,
+    sessionId?: string
   ): Promise<unknown> {
     const page = this.activePage(state);
     if (page.kind === 'chrome') {
       if (!page.chrome?.client) return Promise.reject(new Error('Select this Chrome tab with browser_select_page before using page actions.'));
-      return page.chrome.client.send(method, params, timeoutMs);
+      return page.chrome.client.send(method, params, timeoutMs, sessionId);
     }
     const contents = this.electronContents(page);
     if (!contents) return Promise.reject(new Error('The controlled browser has no open page.'));
-    return this.withTimeout(contents.debugger.sendCommand(method, params), undefined, timeoutMs);
+    return this.withTimeout(contents.debugger.sendCommand(method, params, sessionId), undefined, timeoutMs);
+  }
+
+  private async resolveFrameRoute(state: BrowserState, frame: BrowserFramePath | undefined): Promise<BrowserFrameRoute> {
+    const page = this.activePage(state);
+    const sessions = page.chrome?.frameSessions.values() ?? [];
+    return resolveBrowserFrameRoute(frame, sessions, async (sessionId, expression) => {
+      const response = await this.sendCommand(state, 'Runtime.evaluate', {
+        expression,
+        returnByValue: true,
+        awaitPromise: true
+      }, COMMAND_TIMEOUT_MS, sessionId);
+      return resultValue<unknown>(response);
+    });
+  }
+
+  private async evaluateInFrame(
+    state: BrowserState,
+    frame: BrowserFramePath | undefined,
+    expression: string,
+    options: { awaitPromise?: boolean; returnByValue?: boolean; timeoutMs?: number } = {}
+  ): Promise<{ response: unknown; route: BrowserFrameRoute }> {
+    const route = await this.resolveFrameRoute(state, frame);
+    const response = await this.sendCommand(state, 'Runtime.evaluate', {
+      expression: expressionInBrowserFrame(route.localSelectors, `return (${expression});`),
+      returnByValue: options.returnByValue ?? true,
+      awaitPromise: options.awaitPromise ?? true
+    }, options.timeoutMs ?? COMMAND_TIMEOUT_MS, route.sessionId);
+    return { response, route };
   }
 
   private navigateAndWait(page: BrowserPageState, navigate: () => void): Promise<void> {

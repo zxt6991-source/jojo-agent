@@ -1,7 +1,7 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import type {
-  AgentEvent, ApprovalRequest, BrowserDockState, ExtensionSettings, ExtensionStatus, HookSettingsSnapshot, ImageContentBlock, MemoryCandidateReviewEdit, MemorySettings, MemoryStatusSnapshot, Message, ProviderConfig, ProviderSettings, SessionCompactionRecord, SessionMeta, SkillDetail, SkillStatus, WorkflowRunSnapshot, WorkspaceChanges
+  AgentEvent, ApprovalRequest, BrowserDockState, BrowserRecordingRegistrySnapshot, ExtensionSettings, ExtensionStatus, HookSettingsSnapshot, ImageContentBlock, MemoryCandidateReviewEdit, MemorySettings, MemoryStatusSnapshot, Message, ProviderConfig, ProviderSettings, SessionCompactionRecord, SessionMeta, SkillDetail, SkillStatus, WorkflowRunSnapshot, WorkspaceChanges
 } from '@desktop-agent/contracts';
 import { DEFAULT_BROWSER_SETTINGS, DEFAULT_MEMORY_SETTINGS, DEFAULT_PROVIDERS, DEFAULT_SESSION_TITLE, projectNameFromDirectory } from '@desktop-agent/contracts';
 import {
@@ -106,19 +106,33 @@ function BrowserSettingsPage({
   enabled,
   mode,
   domains,
+  recordings,
+  recordingsBusy,
+  workingDirectory,
   error,
   onEnabledChange,
   onModeChange,
   onDomainsChange,
+  onRefreshRecordings,
+  onTrustRecording,
+  onRevokeRecording,
+  onDeleteRecording,
   onSubmit
 }: {
   enabled: boolean;
   mode: 'sandbox' | 'chrome';
   domains: string;
+  recordings: BrowserRecordingRegistrySnapshot | null;
+  recordingsBusy: boolean;
+  workingDirectory?: string;
   error: string;
   onEnabledChange: (enabled: boolean) => void;
   onModeChange: (mode: 'sandbox' | 'chrome') => void;
   onDomainsChange: (domains: string) => void;
+  onRefreshRecordings: () => void;
+  onTrustRecording: (recordingId: string) => void;
+  onRevokeRecording: (recordingId: string) => void;
+  onDeleteRecording: (recordingId: string) => void;
   onSubmit: () => Promise<void>;
 }) {
   const [draft, setDraft] = useState('');
@@ -247,6 +261,42 @@ function BrowserSettingsPage({
         {!enabled && <p className="browser-domain-hint">启用浏览器工具后可编辑白名单。</p>}
       </div>
       <div className="settings-actions"><button className="primary" type="submit">保存浏览器设置</button></div>
+    </section>
+    <section className="settings-section-card browser-recording-card">
+      <div className="settings-section-title with-meta">
+        <div>
+          <h2>Recording Registry</h2>
+          <p>用户级 Recording 位于 ~/.jojo/browser-recordings。项目级 Recording 可覆盖同名用户资源，高风险内容需按精确版本信任。</p>
+        </div>
+        <button type="button" className="secondary" disabled={recordingsBusy} onClick={onRefreshRecordings}>刷新</button>
+      </div>
+      <div className="browser-recording-paths">
+        <span title={recordings?.userDirectory}>User · {recordings?.userDirectory ?? '~/.jojo/browser-recordings'}</span>
+        <span title={recordings?.projectDirectory}>Project · {recordings?.projectDirectory ?? (workingDirectory ? `${workingDirectory}/.jojo/browser-recordings` : '选择项目后显示')}</span>
+      </div>
+      <div className="browser-recording-list">
+        {recordingsBusy && !recordings && <p className="browser-domain-hint">正在读取 Recording Registry…</p>}
+        {!recordingsBusy && recordings?.recordings.length === 0 && <p className="browser-domain-hint">尚无可用 Recording。</p>}
+        {recordings?.recordings.map((recording) => <article className="browser-recording-item" key={recording.id}>
+          <div className="browser-recording-main">
+            <div className="browser-recording-title">
+              <strong>{recording.name}</strong>
+              <code>{recording.id}</code>
+              <span className={`browser-policy-tag ${recording.source === 'project' ? 'info' : 'allow'}`}>{recording.source}</span>
+              {recording.source === 'project' && <span className={`browser-policy-tag ${recording.trust === 'trusted' ? 'allow' : 'ask'}`}>{recording.trust === 'trusted' ? '已信任' : '未信任'}</span>}
+            </div>
+            {recording.description && <p>{recording.description}</p>}
+            <p>{recording.stepCount} steps · revision {recording.revision} · {recording.highRisk ? '含高风险操作' : '只读/等待操作'}</p>
+            <p>Domains: {recording.domains.join(', ') || 'none'} · Effects: {recording.effects.join(', ') || 'none'}</p>
+            {recording.overriddenSources.length > 0 && <p>覆盖：{recording.overriddenSources.join(', ')}</p>}
+          </div>
+          <div className="browser-recording-actions">
+            {recording.source === 'project' && recording.trust !== 'trusted' && <button type="button" disabled={recordingsBusy} onClick={() => onTrustRecording(recording.id)}>信任此版本</button>}
+            {recording.source === 'project' && recording.trust === 'trusted' && <button type="button" disabled={recordingsBusy} onClick={() => onRevokeRecording(recording.id)}>撤销信任</button>}
+            {recording.source !== 'builtin' && <button type="button" className="danger" disabled={recordingsBusy} onClick={() => onDeleteRecording(recording.id)}>删除</button>}
+          </div>
+        </article>)}
+      </div>
     </section>
   </form>;
 }
@@ -467,6 +517,8 @@ function App() {
   const [mcpServersJson, setMcpServersJson] = useState('[]');
   const [skillDirectories, setSkillDirectories] = useState('');
   const [browserDomains, setBrowserDomains] = useState('');
+  const [browserRecordings, setBrowserRecordings] = useState<BrowserRecordingRegistrySnapshot | null>(null);
+  const [browserRecordingsBusy, setBrowserRecordingsBusy] = useState(false);
   const [extensionError, setExtensionError] = useState('');
   const [hookStatus, setHookStatus] = useState<HookSettingsSnapshot | null>(null);
   const [hookError, setHookError] = useState('');
@@ -672,6 +724,19 @@ function App() {
     setSettings((current) => ({ ...current, extensions: saved }));
     setSettingsDraft((current) => ({ ...current, extensions: saved }));
     return saved;
+  };
+
+  const refreshBrowserRecordings = async (workingDirectory?: string): Promise<void> => {
+    setBrowserRecordingsBusy(true);
+    try {
+      setBrowserRecordings(await window.desktopAgent.listBrowserRecordings(
+        workingDirectory ? { workingDirectory } : undefined
+      ));
+    } catch (cause) {
+      setExtensionError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setBrowserRecordingsBusy(false);
+    }
   };
 
   const loadWorkspaceChanges = async (id: string): Promise<WorkspaceChanges | null> => {
@@ -1097,6 +1162,7 @@ function App() {
     setMemoryStatus(null); setMemoryError('');
     setExtensionError(''); setExtensionSearch(''); setExtensionEditorOpen(false);
     void refreshExtensionStatus(active?.workingDirectory);
+    if (section === 'browser') void refreshBrowserRecordings(active?.workingDirectory);
     setSettingsSection(section);
     setSettingsOpen(true);
   };
@@ -1317,7 +1383,7 @@ function App() {
         <nav aria-label="设置分类">
           <button type="button" className={settingsSection === 'models' ? 'active' : ''} onClick={() => { setSettingsSection('models'); setExtensionEditorOpen(false); }}><span aria-hidden="true">◇</span> 模型</button>
           <button type="button" className={settingsSection === 'memory' ? 'active' : ''} onClick={() => { setSettingsSection('memory'); setExtensionEditorOpen(false); }}><span aria-hidden="true">◈</span> Memory</button>
-          <button type="button" className={settingsSection === 'browser' ? 'active' : ''} onClick={() => { setSettingsSection('browser'); setExtensionEditorOpen(false); }}><span aria-hidden="true">◎</span> 浏览器</button>
+          <button type="button" className={settingsSection === 'browser' ? 'active' : ''} onClick={() => { setSettingsSection('browser'); setExtensionEditorOpen(false); void refreshBrowserRecordings(active?.workingDirectory); }}><span aria-hidden="true">◎</span> 浏览器</button>
           <button type="button" className={settingsSection === 'skills' ? 'active' : ''} onClick={() => { setSettingsSection('skills'); setExtensionSearch(''); setExtensionEditorOpen(false); }}><span aria-hidden="true">⬡</span> 技能</button>
           <button type="button" className={settingsSection === 'mcp' ? 'active' : ''} onClick={() => { setSettingsSection('mcp'); setExtensionSearch(''); setExtensionEditorOpen(false); }}><span aria-hidden="true">⌘</span> MCP 服务</button>
           <button type="button" className={settingsSection === 'hooks' ? 'active' : ''} onClick={() => { setSettingsSection('hooks'); setExtensionEditorOpen(false); }}><span aria-hidden="true">⌥</span> Hooks</button>
@@ -1422,10 +1488,38 @@ function App() {
       enabled={extensionDraft.browser.enabled}
       mode={extensionDraft.browser.mode}
       domains={browserDomains}
+      recordings={browserRecordings}
+      recordingsBusy={browserRecordingsBusy}
+      {...(active?.workingDirectory ? { workingDirectory: active.workingDirectory } : {})}
       error={extensionError}
       onEnabledChange={(enabled) => setExtensionDraft((current) => ({ ...current, browser: { ...current.browser, enabled } }))}
       onModeChange={(mode) => setExtensionDraft((current) => ({ ...current, browser: { ...current.browser, mode } }))}
       onDomainsChange={setBrowserDomains}
+      onRefreshRecordings={() => { void refreshBrowserRecordings(active?.workingDirectory); }}
+      onTrustRecording={(recordingId) => {
+        if (!active?.workingDirectory) return;
+        setBrowserRecordingsBusy(true); setExtensionError('');
+        void window.desktopAgent.trustProjectBrowserRecording({ recordingId, workingDirectory: active.workingDirectory })
+          .then(setBrowserRecordings)
+          .catch((cause) => setExtensionError(cause instanceof Error ? cause.message : String(cause)))
+          .finally(() => setBrowserRecordingsBusy(false));
+      }}
+      onRevokeRecording={(recordingId) => {
+        if (!active?.workingDirectory) return;
+        setBrowserRecordingsBusy(true); setExtensionError('');
+        void window.desktopAgent.revokeProjectBrowserRecordingTrust({ recordingId, workingDirectory: active.workingDirectory })
+          .then(setBrowserRecordings)
+          .catch((cause) => setExtensionError(cause instanceof Error ? cause.message : String(cause)))
+          .finally(() => setBrowserRecordingsBusy(false));
+      }}
+      onDeleteRecording={(recordingId) => {
+        if (!active?.workingDirectory || !window.confirm(`删除 Recording ${recordingId}？此操作会删除当前生效的 user/project YAML。`)) return;
+        setBrowserRecordingsBusy(true); setExtensionError('');
+        void window.desktopAgent.deleteBrowserRecording({ recordingId, workingDirectory: active.workingDirectory })
+          .then(setBrowserRecordings)
+          .catch((cause) => setExtensionError(cause instanceof Error ? cause.message : String(cause)))
+          .finally(() => setBrowserRecordingsBusy(false));
+      }}
       onSubmit={async () => {
         setExtensionError('');
         try { await saveExtensionDraft(); }

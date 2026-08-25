@@ -20,6 +20,11 @@ const commandSamples: unknown[] = [
   { type: 'mcp.oauth.callback', requestId: 'r', serverId: 'm', callbackParams: 'code=ok' },
   { type: 'mcp.oauth.disconnect', requestId: 'r', serverId: 'm' },
   { type: 'mcp.reconnect', requestId: 'r', serverId: 'm' },
+  {
+    type: 'browser.heal.request', requestId: 'r', sessionId: 's',
+    request: { action: 'click', url: 'https://example.com/', candidates: [] }
+  },
+  { type: 'browser.progress', requestId: 'r', text: '1/3 opening login' },
   { type: 'browser.result', requestId: 'r', result: { callId: 'c', ok: true, content: 'ok' } },
   { type: 'hooks.invalidate', requestId: 'r' },
   { type: 'memory.status', requestId: 'r' },
@@ -42,6 +47,8 @@ const messageSamples: unknown[] = [
   { type: 'mcp.oauth.credentials', serverId: 'm', credentials: { accessToken: 'redacted' } },
   { type: 'mcp.oauth.result', requestId: 'r', ok: true },
   { type: 'browser.request', requestId: 'r', sessionId: 's', action: { action: 'pages' }, approved: false },
+  { type: 'browser.cancel', requestId: 'r' },
+  { type: 'browser.heal.result', requestId: 'r', proposal: { selector: '#save', confidence: 0.9 } },
   { type: 'hooks.invalidated', requestId: 'r', ok: true },
   { type: 'memory.result', requestId: 'r', ok: true, status: { root: '/tmp', ftsMode: 'none', projectAvailable: false, scopes: [] } },
   { type: 'worker.error', message: 'failed' }

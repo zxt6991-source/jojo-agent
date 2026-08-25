@@ -26,6 +26,7 @@ describe('Electron Node Vite config', () => {
   it('resolves the hooks workspace package without requiring a stale node_modules link', () => {
     const alias = electronNodeConfig.resolve?.alias;
     expect(alias).toMatchObject({
+      '@desktop-agent/browser-automation': expect.stringContaining('/packages/browser-automation/src/index.ts'),
       '@desktop-agent/contracts': expect.stringContaining('/packages/contracts/src/index.ts'),
       '@desktop-agent/hooks': expect.stringContaining('/packages/hooks/src/index.ts'),
       '@desktop-agent/memory': expect.stringContaining('/packages/memory/src/index.ts')

@@ -30,11 +30,17 @@ export function resolveWorkflowReference(
     const name = argument[1]!;
     return Object.prototype.hasOwnProperty.call(args, name) ? args[name] : missing(reference);
   }
-  const stepReference = /^\$steps\.([A-Za-z][A-Za-z0-9_-]{0,63})\.(output|structuredResult)(?:\.(.+))?$/u.exec(reference);
+  const stepReference = /^\$steps\.([A-Za-z][A-Za-z0-9_-]{0,63})\.(output|outputs|structuredResult)(?:\.(.+))?$/u.exec(reference);
   if (!stepReference) throw new OrchestrationError('workflow_reference_invalid', `Invalid workflow input reference: ${reference}`);
   const dependency = dependencies.find((item) => item.id === stepReference[1]);
   if (!dependency) return missing(reference);
-  let value: unknown = stepReference[2] === 'output' ? dependency.output : dependency.structuredResult;
+  let value: unknown = stepReference[2] === 'output'
+    ? dependency.output
+    : stepReference[2] === 'outputs'
+      ? dependency.structuredResult && typeof dependency.structuredResult === 'object'
+        ? (dependency.structuredResult as Record<string, unknown>).outputs
+        : undefined
+      : dependency.structuredResult;
   if (value === undefined) return missing(reference);
   const path = stepReference[3];
   if (path) {

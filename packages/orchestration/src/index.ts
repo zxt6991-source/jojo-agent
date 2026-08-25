@@ -63,7 +63,10 @@ export type {
   WorkflowStepExecutionContext,
   WorkflowStepExecutionResult,
   WorkflowStepExecutor,
-  WorkflowToolRuntime
+  WorkflowToolRuntime,
+  WorkflowRecordingRuntime,
+  WorkflowRecordingInvocation,
+  WorkflowRecordingInvocationResult
 } from './workflow/executors/types.js';
 export {
   MAX_FOREACH_ITEMS,

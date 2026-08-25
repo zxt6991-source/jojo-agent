@@ -56,3 +56,27 @@ export interface WorkflowToolRuntime {
   has(name: string): boolean;
   execute(invocation: WorkflowToolInvocation): Promise<WorkflowToolInvocationResult>;
 }
+
+export type WorkflowRecordingInvocation = {
+  recordingId: string;
+  params: Record<string, string | number | boolean>;
+  runId: string;
+  resume: boolean;
+  maxRetries: number;
+  retryDelayMs: number;
+  sessionId: string;
+  workingDirectory: string;
+  signal: AbortSignal;
+  onProgress: (text: string) => void;
+};
+
+export type WorkflowRecordingInvocationResult = {
+  ok: boolean;
+  content: string;
+  code?: string;
+  structuredResult?: unknown;
+};
+
+export interface WorkflowRecordingRuntime {
+  execute(invocation: WorkflowRecordingInvocation): Promise<WorkflowRecordingInvocationResult>;
+}
