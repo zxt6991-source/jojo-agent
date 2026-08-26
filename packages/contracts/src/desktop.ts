@@ -9,7 +9,12 @@ import { ExtensionSettingsSchema } from './extensions';
 import type { ExtensionSettings, ExtensionStatus, SkillDetail, SkillOperationResult } from './extensions';
 import { ImageContentBlockSchema } from './messages';
 import type { ImageContentBlock } from './messages';
-import { BROWSER_RECORDING_PARAM_NAME_PATTERN, BrowserFramePathSchema, BrowserRecordingIdSchema } from './browser-recording';
+import {
+  BROWSER_RECORDING_PARAM_NAME_PATTERN,
+  BrowserFramePathSchema,
+  BrowserRecordingDocumentSchema,
+  BrowserRecordingIdSchema
+} from './browser-recording';
 import type { HookSettingsSnapshot } from './hooks';
 import { MemorySettingsSchema } from './memory';
 import type { MemorySettings, MemoryStatusSnapshot } from './memory';
@@ -314,6 +319,71 @@ export const BrowserRecordingRegistrySnapshotSchema = z.object({
 }).strict();
 export type BrowserRecordingRegistrySnapshot = z.infer<typeof BrowserRecordingRegistrySnapshotSchema>;
 
+export const BrowserRecordingStudioInputSchema = z.object({
+  recordingId: BrowserRecordingIdSchema,
+  workingDirectory: z.string().trim().min(1).max(4_096).optional()
+}).strict();
+
+export const SaveBrowserRecordingInputSchema = BrowserRecordingStudioInputSchema.extend({
+  expectedRevision: z.number().int().positive(),
+  expectedHash: z.string().min(1).max(128),
+  document: BrowserRecordingDocumentSchema
+}).strict();
+
+export const DuplicateBrowserRecordingInputSchema = BrowserRecordingStudioInputSchema.extend({
+  name: z.string().trim().min(1).max(120).optional()
+}).strict();
+
+export const BrowserRecordingTimelineItemSchema = z.object({
+  index: z.number().int().nonnegative(),
+  stepId: z.string().min(1).max(160),
+  action: z.string().min(1).max(40),
+  label: z.string().max(500).optional(),
+  target: z.string().max(2_000).optional(),
+  frame: z.array(z.string().max(2_000)).max(16).optional()
+}).strict();
+
+export const BrowserRecordingRevisionItemSchema = z.object({
+  revision: z.number().int().positive(),
+  contentHash: z.string().max(128),
+  updatedAt: z.string().datetime(),
+  current: z.boolean()
+}).strict();
+
+export const BrowserReplayDebugEntrySchema = z.object({
+  runId: z.string().min(1).max(160),
+  timestamp: z.string().datetime(),
+  stepId: z.string().min(1).max(160),
+  stepIndex: z.number().int().nonnegative(),
+  action: z.string().min(1).max(40),
+  state: z.string().min(1).max(80),
+  attempt: z.number().int().positive().optional(),
+  selector: z.string().max(2_000).optional(),
+  confidence: z.number().min(0).max(1).optional()
+}).strict();
+
+export const BrowserHealDiffSchema = z.object({
+  runId: z.string().min(1).max(160),
+  stepId: z.string().min(1).max(160),
+  before: z.string().max(2_000).optional(),
+  after: z.string().min(1).max(2_000),
+  confidence: z.number().min(0).max(1).optional(),
+  verified: z.boolean(),
+  timestamp: z.string().datetime()
+}).strict();
+
+export const BrowserRecordingStudioDetailSchema = z.object({
+  document: BrowserRecordingDocumentSchema,
+  source: z.enum(['builtin', 'user', 'project']),
+  trust: z.enum(['not_required', 'trusted', 'untrusted']),
+  editable: z.boolean(),
+  timeline: z.array(BrowserRecordingTimelineItemSchema).max(200),
+  revisions: z.array(BrowserRecordingRevisionItemSchema).max(1_000),
+  replay: z.array(BrowserReplayDebugEntrySchema).max(5_000),
+  heals: z.array(BrowserHealDiffSchema).max(1_000)
+}).strict();
+export type BrowserRecordingStudioDetail = z.infer<typeof BrowserRecordingStudioDetailSchema>;
+
 export const BrowserSecretRequestSchema = z.object({
   requestId: z.string().min(1).max(256), name: z.string().min(1).max(256), description: z.string().max(4_000).optional()
 }).strict();
@@ -368,6 +438,9 @@ export type DesktopApi = {
   trustProjectBrowserRecording(input: z.input<typeof BrowserRecordingRegistryActionInputSchema>): Promise<BrowserRecordingRegistrySnapshot>;
   revokeProjectBrowserRecordingTrust(input: z.input<typeof BrowserRecordingRegistryActionInputSchema>): Promise<BrowserRecordingRegistrySnapshot>;
   deleteBrowserRecording(input: z.input<typeof BrowserRecordingRegistryActionInputSchema>): Promise<BrowserRecordingRegistrySnapshot>;
+  getBrowserRecordingStudio(input: z.input<typeof BrowserRecordingStudioInputSchema>): Promise<BrowserRecordingStudioDetail>;
+  saveBrowserRecording(input: z.input<typeof SaveBrowserRecordingInputSchema>): Promise<BrowserRecordingStudioDetail>;
+  duplicateBrowserRecording(input: z.input<typeof DuplicateBrowserRecordingInputSchema>): Promise<BrowserRecordingStudioDetail>;
   resolveBrowserSecret(input: { requestId: string; value?: string }): Promise<void>;
   connectMcpOAuth(input: z.input<typeof McpServerIdInputSchema>): Promise<void>;
   disconnectMcpOAuth(input: z.input<typeof McpServerIdInputSchema>): Promise<void>;
@@ -429,6 +502,9 @@ export const IPC = {
   trustProjectBrowserRecording: 'browser:recording-trust',
   revokeProjectBrowserRecordingTrust: 'browser:recording-revoke',
   deleteBrowserRecording: 'browser:recording-delete',
+  getBrowserRecordingStudio: 'browser:recording-studio-get',
+  saveBrowserRecording: 'browser:recording-studio-save',
+  duplicateBrowserRecording: 'browser:recording-duplicate',
   browserSecretRequest: 'browser:secret-request',
   browserSecretResolve: 'browser:secret-resolve',
   connectMcpOAuth: 'extensions:mcp-oauth-connect',

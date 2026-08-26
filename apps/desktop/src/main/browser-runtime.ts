@@ -13,6 +13,7 @@ import {
   type BrowserHealProposal,
   type BrowserRecordingDocument,
   type BrowserRecordingRegistrySnapshot,
+  type BrowserRecordingStudioDetail,
   type BrowserRecordingStep,
   type BrowserSettings,
   type BrowserTarget,
@@ -23,6 +24,7 @@ import {
   BROWSER_RECORDER_BINDING_NAME,
   BROWSER_RECORDER_GUARD_NAME,
   BrowserRecordingRegistry,
+  BrowserRecordingRevisionHistoryStore,
   BrowserReplayJournalStore,
   FileBrowserRecordingTrustStore,
   MAX_RAW_BROWSER_EVENTS,
@@ -38,6 +40,7 @@ import {
   type BrowserHealingPort,
   type BrowserRecordingRegistryEntry,
   type BrowserReplayJournalOutputValue,
+  type BrowserReplayJournalEntry,
   type RawBrowserEvent
 } from '@desktop-agent/browser-automation';
 import {
@@ -97,7 +100,8 @@ import {
   ChromeCdpClient,
   closeChromeTarget,
   listChromeTargets,
-  openChromeTarget
+  openChromeTarget,
+  probeChromeCdp
 } from './browser-backends/chrome-cdp-client';
 import { ensureChromeDebugging } from './browser-backends/chrome-launcher';
 
@@ -146,10 +150,12 @@ type BrowserPageState = {
   chrome?: {
     client?: ChromeCdpClient;
     targetId: string;
+    rootSessionId?: string;
     port: number;
     owned: boolean;
     webSocketDebuggerUrl?: string;
     frameSessions: Map<string, BrowserFrameSession>;
+    attachingFrameTargets: Set<string>;
   };
   url: string;
   title: string;
@@ -238,6 +244,7 @@ function replayDelay(ms: number, signal?: AbortSignal): Promise<void> {
 export class BrowserRuntime {
   private readonly states = new Map<string, BrowserState>();
   private readonly recordingRegistry: BrowserRecordingRegistry;
+  private readonly revisionHistoryStore: BrowserRecordingRevisionHistoryStore;
   private readonly replayJournal: BrowserReplayJournalStore;
   private readonly secrets = new Map<string, Map<string, string>>();
   private dockSessionId: string | undefined;
@@ -259,6 +266,7 @@ export class BrowserRuntime {
       legacyUserDirectory: path.join(dataDirectory, 'browser-recordings'),
       trustStore: new FileBrowserRecordingTrustStore(path.join(os.homedir(), '.jojo', 'browser-recording-trust.json'))
     });
+    this.revisionHistoryStore = new BrowserRecordingRevisionHistoryStore(path.join(dataDirectory, 'browser-recording-revisions'));
     this.replayJournal = new BrowserReplayJournalStore(path.join(dataDirectory, 'browser-replay-journal'));
   }
 
@@ -331,6 +339,92 @@ export class BrowserRuntime {
   async deleteManagedRecording(recordingId: string, workingDirectory: string): Promise<BrowserRecordingRegistrySnapshot> {
     await this.recordingRegistry.delete(recordingId, workingDirectory);
     return this.recordingRegistrySnapshot(workingDirectory);
+  }
+
+  async recordingStudioDetail(recordingId: string, workingDirectory?: string): Promise<BrowserRecordingStudioDetail> {
+    const entry = await this.recordingRegistry.get(recordingId, workingDirectory);
+    const history = await this.recordingRevisionHistory(entry.recording);
+    const replay = await this.recordingReplayEntries(recordingId);
+    const currentTargets = new Map(entry.recording.steps.map((step) => [step.id, step.target?.selector]));
+    const verifiedHeals = new Set(replay.filter((item) => item.state === 'step_heal_verified').map((item) => `${item.runId}:${item.stepId}:${item.selector ?? ''}`));
+    const heals = replay.filter((item) => item.state === 'step_heal_proposed' && item.selector).map((item) => {
+      const current = currentTargets.get(item.stepId);
+      return {
+        runId: item.runId,
+        stepId: item.stepId,
+        ...(current && current !== item.selector ? { before: current } : {}),
+        after: item.selector!,
+        ...(item.confidence !== undefined ? { confidence: item.confidence } : {}),
+        verified: verifiedHeals.has(`${item.runId}:${item.stepId}:${item.selector}`),
+        timestamp: item.timestamp
+      };
+    });
+    return {
+      document: entry.recording,
+      source: entry.source,
+      trust: entry.trust,
+      editable: entry.source !== 'builtin' && (entry.source !== 'project' || entry.trust === 'trusted'),
+      timeline: entry.recording.steps.map((step, index) => ({
+        index: index + 1,
+        stepId: step.id,
+        action: step.action,
+        ...(step.label ? { label: step.label } : {}),
+        ...(step.target?.selector ? { target: step.target.selector } : {}),
+        ...(step.target?.frame ? { frame: step.target.frame.selectors } : {})
+      })),
+      revisions: history,
+      replay: replay.slice(-5_000),
+      heals: heals.slice(-1_000)
+    };
+  }
+
+  async saveManagedRecording(
+    recordingId: string,
+    document: BrowserRecordingDocument,
+    expectation: { expectedRevision: number; expectedHash: string },
+    workingDirectory?: string
+  ): Promise<BrowserRecordingStudioDetail> {
+    const entry = await this.recordingRegistry.get(recordingId, workingDirectory);
+    if (entry.source === 'builtin') throw new Error('Builtin browser recordings cannot be edited.');
+    if (document.id !== recordingId) throw new Error('Recording id cannot be changed in the editor. Duplicate it instead.');
+    await this.archiveRecordingRevision(entry.recording);
+    await this.recordingRegistry.save({
+      ...document,
+      id: entry.recording.id,
+      scope: entry.source === 'project' ? 'project' : 'user',
+      createdAt: entry.recording.createdAt,
+      revision: entry.recording.revision,
+      contentHash: entry.recording.contentHash
+    }, workingDirectory, expectation);
+    return this.recordingStudioDetail(recordingId, workingDirectory);
+  }
+
+  async duplicateManagedRecording(recordingId: string, name: string | undefined, workingDirectory?: string): Promise<BrowserRecordingStudioDetail> {
+    const entry = await this.recordingRegistry.get(recordingId, workingDirectory);
+    const duplicateName = name?.trim() || `${entry.recording.name} Copy`;
+    const id = await this.recordingRegistry.allocateUserId(duplicateName, workingDirectory);
+    await this.recordingRegistry.save({
+      ...entry.recording,
+      id,
+      name: duplicateName,
+      scope: 'user',
+      revision: 1,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    }, workingDirectory);
+    return this.recordingStudioDetail(id, workingDirectory);
+  }
+
+  private async archiveRecordingRevision(recording: BrowserRecordingDocument): Promise<void> {
+    await this.revisionHistoryStore.archive(recording);
+  }
+
+  private async recordingRevisionHistory(current: BrowserRecordingDocument): Promise<BrowserRecordingStudioDetail['revisions']> {
+    return this.revisionHistoryStore.list(current);
+  }
+
+  private async recordingReplayEntries(recordingId: string): Promise<BrowserReplayJournalEntry[]> {
+    return this.replayJournal.list(recordingId);
   }
 
   private async executeAction(
@@ -671,9 +765,10 @@ export class BrowserRuntime {
   private enablePageDiagnostics(page: BrowserPageState): void {
     if (this.isPageDestroyed(page)) return;
     if (page.kind === 'chrome' && page.chrome?.client) {
-      void page.chrome.client.send('Runtime.enable').catch(() => undefined);
-      void page.chrome.client.send('Log.enable').catch(() => undefined);
-      void page.chrome.client.send('Network.enable').catch(() => undefined);
+      const rootSessionId = page.chrome.rootSessionId;
+      void page.chrome.client.send('Runtime.enable', undefined, COMMAND_TIMEOUT_MS, rootSessionId).catch(() => undefined);
+      void page.chrome.client.send('Log.enable', undefined, COMMAND_TIMEOUT_MS, rootSessionId).catch(() => undefined);
+      void page.chrome.client.send('Network.enable', undefined, COMMAND_TIMEOUT_MS, rootSessionId).catch(() => undefined);
       return;
     }
     const dbg = this.electronContents(page)?.debugger;
@@ -855,6 +950,7 @@ export class BrowserRuntime {
         port: state.chromeDebugPort,
         owned,
         frameSessions: new Map(),
+        attachingFrameTargets: new Set(),
         ...(target.webSocketDebuggerUrl ? { webSocketDebuggerUrl: target.webSocketDebuggerUrl } : {})
       },
       url: target.url || 'about:blank',
@@ -902,34 +998,32 @@ export class BrowserRuntime {
   private async connectChromeClient(state: BrowserState, page: BrowserPageState): Promise<void> {
     if (page.kind !== 'chrome' || !page.chrome) throw new Error('Not a Chrome page.');
     if (page.chrome.client) return;
-    let websocket = page.chrome.webSocketDebuggerUrl;
-    if (!websocket) {
-      const target = (await listChromeTargets(page.chrome.port)).find((item) => item.id === page.chrome!.targetId);
-      websocket = target?.webSocketDebuggerUrl;
-      if (websocket) page.chrome.webSocketDebuggerUrl = websocket;
+    const browser = await probeChromeCdp(page.chrome.port);
+    const client = await ChromeCdpClient.connect(browser.webSocketDebuggerUrl);
+    const attached = await client.send('Target.attachToTarget', {
+      targetId: page.chrome.targetId,
+      flatten: true
+    }) as { sessionId?: string };
+    if (!attached.sessionId) {
+      client.close();
+      throw new Error(`Chrome tab ${page.chrome.targetId} could not be attached.`);
     }
-    if (!websocket) throw new Error(`Chrome tab ${page.chrome.targetId} is not inspectable. Start Chrome with --remote-debugging-port.`);
-    const client = await ChromeCdpClient.connect(websocket);
+    page.chrome.rootSessionId = attached.sessionId;
     page.chrome.client = client;
     client.onDisconnect(() => { page.destroyed = true; });
     this.wireChromeClient(state, page, client);
-    await client.send('Page.enable').catch(() => undefined);
-    await client.send('Runtime.enable').catch(() => undefined);
-    await client.send('Target.setAutoAttach', {
-      autoAttach: true,
-      waitForDebuggerOnStart: false,
-      flatten: true,
-      filter: [{ type: 'iframe', exclude: false }]
-    }).catch(() => client.send('Target.setAutoAttach', {
-      autoAttach: true,
-      waitForDebuggerOnStart: false,
-      flatten: true
-    }).catch(() => undefined));
+    await client.send('Page.enable', undefined, COMMAND_TIMEOUT_MS, attached.sessionId).catch(() => undefined);
+    await client.send('Runtime.enable', undefined, COMMAND_TIMEOUT_MS, attached.sessionId).catch(() => undefined);
+    await client.send('Target.setDiscoverTargets', { discover: true }).catch(() => undefined);
+    await this.discoverChromeFrameSessions(state, page).catch(() => undefined);
     this.enablePageDiagnostics(page);
     if (state.draftRecording?.mode === 'user_demo') await this.instrumentUserDemoPage(state, page);
   }
 
   private wireChromeClient(state: BrowserState, page: BrowserPageState, client: ChromeCdpClient): void {
+    const logicalFrameSessionId = (sessionId: string | undefined) => (
+      sessionId === page.chrome?.rootSessionId ? undefined : sessionId
+    );
     client.on('Runtime.exceptionThrown', (params) => {
       const record = exceptionRecordFromCdp(params);
       if (record) pushBounded(page.errors, record, MAX_BROWSER_ERROR_ENTRIES);
@@ -950,7 +1044,7 @@ export class BrowserRuntime {
     client.on('Runtime.bindingCalled', (params, frameSessionId) => {
       if (params.name !== BROWSER_RECORDER_BINDING_NAME || typeof params.payload !== 'string') return;
       const payload = parseBrowserRecorderBindingPayload(params.payload);
-      if (payload) void this.captureCdpUserDemoEvent(state, page, payload, frameSessionId);
+      if (payload) void this.captureCdpUserDemoEvent(state, page, payload, logicalFrameSessionId(frameSessionId));
     });
     client.on('Target.attachedToTarget', (params) => {
       const sessionId = typeof params.sessionId === 'string' ? params.sessionId : undefined;
@@ -966,6 +1060,17 @@ export class BrowserRuntime {
     });
     client.on('Target.detachedFromTarget', (params) => {
       if (typeof params.sessionId === 'string') page.chrome?.frameSessions.delete(params.sessionId);
+    });
+    const refreshFrames = () => { void this.discoverChromeFrameSessions(state, page).catch(() => undefined); };
+    client.on('Target.targetCreated', refreshFrames);
+    client.on('Target.targetInfoChanged', refreshFrames);
+    client.on('Target.targetDestroyed', (params) => {
+      const targetId = typeof params.targetId === 'string' ? params.targetId : undefined;
+      if (!targetId || !page.chrome) return;
+      for (const [sessionId, frame] of page.chrome.frameSessions) {
+        if (frame.targetId === targetId) page.chrome.frameSessions.delete(sessionId);
+      }
+      page.chrome.attachingFrameTargets.delete(targetId);
     });
     client.on('Network.requestWillBeSent', (params) => {
       const requestId = String(params.requestId ?? '');
@@ -1003,7 +1108,8 @@ export class BrowserRuntime {
       }));
       if (tracked && page.pendingNetworkRequests.size === 0) this.captureUserDemoWait(state, page, { type: 'network_idle', idleMs: 500 });
     });
-    client.on('Page.frameNavigated', (params, frameSessionId) => {
+    client.on('Page.frameNavigated', (params, eventSessionId) => {
+      const frameSessionId = logicalFrameSessionId(eventSessionId);
       const frame = params.frame as { url?: string; parentId?: string } | undefined;
       if (frameSessionId && frame?.url) {
         const attached = page.chrome?.frameSessions.get(frameSessionId);
@@ -1063,6 +1169,53 @@ export class BrowserRuntime {
     });
   }
 
+  private async discoverChromeFrameSessions(state: BrowserState, page: BrowserPageState): Promise<void> {
+    const chrome = page.chrome;
+    const client = chrome?.client;
+    if (!chrome || !client || page.destroyed) return;
+    const response = await client.send('Target.getTargets') as {
+      targetInfos?: Array<{ targetId?: string; type?: string; url?: string; parentId?: string }>;
+    };
+    const infos = response.targetInfos ?? [];
+    const attachedTargetIds = new Set([...chrome.frameSessions.values()].map((frame) => frame.targetId));
+    const relevantParents = new Set([chrome.targetId, ...attachedTargetIds]);
+    let progressed = true;
+    while (progressed) {
+      progressed = false;
+      for (const info of infos) {
+        if (
+          info.type !== 'iframe'
+          || !info.targetId
+          || !info.parentId
+          || !relevantParents.has(info.parentId)
+        ) continue;
+        relevantParents.add(info.targetId);
+        if (attachedTargetIds.has(info.targetId) || chrome.attachingFrameTargets.has(info.targetId)) continue;
+        chrome.attachingFrameTargets.add(info.targetId);
+        try {
+          const attached = await client.send('Target.attachToTarget', {
+            targetId: info.targetId,
+            flatten: true
+          }) as { sessionId?: string };
+          if (!attached.sessionId) continue;
+          const frameSession: BrowserFrameSession = {
+            sessionId: attached.sessionId,
+            targetId: info.targetId,
+            url: info.url ?? 'about:blank'
+          };
+          chrome.frameSessions.set(attached.sessionId, frameSession);
+          attachedTargetIds.add(info.targetId);
+          progressed = true;
+          await this.initializeChromeFrameSession(state, page, frameSession);
+        } catch (error) {
+          if (!/already attached/iu.test(error instanceof Error ? error.message : String(error))) throw error;
+        } finally {
+          chrome.attachingFrameTargets.delete(info.targetId);
+        }
+      }
+    }
+  }
+
   private async initializeChromeFrameSession(
     state: BrowserState,
     page: BrowserPageState,
@@ -1072,16 +1225,6 @@ export class BrowserRuntime {
     if (!client || !page.chrome?.frameSessions.has(frameSession.sessionId)) return;
     await client.send('Runtime.enable', undefined, COMMAND_TIMEOUT_MS, frameSession.sessionId).catch(() => undefined);
     await client.send('Page.enable', undefined, COMMAND_TIMEOUT_MS, frameSession.sessionId).catch(() => undefined);
-    await client.send('Target.setAutoAttach', {
-      autoAttach: true,
-      waitForDebuggerOnStart: false,
-      flatten: true,
-      filter: [{ type: 'iframe', exclude: false }]
-    }, COMMAND_TIMEOUT_MS, frameSession.sessionId).catch(() => client.send('Target.setAutoAttach', {
-      autoAttach: true,
-      waitForDebuggerOnStart: false,
-      flatten: true
-    }, COMMAND_TIMEOUT_MS, frameSession.sessionId).catch(() => undefined));
     if (!frameSession.framePath) {
       const framePath = await this.findChromeFrameSessionPath(page, frameSession).catch(() => undefined);
       if (framePath) frameSession.framePath = framePath;
@@ -1208,7 +1351,7 @@ export class BrowserRuntime {
       downloadPath: downloadDirectory,
       eventsEnabled: true
     }).catch(() => undefined);
-    const installed = await this.instrumentUserDemoCdpSession(page, undefined);
+    const installed = await this.instrumentUserDemoCdpSession(page, chrome.rootSessionId);
     if (installed) page.recorderScriptId = installed;
     await Promise.all([...chrome.frameSessions.values()].map(async (frameSession) => {
       await this.instrumentUserDemoCdpSession(page, frameSession.sessionId, frameSession).catch(() => undefined);
@@ -1316,7 +1459,7 @@ export class BrowserRuntime {
           sessionId
         ).catch(() => undefined);
       };
-      await stopSession(undefined, scriptId);
+      await stopSession(page.chrome?.rootSessionId, scriptId);
       await Promise.all([...(page.chrome?.frameSessions.values() ?? [])].map(async (frameSession) => {
         const installedId = frameSession.recorderScriptId;
         delete frameSession.recorderScriptId;
@@ -1373,13 +1516,15 @@ export class BrowserRuntime {
         off();
         reject(new Error('Browser navigation timed out.'));
       }, COMMAND_TIMEOUT_MS);
-      const off = client.on('Page.loadEventFired', () => {
+      const off = client.on('Page.loadEventFired', (_params, sessionId) => {
+        if (sessionId && sessionId !== page.chrome?.rootSessionId) return;
         clearTimeout(timeout);
         off();
         resolve();
       });
     });
-    await client.send('Page.navigate', { url });
+    const rootSessionId = page.chrome?.rootSessionId;
+    await client.send('Page.navigate', { url }, COMMAND_TIMEOUT_MS, rootSessionId);
     await loaded;
     await this.refreshChromePageInfo(page);
     if (!page.url) page.url = url;
@@ -1392,7 +1537,8 @@ export class BrowserRuntime {
         off();
         resolve();
       }, timeoutMs);
-      const off = page.chrome!.client!.on('Page.loadEventFired', () => {
+      const off = page.chrome!.client!.on('Page.loadEventFired', (_params, sessionId) => {
+        if (sessionId && sessionId !== page.chrome?.rootSessionId) return;
         clearTimeout(timeout);
         off();
         resolve();
@@ -1406,7 +1552,7 @@ export class BrowserRuntime {
     const info = resultValue<{ url?: string; title?: string }>(await page.chrome.client.send('Runtime.evaluate', {
       expression: '({ url: location.href, title: document.title })',
       returnByValue: true
-    })) ?? {};
+    }, COMMAND_TIMEOUT_MS, page.chrome.rootSessionId)) ?? {};
     page.url = info.url || page.url;
     page.title = info.title || page.title;
   }
@@ -2057,6 +2203,7 @@ export class BrowserRuntime {
     }
     if (healRecords.length > 0) {
       try {
+        await this.archiveRecordingRevision(recording);
         const saved = await this.recordingRegistry.save({
           ...recording,
           steps: recording.steps.map((step, index) => {
@@ -2874,8 +3021,8 @@ export class BrowserRuntime {
       if (!page.chrome?.client) throw new Error('Select this Chrome tab with browser_select_page before reading cookies.');
       const currentUrl = this.pageUrl(page);
       const scoped = currentUrl && currentUrl !== 'about:blank'
-        ? await page.chrome.client.send('Network.getCookies', { urls: [currentUrl] }) as { cookies?: typeof cookies }
-        : await page.chrome.client.send('Network.getAllCookies') as { cookies?: typeof cookies };
+        ? await page.chrome.client.send('Network.getCookies', { urls: [currentUrl] }, COMMAND_TIMEOUT_MS, page.chrome.rootSessionId) as { cookies?: typeof cookies }
+        : await page.chrome.client.send('Network.getAllCookies', undefined, COMMAND_TIMEOUT_MS, page.chrome.rootSessionId) as { cookies?: typeof cookies };
       cookies = scoped.cookies ?? [];
     } else {
       const contents = this.electronContents(page);
@@ -3121,7 +3268,7 @@ export class BrowserRuntime {
     const page = this.activePage(state);
     if (page.kind === 'chrome') {
       if (!page.chrome?.client) return Promise.reject(new Error('Select this Chrome tab with browser_select_page before using page actions.'));
-      return page.chrome.client.send(method, params, timeoutMs, sessionId);
+      return page.chrome.client.send(method, params, timeoutMs, sessionId ?? page.chrome.rootSessionId);
     }
     const contents = this.electronContents(page);
     if (!contents) return Promise.reject(new Error('The controlled browser has no open page.'));

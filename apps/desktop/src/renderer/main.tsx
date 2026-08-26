@@ -1,7 +1,7 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import type {
-  AgentEvent, ApprovalRequest, BrowserDockState, BrowserRecordingRegistrySnapshot, ExtensionSettings, ExtensionStatus, HookSettingsSnapshot, ImageContentBlock, MemoryCandidateReviewEdit, MemorySettings, MemoryStatusSnapshot, Message, ProviderConfig, ProviderSettings, SessionCompactionRecord, SessionMeta, SkillDetail, SkillStatus, WorkflowRunSnapshot, WorkspaceChanges
+  AgentEvent, ApprovalRequest, BrowserDockState, BrowserRecordingRegistrySnapshot, BrowserRecordingStudioDetail, ExtensionSettings, ExtensionStatus, HookSettingsSnapshot, ImageContentBlock, MemoryCandidateReviewEdit, MemorySettings, MemoryStatusSnapshot, Message, ProviderConfig, ProviderSettings, SessionCompactionRecord, SessionMeta, SkillDetail, SkillStatus, WorkflowRunSnapshot, WorkspaceChanges
 } from '@desktop-agent/contracts';
 import { DEFAULT_BROWSER_SETTINGS, DEFAULT_MEMORY_SETTINGS, DEFAULT_PROVIDERS, DEFAULT_SESSION_TITLE, projectNameFromDirectory } from '@desktop-agent/contracts';
 import {
@@ -137,7 +137,59 @@ function BrowserSettingsPage({
 }) {
   const [draft, setDraft] = useState('');
   const [draftError, setDraftError] = useState('');
+  const [studio, setStudio] = useState<BrowserRecordingStudioDetail | null>(null);
+  const [studioJson, setStudioJson] = useState('');
+  const [studioTab, setStudioTab] = useState<'editor' | 'timeline' | 'debugger' | 'heals' | 'history'>('editor');
+  const [studioBusy, setStudioBusy] = useState(false);
+  const [studioError, setStudioError] = useState('');
   const list = parseBrowserDomainList(domains);
+
+  const studioInput = (recordingId: string) => ({ recordingId, ...(workingDirectory ? { workingDirectory } : {}) });
+  const openStudio = async (recordingId: string) => {
+    setStudioBusy(true); setStudioError('');
+    try {
+      const detail = await window.desktopAgent.getBrowserRecordingStudio(studioInput(recordingId));
+      setStudio(detail);
+      setStudioJson(JSON.stringify(detail.document, null, 2));
+      setStudioTab('editor');
+    } catch (cause) {
+      setStudioError(cause instanceof Error ? cause.message : String(cause));
+    } finally { setStudioBusy(false); }
+  };
+
+  const saveStudio = async () => {
+    if (!studio) return;
+    setStudioBusy(true); setStudioError('');
+    try {
+      const document = JSON.parse(studioJson) as BrowserRecordingStudioDetail['document'];
+      const detail = await window.desktopAgent.saveBrowserRecording({
+        ...studioInput(studio.document.id),
+        expectedRevision: studio.document.revision,
+        expectedHash: studio.document.contentHash,
+        document
+      });
+      setStudio(detail);
+      setStudioJson(JSON.stringify(detail.document, null, 2));
+      onRefreshRecordings();
+    } catch (cause) {
+      setStudioError(cause instanceof Error ? cause.message : String(cause));
+    } finally { setStudioBusy(false); }
+  };
+
+  const duplicateStudio = async (recordingId: string) => {
+    const name = window.prompt('新 Recording 名称（留空自动添加 Copy）') ?? undefined;
+    if (name === undefined) return;
+    setStudioBusy(true); setStudioError('');
+    try {
+      const detail = await window.desktopAgent.duplicateBrowserRecording({ ...studioInput(recordingId), ...(name.trim() ? { name: name.trim() } : {}) });
+      setStudio(detail);
+      setStudioJson(JSON.stringify(detail.document, null, 2));
+      setStudioTab('editor');
+      onRefreshRecordings();
+    } catch (cause) {
+      setStudioError(cause instanceof Error ? cause.message : String(cause));
+    } finally { setStudioBusy(false); }
+  };
 
   const commitDomains = (next: string[]) => {
     onDomainsChange(next.join('\n'));
@@ -291,12 +343,50 @@ function BrowserSettingsPage({
             {recording.overriddenSources.length > 0 && <p>覆盖：{recording.overriddenSources.join(', ')}</p>}
           </div>
           <div className="browser-recording-actions">
+            <button type="button" disabled={recordingsBusy || studioBusy} onClick={() => { void openStudio(recording.id); }}>查看 / 编辑</button>
+            <button type="button" disabled={recordingsBusy || studioBusy} onClick={() => { void duplicateStudio(recording.id); }}>复制</button>
             {recording.source === 'project' && recording.trust !== 'trusted' && <button type="button" disabled={recordingsBusy} onClick={() => onTrustRecording(recording.id)}>信任此版本</button>}
             {recording.source === 'project' && recording.trust === 'trusted' && <button type="button" disabled={recordingsBusy} onClick={() => onRevokeRecording(recording.id)}>撤销信任</button>}
             {recording.source !== 'builtin' && <button type="button" className="danger" disabled={recordingsBusy} onClick={() => onDeleteRecording(recording.id)}>删除</button>}
           </div>
         </article>)}
       </div>
+      {studio && <section className="browser-studio" aria-label="Browser Recording Studio">
+        <header>
+          <div><strong>{studio.document.name}</strong><span>{studio.document.id} · r{studio.document.revision} · {studio.source}</span></div>
+          <button type="button" onClick={() => { setStudio(null); setStudioError(''); }}>关闭</button>
+        </header>
+        <nav aria-label="Recording Studio sections">
+          {([
+            ['editor', 'Recording editor'], ['timeline', 'Step Timeline'], ['debugger', 'Replay debugger'],
+            ['heals', 'Heal diff'], ['history', 'Revision history']
+          ] as const).map(([id, label]) => <button type="button" className={studioTab === id ? 'active' : ''} key={id} onClick={() => setStudioTab(id)}>{label}</button>)}
+        </nav>
+        {studioTab === 'editor' && <div className="browser-studio-editor">
+          <textarea aria-label="Recording JSON editor" value={studioJson} readOnly={!studio.editable} spellCheck={false} onChange={(event) => setStudioJson(event.target.value)} />
+          <div className="browser-studio-actions">
+            <span>{studio.editable ? '保存时校验 schema，并以 revision + content hash 防止覆盖并发修改。' : '此 Recording 当前只读。项目 Recording 需先信任。'}</span>
+            {studio.editable && <button type="button" disabled={studioBusy} onClick={() => { void saveStudio(); }}>保存新 revision</button>}
+          </div>
+        </div>}
+        {studioTab === 'timeline' && <ol className="browser-studio-timeline">
+          {studio.timeline.map((step) => <li key={step.stepId}><b>{step.index}</b><div><strong>{step.label || step.action}</strong><code>{step.action} · {step.stepId}</code>{step.target && <span>{step.target}</span>}{step.frame && <small>frame: {step.frame.join(' → ')}</small>}</div></li>)}
+          {studio.timeline.length === 0 && <li className="empty">没有步骤。</li>}
+        </ol>}
+        {studioTab === 'debugger' && <div className="browser-studio-debugger">
+          {studio.replay.map((entry, index) => <article key={`${entry.runId}-${index}`}><time>{new Date(entry.timestamp).toLocaleString()}</time><code>{entry.runId}</code><strong>{entry.stepIndex}. {entry.action}</strong><span className={`state ${entry.state.includes('failed') ? 'failed' : entry.state.includes('verified') || entry.state === 'run_completed' ? 'ok' : ''}`}>{entry.state}</span>{entry.attempt && <small>attempt {entry.attempt}</small>}</article>)}
+          {studio.replay.length === 0 && <p>还没有 Replay Journal。</p>}
+        </div>}
+        {studioTab === 'heals' && <div className="browser-studio-heals">
+          {studio.heals.map((heal, index) => <article key={`${heal.runId}-${heal.stepId}-${index}`}><header><strong>{heal.stepId}</strong><span>{heal.verified ? '已验证' : '仅提议'}{heal.confidence !== undefined ? ` · ${(heal.confidence * 100).toFixed(0)}%` : ''}</span></header><div><del>{heal.before || '原 selector 不可用'}</del><ins>{heal.after}</ins></div><small>{heal.runId} · {new Date(heal.timestamp).toLocaleString()}</small></article>)}
+          {studio.heals.length === 0 && <p>还没有 selector heal 记录。</p>}
+        </div>}
+        {studioTab === 'history' && <div className="browser-studio-history">
+          {studio.revisions.map((revision) => <article className={revision.current ? 'current' : ''} key={`${revision.revision}-${revision.contentHash}`}><strong>revision {revision.revision}</strong><code>{revision.contentHash.slice(0, 23)}…</code><time>{new Date(revision.updatedAt).toLocaleString()}</time>{revision.current && <span>当前</span>}</article>)}
+        </div>}
+        {studioError && <div className="settings-error" role="alert">{studioError}</div>}
+      </section>}
+      {!studio && studioError && <div className="settings-error" role="alert">{studioError}</div>}
     </section>
   </form>;
 }

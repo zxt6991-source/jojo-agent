@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  AcceptMemoryCandidateInputSchema, ApprovalInputSchema, BindSessionProjectInputSchema, BrowserDockActionSchema, BrowserDockLayoutSchema, BrowserRecordingRegistryActionInputSchema, BrowserRecordingRegistryInputSchema, CreateSessionInputSchema, CreateSkillInputSchema, DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS, DEFAULT_MODEL_MAX_OUTPUT_TOKENS, DeleteMemoryEntryInputSchema, GetExtensionStatusInputSchema, GetHookStatusInputSchema, GetMemoryStatusInputSchema, HookProjectActionInputSchema, ImportSkillInputSchema, IPC, ListModelsInputSchema, MAX_IMAGE_ATTACHMENTS, MAX_IMAGE_BYTES, McpServerIdInputSchema, OpenHookConfigInputSchema, RebuildMemoryIndexInputSchema, RebuildSemanticMemoryIndexInputSchema, RejectMemoryCandidateInputSchema, RenameSessionInputSchema, SaveExtensionSettingsInputSchema, SaveMemorySettingsInputSchema, SaveSettingsInputSchema,
+  AcceptMemoryCandidateInputSchema, ApprovalInputSchema, BindSessionProjectInputSchema, BrowserDockActionSchema, BrowserDockLayoutSchema, BrowserRecordingRegistryActionInputSchema, BrowserRecordingRegistryInputSchema, BrowserRecordingStudioInputSchema, CreateSessionInputSchema, CreateSkillInputSchema, DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS, DEFAULT_MODEL_MAX_OUTPUT_TOKENS, DeleteMemoryEntryInputSchema, DuplicateBrowserRecordingInputSchema, GetExtensionStatusInputSchema, GetHookStatusInputSchema, GetMemoryStatusInputSchema, HookProjectActionInputSchema, ImportSkillInputSchema, IPC, ListModelsInputSchema, MAX_IMAGE_ATTACHMENTS, MAX_IMAGE_BYTES, McpServerIdInputSchema, OpenHookConfigInputSchema, RebuildMemoryIndexInputSchema, RebuildSemanticMemoryIndexInputSchema, RejectMemoryCandidateInputSchema, RenameSessionInputSchema, SaveBrowserRecordingInputSchema, SaveExtensionSettingsInputSchema, SaveMemorySettingsInputSchema, SaveSettingsInputSchema,
   SessionIdInputSchema, SkillPathInputSchema, StartTurnInputSchema, UpdateSkillInputSchema, WorkflowRunActionInputSchema,
   WorkerCommandSchema, WorkerMessageSchema, serializedIpcBytes,
   type BrowserHealProposal, type BrowserHealRequest, type ExtensionStatus, type MemoryStatusSnapshot, type ProviderSettings, type SessionCompactionRecord, type WorkerCommand, type WorkerMessage, type WorkflowRunSnapshot
@@ -916,6 +916,29 @@ function registerIpc(): void {
     const input = BrowserRecordingRegistryActionInputSchema.parse(raw);
     if (!browserRuntime) throw new Error('Browser runtime is not available.');
     return browserRuntime.deleteManagedRecording(input.recordingId, input.workingDirectory);
+  });
+  ipcMain.handle(IPC.getBrowserRecordingStudio, async (event, raw) => {
+    assertTrusted(event);
+    const input = BrowserRecordingStudioInputSchema.parse(raw);
+    if (!browserRuntime) throw new Error('Browser runtime is not available.');
+    return browserRuntime.recordingStudioDetail(input.recordingId, input.workingDirectory);
+  });
+  ipcMain.handle(IPC.saveBrowserRecording, async (event, raw) => {
+    assertTrusted(event);
+    const input = SaveBrowserRecordingInputSchema.parse(raw);
+    if (!browserRuntime) throw new Error('Browser runtime is not available.');
+    return browserRuntime.saveManagedRecording(
+      input.recordingId,
+      input.document,
+      { expectedRevision: input.expectedRevision, expectedHash: input.expectedHash },
+      input.workingDirectory
+    );
+  });
+  ipcMain.handle(IPC.duplicateBrowserRecording, async (event, raw) => {
+    assertTrusted(event);
+    const input = DuplicateBrowserRecordingInputSchema.parse(raw);
+    if (!browserRuntime) throw new Error('Browser runtime is not available.');
+    return browserRuntime.duplicateManagedRecording(input.recordingId, input.name, input.workingDirectory);
   });
   ipcMain.handle(IPC.probeChromeBrowser, async (event, raw) => {
     assertTrusted(event);

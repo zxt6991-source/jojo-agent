@@ -1,4 +1,8 @@
 export * from './errors';
+export * from './drivers/chrome-cdp/cdp-client';
+export * from './drivers/chrome-cdp/chrome-launcher';
+export * from './drivers/chrome-cdp/chrome-cdp-driver';
+export * from './headless/headless-browser-host';
 export * from './ports/browser-driver';
 export * from './ports/browser-healing-port';
 export * from './ports/browser-permission-port';
@@ -8,6 +12,7 @@ export * from './recording/file-store';
 export * from './recording/hash';
 export * from './recording/params';
 export * from './recording/registry';
+export * from './recording/revision-history';
 export * from './recording/serializer';
 export * from './recording/trust';
 export * from './recorder/capture-script';

@@ -1,4 +1,4 @@
-import { appendFile, mkdir, readFile } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import type { BrowserRecordingDocument, BrowserRecordingStep } from '@desktop-agent/contracts';
 import { BrowserAutomationError } from '../errors';
@@ -59,6 +59,24 @@ export class BrowserReplayJournalStore implements BrowserReplayJournalPort {
         );
       }
     });
+  }
+
+  async list(recordingId?: string): Promise<BrowserReplayJournalEntry[]> {
+    let names: string[];
+    try { names = await readdir(this.directory); }
+    catch (error) {
+      if (isMissingFile(error)) return [];
+      throw error;
+    }
+    const entries: BrowserReplayJournalEntry[] = [];
+    for (const name of names.sort()) {
+      const runId = name.replace(/\.jsonl$/u, '');
+      if (`${runId}.jsonl` !== name || !RUN_ID_PATTERN.test(runId)) continue;
+      for (const entry of await this.read(runId).catch(() => [])) {
+        if (!recordingId || entry.recordingId === recordingId) entries.push(entry);
+      }
+    }
+    return entries.sort((left, right) => left.timestamp.localeCompare(right.timestamp));
   }
 
   private filePath(runId: string): string { return path.join(this.directory, `${runId}.jsonl`); }

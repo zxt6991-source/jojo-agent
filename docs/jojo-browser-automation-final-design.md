@@ -2517,6 +2517,8 @@ Browser download
 
 **优先级：P1**
 
+**实现状态：已完成（2026-08-26）**
+
 内容：
 
 - frame path；
@@ -2525,22 +2527,40 @@ Browser download
 - recorder instrumentation；
 - replay routing。
 
+落地补充：
+
+- Browser Action、Recording Target 与 DOM Read 均携带 outer-to-inner frame path；
+- 同源 iframe 在当前 JavaScript realm 内路由，跨站 iframe 通过 browser-level target discovery 与 flattened CDP session 显式附着；
+- User Demo Recorder 会注入现存及后续 frame，并将 OOPIF 外层路径与 frame 内路径合并；
+- 受控双 origin 测试站覆盖同源 iframe、OOPIF replay routing 与 OOPIF 内录制事件。
+
 ---
 
 ## B11：Headless Browser Host
 
 **优先级：P2**
 
+**实现状态：已完成（2026-08-26）**
+
 内容：
 
 - 不依赖 Electron 的 Chrome runtime；
 - 为 `jojo run / jojo serve / Scheduler` 准备。
+
+落地补充：
+
+- `@desktop-agent/browser-automation` 导出独立 Chrome CDP Client、Launcher 与 `ChromeCdpDriver`；
+- `HeadlessBrowserHost` 提供按 Jojo session 延迟 acquire、任务级 `run` 和确定性 close 生命周期；
+- Driver 实现页面管理、导航、读取、Target resolve、交互、等待、上传/下载、截图及 iframe/OOPIF routing；
+- 真实 headless Chrome 集成测试不启动 Electron，覆盖顶层页面、同源 iframe 与跨站 OOPIF。
 
 ---
 
 ## B12：Browser Automation UI
 
 **优先级：P2**
+
+**实现状态：已完成（2026-08-26）**
 
 内容：
 
@@ -2549,6 +2569,15 @@ Browser download
 - Replay debugger；
 - Heal diff；
 - Revision history。
+
+落地补充：
+
+- Recording Registry 可打开 Studio，并提供 schema-validated JSON editor 与 revision/content-hash 乐观并发控制；
+- Step Timeline 显示 action、target 与 frame path；
+- Replay Debugger 读取持久化 Journal，按事件展示 attempt、状态与 run id；
+- Heal Diff 展示 selector proposal、confidence 与 verified 状态；
+- 每次 UI 保存及 self-heal writeback 前归档不可变 revision，History 标记当前版本；
+- 支持从 builtin/user/project Recording 复制为新的 user Recording。
 
 ---
 
@@ -2769,4 +2798,3 @@ Pi:
 - project trust
 - runtime / UI separation
 ```
-
