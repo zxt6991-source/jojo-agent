@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { AgentEventSchema, BoundedJsonValueSchema, serializedIpcBytes } from './agent.js';
 import { BrowserActionSchema, StartTurnInputSchema } from './desktop.js';
 import { BrowserHealProposalSchema, BrowserHealRequestSchema } from './browser-recording.js';
-import { ExtensionStatusSchema } from './extensions.js';
+import { ExtensionStatusSchema } from './integrations.js';
 import { ToolResultSchema } from './messages.js';
 import { MemoryKindSchema, MemoryStatusSchema } from './memory.js';
 import { MemoryCandidateReviewEditSchema, MemoryCandidateSchema } from './memory-candidate.js';

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { MemoryHandoff, MemoryHandoffItem } from '@desktop-agent/contracts';
-import type { MemoryCompactInput } from '@desktop-agent/agent-runtime';
+import type { MemoryCompactInput } from '@desktop-agent/agent-runtime/memory';
 
 function stableItems(items: MemoryHandoffItem[]): MemoryHandoffItem[] {
   return [...items].sort((left, right) => {

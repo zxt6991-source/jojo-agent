@@ -1,10 +1,7 @@
 import { expect, it } from 'vitest';
-import {
-  createReadyState,
-  type AgentRuntimeStore,
-  type Clock,
-  type OperationState
-} from '../src/index.js';
+import { createReadyState } from '../src/operation/reducer.js';
+import type { OperationState } from '../src/operation/state.js';
+import type { AgentRuntimeStore, Clock } from '../src/store.js';
 
 export type StoreFactory = (clock: Clock) => Promise<AgentRuntimeStore> | AgentRuntimeStore;
 

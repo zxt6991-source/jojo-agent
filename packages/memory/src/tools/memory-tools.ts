@@ -249,6 +249,8 @@ class MemorySearchTool extends MemoryTool {
 
 class MemoryWriteTool extends MemoryTool {
   override readonly replay = 'never' as const;
+  readonly risk = 'write' as const;
+  readonly effects = ['memory.write'];
   readonly definition = {
     name: 'memory_write',
     description: 'Create or exactly update a durable Long-Term Memory entry. Requires user approval and an expectedHash from memory_read.',
@@ -304,6 +306,8 @@ class MemoryWriteTool extends MemoryTool {
 
 class MemoryForgetTool extends MemoryTool {
   override readonly replay = 'never' as const;
+  readonly risk = 'write' as const;
+  readonly effects = ['memory.forget'];
   readonly definition = {
     name: 'memory_forget',
     description: 'Delete a Long-Term Memory entry after saving a recovery record. Requires approval.',
@@ -324,6 +328,8 @@ class MemoryForgetTool extends MemoryTool {
 
 class MemoryRestoreTool extends MemoryTool {
   override readonly replay = 'never' as const;
+  readonly risk = 'write' as const;
+  readonly effects = ['memory.restore'];
   readonly definition = {
     name: 'memory_restore',
     description: 'Restore a deleted Long-Term Memory entry from Recovery. Requires approval.',

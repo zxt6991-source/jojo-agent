@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { runtimeStoreConformance } from '../../agent-runtime/test/store-conformance.js';
-import { projectEntriesToMessages } from '@desktop-agent/agent-runtime';
+import { projectEntriesToMessages } from '@desktop-agent/agent-runtime/context';
 import { JsonlAgentRuntimeStore } from '../src/index.js';
 
 describe('JsonlAgentRuntimeStore conformance', () => {

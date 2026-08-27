@@ -30,7 +30,11 @@ export type AgentProfileLoadResult = {
   warnings: AgentProfileLoadWarning[];
 };
 
-function parseProfile(sourceText: string, filePath: string, source: Exclude<AgentProfileSource, 'builtin'>): AgentProfileDefinition {
+function parseProfile(
+  sourceText: string,
+  filePath: string,
+  source: Exclude<AgentProfileSource, 'builtin' | 'extension'>
+): AgentProfileDefinition {
   const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)([\s\S]*)$/u.exec(sourceText);
   if (!match) throw new Error('Agent profile must start with YAML frontmatter.');
   const document = parseDocument(match[1] ?? '', { prettyErrors: true, strict: true });
@@ -61,7 +65,7 @@ function parseProfile(sourceText: string, filePath: string, source: Exclude<Agen
 
 export async function loadAgentProfileDirectory(
   directory: string,
-  source: Exclude<AgentProfileSource, 'builtin'>
+  source: Exclude<AgentProfileSource, 'builtin' | 'extension'>
 ): Promise<AgentProfileLoadResult> {
   let entries: import('node:fs').Dirent<string>[];
   try {

@@ -17,16 +17,11 @@ import type {
   Tool
 } from '@desktop-agent/contracts';
 import { DefaultHookRuntime, HookRegistry, MemoryHookInvocationStore } from '@desktop-agent/hooks';
-import {
-  createReadyState,
-  emptyProgressState,
-  MemoryAgentRuntimeStore,
-  resumeAgentTurn,
-  runAgentTurn,
-  type OperationMeta,
-  type RuntimeAgentRunOptions,
-  type ToolsState
-} from '../src/index.js';
+import { resumeAgentTurn, runAgentTurn, type RuntimeAgentRunOptions } from '../src/harness/runner.js';
+import { MemoryAgentRuntimeStore } from '../src/memory-store.js';
+import type { OperationMeta } from '../src/operation/meta.js';
+import { createReadyState } from '../src/operation/reducer.js';
+import { emptyProgressState, type ToolsState } from '../src/operation/state.js';
 
 const tool: Tool = {
   definition: { name: 'echo', description: 'echo', inputSchema: { type: 'object' } },

@@ -83,6 +83,7 @@ import { isTerminalState, type OperationState, type ProgressState, type ToolsSta
 import type { AgentRuntimeStore } from '../store.js';
 import type { JsonValue } from '../session/types.js';
 import type { MemorySnapshotEntry } from '../session/types.js';
+import { EXECUTION_SCOPE_METADATA, LEGACY_WORKING_DIRECTORY_METADATA } from '../scope.js';
 
 type CoreAgentRunOptions = AgentRunOptions;
 
@@ -160,6 +161,7 @@ function hookEnvelope(
     agent: options.hookMeta?.agent ?? { kind: 'main' },
     ...(options.hookMeta?.workflow ? { workflow: options.hookMeta.workflow } : {}),
     workingDirectory: options.workingDirectory,
+    ...(options.executionScope ? { executionScope: options.executionScope } : {}),
     provider: { id: options.providerId ?? 'compatibility', model: options.model },
     transport: options.hookMeta?.transport ?? 'unknown'
   };
@@ -190,16 +192,20 @@ function latestUserText(messages: Message[]): string {
   return '';
 }
 
-function memoryToolEvents(messages: Message[]): MemoryToolEvent[] {
-  const calls = new Map<string, { name: MemoryToolEvent['toolName']; input: Record<string, unknown> }>();
+function memoryToolEvents(messages: Message[], toolsByName: Map<string, Tool>): MemoryToolEvent[] {
+  const calls = new Map<string, { effect: MemoryToolEvent['effect']; input: Record<string, unknown> }>();
   const events: MemoryToolEvent[] = [];
   for (const message of messages) {
     for (const block of message.content) {
-      if (block.type === 'tool_call'
-        && ['memory_write', 'memory_forget', 'memory_restore'].includes(block.call.name)
+      const effect = block.type === 'tool_call'
+        ? toolsByName.get(block.call.name)?.effects?.find((item): item is MemoryToolEvent['effect'] => (
+            item === 'memory.write' || item === 'memory.forget' || item === 'memory.restore'
+          ))
+        : undefined;
+      if (block.type === 'tool_call' && effect
         && block.call.input && typeof block.call.input === 'object' && !Array.isArray(block.call.input)) {
         calls.set(block.call.id, {
-          name: block.call.name as MemoryToolEvent['toolName'],
+          effect,
           input: block.call.input as Record<string, unknown>
         });
       }
@@ -217,7 +223,7 @@ function memoryToolEvents(messages: Message[]): MemoryToolEvent[] {
       const scope = call.input.scope === 'project' ? 'project' as const : 'global' as const;
       events.push({
         toolCallId: block.result.callId,
-        toolName: call.name,
+        effect: call.effect,
         scope,
         ...(entryId ? { entryId } : {}),
         result: block.result.ok ? 'success' : 'failed'
@@ -225,6 +231,10 @@ function memoryToolEvents(messages: Message[]): MemoryToolEvent[] {
     }
   }
   return events;
+}
+
+function toolHasEffect(data: RunnerData, toolName: string, prefix: string): boolean {
+  return data.toolsByName.get(toolName)?.effects?.some((effect) => effect.startsWith(prefix)) ?? false;
 }
 
 function bindingSnapshotId(binding: RuntimeAgentRunOptions['memoryBinding']): string | undefined {
@@ -618,7 +628,15 @@ async function executeAgentTurn(options: RuntimeAgentRunOptions, resuming: boole
       await runtimeStore.createSession({
         id: options.sessionId,
         createdAt: Date.now(),
-        ...(options.sessionMetadata ? { metadata: options.sessionMetadata } : {})
+        ...((options.sessionMetadata || options.executionScope) ? {
+          metadata: {
+            ...(options.sessionMetadata ?? {}),
+            ...(options.executionScope ? {
+              [EXECUTION_SCOPE_METADATA]: options.executionScope as JsonValue,
+              [LEGACY_WORKING_DIRECTORY_METADATA]: options.workingDirectory
+            } : {})
+          }
+        } : {})
       });
     }
     if (!await runtimeStore.getLane(options.sessionId, laneName)) {
@@ -1031,7 +1049,7 @@ async function executeAgentTurn(options: RuntimeAgentRunOptions, resuming: boole
                   ...(previousCompaction?.type === 'compaction'
                     ? { previousCompactionSummary: previousCompaction.summary }
                     : {}),
-                  memoryToolEvents: memoryToolEvents(info.messagesToSummarize),
+                  memoryToolEvents: memoryToolEvents(info.messagesToSummarize, data.toolsByName),
                   currentSnapshotScopeVersions: memorySnapshot.scopeVersions,
                   signal: options.signal
                 });
@@ -1339,7 +1357,8 @@ async function executeAgentTurn(options: RuntimeAgentRunOptions, resuming: boole
           }
           const decision = await options.permissionGate.check(call, {
             sessionId: options.sessionId,
-            workingDirectory: options.workingDirectory
+            workingDirectory: options.workingDirectory,
+            ...(options.executionScope ? { executionScope: options.executionScope } : {})
           });
           if (decision.decision === 'allow') {
             state = await transition(resolveToolPermission(state, call.id, 'not_required'));
@@ -1359,7 +1378,8 @@ async function executeAgentTurn(options: RuntimeAgentRunOptions, resuming: boole
             state = await transition(settleToolWithoutEffect(state, call.id, result));
             continue;
           }
-          if (hookDecision.decision === 'approve' && hookDecision.canSkipApproval && !call.name.startsWith('memory_')) {
+          if (hookDecision.decision === 'approve' && hookDecision.canSkipApproval
+            && !toolHasEffect(data, call.name, 'memory.')) {
             state = await transition(resolveToolPermission(state, call.id, 'hook_approved', decision.request));
             continue;
           }
@@ -1396,7 +1416,7 @@ async function executeAgentTurn(options: RuntimeAgentRunOptions, resuming: boole
           ? toolResultFromMessage(existing.message, call.id)
           : undefined;
         const result = existingResult ?? await executeApprovedToolCall(call, data, { ...options, loopSafety: safety });
-        if (result.ok && !call.name.startsWith('memory_')) data.memorySaveNudge = true;
+        if (result.ok && !toolHasEffect(data, call.name, 'memory.')) data.memorySaveNudge = true;
         if (!existingResult || !data.messages.some((message) => message.id === resultEntryId)) {
           await appendDurableMessage(options, data, runtimeStore, state, createToolMessage(result, resultEntryId));
         }

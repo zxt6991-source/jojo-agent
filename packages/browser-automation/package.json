@@ -2,7 +2,12 @@
   "name": "@desktop-agent/browser-automation",
   "version": "0.1.0",
   "type": "module",
-  "exports": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./driver": "./src/driver.ts",
+    "./recording": "./src/recording.ts",
+    "./testing": "./src/testing.ts"
+  },
   "dependencies": {
     "@desktop-agent/contracts": "workspace:*",
     "yaml": "^2.9.0"

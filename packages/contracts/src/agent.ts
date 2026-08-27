@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { HookErrorCodeSchema, HookEventNameSchema } from './hooks.js';
 import { ToolResultContentBlockSchema, type ToolCall } from './messages.js';
+import type { ExecutionScope } from './execution-scope.js';
 
 export const MAX_AGENT_EVENT_BYTES = 2 * 1024 * 1024;
 
@@ -56,7 +57,11 @@ export type PermissionDecision =
   | { decision: 'ask'; request: ApprovalRequest };
 
 export interface PermissionGate {
-  check(call: ToolCall, context: { sessionId: string; workingDirectory: string }): Promise<PermissionDecision>;
+  check(call: ToolCall, context: {
+    sessionId: string;
+    workingDirectory: string;
+    executionScope?: ExecutionScope;
+  }): Promise<PermissionDecision>;
 }
 
 const AgentEventBaseSchema = z.discriminatedUnion('type', [

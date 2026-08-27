@@ -1,1 +1,16 @@
-{"name":"@desktop-agent/contracts","version":"0.1.0","type":"module","exports":"./src/index.ts","dependencies":{"zod":"^4.1.13"}}
+{
+  "name": "@desktop-agent/contracts",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./model": "./src/model.ts",
+    "./tools": "./src/tools.ts",
+    "./hooks": "./src/hooks.ts",
+    "./runtime": "./src/runtime.ts",
+    "./integrations": "./src/integrations.ts",
+    "./extension-api": "./src/extension-api.ts",
+    "./extensions": "./src/extensions.ts"
+  },
+  "dependencies": { "zod": "^4.1.13" }
+}

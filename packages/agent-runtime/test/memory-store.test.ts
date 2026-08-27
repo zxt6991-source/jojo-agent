@@ -1,5 +1,5 @@
 import { describe } from 'vitest';
-import { MemoryAgentRuntimeStore } from '../src/index.js';
+import { MemoryAgentRuntimeStore } from '../src/memory-store.js';
 import { runtimeStoreConformance } from './store-conformance.js';
 
 describe('MemoryAgentRuntimeStore conformance', () => {

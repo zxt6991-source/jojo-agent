@@ -2,16 +2,16 @@ import { describe, expect, it } from 'vitest';
 import type { ToolCall } from '@desktop-agent/contracts';
 import {
   advanceTool,
-  assertOperationState,
   beginModelRequest,
   createReadyState,
-  defaultAgentInterpreter,
   planToolCalls,
   prepareToolEffect,
   resolveToolPermission,
-  settleToolEffect,
-  type OperationState
-} from '../src/index.js';
+  settleToolEffect
+} from '../src/operation/reducer.js';
+import { assertOperationState } from '../src/operation/invariants.js';
+import { defaultAgentInterpreter } from '../src/operation/interpreter.js';
+import type { OperationState } from '../src/operation/state.js';
 
 function pendingModel() {
   return beginModelRequest(createReadyState('op-1'), {

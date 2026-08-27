@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { ScriptedProvider } from '@desktop-agent/agent';
-import { MemoryAgentRuntimeStore, runAgentTurn } from '@desktop-agent/agent-runtime';
+import { runAgentTurn } from '@desktop-agent/agent-runtime/compat';
+import { MemoryAgentRuntimeStore } from '@desktop-agent/agent-runtime/store';
 import { WorkflowDefinitionSchema, type PermissionGate, type ProviderConfig } from '@desktop-agent/contracts';
 import { AgentExecutionScheduler, SubAgentManager, WorkflowEngine } from '@desktop-agent/orchestration';
 import { createDesktopLeafAgentRunner } from './orchestration-runtime.js';

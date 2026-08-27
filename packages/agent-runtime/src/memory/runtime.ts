@@ -9,7 +9,7 @@ import type {
 
 export type MemoryToolEvent = {
   toolCallId: string;
-  toolName: 'memory_write' | 'memory_forget' | 'memory_restore';
+  effect: 'memory.write' | 'memory.forget' | 'memory.restore';
   scope: 'global' | 'project';
   entryId?: string;
   result: 'success' | 'failed';

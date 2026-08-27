@@ -1,6 +1,6 @@
 import path from 'node:path';
 import os from 'node:os';
-import { resumeAgentTurn, runAgentTurn } from '@desktop-agent/agent-runtime';
+import { resumeAgentTurn, runAgentTurn } from '@desktop-agent/agent-runtime/compat';
 import { BrowserRecordingRegistry, FileBrowserRecordingTrustStore } from '@desktop-agent/browser-automation';
 import {
   CandidateExtractionResultSchema,
@@ -685,6 +685,7 @@ async function startTurn(sessionId: string, text: string, images: ImageContentBl
     ];
     const commonRunOptions = {
       sessionId, workingDirectory: session.workingDirectory, model,
+      executionScope: { kind: 'workspace' as const, workingDirectory: session.workingDirectory },
       providerId,
       runtimeStore: agentRuntimeStore,
       hooks: loadedHooks.runtime,
@@ -694,7 +695,7 @@ async function startTurn(sessionId: string, text: string, images: ImageContentBl
       memoryRuntime,
       ...(projectIdentity ? {
         projectIdentity,
-        sessionMetadata: { projectIdentity: projectIdentity as unknown as import('@desktop-agent/agent-runtime').JsonValue }
+        sessionMetadata: { projectIdentity: projectIdentity as unknown as import('@desktop-agent/contracts/runtime').JsonValue }
       } : {}),
       instructions,
       getTools: (context: { contextWindowTokens: number; maxOutputTokens: number }) => {

@@ -1,6 +1,6 @@
 import { OrchestrationError } from '../errors.js';
 
-export type AgentProfileSource = 'builtin' | 'user' | 'project';
+export type AgentProfileSource = 'builtin' | 'extension' | 'user' | 'project';
 
 export type AgentProfileDefinition = {
   name: string;
@@ -48,14 +48,18 @@ function profileMap(profiles: AgentProfileRegistration[]): Map<string, AgentProf
 
 export class AgentProfileRegistry {
   private readonly builtinProfiles = new Map<string, AgentProfileDefinition>();
+  private readonly extensionProfiles = new Map<string, AgentProfileDefinition>();
   private userProfiles = new Map<string, AgentProfileDefinition>();
   private readonly projectProfiles = new Map<string, Map<string, AgentProfileDefinition>>();
+  private registryRevision = 0;
+
+  get revision(): number { return this.registryRevision; }
 
   constructor(profiles: AgentProfileRegistration[] = []) {
     for (const profile of profiles) this.register(profile);
   }
 
-  register(input: AgentProfileRegistration): void {
+  register(input: AgentProfileRegistration): { dispose(): void } {
     const profile = normalizeProfile(input);
     if (!/^[a-z][a-z0-9-]{0,63}$/u.test(profile.name)) {
       throw new OrchestrationError('invalid_profile', `Invalid agent profile name: ${profile.name}`);
@@ -63,20 +67,41 @@ export class AgentProfileRegistry {
     if (profile.source === 'project') {
       throw new OrchestrationError('invalid_profile', 'Project profiles must be installed with replaceProjectProfiles().');
     }
-    (profile.source === 'user' ? this.userProfiles : this.builtinProfiles).set(profile.name, copyProfile(profile));
+    const target = profile.source === 'user'
+      ? this.userProfiles
+      : profile.source === 'extension'
+        ? this.extensionProfiles
+        : this.builtinProfiles;
+    const stored = copyProfile(profile);
+    target.set(profile.name, stored);
+    this.registryRevision += 1;
+    let disposed = false;
+    return {
+      dispose: () => {
+        if (disposed) return;
+        disposed = true;
+        if (target.get(profile.name) === stored) {
+          target.delete(profile.name);
+          this.registryRevision += 1;
+        }
+      }
+    };
   }
 
   replaceUserProfiles(profiles: AgentProfileRegistration[]): void {
     this.userProfiles = profileMap(profiles.map((profile) => ({ ...profile, source: 'user' })));
+    this.registryRevision += 1;
   }
 
   replaceProjectProfiles(workingDirectory: string, profiles: AgentProfileRegistration[]): void {
     this.projectProfiles.set(workingDirectory, profileMap(profiles.map((profile) => ({ ...profile, source: 'project' }))));
+    this.registryRevision += 1;
   }
 
   get(name: string, workingDirectory?: string): AgentProfileDefinition {
     const profile = (workingDirectory ? this.projectProfiles.get(workingDirectory)?.get(name) : undefined)
       ?? this.userProfiles.get(name)
+      ?? this.extensionProfiles.get(name)
       ?? this.builtinProfiles.get(name);
     if (!profile) throw new OrchestrationError('invalid_profile', `Unknown agent profile: ${name}`);
     return copyProfile(profile);
@@ -84,6 +109,7 @@ export class AgentProfileRegistry {
 
   list(workingDirectory?: string): AgentProfileDefinition[] {
     const merged = new Map(this.builtinProfiles);
+    for (const [name, profile] of this.extensionProfiles) merged.set(name, profile);
     for (const [name, profile] of this.userProfiles) merged.set(name, profile);
     if (workingDirectory) {
       for (const [name, profile] of this.projectProfiles.get(workingDirectory) ?? []) merged.set(name, profile);

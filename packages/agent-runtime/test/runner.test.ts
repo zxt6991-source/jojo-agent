@@ -1,13 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { AgentEvent, Message, ModelProvider, ModelRequest, PermissionGate, Tool } from '@desktop-agent/contracts';
 import { ScriptedProvider } from '@desktop-agent/agent';
-import {
-  MemoryAgentRuntimeStore,
-  runAgentTurn,
-  type AgentRunOptions,
-  type MemoryRuntime,
-  type OperationState
-} from '../src/index.js';
+import { runAgentTurn, type RuntimeAgentRunOptions as AgentRunOptions } from '../src/harness/runner.js';
+import { MemoryAgentRuntimeStore } from '../src/memory-store.js';
+import type { MemoryRuntime } from '../src/memory/runtime.js';
+import type { OperationState } from '../src/operation/state.js';
 
 const allow: PermissionGate = { check: async () => ({ decision: 'allow' }) };
 const echoTool: Tool = {

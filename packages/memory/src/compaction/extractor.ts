@@ -1,5 +1,5 @@
 import type { MemoryHandoffItem } from '@desktop-agent/contracts';
-import type { MemoryToolEvent } from '@desktop-agent/agent-runtime';
+import type { MemoryToolEvent } from '@desktop-agent/agent-runtime/memory';
 
 function unique(items: MemoryHandoffItem[]): MemoryHandoffItem[] {
   const seen = new Set<string>();
@@ -40,12 +40,12 @@ export function extractScratchpadHandoff(content: string): {
 
 export function extractMemoryToolHandoff(events: MemoryToolEvent[]): MemoryHandoffItem[] {
   const verbs = {
-    memory_write: 'written',
-    memory_forget: 'forgotten',
-    memory_restore: 'restored'
+    'memory.write': 'written',
+    'memory.forget': 'forgotten',
+    'memory.restore': 'restored'
   } as const;
   return unique(events.filter((event) => event.result === 'success').map((event) => ({
-    text: `${event.entryId ?? event.toolCallId} ${verbs[event.toolName]} (${event.scope})`,
+    text: `${event.entryId ?? event.toolCallId} ${verbs[event.effect]} (${event.scope})`,
     source: 'memory_tool' as const,
     ...(event.entryId ? { sourceEntryId: event.entryId } : {})
   })));

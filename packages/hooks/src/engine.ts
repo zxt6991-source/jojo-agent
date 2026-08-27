@@ -229,7 +229,7 @@ export class DefaultHookRuntime implements HookRuntime {
       if (result?.decision === 'block') return result;
       if (result?.decision === 'approve') {
         approval = result;
-        canSkipApproval ||= hook.canApprove && hook.source === 'user';
+        canSkipApproval ||= hook.canApprove && hook.source !== 'project';
       }
     }
     return approval ? { ...approval, ...(canSkipApproval ? { canSkipApproval: true } : {}) } : { decision: 'neutral' };

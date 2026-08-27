@@ -13,8 +13,19 @@
     "baseUrl": ".",
     "paths": {
       "@desktop-agent/contracts": ["packages/contracts/src/index.ts"],
+      "@desktop-agent/contracts/model": ["packages/contracts/src/model.ts"],
+      "@desktop-agent/contracts/tools": ["packages/contracts/src/tools.ts"],
+      "@desktop-agent/contracts/hooks": ["packages/contracts/src/hooks.ts"],
+      "@desktop-agent/contracts/runtime": ["packages/contracts/src/runtime.ts"],
+      "@desktop-agent/contracts/integrations": ["packages/contracts/src/integrations.ts"],
+      "@desktop-agent/contracts/extension-api": ["packages/contracts/src/extension-api.ts"],
       "@desktop-agent/agent": ["packages/agent/src/index.ts"],
       "@desktop-agent/agent-runtime": ["packages/agent-runtime/src/index.ts"],
+      "@desktop-agent/agent-runtime/public": ["packages/agent-runtime/src/public/index.ts"],
+      "@desktop-agent/agent-runtime/compat": ["packages/agent-runtime/src/harness/runner.ts"],
+      "@desktop-agent/agent-runtime/memory": ["packages/agent-runtime/src/memory/runtime.ts"],
+      "@desktop-agent/agent-runtime/store": ["packages/agent-runtime/src/storage.ts"],
+      "@desktop-agent/agent-runtime/context": ["packages/agent-runtime/src/context.ts"],
       "@desktop-agent/hooks": ["packages/hooks/src/index.ts"],
       "@desktop-agent/providers": ["packages/providers/src/index.ts"],
       "@desktop-agent/tools-node": ["packages/tools-node/src/index.ts"],
@@ -23,6 +34,9 @@
       ,"@desktop-agent/extensions": ["packages/extensions/src/index.ts"]
       ,"@desktop-agent/orchestration": ["packages/orchestration/src/index.ts"]
       ,"@desktop-agent/browser-automation": ["packages/browser-automation/src/index.ts"]
+      ,"@desktop-agent/browser-automation/driver": ["packages/browser-automation/src/driver.ts"]
+      ,"@desktop-agent/browser-automation/recording": ["packages/browser-automation/src/recording.ts"]
+      ,"@desktop-agent/browser-automation/testing": ["packages/browser-automation/src/testing.ts"]
     }
   }
 }

@@ -5,8 +5,8 @@ import type { OrchestrationEvent, WorkflowRunSnapshot } from './orchestration';
 import type { ProviderSettings, SessionMeta } from './persistence';
 import { SESSION_TITLE_MAX_LENGTH } from './persistence';
 import type { WorkspaceChanges } from './workspace';
-import { ExtensionSettingsSchema } from './extensions';
-import type { ExtensionSettings, ExtensionStatus, SkillDetail, SkillOperationResult } from './extensions';
+import { ExtensionSettingsSchema } from './integrations';
+import type { ExtensionSettings, ExtensionStatus, SkillDetail, SkillOperationResult } from './integrations';
 import { ImageContentBlockSchema } from './messages';
 import type { ImageContentBlock } from './messages';
 import {

@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import type { Message, ToolCall } from './messages';
 import type { ToolDefinition } from './tools';
 
@@ -28,5 +29,19 @@ export type ModelEvent =
   | { type: 'response_failed'; code: string; message: string };
 
 export interface ModelProvider {
+  /** Optional feature declaration used for runtime routing and validation. */
+  readonly capabilities?: ProviderCapabilities;
   stream(request: ModelRequest): AsyncIterable<ModelEvent>;
 }
+
+export const ProviderCapabilitiesSchema = z.object({
+  toolCalls: z.boolean().optional(),
+  vision: z.boolean().optional(),
+  reasoning: z.boolean().optional(),
+  promptCaching: z.boolean().optional(),
+  structuredOutput: z.boolean().optional(),
+  parallelToolCalls: z.boolean().optional(),
+  maxContextTokens: z.number().int().positive().optional(),
+  maxOutputTokens: z.number().int().positive().optional()
+}).strict();
+export type ProviderCapabilities = z.infer<typeof ProviderCapabilitiesSchema>;

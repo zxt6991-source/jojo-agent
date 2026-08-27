@@ -1,6 +1,7 @@
 import type {
   AgentEvent,
   ApprovalRequest,
+  ExecutionScope,
   Message,
   ModelProvider,
   PermissionGate,
@@ -11,6 +12,8 @@ import type { AgentLoopBudgetOptions, AgentLoopSafetyPolicy } from './loop/types
 export type AgentRunOptions = {
   sessionId: string;
   workingDirectory: string;
+  /** Phase-A scope metadata. workingDirectory remains required for legacy adapters. */
+  executionScope?: ExecutionScope;
   model: string;
   history: Message[];
   userText: string;

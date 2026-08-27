@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { ToolResult } from './messages';
+import type { ExecutionScope } from './execution-scope.js';
 
 export const ToolDefinitionSchema = z.object({
   name: z.string(),
@@ -17,6 +18,8 @@ export type ToolDefinition = z.infer<typeof ToolDefinitionSchema>;
 export type ToolContext = {
   sessionId: string;
   workingDirectory: string;
+  /** Phase-A runtime scope; workingDirectory remains available for compatibility. */
+  executionScope?: ExecutionScope;
   signal: AbortSignal;
   approved: boolean;
   onProgress: (text: string) => void;
@@ -32,6 +35,9 @@ export type ToolPollingPolicy = {
   /** Optional minimum interval. Calls made sooner are rejected, never delayed. */
   minIntervalMs?: number;
 };
+
+export const ToolRiskSchema = z.enum(['read', 'write', 'external_side_effect']);
+export type ToolRisk = z.infer<typeof ToolRiskSchema>;
 
 export interface Tool {
   definition: ToolDefinition;
@@ -49,5 +55,9 @@ export interface Tool {
   repeatPolicy?: ToolRepeatPolicy;
   /** Additional bounded policy for tools explicitly marked as polling. */
   polling?: ToolPollingPolicy;
+  /** Runtime/permission metadata; never exposed as part of the model-facing definition. */
+  risk?: ToolRisk;
+  /** Semantic effects consumed by runtime capabilities, for example `memory.write`. */
+  effects?: string[];
   execute(input: unknown, context: ToolContext): Promise<ToolResult>;
 }

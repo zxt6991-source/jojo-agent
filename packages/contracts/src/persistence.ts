@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { MessageSchema } from './messages';
-import { ExtensionSettingsSchema, DEFAULT_BROWSER_SETTINGS } from './extensions';
+import { ExtensionSettingsSchema, DEFAULT_BROWSER_SETTINGS } from './integrations';
 import { DEFAULT_MEMORY_SETTINGS, MemorySettingsSchema, ProjectIdentitySchema } from './memory';
 
 export const DEFAULT_SESSION_TITLE = '新会话';

@@ -3,7 +3,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { ScriptedProvider } from '@desktop-agent/agent';
-import { projectEntriesToMessages, resumeAgentTurn } from '@desktop-agent/agent-runtime';
+import { resumeAgentTurn } from '@desktop-agent/agent-runtime/compat';
+import { projectEntriesToMessages } from '@desktop-agent/agent-runtime/context';
 import { runtimeStoreConformance } from '../../agent-runtime/test/store-conformance.js';
 import { SqliteAgentRuntimeStore } from '../src/sqlite-runtime-store.js';
 

@@ -2,7 +2,14 @@
   "name": "@desktop-agent/agent-runtime",
   "version": "0.1.0",
   "type": "module",
-  "exports": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./public": "./src/public/index.ts",
+    "./compat": "./src/harness/runner.ts",
+    "./memory": "./src/memory/runtime.ts",
+    "./store": "./src/storage.ts",
+    "./context": "./src/context.ts"
+  },
   "dependencies": {
     "@desktop-agent/agent": "workspace:*",
     "@desktop-agent/contracts": "workspace:*"

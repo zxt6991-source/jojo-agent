@@ -14,7 +14,7 @@ import {
   type SessionEntry,
   type StoredOperation,
   type UsageRecord
-} from '@desktop-agent/agent-runtime';
+} from '@desktop-agent/agent-runtime/store';
 
 const systemClock: Clock = { now: () => Date.now() };
 

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { ToolResultSchema, type ToolResult } from './messages.js';
+import { ExecutionScopeSchema, type ExecutionScope } from './execution-scope.js';
 
 export const HookEventNameSchema = z.enum([
   'SessionStart',
@@ -17,7 +18,7 @@ export type InjectingHookEvent = z.infer<typeof InjectingHookEventSchema>;
 export const SideEffectHookEventSchema = z.enum(['Stop', 'SubagentStop', 'PreCompact']);
 export type SideEffectHookEvent = z.infer<typeof SideEffectHookEventSchema>;
 export type HookTransport = 'desktop' | 'cli' | 'server' | 'im' | 'unknown';
-export type HookSource = 'builtin' | 'user' | 'project';
+export type HookSource = 'builtin' | 'user' | 'project' | 'extension';
 
 export const HookEnvelopeSchema = z.object({
   schemaVersion: z.literal(1),
@@ -34,6 +35,7 @@ export const HookEnvelopeSchema = z.object({
   }),
   workflow: z.object({ runId: z.string(), stepId: z.string().optional() }).optional(),
   workingDirectory: z.string().min(1),
+  executionScope: ExecutionScopeSchema.optional(),
   provider: z.object({ id: z.string().min(1), model: z.string().min(1) }),
   transport: z.enum(['desktop', 'cli', 'server', 'im', 'unknown'])
 });
@@ -219,6 +221,7 @@ export type HookContext = {
   operationId: string;
   lane: string;
   workingDirectory: string;
+  executionScope?: ExecutionScope;
   providerId: string;
   model: string;
   signal: AbortSignal;

@@ -121,7 +121,8 @@ async function executeKnownTool(
 ): Promise<ToolResult> {
   const decision = await options.permissionGate.check(call, {
     sessionId: options.sessionId,
-    workingDirectory: options.workingDirectory
+    workingDirectory: options.workingDirectory,
+    ...(options.executionScope ? { executionScope: options.executionScope } : {})
   });
 
   if (decision.decision === 'deny') {
@@ -148,6 +149,7 @@ async function executeApprovedTool(
     const result = await tool.execute(call.input, {
       sessionId: options.sessionId,
       workingDirectory: options.workingDirectory,
+      ...(options.executionScope ? { executionScope: options.executionScope } : {}),
       signal: options.signal,
       approved: true,
       onProgress: (text) => options.emit({ type: 'tool.progress', id: call.id, text })

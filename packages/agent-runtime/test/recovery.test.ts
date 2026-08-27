@@ -1,14 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Message, ModelProvider, ModelRequest, PermissionGate, Tool, ToolCall, ToolResult } from '@desktop-agent/contracts';
 import { fingerprintToolBatch, ScriptedProvider } from '@desktop-agent/agent';
-import {
-  MemoryAgentRuntimeStore,
-  resumeAgentTurn,
-  type OperationMeta,
-  type OperationState,
-  type ResumeAgentRunOptions,
-  type ToolsState
-} from '../src/index.js';
+import { resumeAgentTurn, type ResumeAgentRunOptions } from '../src/harness/runner.js';
+import { MemoryAgentRuntimeStore } from '../src/memory-store.js';
+import type { OperationMeta } from '../src/operation/meta.js';
+import type { OperationState, ToolsState } from '../src/operation/state.js';
 
 const time = '2026-08-20T00:00:00.000Z';
 const allow: PermissionGate = { check: async () => ({ decision: 'allow' }) };

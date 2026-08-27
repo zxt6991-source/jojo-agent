@@ -30,6 +30,9 @@ export interface Disposable { dispose(): void; }
 export class HookRegistry {
   private readonly hooks = new Map<HookEventName, unknown[]>();
   private sequence = 0;
+  private registryVersion = 0;
+
+  get version(): number { return this.registryVersion; }
 
   on<E extends HookEventName>(
     event: E,
@@ -54,10 +57,15 @@ export class HookRegistry {
     };
     const current = this.hooks.get(event) ?? [];
     this.hooks.set(event, [...current, registered]);
+    this.registryVersion += 1;
+    let disposed = false;
     return {
       dispose: () => {
+        if (disposed) return;
+        disposed = true;
         const hooks = this.hooks.get(event) ?? [];
         this.hooks.set(event, hooks.filter((hook) => hook !== registered));
+        this.registryVersion += 1;
       }
     };
   }

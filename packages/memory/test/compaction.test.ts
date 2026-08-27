@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { MemoryCompactInput } from '@desktop-agent/agent-runtime';
+import type { MemoryCompactInput } from '@desktop-agent/agent-runtime/memory';
 import { createProjectIdentity, DurableMemoryRuntime, MarkdownMemoryStore, MemoryIndex } from '../src/index.js';
 
 const directories: string[] = [];
@@ -84,7 +84,7 @@ describe('M4 compaction memory checkpoint', () => {
       currentSnapshotId: snapshot.id,
       currentSnapshotScopeVersions: snapshot.scopeVersions,
       memoryToolEvents: [{
-        toolCallId: 'call_1', toolName: 'memory_write', scope: 'project',
+        toolCallId: 'call_1', effect: 'memory.write', scope: 'project',
         entryId: 'mem_1', result: 'success'
       }]
     });

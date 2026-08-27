@@ -13,7 +13,7 @@ import {
   type SessionEntry,
   type StoredOperation,
   type UsageRecord
-} from '@desktop-agent/agent-runtime';
+} from '@desktop-agent/agent-runtime/store';
 
 export const MAX_RUNTIME_JOURNAL_BYTES = 20 * 1024 * 1024;
 

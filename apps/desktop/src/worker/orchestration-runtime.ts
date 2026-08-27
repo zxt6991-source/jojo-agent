@@ -1,5 +1,8 @@
-import { AgentError } from '@desktop-agent/agent';
-import { runAgentTurn, type AgentRuntimeStore, type MemoryRuntime } from '@desktop-agent/agent-runtime';
+import {
+  createAgentRuntime
+} from '@desktop-agent/agent-runtime';
+import { MemoryAgentRuntimeStore, type AgentRuntimeStore } from '@desktop-agent/agent-runtime/store';
+import type { MemoryRuntime } from '@desktop-agent/agent-runtime/memory';
 import type { AgentEvent, HookRuntime, Message, ModelProvider, ProviderConfig } from '@desktop-agent/contracts';
 import {
   accrueUsage,
@@ -61,6 +64,7 @@ export function createDesktopWorkflowToolRuntime(options: { trashDirectory: stri
 
 export function createDesktopLeafAgentRunner(options: DesktopLeafAgentRunnerOptions): LeafAgentRunner {
   const profileRegistry = options.profileRegistry ?? createBuiltinAgentProfileRegistry();
+  const runtimeStore = options.runtimeStore ?? new MemoryAgentRuntimeStore();
   const continuations = new Map<string, { request: LeafAgentRunRequest; history: Message[] }>();
   const execute = async (
     request: LeafAgentRunRequest,
@@ -95,32 +99,52 @@ export function createDesktopLeafAgentRunner(options: DesktopLeafAgentRunnerOpti
         signal,
         onEvent
       });
-      let result: Awaited<ReturnType<typeof runAgentTurn>>;
-      try {
-        const runtimeLane = request.runtimeLane && options.runtimeStore
-          ? {
-              runtimeStore: options.runtimeStore,
-              lane: request.runtimeLane.name,
-              ...(request.runtimeLane.parentLane ? { parentLane: request.runtimeLane.parentLane } : {})
+      const provider = options.createModelProvider
+        ? options.createModelProvider({ runtime: providerRuntime, request })
+        : createProvider(providerRuntime.config, providerRuntime.apiKey);
+      const laneId = request.runtimeLane?.name ?? `agent:${request.id}`;
+      const runtime = createAgentRuntime({
+        store: runtimeStore,
+        environment: {
+          providers: { resolve: () => provider },
+          tools: { resolve: () => tools },
+          permissions: new NonInteractivePermissionGate(toolRuntime.permissionGate),
+          ...(options.memoryRuntime ? { memory: options.memoryRuntime } : {}),
+          ...(hooks ? { hooks } : {}),
+          telemetry: {
+            diagnostic: (event) => {
+              if (event.type === 'usage') accrueUsage(usage, event);
+              onEvent(event);
             }
-          : {};
-        result = await runAgentTurn({
-          sessionId: request.sessionId,
+          }
+        }
+      });
+      try {
+        const session = await runtime.openSession({
+          id: request.sessionId,
+          executionScope: { kind: 'workspace', workingDirectory: request.workingDirectory },
+          workingDirectory: request.workingDirectory
+        });
+        const existingLane = (await session.listLanes()).some((lane) => lane.id === laneId);
+        const lane = existingLane
+          ? await session.getLane(laneId)
+          : await session.createLane({
+              id: laneId,
+              parentLaneId: request.runtimeLane?.parentLane ?? 'main'
+            });
+        const handle = await lane.run({
+          input: task,
           workingDirectory: request.workingDirectory,
           model,
           providerId: request.providerId,
           history,
-          userText: task,
-          ...runtimeLane,
           ...(request.memoryBinding ? {
             memoryBinding: request.memoryBinding,
             ...(request.memoryBinding.projectIdentity
               ? { projectIdentity: request.memoryBinding.projectIdentity }
               : {})
           } : {}),
-          ...(options.memoryRuntime ? { memoryRuntime: options.memoryRuntime } : {}),
           ...(hooks ? {
-            hooks,
             hookMeta: {
               transport: 'desktop' as const,
               agent: {
@@ -130,42 +154,38 @@ export function createDesktopLeafAgentRunner(options: DesktopLeafAgentRunnerOpti
               }
             }
           } : {}),
-          provider: options.createModelProvider
-            ? options.createModelProvider({ runtime: providerRuntime, request })
-            : createProvider(providerRuntime.config, providerRuntime.apiKey),
-          tools,
           instructions: [
             profile.systemPrompt,
             ...(request.outputSchema ? [structuredOutputInstruction(request.outputSchema)] : [])
           ],
-          permissionGate: new NonInteractivePermissionGate(toolRuntime.permissionGate),
           signal,
           maxIterations: request.maxIterations,
           allowPartialOnMaxIterations: true,
           contextWindowTokens: providerRuntime.config.contextWindowTokens,
-          maxOutputTokens: Math.min(providerRuntime.config.maxOutputTokens, 4_096),
-          emit: (event) => {
-            if (event.type === 'usage') accrueUsage(usage, event);
-            onEvent(event);
-          },
-          approve: async () => false
+          maxOutputTokens: Math.min(providerRuntime.config.maxOutputTokens, 4_096)
         });
-      } catch (error) {
-        if (error instanceof AgentError) {
-          throw new OrchestrationError(error.code === 'timeout' ? 'provider_timeout' : 'provider_error', error.message, { providerCode: error.code });
+        const result = await handle.result;
+        if (result.status === 'failed') {
+          const code = result.error?.code ?? 'provider_error';
+          throw new OrchestrationError(
+            code === 'timeout' ? 'provider_timeout' : 'provider_error',
+            result.error?.message ?? 'Agent runtime failed.',
+            { providerCode: code }
+          );
         }
-        throw error;
+        const nextContinuationId = request.continuable ? continuationId ?? `sac_${crypto.randomUUID()}` : undefined;
+        if (nextContinuationId) continuations.set(nextContinuationId, { request, history: result.messages });
+        return {
+          result: result.finalText ?? finalAssistantText(result.messages),
+          stopReason: result.stopReason ?? (result.status === 'cancelled' ? 'cancelled' : 'stop'),
+          model,
+          ...(nextContinuationId ? { continuationId: nextContinuationId } : {}),
+          usage,
+          incomplete: result.stopReason ? INCOMPLETE_STOP_REASONS.has(result.stopReason) : false
+        };
+      } finally {
+        await runtime.close();
       }
-      const nextContinuationId = request.continuable ? continuationId ?? `sac_${crypto.randomUUID()}` : undefined;
-      if (nextContinuationId) continuations.set(nextContinuationId, { request, history: result.messages });
-      return {
-        result: finalAssistantText(result.messages),
-        stopReason: result.stopReason,
-        model,
-        ...(nextContinuationId ? { continuationId: nextContinuationId } : {}),
-        usage,
-        incomplete: INCOMPLETE_STOP_REASONS.has(result.stopReason)
-      };
   };
   return {
     run: (request, signal, onEvent) => execute(request, [], request.task, signal, onEvent),

@@ -30,6 +30,8 @@ importers:
         specifier: ^4.0.15
         version: 4.1.10(@types/node@24.13.3)(@vitest/coverage-v8@4.1.10)(vite@7.3.6(@types/node@24.13.3)(jiti@2.7.0)(terser@5.49.2)(yaml@2.9.0))
 
+  apps/browser-test-site: {}
+
   apps/desktop:
     dependencies:
       '@desktop-agent/agent':
@@ -162,6 +164,15 @@ importers:
       '@desktop-agent/contracts':
         specifier: workspace:*
         version: link:../contracts
+      '@desktop-agent/hooks':
+        specifier: workspace:*
+        version: link:../hooks
+      '@desktop-agent/orchestration':
+        specifier: workspace:*
+        version: link:../orchestration
+      '@desktop-agent/providers':
+        specifier: workspace:*
+        version: link:../providers
       '@modelcontextprotocol/client':
         specifier: 2.0.0
         version: 2.0.0
