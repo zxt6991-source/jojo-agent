@@ -32,6 +32,22 @@ importers:
 
   apps/browser-test-site: {}
 
+  apps/server:
+    dependencies:
+      '@desktop-agent/agent-runtime':
+        specifier: workspace:*
+        version: link:../../packages/agent-runtime
+      '@desktop-agent/app-service':
+        specifier: workspace:*
+        version: link:../../packages/app-service
+      '@desktop-agent/runtime-composition':
+        specifier: workspace:*
+        version: link:../../packages/runtime-composition
+    devDependencies:
+      '@desktop-agent/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+
   apps/desktop:
     dependencies:
       '@desktop-agent/agent':
@@ -40,6 +56,9 @@ importers:
       '@desktop-agent/agent-runtime':
         specifier: workspace:*
         version: link:../../packages/agent-runtime
+      '@desktop-agent/runtime-composition':
+        specifier: workspace:*
+        version: link:../../packages/runtime-composition
       '@desktop-agent/browser-automation':
         specifier: workspace:*
         version: link:../../packages/browser-automation
@@ -144,6 +163,15 @@ importers:
         specifier: workspace:*
         version: link:../contracts
 
+  packages/app-service:
+    dependencies:
+      '@desktop-agent/agent-runtime':
+        specifier: workspace:*
+        version: link:../agent-runtime
+      '@desktop-agent/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+
   packages/browser-automation:
     dependencies:
       '@desktop-agent/contracts':
@@ -230,6 +258,15 @@ importers:
       zod:
         specifier: ^4.1.13
         version: 4.4.3
+
+  packages/runtime-composition:
+    dependencies:
+      '@desktop-agent/agent-runtime':
+        specifier: workspace:*
+        version: link:../agent-runtime
+      '@desktop-agent/contracts':
+        specifier: workspace:*
+        version: link:../contracts
 
   packages/storage:
     dependencies:

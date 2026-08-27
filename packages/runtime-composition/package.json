@@ -1,0 +1,12 @@
+{
+  "name": "@desktop-agent/runtime-composition",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@desktop-agent/agent-runtime": "workspace:*",
+    "@desktop-agent/contracts": "workspace:*"
+  }
+}

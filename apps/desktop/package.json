@@ -13,6 +13,7 @@
   "dependencies": {
     "@desktop-agent/agent": "workspace:*",
     "@desktop-agent/agent-runtime": "workspace:*",
+    "@desktop-agent/runtime-composition": "workspace:*",
     "@desktop-agent/browser-automation": "workspace:*",
     "@desktop-agent/contracts": "workspace:*",
     "@desktop-agent/extensions": "workspace:*",

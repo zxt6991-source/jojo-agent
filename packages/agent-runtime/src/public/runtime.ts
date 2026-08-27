@@ -3,8 +3,12 @@ import type {
   ApprovalRequest,
   HookRuntime,
   ModelProvider,
-  PermissionGate,
-  Tool
+  PermissionDecision,
+  ProjectIdentity,
+  SubAgentMemoryBinding,
+  ToolCall,
+  Tool,
+  WorkflowMemoryBinding
 } from '@desktop-agent/contracts';
 import type {
   ExecutionScope,
@@ -15,6 +19,7 @@ import type {
   RuntimeError,
   RuntimeEvent,
   RuntimeEventEnvelope,
+  RuntimeInput,
   SessionInfo,
   SessionSnapshot
 } from '@desktop-agent/contracts/runtime';
@@ -23,13 +28,13 @@ import { MemoryAgentRuntimeStore } from '../memory-store.js';
 import type { MemoryRuntime } from '../memory/runtime.js';
 import type { AgentRuntimeStore } from '../store.js';
 import { resumeAgentTurn, runAgentTurn, type RuntimeAgentRunOptions } from '../harness/runner.js';
+import { projectEntriesToMessages } from '../context/projection.js';
 import type { RuntimeEventListener } from './events.js';
 import type { RuntimeLane } from './lane.js';
 import type { RunHandle, RunRequest, TelemetrySink } from './run.js';
 import type { CreateLaneRequest, RuntimeSession } from './session.js';
 import {
   EXECUTION_SCOPE_METADATA,
-  LEGACY_WORKING_DIRECTORY_METADATA,
   scopeFromMetadata
 } from '../scope.js';
 
@@ -38,8 +43,6 @@ const eventSequencesByStore = new WeakMap<AgentRuntimeStore, Map<string, number>
 export type OpenSessionRequest = {
   id?: string;
   executionScope?: ExecutionScope;
-  /** Compatibility input used to derive a workspace scope when executionScope is omitted. */
-  workingDirectory?: string;
   metadata?: Record<string, JsonValue>;
 };
 
@@ -55,28 +58,75 @@ export type RuntimeResolutionContext = {
   executionScope: ExecutionScope;
   providerId: string;
   model: string;
+  /** Empty when executionScope.kind is not workspace. */
+  workingDirectory: string;
+  actor?: RunRequest['actor'];
+  workflow?: RunRequest['workflow'];
+};
+
+export type RuntimeHostDescriptor = {
+  kind: 'desktop' | 'server' | 'test' | 'cli' | 'unknown';
+  instanceId?: string;
 };
 
 export interface ModelProviderResolver {
   resolve(context: RuntimeResolutionContext): ModelProvider | Promise<ModelProvider>;
 }
 
+export type ToolSnapshotContext = RuntimeResolutionContext & {
+  contextWindowTokens: number;
+  maxOutputTokens: number;
+};
+
+export interface RuntimeToolSource {
+  snapshot(context: ToolSnapshotContext): Tool[];
+  dispose?(): Promise<void>;
+}
+
 export interface ToolResolver {
-  resolve(context: RuntimeResolutionContext): Tool[] | Promise<Tool[]>;
+  resolve(context: RuntimeResolutionContext): RuntimeToolSource | Promise<RuntimeToolSource>;
 }
 
 export interface ApprovalBroker {
   requestApproval(request: ApprovalRequest, context: RuntimeResolutionContext, signal: AbortSignal): Promise<boolean>;
 }
 
+export interface RuntimePermissionGate {
+  check(call: ToolCall, context: RuntimeResolutionContext): Promise<PermissionDecision>;
+}
+
+export interface RuntimeSummarizer {
+  summarize(
+    request: { sessionId: string; laneId: string; runId: string; source: string },
+    signal: AbortSignal
+  ): Promise<string>;
+}
+
+export interface RuntimeHookResolver {
+  resolve(context: RuntimeResolutionContext): HookRuntime | Promise<HookRuntime>;
+}
+
+export type RuntimeRunContext = {
+  projectIdentity?: ProjectIdentity;
+  memoryBinding?: SubAgentMemoryBinding | WorkflowMemoryBinding;
+};
+
+export interface RuntimeRunContextResolver {
+  resolve(context: RuntimeResolutionContext): RuntimeRunContext | Promise<RuntimeRunContext>;
+}
+
 export interface RuntimeEnvironment {
+  host: RuntimeHostDescriptor;
   providers: ModelProviderResolver;
   tools: ToolResolver;
-  permissions: PermissionGate;
+  permissions: RuntimePermissionGate;
   memory?: MemoryRuntime;
-  hooks?: HookRuntime;
+  hooks?: HookRuntime | RuntimeHookResolver;
+  runContext?: RuntimeRunContextResolver;
   approval?: ApprovalBroker;
+  summarizer?: RuntimeSummarizer;
   telemetry?: TelemetrySink;
+  dispose?(): Promise<void>;
 }
 
 export type AgentRuntimeOptions = {
@@ -118,16 +168,19 @@ function finalAssistantText(messages: RunResult['messages']): string | undefined
 }
 
 function runtimeError(error: unknown): RuntimeError {
-  const code = error && typeof error === 'object' && 'code' in error && typeof error.code === 'string'
+  const message = errorMessage(error);
+  const explicitCode = error && typeof error === 'object' && 'code' in error && typeof error.code === 'string'
     ? error.code
-    : 'runtime_error';
+    : undefined;
+  const boundaryCode = /^(runtime_[a-z_]+)(?::|$)/u.exec(message)?.[1];
+  const code = explicitCode ?? boundaryCode ?? 'runtime_internal';
   return { code, message: errorMessage(error) };
 }
 
 function userSessionMetadata(metadata: Record<string, JsonValue> | undefined): Record<string, JsonValue> | undefined {
   if (!metadata) return undefined;
   const visible = Object.fromEntries(Object.entries(metadata).filter(([key]) => (
-    key !== EXECUTION_SCOPE_METADATA && key !== LEGACY_WORKING_DIRECTORY_METADATA
+    key !== EXECUTION_SCOPE_METADATA
   )));
   return Object.keys(visible).length > 0 ? visible : undefined;
 }
@@ -154,19 +207,13 @@ class DefaultAgentRuntime implements AgentRuntime {
     const id = request.id ?? this.idGenerator();
     const existing = await this.store.getSession(id);
     if (!existing) {
-      const scope = request.executionScope
-        ?? (request.workingDirectory
-          ? { kind: 'workspace' as const, workingDirectory: request.workingDirectory }
-          : { kind: 'none' as const });
-      const legacyWorkingDirectory = request.workingDirectory
-        ?? (scope.kind === 'workspace' ? scope.workingDirectory : process.cwd());
+      const scope = request.executionScope ?? { kind: 'none' as const };
       await this.store.createSession({
         id,
         createdAt: this.now().getTime(),
         metadata: {
           ...(request.metadata ?? {}),
-          [EXECUTION_SCOPE_METADATA]: scope as JsonValue,
-          [LEGACY_WORKING_DIRECTORY_METADATA]: legacyWorkingDirectory
+          [EXECUTION_SCOPE_METADATA]: scope as JsonValue
         }
       });
       await this.store.saveLane({ sessionId: id, name: 'main', leafId: null, currentOperationId: null });
@@ -192,7 +239,7 @@ class DefaultAgentRuntime implements AgentRuntime {
         input: '',
         providerId: operation.meta.providerId,
         model: operation.meta.model,
-        maxIterations: operation.meta.maxIterations,
+        budget: { maxIterations: operation.meta.maxIterations },
         ...(request.signal ? { signal: request.signal } : {})
       },
       request.operationId,
@@ -212,6 +259,7 @@ class DefaultAgentRuntime implements AgentRuntime {
     const active = [...this.activeRuns.values()];
     for (const run of active) run.controller.abort('runtime_closed');
     await Promise.allSettled(active.map((run) => run.handle.result));
+    await this.options.environment.dispose?.();
     this.listeners.clear();
   }
 
@@ -285,25 +333,24 @@ class DefaultAgentRuntime implements AgentRuntime {
     const session = await this.store.getSession(sessionId);
     if (!session) throw new Error(`runtime_session_not_found: ${sessionId}`);
     const persistedScope = scopeFromMetadata(session.metadata);
-    const executionScope = persistedScope.kind === 'none' && request.workingDirectory
-      ? { kind: 'workspace' as const, workingDirectory: request.workingDirectory }
-      : persistedScope;
-    const workingDirectory = request.workingDirectory
-      ?? (executionScope.kind === 'workspace' ? executionScope.workingDirectory : undefined)
-      ?? (typeof session.metadata?.[LEGACY_WORKING_DIRECTORY_METADATA] === 'string'
-        ? session.metadata[LEGACY_WORKING_DIRECTORY_METADATA] as string
-        : process.cwd());
+    const executionScope = persistedScope;
+    const workingDirectory = executionScope.kind === 'workspace' ? executionScope.workingDirectory : '';
     const context: RuntimeResolutionContext = {
       sessionId,
       laneId,
       runId,
       executionScope,
       providerId: request.providerId,
-      model: request.model
+      model: request.model,
+      workingDirectory,
+      ...(request.actor ? { actor: request.actor } : {}),
+      ...(request.workflow ? { workflow: request.workflow } : {})
     };
-    const [provider, tools] = await Promise.all([
+    const [provider, toolSource, hooks, runContext] = await Promise.all([
       this.options.environment.providers.resolve(context),
-      this.options.environment.tools.resolve(context)
+      this.options.environment.tools.resolve(context),
+      resolveHooks(this.options.environment.hooks, context),
+      this.options.environment.runContext?.resolve(context)
     ]);
     const controller = new AbortController();
     let cancelReason: string | undefined;
@@ -322,33 +369,58 @@ class DefaultAgentRuntime implements AgentRuntime {
     this.activeRuns.set(runId, { controller, handle });
     if (resuming) this.publish(sessionId, laneId, runId, { type: 'run.resumed' });
 
+    const input = normalizeInput(request.input);
+    const history = projectEntriesToMessages(await this.store.readPath(lane.leafId));
+    const budget = request.budget;
+    const contextWindowTokens = budget?.contextWindowTokens;
+    const maxOutputTokens = budget?.maxOutputTokens;
     const runnerOptions: RuntimeAgentRunOptions = {
       sessionId,
       workingDirectory,
       executionScope,
       model: request.model,
       providerId: request.providerId,
-      history: request.history ?? [],
-      userText: request.input,
+      history,
+      userText: input.text,
+      ...(input.images.length ? { userImages: input.images } : {}),
       provider,
-      tools,
-      permissionGate: this.options.environment.permissions,
+      tools: [],
+      getTools: ({ contextWindowTokens: resolvedContextWindow, maxOutputTokens: resolvedMaxOutput }) => toolSource.snapshot({
+        ...context,
+        contextWindowTokens: resolvedContextWindow,
+        maxOutputTokens: resolvedMaxOutput
+      }),
+      permissionGate: {
+        check: (call) => this.options.environment.permissions.check(call, context)
+      },
       signal: controller.signal,
       runtimeStore: this.store,
       operationId: runId,
       lane: laneId,
       ...(request.instructions ? { instructions: request.instructions } : {}),
-      ...(request.maxIterations !== undefined ? { maxIterations: request.maxIterations } : {}),
-      ...(request.allowPartialOnMaxIterations !== undefined
-        ? { allowPartialOnMaxIterations: request.allowPartialOnMaxIterations }
+      ...(budget?.maxIterations !== undefined ? { maxIterations: budget.maxIterations } : {}),
+      ...(budget?.allowPartialOnLimit !== undefined
+        ? { allowPartialOnMaxIterations: budget.allowPartialOnLimit }
         : {}),
-      ...(request.contextWindowTokens !== undefined ? { contextWindowTokens: request.contextWindowTokens } : {}),
-      ...(request.maxOutputTokens !== undefined ? { maxOutputTokens: request.maxOutputTokens } : {}),
-      ...(request.projectIdentity ? { projectIdentity: request.projectIdentity } : {}),
-      ...(request.memoryBinding ? { memoryBinding: request.memoryBinding } : {}),
-      ...(request.hookMeta ? { hookMeta: request.hookMeta } : {}),
+      ...(contextWindowTokens !== undefined ? { contextWindowTokens } : {}),
+      ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
+      ...(runContext?.projectIdentity ? { projectIdentity: runContext.projectIdentity } : {}),
+      ...(runContext?.memoryBinding ? { memoryBinding: runContext.memoryBinding } : {}),
+      hookMeta: {
+        transport: hostTransport(this.options.environment.host.kind),
+        agent: request.actor ?? { kind: 'main' },
+        ...(request.workflow ? { workflow: {
+          runId: request.workflow.runId ?? request.workflow.id,
+          ...(request.workflow.stepId ? { stepId: request.workflow.stepId } : {})
+        } } : {})
+      },
       ...(this.options.environment.memory ? { memoryRuntime: this.options.environment.memory } : {}),
-      ...(this.options.environment.hooks ? { hooks: this.options.environment.hooks } : {}),
+      ...(hooks ? { hooks } : {}),
+      ...(this.options.environment.summarizer ? {
+        summarize: (source, signal) => this.options.environment.summarizer!.summarize({
+          sessionId, laneId, runId, source
+        }, signal)
+      } : {}),
       emit: (event) => this.onAgentEvent(sessionId, laneId, runId, event, resuming, () => cancelReason),
       approve: (approvalRequest, signal) => this.options.environment.approval
         ? this.options.environment.approval.requestApproval(approvalRequest, context, signal)
@@ -383,6 +455,8 @@ class DefaultAgentRuntime implements AgentRuntime {
       } finally {
         request.signal?.removeEventListener('abort', abortFromRequest);
         this.activeRuns.delete(runId);
+        try { await toolSource.dispose?.(); }
+        catch { /* Capability cleanup never replaces the Run result. */ }
       }
     })();
     Object.defineProperty(handle, 'result', { value: result, enumerable: true });
@@ -403,7 +477,7 @@ class DefaultAgentRuntime implements AgentRuntime {
     resuming: boolean,
     cancelReason: () => string | undefined
   ): void {
-    try { this.options.environment.telemetry?.diagnostic(event); }
+    try { this.options.environment.telemetry?.diagnostic(event, { sessionId, laneId, runId }); }
     catch { /* Observers never change runtime behavior. */ }
     let projected: RuntimeEvent[] = [];
     switch (event.type) {
@@ -425,6 +499,18 @@ class DefaultAgentRuntime implements AgentRuntime {
           ok: event.result.ok,
           ...(event.result.code ? { code: event.result.code } : {})
         }];
+        break;
+      case 'tool.progress':
+        projected = [{ type: 'tool.progress', toolCallId: event.id, text: event.text }];
+        break;
+      case 'context.updated':
+        if (event.compactedMessages > 0) {
+          projected = [{
+            type: 'context.compacted',
+            compactedMessages: event.compactedMessages,
+            reclaimedToolCharacters: event.reclaimedToolCharacters
+          }];
+        }
         break;
       case 'turn.completed': projected = [{ type: 'run.completed', stopReason: event.stopReason }]; break;
       case 'turn.cancelled': {
@@ -512,4 +598,27 @@ class DefaultRuntimeLane implements RuntimeLane {
 
 export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
   return new DefaultAgentRuntime(options);
+}
+
+function normalizeInput(input: RuntimeInput | string): {
+  text: string;
+  images: Extract<RuntimeInput['content'][number], { type: 'image' }>[];
+} {
+  if (typeof input === 'string') return { text: input, images: [] };
+  return {
+    text: input.content.flatMap((block) => block.type === 'text' ? [block.text] : []).join(''),
+    images: input.content.filter((block): block is Extract<typeof block, { type: 'image' }> => block.type === 'image')
+  };
+}
+
+function resolveHooks(
+  hooks: RuntimeEnvironment['hooks'],
+  context: RuntimeResolutionContext
+): HookRuntime | Promise<HookRuntime | undefined> | undefined {
+  if (!hooks) return undefined;
+  return 'resolve' in hooks ? hooks.resolve(context) : hooks;
+}
+
+function hostTransport(kind: RuntimeHostDescriptor['kind']): 'desktop' | 'server' | 'cli' | 'unknown' {
+  return kind === 'desktop' || kind === 'server' || kind === 'cli' ? kind : 'unknown';
 }

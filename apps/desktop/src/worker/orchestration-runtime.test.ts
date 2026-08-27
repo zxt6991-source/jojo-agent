@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { ScriptedProvider } from '@desktop-agent/agent';
-import { runAgentTurn } from '@desktop-agent/agent-runtime/compat';
-import { MemoryAgentRuntimeStore } from '@desktop-agent/agent-runtime/store';
+import { createAgentRuntime } from '@desktop-agent/agent-runtime';
+import { MemoryAgentRuntimeStore } from '@desktop-agent/agent-runtime/spi';
 import { WorkflowDefinitionSchema, type PermissionGate, type ProviderConfig } from '@desktop-agent/contracts';
 import { AgentExecutionScheduler, SubAgentManager, WorkflowEngine } from '@desktop-agent/orchestration';
 import { createDesktopLeafAgentRunner } from './orchestration-runtime.js';
@@ -21,24 +21,28 @@ const providerConfig: ProviderConfig = {
 const allow: PermissionGate = { check: async () => ({ decision: 'allow' }) };
 
 async function seedMainLane(runtimeStore: MemoryAgentRuntimeStore, sessionId = 'session-1'): Promise<void> {
-  await runAgentTurn({
-    sessionId,
-    workingDirectory: process.cwd(),
-    model: 'test-model',
-    providerId: 'test-provider',
-    history: [],
-    userText: 'main task',
-    provider: new ScriptedProvider([[
+  const runtime = createAgentRuntime({
+    store: runtimeStore,
+    environment: {
+      host: { kind: 'test' },
+      providers: { resolve: () => new ScriptedProvider([[
       { type: 'text_delta', text: 'main answer' },
       { type: 'response_completed', stopReason: 'stop' }
-    ]]),
-    tools: [],
-    permissionGate: allow,
-    signal: new AbortController().signal,
-    emit: () => undefined,
-    approve: async () => true,
-    runtimeStore
+      ]]) },
+      tools: { resolve: () => ({ snapshot: () => [] }) },
+      permissions: allow
+    }
   });
+  const session = await runtime.openSession({
+    id: sessionId,
+    executionScope: { kind: 'workspace', workingDirectory: process.cwd() }
+  });
+  await (await (await session.getLane()).run({
+    input: 'main task',
+    model: 'test-model',
+    providerId: 'test-provider'
+  })).result;
+  await runtime.close();
 }
 
 describe('desktop leaf agent runtime', () => {

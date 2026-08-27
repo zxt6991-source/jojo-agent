@@ -1,5 +1,5 @@
 import type { MemoryHandoffItem } from '@desktop-agent/contracts';
-import type { MemoryToolEvent } from '@desktop-agent/agent-runtime/memory';
+import type { MemoryToolEvent } from '@desktop-agent/agent-runtime';
 
 function unique(items: MemoryHandoffItem[]): MemoryHandoffItem[] {
   const seen = new Set<string>();

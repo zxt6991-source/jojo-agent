@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { ScriptedProvider } from '@desktop-agent/agent';
-import type { PermissionGate } from '@desktop-agent/contracts';
+import type { Message, ModelProvider, ModelRequest, PermissionGate, Tool } from '@desktop-agent/contracts';
 import { RuntimeEventEnvelopeSchema } from '@desktop-agent/contracts/runtime';
 import { createAgentRuntime } from '../src/index.js';
 import { MemoryAgentRuntimeStore } from '../src/memory-store.js';
@@ -24,8 +24,9 @@ describe('public runtime facade', () => {
     const runtime = createAgentRuntime({
       idGenerator: () => `id-${++nextId}`,
       environment: {
+        host: { kind: 'test' },
         providers: { resolve: () => provider },
-        tools: { resolve: () => [] },
+        tools: { resolve: () => ({ snapshot: () => [] }) },
         permissions: allow
       }
     });
@@ -64,12 +65,16 @@ describe('public runtime facade', () => {
     ]);
     const runtime = createAgentRuntime({
       environment: {
+        host: { kind: 'test' },
         providers: { resolve: () => provider },
-        tools: { resolve: () => [] },
+        tools: { resolve: () => ({ snapshot: () => [] }) },
         permissions: allow
       }
     });
-    const session = await runtime.openSession({ id: 'session-2', workingDirectory: '/workspace' });
+    const session = await runtime.openSession({
+      id: 'session-2',
+      executionScope: { kind: 'workspace', workingDirectory: '/workspace' }
+    });
     const main = await session.getLane();
     await (await main.run({ input: 'main task', providerId: 'provider', model: 'model' })).result;
     const mainLeaf = (await main.getSnapshot()).leafEntryId;
@@ -91,12 +96,16 @@ describe('public runtime facade', () => {
     const runtime = createAgentRuntime({
       store,
       environment: {
+        host: { kind: 'test' },
         providers: { resolve: () => provider },
-        tools: { resolve: () => [] },
+        tools: { resolve: () => ({ snapshot: () => [] }) },
         permissions: allow
       }
     });
-    await runtime.openSession({ id: 'session-recovery', workingDirectory: '/workspace' });
+    await runtime.openSession({
+      id: 'session-recovery',
+      executionScope: { kind: 'workspace', workingDirectory: '/workspace' }
+    });
     await store.startOperation({
       id: 'operation-recovery',
       sessionId: 'session-recovery',
@@ -131,6 +140,122 @@ describe('public runtime facade', () => {
 
     expect(result).toMatchObject({ status: 'completed', finalText: 'recovered' });
     expect(eventTypes).toEqual(['run.resumed', 'assistant.delta', 'run.completed']);
+    await runtime.close();
+  });
+
+  it('accepts multimodal input, refreshes dynamic tools, publishes progress, and disposes the source', async () => {
+    const requests: ModelRequest[] = [];
+    let activated = false;
+    let disposed = false;
+    const manifest: Tool = {
+      definition: { name: 'manifest', description: 'activate', inputSchema: { type: 'object' } },
+      execute: async (_input, context) => {
+        context.onProgress('discovering');
+        activated = true;
+        return { callId: '', ok: true, content: 'activated' };
+      }
+    };
+    const dynamic: Tool = {
+      definition: { name: 'dynamic', description: 'dynamic', inputSchema: { type: 'object' } },
+      execute: async () => ({ callId: '', ok: true, content: 'dynamic result' })
+    };
+    let step = 0;
+    const provider: ModelProvider = {
+      async *stream(request) {
+        requests.push(request);
+        if (step++ === 0) {
+          yield { type: 'tool_call_completed', call: { id: 'manifest-1', name: 'manifest', input: {} } };
+          yield { type: 'response_completed', stopReason: 'tool_calls' };
+        } else {
+          yield { type: 'text_delta', text: 'done' };
+          yield { type: 'response_completed', stopReason: 'stop' };
+        }
+      }
+    };
+    const eventTypes: string[] = [];
+    const runtime = createAgentRuntime({
+      environment: {
+        host: { kind: 'test' },
+        providers: { resolve: () => provider },
+        tools: {
+          resolve: () => ({
+            snapshot: () => activated ? [manifest, dynamic] : [manifest],
+            dispose: async () => { disposed = true; }
+          })
+        },
+        permissions: allow
+      }
+    });
+    runtime.subscribe((event) => eventTypes.push(event.event.type));
+    const session = await runtime.openSession({ id: 'multimodal', executionScope: { kind: 'none' } });
+    const result = await (await (await session.getLane()).run({
+      input: {
+        content: [
+          { type: 'text', text: 'inspect' },
+          { type: 'image', data: 'aGVsbG8=', mimeType: 'image/png', name: 'sample.png' }
+        ]
+      },
+      providerId: 'test',
+      model: 'scripted'
+    })).result;
+
+    expect(result.status).toBe('completed');
+    expect(requests[0]?.messages.at(-1)?.content).toMatchObject([
+      { type: 'text', text: 'inspect' },
+      { type: 'image', mimeType: 'image/png', name: 'sample.png' }
+    ]);
+    expect(requests[0]?.tools.map((tool) => tool.name)).toEqual(['manifest']);
+    expect(requests[1]?.tools.map((tool) => tool.name)).toEqual(['manifest', 'dynamic']);
+    expect(eventTypes).toContain('tool.progress');
+    expect(disposed).toBe(true);
+    expect((await session.getSnapshot()).session.executionScope).toEqual({ kind: 'none' });
+    await runtime.close();
+  });
+
+  it('uses the environment summarizer and emits stable compaction events', async () => {
+    const store = new MemoryAgentRuntimeStore();
+    const summarize = vi.fn(async (_source: string) => 'stable compacted summary');
+    const runtime = createAgentRuntime({
+      store,
+      environment: {
+        host: { kind: 'test' },
+        providers: { resolve: () => new ScriptedProvider([[
+          { type: 'text_delta', text: 'answer after compaction' },
+          { type: 'response_completed', stopReason: 'stop' }
+        ]]) },
+        tools: { resolve: () => ({ snapshot: () => [] }) },
+        permissions: allow,
+        summarizer: { summarize: ({ source }) => summarize(source) }
+      }
+    });
+    const session = await runtime.openSession({ id: 'compaction', executionScope: { kind: 'none' } });
+    const old: Message = {
+      id: 'old-message',
+      role: 'user',
+      createdAt: '2026-08-20T00:00:00.000Z',
+      content: [{ type: 'text', text: 'old durable requirement '.repeat(2_000) }]
+    };
+    await store.appendEntry({
+      id: old.id,
+      sessionId: session.id,
+      parentId: null,
+      type: 'message',
+      message: old
+    });
+    await store.saveLane({ sessionId: session.id, name: 'main', leafId: old.id, currentOperationId: null });
+    const events: string[] = [];
+    runtime.subscribe((event) => events.push(event.event.type));
+
+    const result = await (await (await session.getLane()).run({
+      input: 'current requirement',
+      providerId: 'test',
+      model: 'scripted',
+      budget: { contextWindowTokens: 2_048, maxOutputTokens: 256 }
+    })).result;
+
+    expect(result.status).toBe('completed');
+    expect(summarize).toHaveBeenCalledOnce();
+    expect(events).toContain('context.compacted');
     await runtime.close();
   });
 });

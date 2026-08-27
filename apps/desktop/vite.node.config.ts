@@ -12,10 +12,14 @@ export function isElectronNodeExternal(id: string): boolean {
 export const electronNodeConfig: UserConfig = {
   resolve: {
     alias: {
+      '@desktop-agent/agent-runtime/spi': fileURLToPath(new URL('../../packages/agent-runtime/src/spi/index.ts', import.meta.url)),
+      '@desktop-agent/agent-runtime': fileURLToPath(new URL('../../packages/agent-runtime/src/index.ts', import.meta.url)),
       '@desktop-agent/browser-automation': fileURLToPath(new URL('../../packages/browser-automation/src/index.ts', import.meta.url)),
+      '@desktop-agent/contracts/runtime': fileURLToPath(new URL('../../packages/contracts/src/runtime.ts', import.meta.url)),
       '@desktop-agent/contracts': fileURLToPath(new URL('../../packages/contracts/src/index.ts', import.meta.url)),
       '@desktop-agent/hooks': fileURLToPath(new URL('../../packages/hooks/src/index.ts', import.meta.url)),
       '@desktop-agent/memory': fileURLToPath(new URL('../../packages/memory/src/index.ts', import.meta.url))
+      ,'@desktop-agent/runtime-composition': fileURLToPath(new URL('../../packages/runtime-composition/src/index.ts', import.meta.url))
     }
   },
   build: {

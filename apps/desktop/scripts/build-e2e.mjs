@@ -8,10 +8,14 @@ const desktopRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 const repositoryRoot = path.resolve(desktopRoot, '../..');
 const buildDirectory = path.join(desktopRoot, '.vite', 'build');
 const aliases = {
+  '@desktop-agent/agent-runtime/spi': path.join(repositoryRoot, 'packages/agent-runtime/src/spi/index.ts'),
+  '@desktop-agent/agent-runtime': path.join(repositoryRoot, 'packages/agent-runtime/src/index.ts'),
   '@desktop-agent/browser-automation': path.join(repositoryRoot, 'packages/browser-automation/src/index.ts'),
+  '@desktop-agent/contracts/runtime': path.join(repositoryRoot, 'packages/contracts/src/runtime.ts'),
   '@desktop-agent/contracts': path.join(repositoryRoot, 'packages/contracts/src/index.ts'),
   '@desktop-agent/hooks': path.join(repositoryRoot, 'packages/hooks/src/index.ts'),
-  '@desktop-agent/memory': path.join(repositoryRoot, 'packages/memory/src/index.ts')
+  '@desktop-agent/memory': path.join(repositoryRoot, 'packages/memory/src/index.ts'),
+  '@desktop-agent/runtime-composition': path.join(repositoryRoot, 'packages/runtime-composition/src/index.ts')
 };
 const external = ['electron', /^node:/u, ...builtinModules];
 const define = {

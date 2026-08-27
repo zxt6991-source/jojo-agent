@@ -3,8 +3,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { ScriptedProvider } from '@desktop-agent/agent';
-import { resumeAgentTurn } from '@desktop-agent/agent-runtime/compat';
-import { projectEntriesToMessages } from '@desktop-agent/agent-runtime/context';
+import { createAgentRuntime } from '@desktop-agent/agent-runtime';
+import { projectEntriesToMessages } from '@desktop-agent/agent-runtime/spi';
 import { runtimeStoreConformance } from '../../agent-runtime/test/store-conformance.js';
 import { SqliteAgentRuntimeStore } from '../src/sqlite-runtime-store.js';
 
@@ -119,32 +119,28 @@ describe('SqliteAgentRuntimeStore durability', () => {
     store.close();
 
     const reopened = new SqliteAgentRuntimeStore(filename);
-    const result = await resumeAgentTurn({
-      runtimeStore: reopened,
-      operationId: 'operation-1',
-      sessionId: 'session-1',
-      workingDirectory: process.cwd(),
-      providerId: 'provider',
-      model: 'model',
-      history: [root.message],
-      provider: new ScriptedProvider([[
-        { type: 'text_delta', text: 'recovered answer' },
-        { type: 'response_completed', stopReason: 'stop' }
-      ]]),
-      tools: [],
-      permissionGate: { check: async () => ({ decision: 'allow' }) },
-      signal: new AbortController().signal,
-      emit: () => undefined,
-      approve: async () => true
+    const runtime = createAgentRuntime({
+      store: reopened,
+      environment: {
+        host: { kind: 'test' },
+        providers: { resolve: () => new ScriptedProvider([[
+          { type: 'text_delta', text: 'recovered answer' },
+          { type: 'response_completed', stopReason: 'stop' }
+        ]]) },
+        tools: { resolve: () => ({ snapshot: () => [] }) },
+        permissions: { check: async () => ({ decision: 'allow' }) }
+      }
     });
+    const result = await (await runtime.resumeOperation({ operationId: 'operation-1' })).result;
 
-    expect(result.stopReason).toBe('stop');
+    expect(result).toMatchObject({ status: 'completed', stopReason: 'stop' });
     expect(await reopened.loadOperation('operation-1')).toMatchObject({ state: { phase: 'completed' } });
     const lane = await reopened.getLane('session-1', 'main');
     expect(lane?.currentOperationId).toBeNull();
     expect((await reopened.readPath(lane?.leafId ?? null)).at(-1)).toMatchObject({
       type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: 'recovered answer' }] }
     });
+    await runtime.close();
     reopened.close();
   });
 });

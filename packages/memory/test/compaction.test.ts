@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { MemoryCompactInput } from '@desktop-agent/agent-runtime/memory';
+import type { MemoryCompactInput } from '@desktop-agent/agent-runtime';
 import { createProjectIdentity, DurableMemoryRuntime, MarkdownMemoryStore, MemoryIndex } from '../src/index.js';
 
 const directories: string[] = [];

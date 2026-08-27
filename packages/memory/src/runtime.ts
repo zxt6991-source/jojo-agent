@@ -11,7 +11,7 @@ import type {
   MemoryCompactResult,
   MemoryRuntime,
   MemoryTurnSettledInput
-} from '@desktop-agent/agent-runtime/memory';
+} from '@desktop-agent/agent-runtime';
 import { matchTriggeredRules } from './recall/trigger-matcher.js';
 import { buildMemorySnapshot } from './snapshot/builder.js';
 import type { MarkdownMemoryStore } from './store/markdown-store.js';

@@ -1,9 +1,12 @@
+import type { AgentRuntime } from '@desktop-agent/agent-runtime';
+import { MemoryAgentRuntimeStore, type AgentRuntimeStore } from '@desktop-agent/agent-runtime/spi';
+import type { MemoryRuntime } from '@desktop-agent/agent-runtime';
 import {
-  createAgentRuntime
-} from '@desktop-agent/agent-runtime';
-import { MemoryAgentRuntimeStore, type AgentRuntimeStore } from '@desktop-agent/agent-runtime/store';
-import type { MemoryRuntime } from '@desktop-agent/agent-runtime/memory';
-import type { AgentEvent, HookRuntime, Message, ModelProvider, ProviderConfig } from '@desktop-agent/contracts';
+  createJojoRuntime,
+  RuntimeEnvironmentRegistry,
+  type SharedRuntimeService
+} from '@desktop-agent/runtime-composition';
+import type { AgentEvent, HookRuntime, Message, ModelProvider, PermissionGate, ProviderConfig } from '@desktop-agent/contracts';
 import {
   accrueUsage,
   type AgentProfileRegistry,
@@ -31,6 +34,7 @@ export type DesktopLeafAgentRunnerOptions = {
   profileRegistry?: AgentProfileRegistry;
   runtimeStore?: AgentRuntimeStore;
   memoryRuntime?: MemoryRuntime;
+  runtimeService?: SharedRuntimeService;
   createModelProvider?: (input: { runtime: ProviderRuntime; request: LeafAgentRunRequest }) => ModelProvider;
   resolveHooks?: (input: {
     sessionId: string;
@@ -65,10 +69,21 @@ export function createDesktopWorkflowToolRuntime(options: { trashDirectory: stri
 export function createDesktopLeafAgentRunner(options: DesktopLeafAgentRunnerOptions): LeafAgentRunner {
   const profileRegistry = options.profileRegistry ?? createBuiltinAgentProfileRegistry();
   const runtimeStore = options.runtimeStore ?? new MemoryAgentRuntimeStore();
-  const continuations = new Map<string, { request: LeafAgentRunRequest; history: Message[] }>();
+  const environments = options.runtimeService?.environments ?? new RuntimeEnvironmentRegistry();
+  const sharedRuntime: AgentRuntime | Promise<AgentRuntime> = options.runtimeService?.runtime ?? createJojoRuntime({
+    host: { kind: 'desktop' },
+    store: runtimeStore,
+    providers: environments.providers,
+    tools: environments.tools,
+    permissions: environments.permissions,
+    hooks: environments.hooks,
+    runContext: environments.runContext,
+    telemetry: environments.telemetry,
+    ...(options.memoryRuntime ? { memory: options.memoryRuntime } : {})
+  });
+  const continuations = new Map<string, { request: LeafAgentRunRequest }>();
   const execute = async (
     request: LeafAgentRunRequest,
-    history: Message[],
     task: string,
     signal: AbortSignal,
     onEvent: Parameters<LeafAgentRunner['run']>[2],
@@ -91,7 +106,17 @@ export function createDesktopLeafAgentRunner(options: DesktopLeafAgentRunnerOpti
         }
       );
       const allowedTools = new Set(policy.allowedTools);
-      const tools = toolRuntime.tools.filter((tool) => allowedTools.has(tool.definition.name));
+      const executionScope = { kind: 'workspace' as const, workingDirectory: request.workingDirectory };
+      const tools = toolRuntime.tools
+        .filter((tool) => allowedTools.has(tool.definition.name))
+        .map((tool) => ({
+          ...tool,
+          execute: (input: unknown, context: Parameters<typeof tool.execute>[1]) => tool.execute(input, {
+            ...context,
+            workingDirectory: request.workingDirectory,
+            executionScope
+          })
+        }));
       const usage = emptyUsage();
       const hooks = request.hooks ?? await options.resolveHooks?.({
         sessionId: request.sessionId,
@@ -103,27 +128,44 @@ export function createDesktopLeafAgentRunner(options: DesktopLeafAgentRunnerOpti
         ? options.createModelProvider({ runtime: providerRuntime, request })
         : createProvider(providerRuntime.config, providerRuntime.apiKey);
       const laneId = request.runtimeLane?.name ?? `agent:${request.id}`;
-      const runtime = createAgentRuntime({
-        store: runtimeStore,
-        environment: {
-          providers: { resolve: () => provider },
-          tools: { resolve: () => tools },
-          permissions: new NonInteractivePermissionGate(toolRuntime.permissionGate),
-          ...(options.memoryRuntime ? { memory: options.memoryRuntime } : {}),
-          ...(hooks ? { hooks } : {}),
-          telemetry: {
-            diagnostic: (event) => {
-              if (event.type === 'usage') accrueUsage(usage, event);
-              onEvent(event);
-            }
+      const basePermissionGate: PermissionGate = toolRuntime.permissionGate;
+      const scopedPermissionGate: PermissionGate = {
+        check: (call, context) => basePermissionGate.check(call, {
+          ...context,
+          executionScope
+        })
+      };
+      const permissionGate = new NonInteractivePermissionGate(scopedPermissionGate);
+      const binding = environments.bind(request.sessionId, laneId, {
+        provider,
+        tools: { snapshot: () => tools },
+        permissions: {
+          check: (call, context) => permissionGate.check(call, {
+            ...context,
+            workingDirectory: request.workingDirectory
+          })
+        },
+        ...(hooks ? { hooks } : {}),
+        ...(request.memoryBinding ? {
+          runContext: {
+            ...(request.memoryBinding?.projectIdentity
+              ? { projectIdentity: request.memoryBinding.projectIdentity }
+              : {}),
+            ...(request.memoryBinding ? { memoryBinding: request.memoryBinding } : {})
+          }
+        } : {}),
+        telemetry: {
+          diagnostic: (event) => {
+            if (event.type === 'usage') accrueUsage(usage, event);
+            onEvent(event);
           }
         }
       });
       try {
+        const runtime = await sharedRuntime;
         const session = await runtime.openSession({
           id: request.sessionId,
-          executionScope: { kind: 'workspace', workingDirectory: request.workingDirectory },
-          workingDirectory: request.workingDirectory
+          executionScope
         });
         const existingLane = (await session.listLanes()).some((lane) => lane.id === laneId);
         const lane = existingLane
@@ -132,26 +174,22 @@ export function createDesktopLeafAgentRunner(options: DesktopLeafAgentRunnerOpti
               id: laneId,
               parentLaneId: request.runtimeLane?.parentLane ?? 'main'
             });
+        const workflowLane = request.runtimeLane?.name.startsWith('workflow:')
+          ? request.runtimeLane.name.split(':')
+          : undefined;
         const handle = await lane.run({
           input: task,
-          workingDirectory: request.workingDirectory,
           model,
           providerId: request.providerId,
-          history,
-          ...(request.memoryBinding ? {
-            memoryBinding: request.memoryBinding,
-            ...(request.memoryBinding.projectIdentity
-              ? { projectIdentity: request.memoryBinding.projectIdentity }
-              : {})
-          } : {}),
-          ...(hooks ? {
-            hookMeta: {
-              transport: 'desktop' as const,
-              agent: {
-                kind: request.runtimeLane?.name.startsWith('workflow:') ? 'workflow' as const : 'subagent' as const,
-                id: request.id,
-                profile: request.profile
-              }
+          actor: {
+            kind: workflowLane ? 'workflow' : 'subagent',
+            id: request.id,
+            profile: request.profile
+          },
+          ...(workflowLane ? {
+            workflow: {
+              id: workflowLane[1] ?? request.id,
+              ...(workflowLane[2] ? { stepId: workflowLane[2] } : {})
             }
           } : {}),
           instructions: [
@@ -159,10 +197,12 @@ export function createDesktopLeafAgentRunner(options: DesktopLeafAgentRunnerOpti
             ...(request.outputSchema ? [structuredOutputInstruction(request.outputSchema)] : [])
           ],
           signal,
-          maxIterations: request.maxIterations,
-          allowPartialOnMaxIterations: true,
-          contextWindowTokens: providerRuntime.config.contextWindowTokens,
-          maxOutputTokens: Math.min(providerRuntime.config.maxOutputTokens, 4_096)
+          budget: {
+            ...(request.maxIterations !== undefined ? { maxIterations: request.maxIterations } : {}),
+            allowPartialOnLimit: true,
+            contextWindowTokens: providerRuntime.config.contextWindowTokens,
+            maxOutputTokens: Math.min(providerRuntime.config.maxOutputTokens, 4_096)
+          }
         });
         const result = await handle.result;
         if (result.status === 'failed') {
@@ -174,7 +214,7 @@ export function createDesktopLeafAgentRunner(options: DesktopLeafAgentRunnerOpti
           );
         }
         const nextContinuationId = request.continuable ? continuationId ?? `sac_${crypto.randomUUID()}` : undefined;
-        if (nextContinuationId) continuations.set(nextContinuationId, { request, history: result.messages });
+        if (nextContinuationId) continuations.set(nextContinuationId, { request });
         return {
           result: result.finalText ?? finalAssistantText(result.messages),
           stopReason: result.stopReason ?? (result.status === 'cancelled' ? 'cancelled' : 'stop'),
@@ -184,15 +224,15 @@ export function createDesktopLeafAgentRunner(options: DesktopLeafAgentRunnerOpti
           incomplete: result.stopReason ? INCOMPLETE_STOP_REASONS.has(result.stopReason) : false
         };
       } finally {
-        await runtime.close();
+        binding.dispose();
       }
   };
   return {
-    run: (request, signal, onEvent) => execute(request, [], request.task, signal, onEvent),
+    run: (request, signal, onEvent) => execute(request, request.task, signal, onEvent),
     continue: async (continuationId, task, signal, onEvent) => {
       const continuation = continuations.get(continuationId);
       if (!continuation) throw new OrchestrationError('subagent_closed', `Sub-agent continuation is unavailable: ${continuationId}`);
-      return execute(continuation.request, continuation.history, task, signal, onEvent, continuationId);
+      return execute(continuation.request, task, signal, onEvent, continuationId);
     },
     close: async (continuationId) => {
       continuations.delete(continuationId);

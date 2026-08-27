@@ -1,9 +1,22 @@
 import { z } from 'zod';
 import { ApprovalRequestSchema } from './agent.js';
 import { ExecutionScopeSchema, JsonValueSchema } from './execution-scope.js';
-import { MessageSchema } from './messages.js';
+import { ImageContentBlockSchema, MessageSchema } from './messages.js';
 export { ExecutionScopeSchema, JsonValueSchema } from './execution-scope.js';
 export type { ExecutionScope, JsonValue } from './execution-scope.js';
+
+export const RUNTIME_CONTRACT_VERSION = 1 as const;
+
+export const RuntimeInputBlockSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('text'), text: z.string() }).strict(),
+  ImageContentBlockSchema
+]);
+export type RuntimeInputBlock = z.infer<typeof RuntimeInputBlockSchema>;
+
+export const RuntimeInputSchema = z.object({
+  content: z.array(RuntimeInputBlockSchema).min(1)
+}).strict();
+export type RuntimeInput = z.infer<typeof RuntimeInputSchema>;
 
 export const SessionInfoSchema = z.object({
   id: z.string().min(1),
@@ -61,6 +74,16 @@ export const RuntimeEventSchema = z.discriminatedUnion('type', [
     toolCallId: z.string().min(1),
     ok: z.boolean(),
     code: z.string().optional()
+  }).strict(),
+  z.object({
+    type: z.literal('tool.progress'),
+    toolCallId: z.string().min(1),
+    text: z.string()
+  }).strict(),
+  z.object({
+    type: z.literal('context.compacted'),
+    compactedMessages: z.number().int().positive(),
+    reclaimedToolCharacters: z.number().int().nonnegative()
   }).strict(),
   z.object({ type: z.literal('run.suspended'), reason: z.string().min(1) }).strict(),
   z.object({ type: z.literal('run.resumed') }).strict(),
