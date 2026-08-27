@@ -29,6 +29,14 @@ export async function startBrowserTestSite(): Promise<BrowserTestSite> {
       </body></html>`);
       return;
     }
+    if (request.url === '/checkout-duplicate') {
+      html(response, `<!doctype html><html><body>
+        <h1>Duplicate payment frames</h1>
+        <iframe name="payment" src="${oopifOrigin}/payment#primary"></iframe>
+        <iframe name="backup-payment" src="${oopifOrigin}/payment#backup"></iframe>
+      </body></html>`);
+      return;
+    }
     if (request.url === '/profile') {
       html(response, '<!doctype html><html><body><button id="save-profile">Save profile</button></body></html>');
       return;

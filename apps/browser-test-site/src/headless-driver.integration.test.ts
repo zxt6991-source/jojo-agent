@@ -60,6 +60,22 @@ suite('headless Chrome CDP driver', () => {
       expect(snapshot.text).toContain('Pay now');
     });
   }, 30_000);
+
+  it('routes duplicate-URL OOPIFs by their frame target id', async () => {
+    await host.run({
+      sessionId: 'headless-duplicate-oopif',
+      allowedDomains: ['jojo-top.test', 'jojo-frame.test']
+    }, async (session, signal) => {
+      const page = await session.activePage();
+      await page.navigate(`${site.topOrigin}/checkout-duplicate`, signal);
+      const primary = { selectors: ['iframe[name="payment"]'] };
+      const backup = { selectors: ['iframe[name="backup-payment"]'] };
+      await expect(page.resolveTarget({ selector: '#pay', frame: primary }, undefined, signal))
+        .resolves.toMatchObject({ selector: '#pay', frame: primary });
+      await expect(page.resolveTarget({ selector: '#pay', frame: backup }, undefined, signal))
+        .resolves.toMatchObject({ selector: '#pay', frame: backup });
+    });
+  }, 30_000);
 });
 
 function allocatePort(): Promise<number> {

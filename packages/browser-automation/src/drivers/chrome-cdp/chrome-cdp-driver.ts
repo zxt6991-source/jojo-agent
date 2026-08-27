@@ -31,6 +31,7 @@ type PageEntry = {
   targetId: string;
   sessionId: string;
   page: ChromeCdpPage;
+  /** OOPIF target id -> attached flattened session. */
   frameSessions: Map<string, FrameSession>;
 };
 
@@ -75,6 +76,7 @@ class ChromeCdpSession implements BrowserSession {
   private activeTargetId = '';
   private closed = false;
   private downloadDirectory = '';
+  private frameRefresh: Promise<void> | undefined;
   private readonly pendingDownloads = new Map<string, { path: string; done: Promise<void>; resolve: () => void }>();
 
   constructor(
@@ -96,8 +98,22 @@ class ChromeCdpSession implements BrowserSession {
       downloadPath: this.downloadDirectory,
       eventsEnabled: true
     });
-    this.client.on('Target.targetCreated', () => { void this.refreshFrames(); });
-    this.client.on('Target.targetInfoChanged', () => { void this.refreshFrames(); });
+    this.client.on('Target.targetCreated', () => { void this.refreshFrames().catch(() => undefined); });
+    this.client.on('Target.targetInfoChanged', () => { void this.refreshFrames().catch(() => undefined); });
+    this.client.on('Target.targetDestroyed', (params) => {
+      if (typeof params.targetId === 'string') this.removeFrameTarget(params.targetId);
+    });
+    this.client.on('Target.detachedFromTarget', (params) => {
+      const targetId = typeof params.targetId === 'string' ? params.targetId : undefined;
+      const sessionId = typeof params.sessionId === 'string' ? params.sessionId : undefined;
+      for (const entry of this.pages.values()) {
+        for (const [candidateTargetId, frame] of entry.frameSessions) {
+          if (candidateTargetId === targetId || frame.sessionId === sessionId) {
+            entry.frameSessions.delete(candidateTargetId);
+          }
+        }
+      }
+    });
     this.client.on('Browser.downloadWillBegin', (params) => {
       const guid = String(params.guid ?? '');
       const filename = safeName(String(params.suggestedFilename ?? 'download'));
@@ -224,12 +240,14 @@ class ChromeCdpSession implements BrowserSession {
       const owner = document.querySelector(${JSON.stringify(first)});
       return owner && (owner.src || owner.getAttribute('src')) || undefined;
     })()`);
+    const ownerTargetId = await this.frameOwnerTargetId(entry.sessionId, first);
     const deadline = Date.now() + 5_000;
     while (Date.now() < deadline) {
       await this.refreshFrames();
+      const exact = ownerTargetId ? entry.frameSessions.get(ownerTargetId) : undefined;
+      if (exact) return { sessionId: exact.sessionId, selectors: frame.selectors.slice(1) };
       const matches = [...entry.frameSessions.values()].filter((candidate) => urlsMatch(candidate.url, ownerUrl));
       if (matches.length === 1) return { sessionId: matches[0]!.sessionId, selectors: frame.selectors.slice(1) };
-      if (matches.length > 1) break;
       await delay(50);
     }
     throw new Error(`Unable to resolve frame path: ${frame.selectors.join(' -> ')}`);
@@ -253,18 +271,35 @@ class ChromeCdpSession implements BrowserSession {
 
   downloadIds(): Set<string> { return new Set(this.pendingDownloads.keys()); }
 
-  private async refreshFrames(): Promise<void> {
+  private refreshFrames(): Promise<void> {
+    if (this.frameRefresh) return this.frameRefresh;
+    const refresh = this.doRefreshFrames();
+    this.frameRefresh = refresh;
+    void refresh.finally(() => {
+      if (this.frameRefresh === refresh) this.frameRefresh = undefined;
+    }).catch(() => undefined);
+    return refresh;
+  }
+
+  private async doRefreshFrames(): Promise<void> {
     const response = await this.client.send('Target.getTargets') as { targetInfos?: CdpTargetInfo[] };
     for (const entry of this.pages.values()) {
-      const known = new Set([...entry.frameSessions.values()].map((frame) => frame.targetId));
+      const activeTargets = new Set<string>();
       for (const info of response.targetInfos ?? []) {
-        if (info.type !== 'iframe' || info.parentId !== entry.targetId || !info.targetId || known.has(info.targetId)) continue;
+        if (info.type !== 'iframe' || info.parentId !== entry.targetId || !info.targetId) continue;
+        activeTargets.add(info.targetId);
+        const known = entry.frameSessions.get(info.targetId);
+        if (known) {
+          // targetCreated can expose about:blank before targetInfoChanged publishes the final URL.
+          known.url = info.url ?? known.url;
+          continue;
+        }
         const attached = await this.client.send('Target.attachToTarget', {
           targetId: info.targetId,
           flatten: true
         }).catch(() => undefined) as { sessionId?: string } | undefined;
         if (!attached?.sessionId) continue;
-        entry.frameSessions.set(attached.sessionId, {
+        entry.frameSessions.set(info.targetId, {
           targetId: info.targetId,
           sessionId: attached.sessionId,
           url: info.url ?? 'about:blank'
@@ -274,6 +309,29 @@ class ChromeCdpSession implements BrowserSession {
           this.client.send('Runtime.enable', undefined, attached.sessionId).catch(() => undefined)
         ]);
       }
+      for (const targetId of entry.frameSessions.keys()) {
+        if (!activeTargets.has(targetId)) entry.frameSessions.delete(targetId);
+      }
+    }
+  }
+
+  private removeFrameTarget(targetId: string): void {
+    for (const entry of this.pages.values()) entry.frameSessions.delete(targetId);
+  }
+
+  private async frameOwnerTargetId(sessionId: string, selector: string): Promise<string | undefined> {
+    const evaluated = await this.client.send('Runtime.evaluate', {
+      expression: `document.querySelector(${JSON.stringify(selector)})`,
+      returnByValue: false
+    }, sessionId).catch(() => undefined) as { result?: { objectId?: string } } | undefined;
+    const objectId = evaluated?.result?.objectId;
+    if (!objectId) return undefined;
+    try {
+      const described = await this.client.send('DOM.describeNode', { objectId, depth: 0 }, sessionId)
+        .catch(() => undefined) as { node?: { frameId?: string } } | undefined;
+      return described?.node?.frameId;
+    } finally {
+      await this.client.send('Runtime.releaseObject', { objectId }, sessionId).catch(() => undefined);
     }
   }
 
