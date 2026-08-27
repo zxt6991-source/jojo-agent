@@ -1,13 +1,12 @@
 {
-  "name": "@desktop-agent/app-service",
+  "name": "@desktop-agent/server-core",
   "version": "0.1.0",
   "type": "module",
   "exports": {
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@desktop-agent/agent-runtime": "workspace:*",
-    "@desktop-agent/contracts": "workspace:*",
+    "@desktop-agent/app-service": "workspace:*",
     "@desktop-agent/server-protocol": "workspace:*"
   }
 }

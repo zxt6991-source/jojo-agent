@@ -15,6 +15,9 @@ export function runtimeStoreConformance(factory: StoreFactory): void {
     expect(await store.getSession('session-1')).toEqual({
       id: 'session-1', createdAt: 900, metadata: { tenant: 'test' }
     });
+    expect(await store.listSessions()).toEqual([
+      { id: 'session-1', createdAt: 900, metadata: { tenant: 'test' } }
+    ]);
 
     const root = await store.appendEntry({
       id: 'entry-1', sessionId: 'session-1', parentId: null, type: 'custom',

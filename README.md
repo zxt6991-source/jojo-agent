@@ -11,6 +11,8 @@
 - Agent Core：多轮工具循环、上下文估算、大结果回收、历史压缩、拒绝回填、重复调用保护；
 - Runtime 公共边界：`AgentRuntime`、`RuntimeSession`、`RuntimeLane`、`RunHandle`、版本化 Contract，以及统一的 Provider / Tool / Permission / Approval / Memory / Hook 注入；
 - Runtime Composition 与 App Service：同一套 Runtime 可由 Electron Worker、普通 Node 程序和 `apps/server` 的 headless 入口复用；
+- Headless Network Server：版本化 Zod Protocol、Server Core、Control / Observer Lease、幂等 mutation、REST / WebSocket、远程审批与断线后 Run 查询恢复；
+- Client SDK：`JojoClient` / `JojoSession` / `JojoRun` 远程对象模型，自动注入认证和幂等键，并以 WebSocket 事件 + REST Snapshot 恢复运行结果；
 - 十个主 Agent 工具：`read_file`、`list_files`、`grep`、`glob`、`web_search`、`web_fetch`、`write_file`、`edit_file`、`delete_file`、`terminal`；
 - 工作目录边界、真实路径 / 符号链接检查、写前冲突检测、精确编辑、回收站、Terminal 超时与进程组回收；会话删除通过 Main 生命周期门禁与 Storage tombstone / 跨实例串行化阻止晚到写入复活 JSONL；
 - Desktop IPC 边界使用严格 Zod Schema 和负载大小限制，覆盖 Main ↔ Worker 命令与事件，以及 Preload 推送到 Renderer 的消息；非法消息会被拒绝并记录协议违规；
@@ -24,7 +26,7 @@
 - WorkflowCard：步骤列表、依赖图、时间线、Usage、预算、错误码、结构化输出与 Isolation Diff；
 - 生命周期 Hooks：用户 `~/.jojo/hooks.yml`、项目 `.jojo/hooks.yml`（fingerprint 信任 / 可禁用）、设置页状态与 Reload。
 
-尚未实现：可视化 Workflow 编辑器、pipeline / human / HTTP Step、对外 HTTP / WebSocket Server Transport、Scheduler、长期记忆、专用 Git 提交工具、自动更新与云同步。
+尚未实现：`jojo serve` 独立 CLI 产品化、Worker Runtime Backend、Workflow / Browser / Memory 远程 API、可视化 Workflow 编辑器、pipeline / human / HTTP Step、Scheduler、专用 Git 提交工具、自动更新与云同步。
 
 ## 开发
 
@@ -60,6 +62,27 @@ pnpm test:e2e:electron
 ```
 
 `test:runtime-smoke` 不启动 Electron，验证 headless Runtime Composition；`test:e2e:electron` 使用离线 Scripted Provider 启动真实 Main、Preload、Renderer 与 Utility Process，不需要 API Key 或外网。
+
+### Headless Server 与 Client SDK
+
+`apps/server` 导出 `createNetworkServer()`，默认只允许监听 `127.0.0.1`；非回环地址必须同时显式启用 `allowRemote` 并配置 token。网络层提供 `/healthz`、`/readyz`、`/api/v1` REST 资源与 `/api/v1/events` WebSocket。
+
+Client SDK 示例：
+
+```ts
+import { JojoClient } from '@desktop-agent/client';
+
+const client = new JojoClient({
+  baseUrl: 'http://127.0.0.1:7788',
+  token: process.env.JOJO_SERVER_TOKEN
+});
+
+await client.connect();
+const session = await client.createSession({ executionScope: { kind: 'none' } });
+const run = await session.run({ input: '分析这个项目', providerId: 'openai', model: 'gpt-5', laneId: 'main' });
+console.log(await run.result());
+await client.close();
+```
 
 `pnpm build` 使用 Electron Forge 生成当前平台安装产物。只生成未封装应用目录：
 
@@ -128,6 +151,10 @@ packages/agent/           模型、消息、工具执行原语与兼容 Agent �
 packages/agent-runtime/   公共 Runtime API、Durable Operation、Lane、恢复与测试 Contract Suite
 packages/runtime-composition/ Provider、Tool、权限、Memory、Hook 等 Runtime 能力组合
 packages/app-service/     面向 Desktop / Server Transport 的 Runtime 应用服务
+packages/server-protocol/ REST / WebSocket 共用的版本化 Zod Protocol
+packages/server-core/     Connection、Lease、Idempotency、AuthZ 与命令协调
+packages/server-http/     Fastify REST / WebSocket Transport
+packages/client/          不依赖 Runtime 的 Jojo Server Client SDK
 packages/orchestration/   Sub-Agent、Workflow Engine、Isolation、Saved Workflow
 packages/browser-automation/ 可复用的 CDP 浏览器驱动与 Host 适配
 packages/providers/       模型协议适配

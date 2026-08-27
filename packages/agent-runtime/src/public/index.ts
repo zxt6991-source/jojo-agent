@@ -19,7 +19,7 @@ export type {
   ToolResolver
 } from './runtime.js';
 export type { CreateLaneRequest, RuntimeSession } from './session.js';
-export type { RuntimeLane } from './lane.js';
+export type { RuntimeLane, RuntimeTranscriptPage, TranscriptReadOptions } from './lane.js';
 export type {
   RunBudget,
   RunHandle,

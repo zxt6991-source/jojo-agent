@@ -35,6 +35,12 @@ export class MemoryAgentRuntimeStore implements AgentRuntimeStore {
     return session ? clone(session) : null;
   }
 
+  async listSessions(): Promise<Session[]> {
+    return [...this.sessions.values()]
+      .sort((left, right) => right.createdAt - left.createdAt || left.id.localeCompare(right.id))
+      .map(clone);
+  }
+
   async deleteSession(sessionId: string): Promise<void> {
     this.sessions.delete(sessionId);
     this.nextSequence.delete(sessionId);

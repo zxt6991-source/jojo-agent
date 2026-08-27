@@ -216,6 +216,13 @@ export class JsonlAgentRuntimeStore implements AgentRuntimeStore {
     return snapshot.session ? clone(snapshot.session) : null;
   }
 
+  async listSessions(): Promise<Session[]> {
+    const sessions = await Promise.all((await this.sessionIds()).map((id) => this.getSession(id)));
+    return sessions
+      .filter((session): session is Session => session !== null)
+      .sort((left, right) => right.createdAt - left.createdAt || left.id.localeCompare(right.id));
+  }
+
   async deleteSession(sessionId: string): Promise<void> {
     await this.writes.get(sessionId);
     const snapshot = await this.readSnapshot(sessionId);

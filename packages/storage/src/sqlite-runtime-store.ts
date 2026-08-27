@@ -154,6 +154,22 @@ export class SqliteAgentRuntimeStore implements AgentRuntimeStore {
     };
   }
 
+  async listSessions(): Promise<Session[]> {
+    const rows = this.database.prepare(
+      'SELECT id, metadata_json, created_at FROM sessions ORDER BY created_at DESC, id'
+    ).all() as Row[];
+    return rows.map((row) => {
+      const metadata = row.metadata_json === null
+        ? undefined
+        : json<Session['metadata']>(row.metadata_json, 'session metadata');
+      return {
+        id: text(row.id, 'session id'),
+        createdAt: integer(row.created_at, 'session created_at'),
+        ...(metadata ? { metadata } : {})
+      };
+    });
+  }
+
   async deleteSession(sessionId: string): Promise<void> {
     this.database.prepare('DELETE FROM sessions WHERE id = ?').run(sessionId);
   }

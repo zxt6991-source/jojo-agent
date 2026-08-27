@@ -30,7 +30,7 @@ import type { AgentRuntimeStore } from '../store.js';
 import { resumeAgentTurn, runAgentTurn, type RuntimeAgentRunOptions } from '../harness/runner.js';
 import { projectEntriesToMessages } from '../context/projection.js';
 import type { RuntimeEventListener } from './events.js';
-import type { RuntimeLane } from './lane.js';
+import type { RuntimeLane, RuntimeTranscriptPage, TranscriptReadOptions } from './lane.js';
 import type { RunHandle, RunRequest, TelemetrySink } from './run.js';
 import type { CreateLaneRequest, RuntimeSession } from './session.js';
 import {
@@ -139,6 +139,7 @@ export type AgentRuntimeOptions = {
 export interface AgentRuntime {
   openSession(request: OpenSessionRequest): Promise<RuntimeSession>;
   getSession(id: string): Promise<RuntimeSession | undefined>;
+  listSessions(): Promise<SessionInfo[]>;
   /** Crash recovery only. Continue a conversation with RuntimeLane.run(). */
   resumeOperation(request: ResumeOperationRequest): Promise<RunHandle>;
   subscribe(listener: RuntimeEventListener): () => void;
@@ -226,6 +227,11 @@ class DefaultAgentRuntime implements AgentRuntime {
     return await this.store.getSession(id) ? new DefaultRuntimeSession(this, id) : undefined;
   }
 
+  async listSessions(): Promise<SessionInfo[]> {
+    this.assertOpen();
+    return Promise.all((await this.store.listSessions()).map((session) => this.sessionInfo(session.id)));
+  }
+
   async resumeOperation(request: ResumeOperationRequest): Promise<RunHandle> {
     this.assertOpen();
     const operation = await this.store.loadOperation(request.operationId);
@@ -293,6 +299,26 @@ class DefaultAgentRuntime implements AgentRuntime {
       lane: await this.laneInfo(sessionId, laneId),
       messageCount: entries.filter((entry) => entry.type === 'message').length,
       ...(lane.leafId ? { leafEntryId: lane.leafId } : {})
+    };
+  }
+
+  async readTranscript(
+    sessionId: string,
+    laneId: string,
+    options: TranscriptReadOptions = {}
+  ): Promise<RuntimeTranscriptPage> {
+    const lane = await this.store.getLane(sessionId, laneId);
+    if (!lane) throw new Error(`runtime_lane_not_found: ${laneId}`);
+    const messages = (await this.store.readPath(lane.leafId))
+      .flatMap((entry) => entry.type === 'message' ? [structuredClone(entry.message)] : []);
+    const cursor = parseTranscriptCursor(options.cursor);
+    const limit = Math.min(500, Math.max(1, options.limit ?? 100));
+    if (cursor > messages.length) throw new Error('runtime_transcript_cursor_invalid');
+    const items = messages.slice(cursor, cursor + limit);
+    const next = cursor + items.length;
+    return {
+      items,
+      ...(next < messages.length ? { nextCursor: String(next) } : {})
     };
   }
 
@@ -594,6 +620,10 @@ class DefaultRuntimeLane implements RuntimeLane {
   getSnapshot(): Promise<LaneSnapshot> {
     return this.runtime.laneSnapshot(this.sessionId, this.id);
   }
+
+  readTranscript(options?: TranscriptReadOptions): Promise<RuntimeTranscriptPage> {
+    return this.runtime.readTranscript(this.sessionId, this.id, options);
+  }
 }
 
 export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
@@ -621,4 +651,12 @@ function resolveHooks(
 
 function hostTransport(kind: RuntimeHostDescriptor['kind']): 'desktop' | 'server' | 'cli' | 'unknown' {
   return kind === 'desktop' || kind === 'server' || kind === 'cli' ? kind : 'unknown';
+}
+
+function parseTranscriptCursor(cursor: string | undefined): number {
+  if (cursor === undefined) return 0;
+  if (!/^\d+$/u.test(cursor)) throw new Error('runtime_transcript_cursor_invalid');
+  const value = Number(cursor);
+  if (!Number.isSafeInteger(value) || value < 0) throw new Error('runtime_transcript_cursor_invalid');
+  return value;
 }
