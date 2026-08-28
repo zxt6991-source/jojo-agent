@@ -11,6 +11,7 @@ export type {
   RuntimeHookResolver,
   RuntimePermissionGate,
   RuntimeResolutionContext,
+  RuntimeRunSnapshot,
   RuntimeRunContext,
   RuntimeRunContextResolver,
   RuntimeSummarizer,

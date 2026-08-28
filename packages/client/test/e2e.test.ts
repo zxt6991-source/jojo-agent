@@ -21,6 +21,10 @@ describe('Jojo client SDK', () => {
     try {
       await client.connect();
       const session = await client.createSession({ title: 'SDK', executionScope: { kind: 'none' } });
+      const beforePatch = await session.snapshot();
+      await expect(session.patch({
+        labels: ['sdk'], favorite: true, expectedRevision: beforePatch.revision
+      })).resolves.toMatchObject({ labels: ['sdk'], favorite: true, revision: beforePatch.revision + 1 });
       const run = await session.run({ input: 'hello', providerId: 'test', model: 'test', laneId: 'main' });
       await expect(run.result()).resolves.toMatchObject({ status: 'completed', finalText: 'sdk answer' });
       await expect(session.transcript()).resolves.toMatchObject({

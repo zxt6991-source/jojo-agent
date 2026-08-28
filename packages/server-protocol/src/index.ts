@@ -80,10 +80,23 @@ export const CreateSessionInputSchema = z.object({
 }).strict();
 export type CreateSessionInput = z.infer<typeof CreateSessionInputSchema>;
 
+export const PatchSessionMetadataInputSchema = z.object({
+  title: z.string().trim().min(1).max(500).nullable().optional(),
+  labels: z.array(z.string().trim().min(1).max(128)).max(100).optional(),
+  favorite: z.boolean().optional(),
+  defaultProviderId: z.string().min(1).nullable().optional(),
+  defaultModel: z.string().min(1).nullable().optional(),
+  expectedRevision: z.number().int().nonnegative().optional()
+}).strict();
+export type PatchSessionMetadataInput = z.infer<typeof PatchSessionMetadataInputSchema>;
+
 export const ServerSessionSummarySchema = z.object({
   id: z.string().min(1),
   title: z.string().optional(),
   labels: z.array(z.string()),
+  favorite: z.boolean().default(false),
+  defaultProviderId: z.string().optional(),
+  defaultModel: z.string().optional(),
   createdAt: z.string().datetime(),
   executionScope: ExecutionScopeSchema,
   revision: z.number().int().nonnegative()
@@ -112,7 +125,7 @@ export const TranscriptPageSchema = z.object({
 export type TranscriptPage = z.infer<typeof TranscriptPageSchema>;
 
 export const RunStatusSchema = z.enum([
-  'accepted', 'running', 'completed', 'failed', 'cancelled', 'interrupted'
+  'accepted', 'starting', 'running', 'completed', 'failed', 'cancelled', 'interrupted'
 ]);
 export type RunStatus = z.infer<typeof RunStatusSchema>;
 
@@ -137,6 +150,8 @@ export const RunSnapshotSchema = z.object({
   laneId: z.string().min(1),
   status: RunStatusSchema,
   createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime().optional(),
+  version: z.number().int().positive().optional(),
   startedAt: z.string().datetime().optional(),
   completedAt: z.string().datetime().optional(),
   result: RunResultSchema.optional(),
@@ -184,6 +199,9 @@ export const ServerSessionSnapshotSchema = z.object({
   id: z.string().min(1),
   title: z.string().optional(),
   labels: z.array(z.string()),
+  favorite: z.boolean().default(false),
+  defaultProviderId: z.string().optional(),
+  defaultModel: z.string().optional(),
   executionScope: ExecutionScopeSchema,
   revision: z.number().int().nonnegative(),
   runtime: SessionSnapshotSchema,
@@ -220,6 +238,11 @@ export const ClientCommandSchema = z.discriminatedUnion('type', [
   CommandBaseSchema.extend({ type: z.literal('server.snapshot') }).strict(),
   CommandBaseSchema.extend({ type: z.literal('session.list') }).strict(),
   CommandBaseSchema.extend({ type: z.literal('session.create'), input: CreateSessionInputSchema }).strict(),
+  CommandBaseSchema.extend({
+    type: z.literal('session.patch'),
+    sessionId: z.string().min(1),
+    input: PatchSessionMetadataInputSchema
+  }).strict(),
   CommandBaseSchema.extend({ type: z.literal('session.attach'), input: AttachSessionInputSchema }).strict(),
   CommandBaseSchema.extend({ type: z.literal('session.detach'), sessionId: z.string().min(1) }).strict(),
   CommandBaseSchema.extend({ type: z.literal('session.snapshot'), sessionId: z.string().min(1) }).strict(),

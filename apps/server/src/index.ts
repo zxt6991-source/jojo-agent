@@ -1,10 +1,14 @@
+import path from 'node:path';
 import type { AgentRuntime } from '@desktop-agent/agent-runtime';
 import {
   createJojoAppService,
   createRuntimeAppService,
+  MemoryServerStateStore,
+  ServerRecoveryCoordinator,
   ServerApprovalBroker,
   type JojoAppService,
-  type RuntimeAppService
+  type RuntimeAppService,
+  type ServerStateStore
 } from '@desktop-agent/app-service';
 import { createJojoServerCore, type JojoServerCore, type JojoServerCoreOptions } from '@desktop-agent/server-core';
 import { createJojoHttpServer, type JojoHttpServer, type JojoHttpServerOptions } from '@desktop-agent/server-http';
@@ -12,9 +16,12 @@ import {
   createJojoRuntime,
   type JojoRuntimeCompositionOptions
 } from '@desktop-agent/runtime-composition';
+import { SqliteServerStateStore } from '@desktop-agent/storage';
 
 export type HeadlessServerOptions = Omit<JojoRuntimeCompositionOptions, 'host' | 'approval'> & {
   instanceId?: string;
+  dataDir?: string;
+  stateStore?: ServerStateStore;
   server?: JojoServerCoreOptions;
 };
 
@@ -29,7 +36,16 @@ export type HeadlessServer = {
 
 /** Creates the Server Host without Electron, IPC, UtilityProcess, or a Renderer. */
 export async function createHeadlessServer(options: HeadlessServerOptions): Promise<HeadlessServer> {
-  const approvalBroker = new ServerApprovalBroker(options.now);
+  const stateStore = options.stateStore
+    ?? (options.dataDir
+      ? new SqliteServerStateStore(path.join(options.dataDir, 'server-state.sqlite'), {
+        now: () => options.now?.().getTime() ?? Date.now()
+      })
+      : new MemoryServerStateStore(options.now));
+  const approvalBroker = new ServerApprovalBroker({
+    store: stateStore.approvals,
+    ...(options.now ? { now: options.now } : {})
+  });
   const runtime = await createJojoRuntime({
     ...options,
     approval: approvalBroker,
@@ -38,8 +54,14 @@ export async function createHeadlessServer(options: HeadlessServerOptions): Prom
       ...(options.instanceId ? { instanceId: options.instanceId } : {})
     }
   });
+  await new ServerRecoveryCoordinator(runtime, stateStore).reconcile();
   const service = createRuntimeAppService(runtime);
-  const appService = createJojoAppService(runtime, { approvalBroker, ...(options.now ? { now: options.now } : {}) });
+  const appService = createJojoAppService(runtime, {
+    approvalBroker,
+    stateStore,
+    ...(options.idGenerator ? { idGenerator: options.idGenerator } : {}),
+    ...(options.now ? { now: options.now } : {})
+  });
   const core = createJojoServerCore(appService, {
     ...(options.server ?? {}),
     ...(options.instanceId && !options.server?.serverId ? { serverId: options.instanceId } : {}),

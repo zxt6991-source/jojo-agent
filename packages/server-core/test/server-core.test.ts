@@ -41,6 +41,13 @@ describe('server core', () => {
     })).rejects.toMatchObject({ protocol: { code: 'session_locked' } });
 
     await core.attach(context, created.id, 'control');
+    const patched = await core.patchSession(context, created.id, {
+      labels: ['durable'], favorite: true, expectedRevision: created.revision
+    });
+    expect(patched).toMatchObject({ labels: ['durable'], favorite: true, revision: created.revision + 1 });
+    await expect(core.patchSession(context, created.id, {
+      title: 'stale', expectedRevision: created.revision
+    })).rejects.toThrow('revision_conflict');
     const started = await core.startRun(context, created.id, {
       laneId: 'main', input: { content: [{ type: 'text', text: 'hello' }] }, providerId: 'test', model: 'test'
     }, 'run-key');

@@ -26,7 +26,10 @@ export function protocolStatus(code: string): number {
   if (code === 'forbidden' || code === 'workspace_not_allowed' || code === 'scope_not_allowed') return 403;
   if (['not_found', 'run_not_found', 'approval_not_found'].includes(code)) return 404;
   if (code === 'session_locked') return 423;
-  if (['session_busy', 'lane_busy', 'idempotency_conflict'].includes(code)) return 409;
+  if ([
+    'session_busy', 'lane_busy', 'idempotency_conflict', 'revision_conflict',
+    'approval_already_resolved', 'approval_interrupted', 'run_transition_conflict'
+  ].includes(code)) return 409;
   if (code === 'payload_too_large') return 413;
   if (code === 'rate_limited') return 429;
   if (['runtime_unavailable', 'runtime_interrupted'].includes(code)) return 503;
@@ -45,7 +48,8 @@ function mapCode(code: string): string {
     'session_busy', 'lane_busy', 'session_locked', 'idempotency_conflict', 'approval_required',
     'approval_expired', 'run_not_found', 'run_cancelled', 'runtime_unavailable', 'runtime_interrupted',
     'rate_limited', 'payload_too_large', 'scope_not_allowed', 'workspace_not_allowed',
-    'provider_error', 'internal_error'
+    'provider_error', 'internal_error', 'revision_conflict', 'approval_already_resolved',
+    'approval_interrupted', 'run_transition_conflict'
   ]);
   return publicCodes.has(code) ? code : 'internal_error';
 }

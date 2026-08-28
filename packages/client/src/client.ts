@@ -13,6 +13,7 @@ import {
   type CreateSessionInput,
   type LeaseMode,
   type LeaseSnapshot,
+  type PatchSessionMetadataInput,
   type ProtocolError,
   type RunResult,
   type RunSnapshot,
@@ -294,6 +295,15 @@ export class JojoSession {
 
   snapshot(): Promise<ServerSessionSnapshot> {
     return this.client.http(`/api/v1/sessions/${encodeURIComponent(this.id)}`, ServerSessionSnapshotSchema);
+  }
+
+  async patch(input: PatchSessionMetadataInput): Promise<ServerSessionSnapshot> {
+    if (this.mode !== 'control') await this.attach('control');
+    return this.client.http(
+      `/api/v1/sessions/${encodeURIComponent(this.id)}`,
+      ServerSessionSnapshotSchema,
+      { method: 'PATCH', body: input, idempotencyKey: crypto.randomUUID() }
+    );
   }
 
   transcript(options: Partial<TranscriptQuery> = {}): Promise<TranscriptPage> {

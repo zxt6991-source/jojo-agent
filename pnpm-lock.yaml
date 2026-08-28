@@ -152,6 +152,9 @@ importers:
       '@desktop-agent/server-protocol':
         specifier: workspace:*
         version: link:../../packages/server-protocol
+      '@desktop-agent/storage':
+        specifier: workspace:*
+        version: link:../../packages/storage
     devDependencies:
       '@desktop-agent/contracts':
         specifier: workspace:*
@@ -330,12 +333,18 @@ importers:
       '@desktop-agent/agent-runtime':
         specifier: workspace:*
         version: link:../agent-runtime
+      '@desktop-agent/app-service':
+        specifier: workspace:*
+        version: link:../app-service
       '@desktop-agent/contracts':
         specifier: workspace:*
         version: link:../contracts
       '@desktop-agent/memory':
         specifier: workspace:*
         version: link:../memory
+      '@desktop-agent/server-protocol':
+        specifier: workspace:*
+        version: link:../server-protocol
       zod:
         specifier: ^4.1.13
         version: 4.4.3

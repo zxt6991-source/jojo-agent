@@ -51,6 +51,14 @@ export type ResumeOperationRequest = {
   signal?: AbortSignal;
 };
 
+export type RuntimeRunSnapshot = {
+  id: string;
+  sessionId: string;
+  laneId: string;
+  status: 'running' | 'suspended' | 'completed' | 'failed' | 'cancelled';
+  result?: RunResult;
+};
+
 export type RuntimeResolutionContext = {
   sessionId: string;
   laneId: string;
@@ -140,6 +148,7 @@ export interface AgentRuntime {
   openSession(request: OpenSessionRequest): Promise<RuntimeSession>;
   getSession(id: string): Promise<RuntimeSession | undefined>;
   listSessions(): Promise<SessionInfo[]>;
+  inspectRun(runId: string): Promise<RuntimeRunSnapshot | undefined>;
   /** Crash recovery only. Continue a conversation with RuntimeLane.run(). */
   resumeOperation(request: ResumeOperationRequest): Promise<RunHandle>;
   subscribe(listener: RuntimeEventListener): () => void;
@@ -230,6 +239,56 @@ class DefaultAgentRuntime implements AgentRuntime {
   async listSessions(): Promise<SessionInfo[]> {
     this.assertOpen();
     return Promise.all((await this.store.listSessions()).map((session) => this.sessionInfo(session.id)));
+  }
+
+  async inspectRun(runId: string): Promise<RuntimeRunSnapshot | undefined> {
+    this.assertOpen();
+    const operation = await this.store.loadOperation(runId);
+    if (!operation) return undefined;
+    const { meta, state } = operation;
+    if (state.phase !== 'completed' && state.phase !== 'failed' && state.phase !== 'aborted') {
+      return {
+        id: runId,
+        sessionId: meta.sessionId,
+        laneId: meta.lane,
+        status: state.phase === 'suspended' ? 'suspended' : 'running'
+      };
+    }
+    const lane = await this.store.getLane(meta.sessionId, meta.lane);
+    const messages = projectEntriesToMessages(await this.store.readPath(lane?.leafId ?? null));
+    if (state.phase === 'completed') {
+      const finalText = finalAssistantText(messages);
+      const result: RunResult = {
+        runId,
+        sessionId: meta.sessionId,
+        laneId: meta.lane,
+        status: 'completed',
+        stopReason: state.stopReason,
+        ...(finalText ? { finalText } : {}),
+        messages
+      };
+      return { id: runId, sessionId: meta.sessionId, laneId: meta.lane, status: 'completed', result };
+    }
+    if (state.phase === 'aborted') {
+      const result: RunResult = {
+        runId,
+        sessionId: meta.sessionId,
+        laneId: meta.lane,
+        status: 'cancelled',
+        stopReason: state.reason,
+        messages
+      };
+      return { id: runId, sessionId: meta.sessionId, laneId: meta.lane, status: 'cancelled', result };
+    }
+    const result: RunResult = {
+      runId,
+      sessionId: meta.sessionId,
+      laneId: meta.lane,
+      status: 'failed',
+      messages: [],
+      error: runtimeError(state.error)
+    };
+    return { id: runId, sessionId: meta.sessionId, laneId: meta.lane, status: 'failed', result };
   }
 
   async resumeOperation(request: ResumeOperationRequest): Promise<RunHandle> {
@@ -610,7 +669,7 @@ class DefaultRuntimeLane implements RuntimeLane {
   ) {}
 
   run(request: RunRequest): Promise<RunHandle> {
-    return this.runtime.startRun(this.sessionId, this.id, request);
+    return this.runtime.startRun(this.sessionId, this.id, request, request.runId);
   }
 
   cancelActiveRun(reason?: string): Promise<void> {

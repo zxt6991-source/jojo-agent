@@ -23,6 +23,8 @@ export type RuntimeWorkflowContext = {
 };
 
 export type RunRequest = {
+  /** Stable public identity supplied by durable orchestrators before execution starts. */
+  runId?: string;
   /** Strings remain accepted during the v0.x compatibility window. */
   input: RuntimeInput | string;
   providerId: string;

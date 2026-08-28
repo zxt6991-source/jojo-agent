@@ -6,6 +6,7 @@ import {
   type LeaseMode,
   type LeaseSnapshot,
   type ModelInfo,
+  type PatchSessionMetadataInput,
   type RequestContext,
   type RunSnapshot,
   type ServerCapabilities,
@@ -41,6 +42,12 @@ export interface JojoServerCore {
   serverSnapshot(ctx: RequestContext): Promise<ServerSnapshot>;
   listSessions(ctx: RequestContext): Promise<ServerSessionSummary[]>;
   createSession(ctx: RequestContext, input: CreateSessionInput, idempotencyKey?: string): Promise<ServerSessionSnapshot>;
+  patchSession(
+    ctx: RequestContext,
+    sessionId: string,
+    input: PatchSessionMetadataInput,
+    idempotencyKey?: string
+  ): Promise<ServerSessionSnapshot>;
   getSession(ctx: RequestContext, sessionId: string): Promise<ServerSessionSnapshot>;
   transcript(ctx: RequestContext, sessionId: string, query?: TranscriptQuery): Promise<TranscriptPage>;
   attach(ctx: RequestContext, sessionId: string, mode: LeaseMode): Promise<LeaseSnapshot>;
@@ -104,6 +111,19 @@ class DefaultJojoServerCore implements JojoServerCore {
     });
   }
 
+  patchSession(
+    ctx: RequestContext,
+    sessionId: string,
+    input: PatchSessionMetadataInput,
+    key?: string
+  ): Promise<ServerSessionSnapshot> {
+    authorize(ctx, 'sessions:write');
+    this.leases.requireControl(sessionId, ctx.connectionId);
+    return this.idempotency.execute(ctx.principal.id, `session.patch:${sessionId}`, key, input, () => (
+      this.service.patchSession(ctx, sessionId, input)
+    ));
+  }
+
   async getSession(ctx: RequestContext, sessionId: string): Promise<ServerSessionSnapshot> {
     authorize(ctx, 'sessions:read');
     return this.withLease(ctx, await this.service.getSession(ctx, sessionId));
@@ -152,15 +172,7 @@ class DefaultJojoServerCore implements JojoServerCore {
     key?: string
   ): Promise<void> {
     authorize(ctx, 'approvals:resolve');
-    const approvals = (await this.service.listSessions(ctx)).map((session) => session.id);
-    let sessionId: string | undefined;
-    for (const id of approvals) {
-      if ((await this.service.listApprovals(ctx, id)).some((item) => item.id === approvalId)) {
-        sessionId = id;
-        break;
-      }
-    }
-    if (!sessionId) throw new Error(`approval_not_found: ${approvalId}`);
+    const sessionId = await this.service.getApprovalSessionId(ctx, approvalId);
     this.leases.requireControl(sessionId, ctx.connectionId);
     await this.idempotency.execute(ctx.principal.id, `approval.resolve:${approvalId}`, key, { decision }, () => (
       this.service.resolveApproval(ctx, approvalId, decision)
@@ -172,6 +184,7 @@ class DefaultJojoServerCore implements JojoServerCore {
       case 'server.snapshot': return this.serverSnapshot(ctx);
       case 'session.list': return this.listSessions(ctx);
       case 'session.create': return this.createSession(ctx, command.input, command.id);
+      case 'session.patch': return this.patchSession(ctx, command.sessionId, command.input, command.id);
       case 'session.attach': return this.attach(ctx, command.input.sessionId, command.input.mode);
       case 'session.detach': return this.detach(ctx, command.sessionId);
       case 'session.snapshot': return this.getSession(ctx, command.sessionId);

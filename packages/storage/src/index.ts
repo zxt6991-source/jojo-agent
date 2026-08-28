@@ -21,6 +21,9 @@ export { JsonlAgentRuntimeStore, MAX_RUNTIME_JOURNAL_BYTES } from './runtime-sto
 export { SqliteHookInvocationStore } from './sqlite-hook-invocation-store.js';
 export { SqliteMemoryCandidateStore } from './sqlite-memory-candidate-store.js';
 export { SqliteSemanticMemoryBackend } from './sqlite-semantic-memory-backend.js';
+export { SqliteServerStateStore } from './sqlite-server-state-store.js';
+export { SERVER_STATE_SCHEMA_VERSION } from './server-state-schema.js';
+export { SqliteAgentRuntimeStore } from './sqlite-runtime-store.js';
 
 const StoredConfigV1Schema = z.object({
   schemaVersion: z.literal(1),

@@ -8,6 +8,7 @@ import {
   ClientHelloSchema,
   CreateSessionInputSchema,
   JOJO_SERVER_PROTOCOL_VERSION,
+  PatchSessionMetadataInputSchema,
   ResolveApprovalInputSchema,
   StartRunInputSchema,
   TranscriptQuerySchema,
@@ -64,6 +65,14 @@ export async function createJojoHttpServer(
   }));
   app.get('/api/v1/sessions/:sessionId', async (request, reply) => withHttp(request, reply, options.token, (ctx) => (
     core.getSession(ctx, param(request, 'sessionId'))
+  )));
+  app.patch('/api/v1/sessions/:sessionId', async (request, reply) => withHttp(request, reply, options.token, (ctx) => (
+    core.patchSession(
+      ctx,
+      param(request, 'sessionId'),
+      parse(PatchSessionMetadataInputSchema, request.body),
+      header(request, 'idempotency-key')
+    )
   )));
   app.get('/api/v1/sessions/:sessionId/transcript', async (request, reply) => withHttp(request, reply, options.token, (ctx) => (
     core.transcript(ctx, param(request, 'sessionId'), parse(TranscriptQuerySchema, request.query))
@@ -132,15 +141,33 @@ export async function createJojoHttpServer(
           principal = authenticateToken(options.token, hello.auth?.token);
           clientId = hello.client.id;
           unsubscribe = core.subscribe((event) => {
-            if (event.type !== 'runtime.event' || !attached.has(event.envelope.sessionId)) return;
-            connectionSeq += 1;
-            send({
-              type: 'event',
-              seq: connectionSeq,
-              sessionSeq: event.envelope.sequence,
-              sessionId: event.envelope.sessionId,
-              event: event.envelope
-            });
+            if (event.type === 'runtime.event') {
+              if (!attached.has(event.envelope.sessionId)) return;
+              connectionSeq += 1;
+              send({
+                type: 'event',
+                seq: connectionSeq,
+                sessionSeq: event.envelope.sequence,
+                sessionId: event.envelope.sessionId,
+                event: event.envelope
+              });
+              return;
+            }
+            const sessionId = event.type === 'run.updated'
+              ? event.run.sessionId
+              : event.type === 'session.metadata.updated'
+                ? event.sessionId
+                : event.approval.sessionId;
+            if (!attached.has(sessionId)) return;
+            const snapshotContext: RequestContext = {
+              requestId: `event_${crypto.randomUUID()}`,
+              principal: principal!,
+              connectionId,
+              clientId: clientId!
+            };
+            void core.getSession(snapshotContext, sessionId)
+              .then((snapshot) => send({ type: 'session.snapshot', snapshot }))
+              .catch(() => undefined);
           });
           send({ type: 'hello', version: JOJO_SERVER_PROTOCOL_VERSION, connectionId, server: core.info });
           return;

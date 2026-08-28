@@ -12,7 +12,8 @@
     "@desktop-agent/runtime-composition": "workspace:*",
     "@desktop-agent/server-core": "workspace:*",
     "@desktop-agent/server-http": "workspace:*",
-    "@desktop-agent/server-protocol": "workspace:*"
+    "@desktop-agent/server-protocol": "workspace:*",
+    "@desktop-agent/storage": "workspace:*"
   },
   "devDependencies": {
     "@desktop-agent/contracts": "workspace:*"
