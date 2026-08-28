@@ -123,6 +123,25 @@ export type CreateApprovalRecord = {
   preview?: PersistedApprovalPreview;
 };
 
+export type IdempotencyClaimInput = {
+  principalId: string;
+  route: string;
+  key: string;
+  requestHash: string;
+  expiresAt: string;
+};
+
+export type IdempotencyClaimResult =
+  | { status: 'claimed' }
+  | { status: 'pending' }
+  | { status: 'completed'; result: unknown };
+
+export type CompleteIdempotencyInput = Omit<IdempotencyClaimInput, 'expiresAt'> & {
+  result: unknown;
+};
+
+export type AbandonIdempotencyInput = Omit<IdempotencyClaimInput, 'expiresAt'>;
+
 export interface SessionMetadataStore {
   createCreating(input: CreateSessionMetadataRecord): Promise<SessionMetadataRecord>;
   ensureActive(input: EnsureSessionMetadataRecord): Promise<SessionMetadataRecord>;
@@ -165,10 +184,17 @@ export interface ApprovalStore {
   interrupt(id: string, reason: string, expectedVersion?: number): Promise<PersistedApprovalRecord>;
 }
 
+export interface DurableIdempotencyStore {
+  claim(input: IdempotencyClaimInput): Promise<IdempotencyClaimResult>;
+  complete(input: CompleteIdempotencyInput): Promise<void>;
+  abandon(input: AbandonIdempotencyInput): Promise<void>;
+}
+
 export interface ServerStateStore {
   readonly sessions: SessionMetadataStore;
   readonly runs: RunStore;
   readonly approvals: ApprovalStore;
+  readonly idempotency: DurableIdempotencyStore;
   close(): Promise<void>;
 }
 
@@ -185,10 +211,17 @@ export class MemoryServerStateStore implements ServerStateStore {
   private readonly sessionRecords = new Map<string, SessionMetadataRecord>();
   private readonly runRecords = new Map<string, PersistedRunRecord>();
   private readonly approvalRecords = new Map<string, PersistedApprovalRecord>();
+  private readonly idempotencyRecords = new Map<string, {
+    requestHash: string;
+    status: 'pending' | 'completed';
+    result?: unknown;
+    expiresAt: string;
+  }>();
 
   readonly sessions: SessionMetadataStore;
   readonly runs: RunStore;
   readonly approvals: ApprovalStore;
+  readonly idempotency: DurableIdempotencyStore;
 
   constructor(private readonly now: Clock = () => new Date()) {
     this.sessions = {
@@ -241,6 +274,11 @@ export class MemoryServerStateStore implements ServerStateStore {
         .map(clone),
       resolve: async (id, decision, principalId, version) => this.resolveApproval(id, decision, principalId, version),
       interrupt: async (id, reason, version) => this.interruptApproval(id, reason, version)
+    };
+    this.idempotency = {
+      claim: async (input) => this.claimIdempotency(input),
+      complete: async (input) => this.completeIdempotency(input),
+      abandon: async (input) => this.abandonIdempotency(input)
     };
   }
 
@@ -418,6 +456,45 @@ export class MemoryServerStateStore implements ServerStateStore {
     return clone(record);
   }
 
+  private claimIdempotency(input: IdempotencyClaimInput): IdempotencyClaimResult {
+    const key = idempotencyStorageKey(input);
+    const existing = this.idempotencyRecords.get(key);
+    if (existing && existing.expiresAt <= this.now().toISOString()) this.idempotencyRecords.delete(key);
+    const current = this.idempotencyRecords.get(key);
+    if (current) {
+      if (current.requestHash !== input.requestHash) {
+        throw new Error('idempotency_conflict: key was used with a different request');
+      }
+      if (current.status === 'completed') {
+        return { status: 'completed', result: clone(current.result) };
+      }
+      return { status: 'pending' };
+    }
+    this.idempotencyRecords.set(key, {
+      requestHash: input.requestHash,
+      status: 'pending',
+      expiresAt: input.expiresAt
+    });
+    return { status: 'claimed' };
+  }
+
+  private completeIdempotency(input: CompleteIdempotencyInput): void {
+    const record = this.idempotencyRecords.get(idempotencyStorageKey(input));
+    if (!record || record.requestHash !== input.requestHash) {
+      throw new Error('idempotency_claim_missing: durable claim is unavailable');
+    }
+    record.status = 'completed';
+    record.result = clone(input.result);
+  }
+
+  private abandonIdempotency(input: AbandonIdempotencyInput): void {
+    const key = idempotencyStorageKey(input);
+    const record = this.idempotencyRecords.get(key);
+    if (record?.status === 'pending' && record.requestHash === input.requestHash) {
+      this.idempotencyRecords.delete(key);
+    }
+  }
+
   private requireSession(sessionId: string): SessionMetadataRecord {
     const record = this.sessionRecords.get(sessionId);
     if (!record) throw new Error(`server_session_metadata_missing: ${sessionId}`);
@@ -443,4 +520,8 @@ export class MemoryServerStateStore implements ServerStateStore {
     const record = this.approvalRecords.get(id);
     return record ? clone(record) : undefined;
   }
+}
+
+function idempotencyStorageKey(input: { principalId: string; route: string; key: string }): string {
+  return `${input.principalId}\u0000${input.route}\u0000${input.key}`;
 }

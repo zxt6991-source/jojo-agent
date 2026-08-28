@@ -1,4 +1,4 @@
-import type { AppServiceEvent, JojoAppService } from '@desktop-agent/app-service';
+import type { AppServiceEvent, DurableIdempotencyStore, JojoAppService } from '@desktop-agent/app-service';
 import {
   JOJO_SERVER_PROTOCOL_VERSION,
   type ClientCommand,
@@ -33,6 +33,7 @@ export type JojoServerCoreOptions = {
   workspaceRoots?: string[];
   idGenerator?: () => string;
   now?: () => Date;
+  idempotencyStore?: DurableIdempotencyStore;
 };
 
 export interface JojoServerCore {
@@ -67,7 +68,7 @@ class DefaultJojoServerCore implements JojoServerCore {
   readonly capabilities: ServerCapabilities;
   readonly models: ModelInfo[];
   private readonly leases: LeaseManager;
-  private readonly idempotency = new IdempotencyStore();
+  private readonly idempotency: IdempotencyStore;
   private readonly scopePolicy: ScopePolicy;
 
   constructor(private readonly service: JojoAppService, options: JojoServerCoreOptions) {
@@ -92,6 +93,11 @@ class DefaultJojoServerCore implements JojoServerCore {
     this.models = [...(options.models ?? [])];
     this.leases = new LeaseManager(options.idGenerator, options.now);
     this.scopePolicy = new ScopePolicy(options.workspaceRoots);
+    this.idempotency = new IdempotencyStore(
+      24 * 60 * 60 * 1000,
+      options.now ? () => options.now!().getTime() : Date.now,
+      options.idempotencyStore
+    );
   }
 
   async serverSnapshot(ctx: RequestContext): Promise<ServerSnapshot> {
@@ -121,7 +127,7 @@ class DefaultJojoServerCore implements JojoServerCore {
     this.leases.requireControl(sessionId, ctx.connectionId);
     return this.idempotency.execute(ctx.principal.id, `session.patch:${sessionId}`, key, input, () => (
       this.service.patchSession(ctx, sessionId, input)
-    ));
+    ), { durable: false });
   }
 
   async getSession(ctx: RequestContext, sessionId: string): Promise<ServerSessionSnapshot> {

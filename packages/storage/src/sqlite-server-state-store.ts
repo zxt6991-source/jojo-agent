@@ -2,11 +2,16 @@ import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 import type {
+  AbandonIdempotencyInput,
   ApprovalStore,
+  CompleteIdempotencyInput,
   CreateApprovalRecord,
   CreateRunRecord,
   CreateSessionMetadataRecord,
+  DurableIdempotencyStore,
   EnsureSessionMetadataRecord,
+  IdempotencyClaimInput,
+  IdempotencyClaimResult,
   PersistedApprovalRecord,
   PersistedRunRecord,
   PersistedRunStatus,
@@ -141,6 +146,7 @@ export class SqliteServerStateStore implements ServerStateStore {
   readonly sessions: SessionMetadataStore;
   readonly runs: RunStore;
   readonly approvals: ApprovalStore;
+  readonly idempotency: DurableIdempotencyStore;
 
   constructor(readonly filename: string, private readonly clock: Clock = systemClock) {
     mkdirSync(path.dirname(filename), { recursive: true });
@@ -201,6 +207,11 @@ export class SqliteServerStateStore implements ServerStateStore {
       ).all() as Row[]).map(approvalFromRow),
       resolve: async (id, decision, principalId, version) => this.resolveApproval(id, decision, principalId, version),
       interrupt: async (id, reason, version) => this.interruptApproval(id, reason, version)
+    };
+    this.idempotency = {
+      claim: async (input) => this.claimIdempotency(input),
+      complete: async (input) => this.completeIdempotency(input),
+      abandon: async (input) => this.abandonIdempotency(input)
     };
   }
 
@@ -392,6 +403,75 @@ export class SqliteServerStateStore implements ServerStateStore {
       this.bump(current.sessionId, now);
       return this.requireApproval(id);
     });
+  }
+
+  private claimIdempotency(input: IdempotencyClaimInput): IdempotencyClaimResult {
+    return this.transaction(() => {
+      const now = this.clock.now();
+      let row = this.database.prepare(`
+        SELECT request_hash, status, result_json, expires_at
+        FROM server_idempotency
+        WHERE principal_id = ? AND route = ? AND idempotency_key = ?
+      `).get(input.principalId, input.route, input.key) as Row | undefined;
+      if (row && numberValue(row.expires_at, 'idempotency expires_at') <= now) {
+        this.database.prepare(`
+          DELETE FROM server_idempotency
+          WHERE principal_id = ? AND route = ? AND idempotency_key = ?
+        `).run(input.principalId, input.route, input.key);
+        row = undefined;
+      }
+      if (row) {
+        if (stringValue(row.request_hash, 'idempotency request hash') !== input.requestHash) {
+          throw new Error('idempotency_conflict: key was used with a different request');
+        }
+        if (stringValue(row.status, 'idempotency status') === 'completed') {
+          return {
+            status: 'completed',
+            result: parsed<unknown>(row.result_json, 'idempotency result') ?? null
+          };
+        }
+        return { status: 'pending' };
+      }
+      this.database.prepare(`
+        INSERT INTO server_idempotency(
+          principal_id, route, idempotency_key, request_hash, status,
+          result_json, created_at, updated_at, expires_at
+        ) VALUES (?, ?, ?, ?, 'pending', NULL, ?, ?, ?)
+      `).run(
+        input.principalId,
+        input.route,
+        input.key,
+        input.requestHash,
+        now,
+        now,
+        new Date(input.expiresAt).getTime()
+      );
+      return { status: 'claimed' };
+    });
+  }
+
+  private completeIdempotency(input: CompleteIdempotencyInput): void {
+    const result = this.database.prepare(`
+      UPDATE server_idempotency
+      SET status = 'completed', result_json = ?, updated_at = ?
+      WHERE principal_id = ? AND route = ? AND idempotency_key = ? AND request_hash = ?
+    `).run(
+      JSON.stringify(input.result ?? null),
+      this.clock.now(),
+      input.principalId,
+      input.route,
+      input.key,
+      input.requestHash
+    );
+    if (result.changes !== 1) throw new Error('idempotency_claim_missing: durable claim is unavailable');
+  }
+
+  private abandonIdempotency(input: AbandonIdempotencyInput): void {
+    this.database.prepare(`
+      DELETE FROM server_idempotency
+      WHERE principal_id = ? AND route = ? AND idempotency_key = ?
+        AND request_hash = ? AND status = 'pending'
+    `).run(input.principalId, input.route, input.key, input.requestHash);
   }
 
   private bump(sessionId: string, now: number): void {

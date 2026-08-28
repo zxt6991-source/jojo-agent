@@ -64,6 +64,7 @@ export async function createHeadlessServer(options: HeadlessServerOptions): Prom
   });
   const core = createJojoServerCore(appService, {
     ...(options.server ?? {}),
+    idempotencyStore: options.server?.idempotencyStore ?? stateStore.idempotency,
     ...(options.instanceId && !options.server?.serverId ? { serverId: options.instanceId } : {}),
     ...(options.idGenerator ? { idGenerator: options.idGenerator } : {}),
     ...(options.now ? { now: options.now } : {})

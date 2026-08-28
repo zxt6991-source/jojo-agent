@@ -7,10 +7,15 @@ export { ServerRecoveryCoordinator } from './recovery-coordinator.js';
 export { MemoryServerStateStore } from './persistence.js';
 export type {
   ApprovalStore,
+  AbandonIdempotencyInput,
+  CompleteIdempotencyInput,
   CreateApprovalRecord,
   CreateRunRecord,
   CreateSessionMetadataRecord,
   EnsureSessionMetadataRecord,
+  DurableIdempotencyStore,
+  IdempotencyClaimInput,
+  IdempotencyClaimResult,
   PersistedApprovalPreview,
   PersistedApprovalRecord,
   PersistedApprovalStatus,

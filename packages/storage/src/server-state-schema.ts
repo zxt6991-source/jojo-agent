@@ -1,4 +1,4 @@
-export const SERVER_STATE_SCHEMA_VERSION = 1;
+export const SERVER_STATE_SCHEMA_VERSION = 2;
 
 export const SERVER_STATE_SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS server_sessions (
@@ -61,4 +61,18 @@ export const SERVER_STATE_SCHEMA_SQL = `
   CREATE INDEX IF NOT EXISTS server_approvals_session_status ON server_approvals(session_id, status);
   CREATE INDEX IF NOT EXISTS server_approvals_run ON server_approvals(run_id);
   CREATE INDEX IF NOT EXISTS server_approvals_recovery ON server_approvals(status, updated_at);
+
+  CREATE TABLE IF NOT EXISTS server_idempotency (
+    principal_id TEXT NOT NULL,
+    route TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    request_hash TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('pending', 'completed')),
+    result_json TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    PRIMARY KEY(principal_id, route, idempotency_key)
+  );
+  CREATE INDEX IF NOT EXISTS server_idempotency_expiry ON server_idempotency(expires_at);
 `;

@@ -10,6 +10,27 @@ async function databaseFile(): Promise<string> {
 }
 
 describe('SqliteServerStateStore', () => {
+  it('migrates an existing v1 database to the idempotency schema', async () => {
+    const filename = await databaseFile();
+    const legacy = new DatabaseSync(filename);
+    legacy.exec('PRAGMA user_version = 1;');
+    legacy.close();
+
+    const migrated = new SqliteServerStateStore(filename, { now: () => 1_000 });
+    await expect(migrated.idempotency.claim({
+      principalId: 'principal-1', route: 'session.create', key: 'key-1', requestHash: 'hash-1',
+      expiresAt: new Date(20_000).toISOString()
+    })).resolves.toEqual({ status: 'claimed' });
+    await migrated.close();
+
+    const verified = new DatabaseSync(filename);
+    expect(verified.prepare('PRAGMA user_version').get()).toEqual({ user_version: 2 });
+    expect(verified.prepare(`
+      SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'server_idempotency'
+    `).get()).toEqual({ name: 'server_idempotency' });
+    verified.close();
+  });
+
   it('persists metadata revisions and enforces optimistic concurrency across reopen', async () => {
     const filename = await databaseFile();
     let now = 1_000;
@@ -89,7 +110,40 @@ describe('SqliteServerStateStore', () => {
     };
     expect(row.preview_json).toContain('/safe/path');
     expect(row.preview_json).not.toContain('patch');
-    expect(database.prepare('PRAGMA user_version').get()).toEqual({ user_version: 1 });
+    expect(database.prepare('PRAGMA user_version').get()).toEqual({ user_version: 2 });
     database.close();
+  });
+
+  it('persists completed idempotency responses and protects pending claims', async () => {
+    const filename = await databaseFile();
+    const identity = {
+      principalId: 'principal-1', route: 'run.start:session-1', key: 'key-1', requestHash: 'hash-1'
+    };
+    const store = new SqliteServerStateStore(filename, { now: () => 4_000 });
+    await expect(store.idempotency.claim({
+      ...identity, expiresAt: new Date(20_000).toISOString()
+    })).resolves.toEqual({ status: 'claimed' });
+    await expect(store.idempotency.claim({
+      ...identity, expiresAt: new Date(20_000).toISOString()
+    })).resolves.toEqual({ status: 'pending' });
+    await expect(store.idempotency.claim({
+      ...identity, requestHash: 'different', expiresAt: new Date(20_000).toISOString()
+    })).rejects.toThrow('idempotency_conflict');
+    await store.idempotency.complete({ ...identity, result: { id: 'run-1', status: 'running' } });
+    await store.close();
+
+    const reopened = new SqliteServerStateStore(filename, { now: () => 5_000 });
+    await expect(reopened.idempotency.claim({
+      ...identity, expiresAt: new Date(20_000).toISOString()
+    })).resolves.toEqual({
+      status: 'completed', result: { id: 'run-1', status: 'running' }
+    });
+    const second = { ...identity, key: 'key-2' };
+    await reopened.idempotency.claim({ ...second, expiresAt: new Date(20_000).toISOString() });
+    await reopened.idempotency.abandon(second);
+    await expect(reopened.idempotency.claim({
+      ...second, expiresAt: new Date(20_000).toISOString()
+    })).resolves.toEqual({ status: 'claimed' });
+    await reopened.close();
   });
 });

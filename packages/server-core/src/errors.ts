@@ -27,7 +27,7 @@ export function protocolStatus(code: string): number {
   if (['not_found', 'run_not_found', 'approval_not_found'].includes(code)) return 404;
   if (code === 'session_locked') return 423;
   if ([
-    'session_busy', 'lane_busy', 'idempotency_conflict', 'revision_conflict',
+    'session_busy', 'lane_busy', 'idempotency_conflict', 'idempotency_in_progress', 'revision_conflict',
     'approval_already_resolved', 'approval_interrupted', 'run_transition_conflict'
   ].includes(code)) return 409;
   if (code === 'payload_too_large') return 413;
@@ -45,7 +45,8 @@ function mapCode(code: string): string {
   if (code === 'run_not_found') return 'run_not_found';
   const publicCodes = new Set([
     'protocol_version_unsupported', 'unauthorized', 'forbidden', 'not_found', 'invalid_request',
-    'session_busy', 'lane_busy', 'session_locked', 'idempotency_conflict', 'approval_required',
+    'session_busy', 'lane_busy', 'session_locked', 'idempotency_conflict', 'idempotency_in_progress',
+    'approval_required',
     'approval_expired', 'run_not_found', 'run_cancelled', 'runtime_unavailable', 'runtime_interrupted',
     'rate_limited', 'payload_too_large', 'scope_not_allowed', 'workspace_not_allowed',
     'provider_error', 'internal_error', 'revision_conflict', 'approval_already_resolved',
