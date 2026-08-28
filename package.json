@@ -23,6 +23,9 @@
     "vitest": "^4.0.15"
   },
   "pnpm": {
-    "onlyBuiltDependencies": ["electron", "esbuild"]
+    "onlyBuiltDependencies": ["electron", "esbuild"],
+    "overrides": {
+      "@electron/node-gyp": "10.2.0-electron.1"
+    }
   }
 }
