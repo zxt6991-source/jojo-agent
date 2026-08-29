@@ -225,6 +225,9 @@ importers:
       '@desktop-agent/orchestration':
         specifier: workspace:*
         version: link:../orchestration
+      '@desktop-agent/process-sandbox':
+        specifier: workspace:*
+        version: link:../process-sandbox
       '@desktop-agent/providers':
         specifier: workspace:*
         version: link:../providers
@@ -276,6 +279,8 @@ importers:
       zod:
         specifier: ^4.1.13
         version: 4.4.3
+
+  packages/process-sandbox: {}
 
   packages/providers:
     dependencies:
@@ -357,6 +362,9 @@ importers:
       '@desktop-agent/contracts':
         specifier: workspace:*
         version: link:../contracts
+      '@desktop-agent/process-sandbox':
+        specifier: workspace:*
+        version: link:../process-sandbox
       zod:
         specifier: ^4.1.13
         version: 4.4.3

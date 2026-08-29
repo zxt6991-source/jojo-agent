@@ -56,6 +56,7 @@ import {
   JsonlWorkflowStore,
   SqliteHookInvocationStore,
   SqliteMemoryCandidateStore,
+  SqliteMcpTrustStore,
   SqliteSemanticMemoryBackend
 } from '@desktop-agent/storage';
 import { SqliteAgentRuntimeStore } from '@desktop-agent/storage/sqlite-runtime-store';
@@ -64,11 +65,13 @@ import { parse as parseYaml } from 'yaml';
 import { BrowserPermissionGate, BrowserToolBridge } from './browser-tools';
 import { UtilityModelBrowserHealingAdapter } from './browser-healing';
 import { createDesktopLeafAgentRunner, createDesktopWorkflowToolRuntime } from './orchestration-runtime';
+import { TurnTaskRegistry } from './turn-task-registry';
+import { InteractiveTerminalSecretBroker } from './terminal-secret-broker';
 import {
   ConversationGrantPermissionGate,
-  ConversationPermissionGrants
+  ConversationPermissionGrants,
+  defaultSimilarApprovalKey
 } from './session-permission-grants';
-import { TurnTaskRegistry } from './turn-task-registry';
 import { projectRuntimeMessagesToLegacy, seedRuntimeLaneFromLegacy } from '../runtime/legacy-projection';
 
 type ParentPort = { on(event: 'message', listener: (event: { data: unknown }) => void): void; postMessage(message: WorkerMessage): void };
@@ -83,6 +86,7 @@ let runtime: { settings: ProviderSettings; apiKeys: Record<string, string> } | n
 const store = new JsonlSessionStore(path.join(dataDirectory, 'sessions'));
 const agentRuntimeStore = new SqliteAgentRuntimeStore(path.join(dataDirectory, 'runtime', 'agent-runtime.sqlite'));
 const hookInvocationStore = new SqliteHookInvocationStore(path.join(dataDirectory, 'runtime', 'hooks.sqlite'));
+const mcpTrustStore = new SqliteMcpTrustStore(path.join(dataDirectory, 'runtime', 'mcp-trust.sqlite'));
 const hookTrustStore = new FileHookTrustStore(path.join(os.homedir(), '.jojo', 'hooks-trust.json'));
 const memoryRoot = path.join(os.homedir(), '.jojo', 'memory');
 const memoryIndex = new MemoryIndex(path.join(dataDirectory, 'runtime', 'memory.sqlite'));
@@ -203,6 +207,9 @@ const post = (message: WorkerMessage) => {
   }
   parentPort.postMessage(parsed.data);
 };
+const terminalSecretBroker = new InteractiveTerminalSecretBroker((request) => {
+  post({ type: 'terminal.secret.request', ...request });
+});
 const executionScheduler = new AgentExecutionScheduler(4);
 const resourceGroups = new ResourceGroupLimiter();
 const providerSemaphore = new ProviderSemaphore();
@@ -218,6 +225,7 @@ const leafAgentRunner = createDesktopLeafAgentRunner({
     return config && apiKey ? { config, apiKey } : undefined;
   },
   trashDirectory: path.join(dataDirectory, 'trash'),
+  secretBroker: terminalSecretBroker,
   profileRegistry,
   runtimeStore: agentRuntimeStore,
   memoryRuntime,
@@ -289,7 +297,10 @@ const workflowManager = new WorkflowManager(
   new WorkflowEngine(leafAgentRunner, executionScheduler, {
     profileRegistry,
     isolation: isolationManager,
-    toolRuntime: createDesktopWorkflowToolRuntime({ trashDirectory: path.join(dataDirectory, 'trash') }),
+    toolRuntime: createDesktopWorkflowToolRuntime({
+      trashDirectory: path.join(dataDirectory, 'trash'),
+      secretBroker: terminalSecretBroker
+    }),
     savedWorkflows: savedWorkflowRegistry,
     resourceGroups,
     providers: providerSemaphore,
@@ -345,7 +356,7 @@ const mcpManager = new McpManager((mcpServers) => {
 }, undefined, {
   onAuthorization: (requestId, url) => post({ type: 'mcp.oauth.authorization', requestId, url }),
   onCredentials: (serverId, credentials) => post({ type: 'mcp.oauth.credentials', serverId, credentials })
-});
+}, { trustStore: mcpTrustStore, enforceStdioSandbox: true, secretBroker: terminalSecretBroker });
 
 function globalSkillDirectories(settings: ProviderSettings): SkillDirectory[] {
   return [
@@ -369,9 +380,11 @@ async function reloadOrchestrationAssets(projectRoot?: string): Promise<void> {
 async function applyRuntimeConfig(
   settings: ProviderSettings,
   apiKeys: Record<string, string>,
-  mcpOAuthCredentials: Record<string, unknown>
+  mcpOAuthCredentials: Record<string, unknown>,
+  terminalSecrets: Record<string, string>
 ): Promise<void> {
   runtime = { settings, apiKeys };
+  terminalSecretBroker.replace(terminalSecrets);
   memoryRuntime.updateSettings(settings.memory);
   memoryService.updateSettings(settings.memory);
   await reloadOrchestrationAssets();
@@ -451,6 +464,23 @@ function createE2eProvider(): ModelProvider {
         return;
       }
       const hasToolResult = request.messages.some((message) => message.content.some((block) => block.type === 'tool_result'));
+      if (prompt.includes('E2E: terminal secret') && !hasToolResult) {
+        yield {
+          type: 'tool_call_completed' as const,
+          call: {
+            id: `e2e-terminal-${crypto.randomUUID()}`,
+            name: 'terminal',
+            input: {
+              command: 'node',
+              args: ['-e', 'console.log(process.env.WEREAD_API_KEY)'],
+              network: 'host',
+              secretEnv: ['WEREAD_API_KEY']
+            }
+          }
+        };
+        yield { type: 'response_completed' as const, stopReason: 'tool_calls' };
+        return;
+      }
       if (prompt.includes('E2E: approval') && !hasToolResult) {
         const target = prompt.includes('deny') ? 'e2e-denied.txt' : 'e2e-approved.txt';
         yield {
@@ -460,7 +490,12 @@ function createE2eProvider(): ModelProvider {
         yield { type: 'response_completed' as const, stopReason: 'tool_calls' };
         return;
       }
-      yield { type: 'text_delta' as const, text: prompt.includes('E2E: approval') ? 'approval handled' : 'hello from offline e2e' };
+      yield {
+        type: 'text_delta' as const,
+        text: prompt.includes('E2E: terminal secret')
+          ? 'terminal secret handled'
+          : prompt.includes('E2E: approval') ? 'approval handled' : 'hello from offline e2e'
+      };
       yield { type: 'response_completed' as const, stopReason: 'stop' };
     }
   };
@@ -645,7 +680,10 @@ async function startTurn(sessionId: string, text: string, images: ImageContentBl
       if (status.state === 'invalid') console.warn(`Hook config is invalid: ${status.path}: ${status.error ?? 'unknown error'}`);
     }
     await maybeGenerateTitle(sessionId, session.workingDirectory, session.title, history, text, controller.signal);
-    const toolRuntime = createDefaultToolRuntime({ trashDirectory: path.join(dataDirectory, 'trash') });
+    const toolRuntime = createDefaultToolRuntime({
+      trashDirectory: path.join(dataDirectory, 'trash'),
+      secretBroker: terminalSecretBroker
+    });
     const skillDirectories: SkillDirectory[] = [
       ...(projectBound ? [
         { path: path.join(session.workingDirectory, '.codex', 'skills'), origin: 'project' as const },
@@ -726,7 +764,12 @@ async function startTurn(sessionId: string, text: string, images: ImageContentBl
     const permissionGate = new ConversationGrantPermissionGate(
       new OrchestrationPermissionGate(
         new BrowserPermissionGate(
-          new ExtensionPermissionGate(new MemoryPermissionGate(toolRuntime.permissionGate, memoryRoot)),
+          new ExtensionPermissionGate(
+            new MemoryPermissionGate(toolRuntime.permissionGate, memoryRoot),
+            undefined,
+            (call) => mcpManager.describeApproval(call),
+            (call) => mcpManager.approvalGrantKey(call)
+          ),
           browserSettings,
           async (recordingId, workingDirectory) => {
             const entry = await browserRecordingRegistry.get(recordingId, workingDirectory);
@@ -739,7 +782,8 @@ async function startTurn(sessionId: string, text: string, images: ImageContentBl
         ),
         (call, context) => describeWorkflowRecordingPlan(call, context.workingDirectory)
       ),
-      conversationPermissionGrants
+      conversationPermissionGrants,
+      (call, context) => mcpManager.approvalGrantKey(call) ?? defaultSimilarApprovalKey(call, context)
     );
     runtimeBinding = runtimeEnvironments.bind(sessionId, 'main', {
       provider: e2eMode ? createE2eProvider() : createProvider(providerConfig, apiKey),
@@ -825,6 +869,7 @@ function launchTurn(sessionId: string, text: string, images: ImageContentBlock[]
 
 async function stopSession(sessionId: string): Promise<void> {
   controllers.get(sessionId)?.abort();
+  terminalSecretBroker.cancelSession(sessionId);
   for (const approval of approvals.values()) {
     if (approval.sessionId === sessionId) approval.resolve(false);
   }
@@ -836,7 +881,6 @@ async function stopSession(sessionId: string): Promise<void> {
   await agentRuntimeStore.deleteSession(sessionId);
   memoryRuntime.deleteSession(sessionId);
   sessionHookRuntimes.delete(sessionId);
-  conversationPermissionGrants.clear(sessionId);
 }
 
 parentPort.on('message', (event) => {
@@ -853,17 +897,23 @@ parentPort.on('message', (event) => {
   }
   const command = parsed.data;
   if (command.type === 'config.update') extensionReady = extensionReady.then(
-    () => applyRuntimeConfig(command.settings, command.apiKeys, command.mcpOAuthCredentials)
+    () => applyRuntimeConfig(command.settings, command.apiKeys, command.mcpOAuthCredentials, command.terminalSecrets)
   ).catch((error) => {
     post({ type: 'worker.error', message: error instanceof Error ? error.message : String(error) });
   });
   else if (command.type === 'turn.start') launchTurn(command.payload.sessionId, command.payload.text, command.payload.images, command.payload.providerId, command.payload.model);
   else if (command.type === 'turn.cancel') {
     controllers.get(command.sessionId)?.abort();
+    terminalSecretBroker.cancelSession(command.sessionId);
     for (const approval of approvals.values()) if (approval.sessionId === command.sessionId) approval.resolve(false);
+  } else if (command.type === 'terminal.secret.resolve') {
+    terminalSecretBroker.resolveRequest(command.requestId, command.value);
   } else if (command.type === 'session.stop') {
     void stopSession(command.sessionId)
-      .then(() => post({ type: 'session.stopped', requestId: command.requestId, sessionId: command.sessionId, ok: true }))
+      .then(() => {
+        conversationPermissionGrants.clear(command.sessionId);
+        post({ type: 'session.stopped', requestId: command.requestId, sessionId: command.sessionId, ok: true });
+      })
       .catch((error) => post({
         type: 'session.stopped', requestId: command.requestId, sessionId: command.sessionId, ok: false,
         error: error instanceof Error ? error.message : String(error)
@@ -887,8 +937,8 @@ parentPort.on('message', (event) => {
     }));
   } else if (command.type === 'approval.resolve') {
     const pending = approvals.get(command.requestId);
-    if (pending && command.allow && (command.scope === 'similar' || command.scope === 'conversation')) {
-      conversationPermissionGrants.grant(pending.request, command.scope);
+    if (pending && command.allow && (command.scope === 'session' || command.scope === 'similar' || command.scope === 'conversation')) {
+      conversationPermissionGrants.grant(pending.request, command.scope === 'session' ? 'similar' : command.scope);
     }
     pending?.resolve(command.allow);
   } else if (command.type === 'mcp.oauth.start') {
@@ -909,6 +959,14 @@ parentPort.on('message', (event) => {
       .catch((error) => postOAuthError(command.requestId, error));
   } else if (command.type === 'mcp.reconnect') {
     void extensionReady.then(() => mcpManager.reconnect(command.serverId))
+      .then(() => post({ type: 'mcp.oauth.result', requestId: command.requestId, ok: true }))
+      .catch((error) => postOAuthError(command.requestId, error));
+  } else if (command.type === 'mcp.trust') {
+    void extensionReady.then(() => mcpManager.trust(command.serverId))
+      .then(() => post({ type: 'mcp.oauth.result', requestId: command.requestId, ok: true }))
+      .catch((error) => postOAuthError(command.requestId, error));
+  } else if (command.type === 'mcp.trust.revoke') {
+    void extensionReady.then(() => mcpManager.revokeTrust(command.serverId))
       .then(() => post({ type: 'mcp.oauth.result', requestId: command.requestId, ok: true }))
       .catch((error) => postOAuthError(command.requestId, error));
   } else if (command.type === 'browser.heal.request') {
@@ -1000,6 +1058,7 @@ process.once('SIGTERM', () => {
     memoryCandidateStore.close();
     memoryIndex.close();
     hookInvocationStore.close();
+    mcpTrustStore.close();
     agentRuntimeStore.close();
     process.exit(0);
   });

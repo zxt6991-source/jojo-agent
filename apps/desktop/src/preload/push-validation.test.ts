@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseAgentPush, parseBrowserDockPush, parseBrowserSecretPush } from './push-validation';
+import { parseAgentPush, parseBrowserDockPush, parseBrowserSecretPush, parseTerminalSecretPush } from './push-validation';
 
 describe('preload push validation', () => {
   it('drops malformed agent events', () => {
@@ -18,5 +18,7 @@ describe('preload push validation', () => {
 
   it('rejects unknown fields in secret requests', () => {
     expect(parseBrowserSecretPush({ requestId: 'r', name: 'token', secret: 'leak' })).toBeNull();
+    expect(parseTerminalSecretPush({ requestId: 'r', name: 'TOKEN', value: 'leak' })).toBeNull();
+    expect(parseTerminalSecretPush({ requestId: 'r', name: 'TOKEN' })).toEqual({ requestId: 'r', name: 'TOKEN' });
   });
 });

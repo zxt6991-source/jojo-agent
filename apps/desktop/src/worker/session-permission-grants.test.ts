@@ -15,14 +15,15 @@ const askingGate = (): PermissionGate => ({
 });
 
 describe('conversation approval grants', () => {
-  it('decorates approvals with the three choices without storing raw command text', async () => {
+  it('decorates approvals with the three requested choices without storing raw command text', async () => {
     const gate = new ConversationGrantPermissionGate(askingGate(), new ConversationPermissionGrants());
     const decision = await gate.check({
       id: 'call-1', name: 'terminal', input: { command: 'pnpm', args: ['test', '--token=visible-secret'], cwd: '.' }
     }, context);
 
     expect(decision).toMatchObject({
-      decision: 'ask', request: { grant: { kind: 'approval', options: ['once', 'similar', 'conversation'] } }
+      decision: 'ask',
+      request: { grant: { kind: 'approval', options: ['once', 'similar', 'conversation'] } }
     });
     if (decision.decision !== 'ask') throw new Error('Expected approval.');
     expect(decision.request.grant?.key).toMatch(/^approval:[a-f0-9]{64}$/u);
@@ -31,7 +32,8 @@ describe('conversation approval grants', () => {
 
   it('allows only a matching command family after choosing similar', async () => {
     const grants = new ConversationPermissionGrants();
-    const gate = new ConversationGrantPermissionGate(askingGate(), grants);
+    const base = askingGate();
+    const gate = new ConversationGrantPermissionGate(base, grants);
     const first = await gate.check({ id: 'one', name: 'terminal', input: { command: 'pnpm', args: ['test', 'a'] } }, context);
     if (first.decision !== 'ask') throw new Error('Expected approval.');
     grants.grant(first.request, 'similar');
@@ -45,7 +47,7 @@ describe('conversation approval grants', () => {
     })).resolves.toMatchObject({ decision: 'ask' });
   });
 
-  it('allows the conversation and clears the grant with the session', async () => {
+  it('allows all ordinary approvals for the conversation and clears them with the session', async () => {
     const grants = new ConversationPermissionGrants();
     const gate = new ConversationGrantPermissionGate(askingGate(), grants);
     const first = await gate.check({ id: 'one', name: 'read_file', input: { path: '../outside.txt' } }, context);
@@ -59,9 +61,10 @@ describe('conversation approval grants', () => {
       .resolves.toMatchObject({ decision: 'ask' });
   });
 
-  it('does not bypass persistent project hook trust', async () => {
+  it('does not let conversation grants bypass persistent project hook trust', async () => {
     const grants = new ConversationPermissionGrants();
-    const gate = new ConversationGrantPermissionGate(askingGate(), grants);
+    const base = askingGate();
+    const gate = new ConversationGrantPermissionGate(base, grants);
     const seed: ApprovalRequest = {
       requestId: 'seed', sessionId: context.sessionId,
       call: { id: 'seed-call', name: 'terminal', input: {} }, reason: 'seed',
@@ -75,7 +78,7 @@ describe('conversation approval grants', () => {
     expect(decision.request).not.toHaveProperty('grant');
   });
 
-  it('groups files by operation and parent directory', () => {
+  it('groups external file reads by operation and parent directory', () => {
     const first = defaultSimilarApprovalKey({ id: 'one', name: 'read_file', input: { path: '../skills/a.md' } }, context);
     const second = defaultSimilarApprovalKey({ id: 'two', name: 'read_file', input: { path: '../skills/b.md' } }, context);
     const other = defaultSimilarApprovalKey({ id: 'three', name: 'read_file', input: { path: '../notes/a.md' } }, context);
@@ -83,11 +86,27 @@ describe('conversation approval grants', () => {
     expect(other).not.toBe(first);
   });
 
-  it('does not offer a broad similar rule for shells or interpreters', async () => {
+  it('does not offer a broad similar rule for shells or general interpreters', async () => {
     const gate = new ConversationGrantPermissionGate(askingGate(), new ConversationPermissionGrants());
     const decision = await gate.check({
       id: 'shell', name: 'terminal', input: { command: 'bash', args: ['-c', 'do-anything'] }
     }, context);
-    expect(decision).toMatchObject({ decision: 'ask', request: { grant: { options: ['once', 'conversation'] } } });
+    expect(decision).toMatchObject({
+      decision: 'ask', request: { grant: { options: ['once', 'conversation'] } }
+    });
+  });
+
+  it('does not broaden a similar grant across network or secret boundaries', () => {
+    const offline = defaultSimilarApprovalKey({
+      id: 'offline', name: 'terminal', input: { command: 'pnpm', args: ['test'], network: 'none', secretEnv: [] }
+    }, context);
+    const online = defaultSimilarApprovalKey({
+      id: 'online', name: 'terminal', input: { command: 'pnpm', args: ['test'], network: 'host', secretEnv: [] }
+    }, context);
+    const withSecret = defaultSimilarApprovalKey({
+      id: 'secret', name: 'terminal', input: { command: 'pnpm', args: ['test'], network: 'none', secretEnv: ['TOKEN'] }
+    }, context);
+    expect(online).not.toBe(offline);
+    expect(withSecret).not.toBe(offline);
   });
 });

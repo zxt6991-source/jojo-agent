@@ -5,6 +5,7 @@ import {
   MAX_ORCHESTRATION_EVENT_BYTES,
   OrchestrationEventSchema,
   serializedIpcBytes,
+  TerminalSecretRequestSchema,
   type AgentEvent,
   type BrowserDockState,
   type OrchestrationEvent
@@ -23,6 +24,16 @@ export function parseOrchestrationPush(raw: unknown): OrchestrationEvent | null 
 
 export function parseBrowserSecretPush(raw: unknown): { requestId: string; name: string; description?: string } | null {
   const parsed = BrowserSecretRequestSchema.safeParse(raw);
+  if (!parsed.success) return null;
+  return {
+    requestId: parsed.data.requestId,
+    name: parsed.data.name,
+    ...(parsed.data.description !== undefined ? { description: parsed.data.description } : {})
+  };
+}
+
+export function parseTerminalSecretPush(raw: unknown): { requestId: string; name: string; description?: string } | null {
+  const parsed = TerminalSecretRequestSchema.safeParse(raw);
   if (!parsed.success) return null;
   return {
     requestId: parsed.data.requestId,

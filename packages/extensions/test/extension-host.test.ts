@@ -205,7 +205,8 @@ describe('first-party contribution adapters', () => {
       instructions: 'Respect the remote service policy.'
     }));
     await manager.configure([{
-      id: 'demo', name: 'Demo', enabled: true, transport: 'stdio', command: 'demo', args: []
+      id: 'demo', name: 'Demo', enabled: true, transport: 'stdio', command: 'demo', args: [],
+      security: { allowInstructions: true }
     }]);
     const tools = new ToolContributionRegistry();
     const contexts = new ContextContributionRegistry();

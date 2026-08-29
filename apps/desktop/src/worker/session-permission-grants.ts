@@ -75,14 +75,18 @@ export function defaultSimilarApprovalKey(
     if (!SIMILAR_TERMINAL_COMMANDS.has(executable)) return undefined;
     const firstArgument = Array.isArray(input.args) && typeof input.args[0] === 'string' ? input.args[0] : '';
     const cwd = typeof input.cwd === 'string' ? input.cwd : '.';
-    return command ? hashGrantKey(['terminal', executable, firstArgument, cwd]) : undefined;
+    const network = input.network === 'host' ? 'host' : 'none';
+    const secretEnv = Array.isArray(input.secretEnv)
+      ? input.secretEnv.filter((name): name is string => typeof name === 'string').sort()
+      : [];
+    return command ? hashGrantKey(['terminal', executable, firstArgument, cwd, network, ...secretEnv]) : undefined;
   }
   if (['read_file', 'write_file', 'edit_file', 'delete_file'].includes(call.name) && typeof input.path === 'string') {
     return hashGrantKey([call.name, path.dirname(path.resolve(context.workingDirectory, input.path))]);
   }
-  if (call.name.startsWith('mcp__')) return hashGrantKey(['mcp', call.name]);
-  if (call.name === 'mcp_tool_call' && typeof input.name === 'string') return hashGrantKey(['mcp', input.name]);
-  if (call.name === 'mcp_read_resource' || call.name === 'mcp_get_prompt') return undefined;
+  if (call.name.startsWith('mcp_') && typeof input.serverId === 'string') {
+    return hashGrantKey([call.name, input.serverId]);
+  }
   if (call.name.startsWith('browser_') && typeof input.url === 'string') {
     try { return hashGrantKey([call.name, new URL(input.url).origin]); } catch { /* Fall through to the tool name. */ }
   }

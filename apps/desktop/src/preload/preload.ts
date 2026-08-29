@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { IPC, type DesktopApi } from '@desktop-agent/contracts';
-import { parseAgentPush, parseBrowserDockPush, parseBrowserSecretPush, parseOrchestrationPush } from './push-validation';
+import { parseAgentPush, parseBrowserDockPush, parseBrowserSecretPush, parseOrchestrationPush, parseTerminalSecretPush } from './push-validation';
 
 const api: DesktopApi = {
   listSessions: () => ipcRenderer.invoke(IPC.listSessions),
@@ -49,9 +49,12 @@ const api: DesktopApi = {
   saveBrowserRecording: (input) => ipcRenderer.invoke(IPC.saveBrowserRecording, input),
   duplicateBrowserRecording: (input) => ipcRenderer.invoke(IPC.duplicateBrowserRecording, input),
   resolveBrowserSecret: (input) => ipcRenderer.invoke(IPC.browserSecretResolve, input),
+  resolveTerminalSecret: (input) => ipcRenderer.invoke(IPC.terminalSecretResolve, input),
   connectMcpOAuth: (input) => ipcRenderer.invoke(IPC.connectMcpOAuth, input),
   disconnectMcpOAuth: (input) => ipcRenderer.invoke(IPC.disconnectMcpOAuth, input),
   reconnectMcp: (input) => ipcRenderer.invoke(IPC.reconnectMcp, input),
+  trustMcpServer: (input) => ipcRenderer.invoke(IPC.trustMcpServer, input),
+  revokeMcpServerTrust: (input) => ipcRenderer.invoke(IPC.revokeMcpServerTrust, input),
   getHookStatus: (input) => ipcRenderer.invoke(IPC.getHookStatus, input),
   reloadHooks: (input) => ipcRenderer.invoke(IPC.reloadHooks, input),
   trustProjectHooks: (input) => ipcRenderer.invoke(IPC.trustProjectHooks, input),
@@ -90,6 +93,14 @@ const api: DesktopApi = {
     };
     ipcRenderer.on(IPC.browserSecretRequest, handler);
     return () => ipcRenderer.removeListener(IPC.browserSecretRequest, handler);
+  },
+  onTerminalSecretRequest: (listener) => {
+    const handler = (_event: Electron.IpcRendererEvent, raw: unknown) => {
+      const request = parseTerminalSecretPush(raw);
+      if (request) listener(request);
+    };
+    ipcRenderer.on(IPC.terminalSecretRequest, handler);
+    return () => ipcRenderer.removeListener(IPC.terminalSecretRequest, handler);
   },
   onBrowserDockState: (listener) => {
     const handler = (_event: Electron.IpcRendererEvent, raw: unknown) => {

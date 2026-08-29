@@ -35,6 +35,28 @@ const IpcToolResultSchema = z.object({
   code: z.string().max(256).optional()
 }).strict();
 
+const TerminalSecurityApprovalPreviewSchema = z.object({
+  kind: z.literal('terminal'), command: z.string().max(1_000),
+  argumentsPreview: z.array(z.string().max(500)).max(20), cwd: z.string().max(4_096),
+  risk: z.enum(['medium', 'high', 'critical']),
+  sandbox: z.enum(['strong', 'container', 'soft', 'none']),
+  network: z.enum(['none', 'host']),
+  secretEnv: z.array(z.string().min(1).max(128)).max(20),
+  capabilities: z.array(z.string().max(128)).max(50),
+  reasons: z.array(z.string().max(2_000)).max(50)
+}).strict();
+const McpSecurityApprovalPreviewSchema = z.object({
+  kind: z.literal('mcp'), serverId: z.string().min(1).max(64), serverName: z.string().min(1).max(120),
+  toolName: z.string().min(1).max(256), risk: z.enum(['read', 'external_side_effect']),
+  capabilities: z.array(z.string().max(128)).max(50),
+  reasons: z.array(z.string().max(2_000)).max(50)
+}).strict();
+export const SecurityApprovalPreviewSchema = z.discriminatedUnion('kind', [
+  TerminalSecurityApprovalPreviewSchema,
+  McpSecurityApprovalPreviewSchema
+]);
+export type SecurityApprovalPreview = z.infer<typeof SecurityApprovalPreviewSchema>;
+
 export const ApprovalRequestSchema = z.object({
   requestId: z.string().min(1).max(256),
   sessionId: z.string().min(1).max(256),
@@ -48,10 +70,10 @@ export const ApprovalRequestSchema = z.object({
     deletions: z.number().int().nonnegative(),
     truncated: z.boolean().optional()
   }).strict().optional(),
+  security: SecurityApprovalPreviewSchema.optional(),
   grant: z.object({
-    kind: z.literal('approval'),
-    key: z.string().min(1).max(512),
-    options: z.array(z.enum(['once', 'similar', 'conversation'])).min(1).max(3)
+    kind: z.enum(['mcp_tool', 'approval']), key: z.string().min(1).max(512),
+    options: z.array(z.enum(['once', 'session', 'similar', 'conversation'])).min(1).max(4)
   }).strict().optional()
 }).strict();
 export type ApprovalRequest = z.infer<typeof ApprovalRequestSchema>;

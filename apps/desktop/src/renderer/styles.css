@@ -672,6 +672,10 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .browser-mode-copy strong { color: #292b30; font-size: 13px; font-weight: 650; }
 .browser-mode-copy span { color: #858990; font-size: 11px; line-height: 1.45; }
 .browser-secret-modal p { margin: 0 0 12px; color: #6a6e75; font-size: 13px; line-height: 1.5; }
+.terminal-secret-remember { display: flex !important; flex-direction: row !important; align-items: center; gap: 8px; margin-top: 12px !important; color: #686c73; font-size: 12px; }
+.terminal-secret-remember input { width: 15px !important; height: 15px !important; margin: 0; accent-color: #202124; }
+.terminal-secret-actions { flex-wrap: wrap; }
+.approval-security-warning { display: flex; flex-direction: column; gap: 4px; margin: 0 0 14px; padding: 10px 12px; border: 1px solid #ead8af; border-radius: 10px; background: #fff8e9; color: #76571f; font-size: 12px; line-height: 1.45; }
 .browser-domain-body .settings-error { margin: 0 0 10px; }
 .browser-recording-card > .settings-section-title button { min-height: 30px; padding: 0 11px; border: 1px solid #d7d8dc; border-radius: 8px; background: #fff; color: #555960; font-size: 10px; font-weight: 650; }
 .browser-recording-card > .settings-section-title button:disabled { cursor: default; opacity: .5; }

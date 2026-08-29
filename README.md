@@ -1,6 +1,6 @@
 # Jojo Agent
 
-本地优先的 Electron Coding Agent。一次对话绑定一个本地目录，模型可检索和阅读项目；主 Agent 修改文件或执行命令前会展示 Diff / 命令并逐次批准。后台 Sub-Agent 与声明式 Workflow DAG 可并行执行只读分析，或在独立 Git Worktree 中写入且不自动 Merge。会话记忆、MCP / Skills、受控浏览器与生命周期 Hooks 都挂在同一套 Runtime 上。
+本地优先的 Electron Coding Agent。一次对话绑定一个本地目录，模型可检索和阅读项目；主 Agent 修改文件或执行命令前会展示 Diff / 安全预览并逐次批准。Terminal 与 MCP stdio 进程通过共享 Process Sandbox 执行，MCP Server 还受配置指纹信任、HTTP SSRF 和细粒度审批边界保护。后台 Sub-Agent 与声明式 Workflow DAG 可并行执行只读分析，或在独立 Git Worktree 中写入且不自动 Merge。会话记忆、MCP / Skills、受控浏览器与生命周期 Hooks 都挂在同一套 Runtime 上。
 
 核心 Runtime 通过稳定的公共 API 和组合层同时服务 Electron、普通 Node 测试与无界面 Server Host，不依赖 Renderer 或 Electron IPC。
 
@@ -16,11 +16,15 @@
 - Headless Network Server：版本化 Zod Protocol、Server Core、Control / Observer Lease、幂等 mutation、REST / WebSocket、远程审批与断线后 Run 查询恢复。默认开放 Runtime Run / Lane / 审批 / 图片 / Sub-Agent；Workflow、Browser、Memory 远程 API 尚未挂出；
 - Client SDK：`JojoClient` / `JojoSession` / `JojoRun` 远程对象模型，自动注入认证和幂等键，并以 WebSocket 事件 + REST Snapshot 恢复运行结果；
 - 十个主 Agent 文件 / 网页 / 终端工具：`read_file`、`list_files`、`grep`、`glob`、`web_search`、`web_fetch`、`write_file`、`edit_file`、`delete_file`、`terminal`；另有 Sub-Agent、Workflow、Memory、Browser、MCP / Skills 编排工具；
-- 工作目录边界、真实路径 / 符号链接检查、写前冲突检测、精确编辑、回收站、Terminal 超时与进程组回收；会话删除通过 Main 生命周期门禁与 Storage tombstone / 跨实例串行化阻止晚到写入复活 JSONL；
+- 工作目录边界、真实路径 / 符号链接检查、写前冲突检测、精确编辑与回收站；Terminal 不经过 Shell，使用参数数组、环境变量 allowlist、假 HOME / 独立临时目录、流式脱敏、超时与进程树回收；
+- 共享 `@desktop-agent/process-sandbox`：Linux Bubblewrap、macOS Seatbelt 和 Soft fallback；Terminal 网络默认为 `none`，需要联网的命令可申请 `host` 全局网络并由用户在审批中决定，strict 模式在强后端不可用时 fail closed，fallback 的宿主能力会进入审批风险预览。macOS Seatbelt 是敏感目录与网络强化，不等同于 Linux mount namespace 的最小 Host 可见性；
+- 会话删除通过 Main 生命周期门禁与 Storage tombstone / 跨实例串行化阻止晚到写入复活 JSONL；
 - Desktop IPC 边界使用严格 Zod Schema 和负载大小限制，覆盖 Main ↔ Worker 命令与事件，以及 Preload 推送到 Renderer 的消息；非法消息会被拒绝并记录协议违规；
-- 主会话文件修改与 Terminal 逐次审批；工作区外读取逐次审批；
+- 主会话文件修改与 Terminal 默认逐次审批；审批展示命令、cwd、风险、沙箱强度、网络模式和密钥名称，允许范围可选“允许一次”“允许类似命令”或“本次对话都允许”，后两者只在当前对话的内存状态中生效；相似授权绑定网络模式与密钥名称，不能从离线授权扩大为联网或凭据授权；工作区外读取默认逐次审批；
 - 多会话侧边栏、对话 / 轨迹视图、Markdown 消毒、审批弹窗、停止、加密 API Key；
-- MCP（stdio / Streamable HTTP，含 OAuth）与本地 `SKILL.md`；工具 Schema 过大时改为 manifest + describe/call；`packages/extensions` 另有 Extension Host 契约与适配器测试，Desktop Worker 当前仍直接装配 MCP / Skills；
+- MCP（stdio / Streamable HTTP，含 OAuth）与本地 `SKILL.md`；Server 连接前按安全身份指纹信任，安全身份变化自动失效，stdio 复用 Process Sandbox，Server Instructions 默认不进入上下文；远程 MCP 默认只允许 HTTPS（显式 loopback HTTP 例外），DNS、私网 / Metadata 地址和每次 Redirect 都会重新校验；
+- MCP 工具默认按外部副作用审批；“允许类似命令”绑定当前 Server 配置指纹与精确工具，“本次对话都允许”则覆盖当前对话中的普通交互审批。只有已信任 Server、本地 `trustedReadTools` 策略与 `readOnlyHint=true` 同时满足时才按可信只读处理。大工具集自动切换 manifest + describe/call，Resource / Prompt 仍保持不可信与默认逐次审批；
+- MCP 结果有总量边界；敏感 env / Header 明文配置会被拒绝，可通过运行时 `SecretReference` 注入。Desktop Secret Broker 与 Terminal 共用系统安全存储；缺少命名密钥时用户可直接输入，或主动从 `.zshrc` 等 Shell 配置静态导入（不会执行启动脚本），OAuth Token 继续由 Electron `safeStorage` 加密；
 - 受控 CDP 浏览器（沙箱或附加本机 Chrome）、录制 / 回放 YAML、图片附件与视觉消息；
 - Markdown 记忆：`memory_status` / `memory_read` / `memory_search` / `memory_write` / `memory_forget` / `memory_restore`，候选治理与语义检索；用户记忆在 `~/.jojo/memory`；
 - 后台 Sub-Agent：Profile（`explore` / `general` / `code-review` / `synthesize`，可叠加 user/project）、Tool Policy、Continue / Send / Close、Structured Output；
@@ -29,7 +33,7 @@
 - WorkflowCard：步骤列表、依赖图、时间线、Usage、预算、错误码、结构化输出与 Isolation Diff；
 - 生命周期 Hooks：用户 `~/.jojo/hooks.yml`、项目 `.jojo/hooks.yml`（fingerprint 信任 / 可禁用）、设置页状态与 Reload。
 
-尚未实现：`jojo serve` 独立 CLI 产品化、Worker Runtime Backend、Workflow / Browser / Memory 远程 API、可视化 Workflow 编辑器、pipeline / human / HTTP Step、Scheduler、专用 Git 提交工具、自动更新与云同步。
+尚未实现：`jojo serve` 独立 CLI 产品化、Worker Runtime Backend、Workflow / Browser / Memory 远程 API、可视化 Workflow 编辑器、pipeline / human / HTTP Step、Scheduler、专用 Git 提交工具、自动更新与云同步。Process Sandbox 后续项还包括 Windows 强隔离、OCI Backend、可选域名级网络代理、cgroup 资源限制，以及系统 Keychain provider。
 
 ## 开发
 
@@ -46,7 +50,7 @@ pnpm dev
 2. 选择一个本地项目目录创建会话（可写 Sub-Agent / Workflow 需要 Git 仓库）；
 3. 在输入框右下角选择本轮模型后发送任务。可用「＋」添加最多 4 张图片。
 
-项目内检索和公开网页搜索 / 抓取默认允许；主会话的文件修改会先展示 Diff，Terminal 始终弹出审批。浏览器、MCP、Skills、记忆与 Hooks 的配置见 [`docs/current-features.md`](./docs/current-features.md)。
+项目内检索和公开网页搜索 / 抓取默认允许；主会话的文件修改会先展示 Diff，Terminal 默认弹出带沙箱能力说明的审批。命令可显式申请主机全局网络和命名密钥，审批会醒目标示；审批菜单可选择仅允许一次、允许同类命令或允许本次对话。对话授权不会持久化，项目 Hooks 的版本信任也不会被它绕过。MCP 首次连接或安全配置变化后需要重新信任。浏览器、MCP、Skills、记忆与 Hooks 的配置见 [`docs/current-features.md`](./docs/current-features.md)。
 
 常用命令：
 
@@ -113,11 +117,21 @@ pnpm test
 | Worker IPC strict schema / size guard | `packages/contracts/test/desktop-ipc.test.ts` |
 | Preload push runtime validation | `apps/desktop/src/preload/push-validation.test.ts` |
 | Session delete lease / JSONL 防复活 | `apps/desktop/src/main/session-lifecycle.test.ts`、`packages/storage/test/session-delete-race.test.ts` |
+| Process Sandbox / Terminal 安全边界 | `packages/process-sandbox/test/process-sandbox.test.ts`、`packages/tools-node/test/tools.test.ts` |
+| MCP 信任、stdio 沙箱、HTTP SSRF 与 Secret Ref | `packages/extensions/test/extensions.test.ts`、`packages/extensions/test/sandboxed-stdio.test.ts`、`packages/extensions/test/mcp-http-security.test.ts`、`packages/storage/test/sqlite-mcp-trust-store.test.ts` |
 | Memory 存储 / 候选 / 语义检索 | `packages/memory/test/` |
 | 浏览器驱动与录制 | `packages/browser-automation/test/`、`apps/browser-test-site/` |
 | 真实 Electron 离线冒烟 | `apps/desktop/e2e/smoke.spec.ts` |
 
 Electron E2E 覆盖应用启动、离线回合、审批允许 / 拒绝、取消慢回合，以及运行中删除与并发发送竞态；删除场景还会重启应用确认会话和 JSONL 没有复活。CI 在 Linux 上依次执行 `pnpm install --frozen-lockfile`、lint、typecheck、test、Xvfb Electron E2E，以及带重试的 `electron-forge package`。
+
+macOS Seatbelt 实机边界测试默认跳过（嵌套沙箱环境无法运行 `sandbox-exec`）；在非沙箱化的 macOS 终端中可显式执行：
+
+```bash
+JOJO_STRONG_SANDBOX_TEST=1 pnpm vitest run packages/process-sandbox/test/process-sandbox.test.ts
+```
+
+该测试验证 Node 命令可运行，同时宿主 HOME 读取和回环网络连接被拒绝。
 
 ### Workflow
 
@@ -167,15 +181,16 @@ packages/orchestration/   Sub-Agent、Workflow Engine、Isolation、Saved Workfl
 packages/browser-automation/ 可复用的 CDP 浏览器驱动、录制 / 回放与 Host 适配
 packages/providers/       Chat Completions 与 Embedding 协议适配
 packages/tools-node/      文件、目录、终端与权限 Gate
+packages/process-sandbox/ Terminal / MCP stdio 共用的进程、环境、文件系统与网络隔离后端
 packages/storage/         SQLite Runtime / Server State、JSONL Session / Workflow Journal 与普通配置
-packages/extensions/      MCP 客户端、延迟工具目录、Skills 发现；包内含尚未接入 Desktop 的 Extension Host
+packages/extensions/      MCP 客户端、安全策略、延迟工具目录、Skills 发现；包内含尚未接入 Desktop 的 Extension Host
 packages/hooks/           生命周期 Hook Engine、hooks.yml 加载与项目信任
 packages/memory/          Markdown 记忆、候选治理、语义检索与 Runtime Memory 适配
 ```
 
 各 Workspace 的职责、依赖方向与安全边界见 [`docs/technical-implementation/`](./docs/technical-implementation/README.md)。
 
-会话、普通配置、JSONL、Runtime SQLite 和浏览器下载 / 录制在 Electron `userData`。API Key 与 MCP OAuth 凭据由操作系统安全存储加密；普通配置和 JSONL 不含明文密钥。用户级 Hooks、Agent Profile、Saved Workflow 和记忆分别在 `~/.jojo/`（`hooks.yml`、`agents/`、`workflows/`、`memory/`）。
+会话、普通配置、JSONL、Runtime SQLite、MCP Trust Grant 和浏览器下载 / 录制在 Electron `userData`。API Key、Terminal / MCP 命名密钥与 MCP OAuth 凭据由操作系统安全存储加密；普通配置和 JSONL 不含明文密钥。Terminal 通过 `secretEnv` 只提交名称，MCP env / Header 的敏感字段只接受 Secret Reference；缺失值可由用户输入或从 Shell 配置静态导入。用户级 Hooks、Agent Profile、Saved Workflow 和记忆分别在 `~/.jojo/`（`hooks.yml`、`agents/`、`workflows/`、`memory/`）。
 
 ## 当前验证范围
 
@@ -184,9 +199,9 @@ packages/memory/          Markdown 记忆、候选治理、语义检索与 Runti
 - Server / Client：Protocol、Lease、幂等 mutation、远程审批、断线后 Run Snapshot 恢复；
 - Orchestration：Sub-Agent 生命周期、Profile / Tool Policy、Workflow DAG、Worktree 隔离、Budget、依赖图 UI；
 - Memory：Markdown 存储、候选治理、语义检索与权限 Gate；
-- Extensions：Skill 发现 / 按需加载、MCP 连接状态和大工具集延迟激活；Extension Host 契约在包内测试，尚未接入 Desktop Worker；
+- Extensions：Skill 发现 / 按需加载、MCP 指纹信任和失效、stdio Sandbox、HTTP SSRF / Redirect、OAuth 安全存储、Secret Reference、结果限额、Instructions 默认关闭、大工具集延迟激活与细粒度审批；Extension Host 契约在包内测试，尚未接入 Desktop Worker；
 - Hooks：配置校验、项目信任 / Disable、Shell 超时与输出上限、Runtime 恢复语义；
-- Tools：大文件截断、项目检索、修改 Diff、读后写冲突、精确编辑、回收站、符号链接逃逸和目录外审批；
+- Tools / Process Sandbox：大文件截断、项目检索、修改 Diff、读后写冲突、精确编辑、回收站、符号链接逃逸、目录外审批，以及 Terminal 环境 allowlist、流式脱敏、风险分类、网络 / 工作区能力预览、隔离 cwd 和进程树终止；
 - Desktop 边界：Main ↔ Worker 与 Preload 推送的运行时校验、IPC 大小限制、协议违规拒绝；
 - Storage：SQLite Runtime conformance / crash resume、JSONL 损坏尾恢复、单会话运行锁、删除 tombstone / 并发防复活、Workflow Journal Resume、Server State SQLite；
 - Browser / 富内容：可复用 CDP 驱动、录制 / 回放、域名与 URL 校验、下载文件名净化、浏览器权限 Gate、视觉消息序列化；

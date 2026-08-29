@@ -1,4 +1,4 @@
-import type { Tool } from '@desktop-agent/contracts';
+import type { SecretBroker, Tool } from '@desktop-agent/contracts';
 import os from 'node:os';
 import path from 'node:path';
 import { DefaultPermissionGate } from './default-permission-gate.js';
@@ -9,6 +9,8 @@ import { GrepTool } from './grep-tool.js';
 import { ListFilesTool } from './list-files-tool.js';
 import { ReadFileTool } from './read-file-tool.js';
 import { TerminalTool } from './terminal-tool.js';
+import { createProcessSandbox, type ProcessSandbox, type SandboxMode } from '@desktop-agent/process-sandbox';
+import { DefaultTerminalSecurityPolicy, type TerminalSecurityPolicy } from './terminal-security-policy.js';
 import { WebFetchTool } from './web-fetch-tool.js';
 import { WebSearchTool } from './web-search-tool.js';
 
@@ -20,6 +22,9 @@ export {
   createTerminalEnvironment,
   redactSensitiveEnvironmentAssignments
 } from './terminal-tool.js';
+export { DefaultTerminalSecurityPolicy } from './terminal-security-policy.js';
+export type { TerminalCapability, TerminalRisk, TerminalSecurityPlan, TerminalSecurityPolicy } from './terminal-security-policy.js';
+export { classifyTerminalCommand } from './terminal-risk.js';
 export { DeleteFileTool, EditFileTool, WriteFileTool } from './file-tools.js';
 export { FileSnapshotRegistry } from './file-snapshots.js';
 export { GlobTool } from './glob-tool.js';
@@ -43,11 +48,17 @@ export { UnsafeWebUrlError, assertSafeHttpUrl, isBlockedFetchAddress, parseHttpU
 export type DefaultToolOptions = {
   snapshots?: FileSnapshotRegistry;
   trashDirectory?: string;
+  sandboxMode?: SandboxMode;
+  sandbox?: ProcessSandbox;
+  terminalPolicy?: TerminalSecurityPolicy;
+  secretBroker?: SecretBroker;
 };
 
 export function createDefaultTools(options: DefaultToolOptions = {}): Tool[] {
   const snapshots = options.snapshots ?? new FileSnapshotRegistry();
   const trashDirectory = options.trashDirectory ?? path.join(os.tmpdir(), 'desktop-agent-trash');
+  const sandbox = options.sandbox ?? createProcessSandbox(options.sandboxMode ?? 'fallback');
+  const terminalPolicy = options.terminalPolicy ?? new DefaultTerminalSecurityPolicy(sandbox);
   return [
     new ReadFileTool(undefined, snapshots),
     new ListFilesTool(),
@@ -58,7 +69,7 @@ export function createDefaultTools(options: DefaultToolOptions = {}): Tool[] {
     new WriteFileTool(snapshots, trashDirectory),
     new EditFileTool(snapshots, trashDirectory),
     new DeleteFileTool(snapshots, trashDirectory),
-    new TerminalTool()
+    new TerminalTool({ sandbox, policy: terminalPolicy, ...(options.secretBroker ? { secretBroker: options.secretBroker } : {}) })
   ];
 }
 
@@ -67,8 +78,10 @@ export function createDefaultToolRuntime(options: Omit<DefaultToolOptions, 'snap
   permissionGate: DefaultPermissionGate;
 } {
   const snapshots = new FileSnapshotRegistry();
+  const sandbox = options.sandbox ?? createProcessSandbox(options.sandboxMode ?? 'fallback');
+  const terminalPolicy = options.terminalPolicy ?? new DefaultTerminalSecurityPolicy(sandbox);
   return {
-    tools: createDefaultTools({ ...options, snapshots }),
-    permissionGate: new DefaultPermissionGate(snapshots)
+    tools: createDefaultTools({ ...options, snapshots, sandbox, terminalPolicy }),
+    permissionGate: new DefaultPermissionGate(snapshots, terminalPolicy)
   };
 }

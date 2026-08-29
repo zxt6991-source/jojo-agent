@@ -70,7 +70,7 @@ function skillScope(skill: SkillStatus): string {
 }
 
 function approvalTitle(request: ApprovalRequest): string {
-  if (request.call.name.startsWith('mcp__')) return '调用外部 MCP 工具';
+  if (request.security?.kind === 'mcp' || request.call.name.startsWith('mcp__') || request.call.name.startsWith('mcp_')) return '调用外部 MCP 工具';
   if (request.call.name === 'browser_open') return '打开网页';
   if (request.call.name === 'browser_download') return '下载网页文件';
   if (request.call.name === 'browser_eval') return '执行网页脚本';
@@ -85,7 +85,7 @@ function approvalTitle(request: ApprovalRequest): string {
 
 function approvalToolLabel(request: ApprovalRequest): string {
   if (request.call.name === 'trust_project_hooks') return 'Hooks';
-  if (request.call.name.startsWith('mcp__')) return 'MCP';
+  if (request.security?.kind === 'mcp' || request.call.name.startsWith('mcp__') || request.call.name.startsWith('mcp_')) return 'MCP';
   if (request.call.name.startsWith('browser_')) return '浏览器';
   if (request.call.name === 'terminal') return '终端';
   if (request.call.name === 'read_file') return '文件';
@@ -393,6 +393,23 @@ function BrowserSettingsPage({
 
 function approvalSummary(request: ApprovalRequest): string {
   if (request.preview) return request.preview.path;
+  if (request.security?.kind === 'terminal') {
+    const command = [request.security.command, ...request.security.argumentsPreview].map(quoteCommandPart).join(' ');
+    return [command, `cwd: ${request.security.cwd}`, `risk: ${request.security.risk}`,
+      `network: ${request.security.network === 'host' ? '全局网络' : '禁用'}`,
+      `secrets: ${request.security.secretEnv.join(', ') || 'none'}`,
+      `sandbox: ${request.security.sandbox}`, `capabilities: ${request.security.capabilities.join(', ')}`,
+      ...request.security.reasons.map((reason) => `- ${reason}`)].join('\n');
+  }
+  if (request.security?.kind === 'mcp') {
+    return [
+      `${request.security.serverName} (${request.security.serverId})`,
+      `tool: ${request.security.toolName}`,
+      `risk: ${request.security.risk}`,
+      `capabilities: ${request.security.capabilities.join(', ') || 'none'}`,
+      ...request.security.reasons.map((reason) => `- ${reason}`)
+    ].join('\n');
+  }
   const input = request.call.input;
   if (!input || typeof input !== 'object' || Array.isArray(input)) return JSON.stringify(input);
   const record = input as Record<string, unknown>;
@@ -617,6 +634,11 @@ function App() {
   const [hookBusy, setHookBusy] = useState(false);
   const [browserSecret, setBrowserSecret] = useState<{ requestId: string; name: string; description?: string } | null>(null);
   const [browserSecretValue, setBrowserSecretValue] = useState('');
+  const [terminalSecret, setTerminalSecret] = useState<{ requestId: string; name: string; description?: string } | null>(null);
+  const [terminalSecretValue, setTerminalSecretValue] = useState('');
+  const [terminalSecretRemember, setTerminalSecretRemember] = useState(true);
+  const [terminalSecretBusy, setTerminalSecretBusy] = useState(false);
+  const [terminalSecretError, setTerminalSecretError] = useState('');
   const [extensionSearch, setExtensionSearch] = useState('');
   const [extensionEditorOpen, setExtensionEditorOpen] = useState(false);
   const [selectedSkill, setSelectedSkill] = useState<SkillStatus | null>(null);
@@ -883,6 +905,13 @@ function App() {
       setBrowserSecret(request);
       setBrowserSecretValue('');
     });
+    const offTerminalSecret = window.desktopAgent.onTerminalSecretRequest((request) => {
+      setTerminalSecret(request);
+      setTerminalSecretValue('');
+      setTerminalSecretRemember(true);
+      setTerminalSecretBusy(false);
+      setTerminalSecretError('');
+    });
     const offDock = window.desktopAgent.onBrowserDockState((state) => setBrowserDock(state));
     const offOrchestration = window.desktopAgent.onOrchestrationEvent((event) => {
       if (event.type === 'workflow.changed') {
@@ -922,10 +951,10 @@ function App() {
         && (event.event === 'memory.embedding.completed' || event.event === 'memory.embedding.failed')) {
         void window.desktopAgent.getMemoryStatus(memoryDirectoryInput()).then(setMemoryStatus).catch(() => undefined);
       }
-      else if (event.type === 'turn.failed') { setError(event.message); runningRef.current = false; setRunningSessionId(null); setTurnStartedAt(null); setApproval(null); void reloadActive(); }
-      else if (event.type === 'turn.completed' || event.type === 'turn.cancelled') { runningRef.current = false; setRunningSessionId(null); setTurnStartedAt(null); setApproval(null); void reloadActive(); }
+      else if (event.type === 'turn.failed') { setError(event.message); runningRef.current = false; setRunningSessionId(null); setTurnStartedAt(null); setApproval(null); setTerminalSecret(null); void reloadActive(); }
+      else if (event.type === 'turn.completed' || event.type === 'turn.cancelled') { runningRef.current = false; setRunningSessionId(null); setTurnStartedAt(null); setApproval(null); setTerminalSecret(null); void reloadActive(); }
     });
-    return () => { offSessions(); offExtensions(); offSecret(); offDock(); offOrchestration(); offEvents(); };
+    return () => { offSessions(); offExtensions(); offSecret(); offTerminalSecret(); offDock(); offOrchestration(); offEvents(); };
   }, []);
 
   useEffect(() => {
@@ -1174,7 +1203,7 @@ function App() {
   }));
   const sessionBusy = runningSessionId === activeId;
   const showProjectPicker = active?.projectBound === false && messages.length === 0 && !sessionBusy;
-  const overlayOpen = settingsOpen || Boolean(approval) || Boolean(browserSecret) || skillCreateOpen || Boolean(selectedSkill) || projectPickerOpen;
+  const overlayOpen = settingsOpen || Boolean(approval) || Boolean(browserSecret) || Boolean(terminalSecret) || skillCreateOpen || Boolean(selectedSkill) || projectPickerOpen;
   const visibleDock = browserDock && activeId && browserDock.sessionId === activeId ? browserDock : null;
   const browsing = Boolean(visibleDock);
   const visibleWorkflows = useMemo(() => workflowsForSession(workflows, activeId), [workflows, activeId]);
@@ -1459,6 +1488,10 @@ function App() {
     {approval && <div className="approval-layer"><div className="approval-panel" role="dialog" aria-modal="true" aria-labelledby="approval-title">
       <div className="approval-tool"><span className="approval-tool-icon" aria-hidden="true">›_</span><span>{approvalToolLabel(approval)}</span></div>
       <h2 id="approval-title">{approvalQuestion(approval)}</h2>
+      {approval.security?.kind === 'terminal' && (approval.security.network === 'host' || approval.security.secretEnv.length > 0) && <div className="approval-security-warning">
+        {approval.security.network === 'host' && <span>此命令将使用主机全局网络。</span>}
+        {approval.security.secretEnv.length > 0 && <span>批准后注入密钥：{approval.security.secretEnv.join(', ')}</span>}
+      </div>}
       {approval.preview ? <ApprovalDiff request={approval} /> : <pre className="approval-command">{approvalSummary(approval)}</pre>}
       <div className="approval-actions">
         <button className="approval-reject" disabled={approvalResolving} onClick={() => void resolveApprovalChoice(approval, false)}><span>{approval.call.name === 'trust_project_hooks' ? '禁用项目 Hooks' : '拒绝'}</span><kbd>Esc</kbd></button>
@@ -1495,6 +1528,49 @@ function App() {
           setBrowserSecretValue('');
         }}>取消</button>
         <button className="primary" type="submit">继续回放</button>
+      </div>
+    </form></div>}
+    {terminalSecret && <div className="modal-backdrop"><form className="modal browser-secret-modal" role="dialog" aria-modal="true" aria-labelledby="terminal-secret-title" onSubmit={(event) => {
+      event.preventDefault();
+      setTerminalSecretBusy(true);
+      setTerminalSecretError('');
+      void window.desktopAgent.resolveTerminalSecret({
+        requestId: terminalSecret.requestId,
+        action: 'submit',
+        value: terminalSecretValue,
+        remember: terminalSecretRemember
+      }).then(() => {
+        setTerminalSecret(null);
+        setTerminalSecretValue('');
+      }).catch((cause) => setTerminalSecretError(cause instanceof Error ? cause.message : String(cause)))
+        .finally(() => setTerminalSecretBusy(false));
+    }}>
+      <div className="modal-tag">Secret Broker</div>
+      <h2 id="terminal-secret-title">终端或 MCP 需要 {terminalSecret.name}</h2>
+      <p>密钥只会在批准后注入目标进程，不会进入模型上下文、命令参数或授权规则。</p>
+      {terminalSecret.description && <p>{terminalSecret.description}</p>}
+      <label>密钥
+        <input type="password" autoFocus value={terminalSecretValue} disabled={terminalSecretBusy} onChange={(event) => setTerminalSecretValue(event.target.value)} />
+      </label>
+      <label className="terminal-secret-remember"><input type="checkbox" checked={terminalSecretRemember} disabled={terminalSecretBusy} onChange={(event) => setTerminalSecretRemember(event.target.checked)} /> 使用系统安全存储记住此密钥</label>
+      {terminalSecretError && <div className="settings-error" role="alert">{terminalSecretError}</div>}
+      <div className="modal-actions terminal-secret-actions">
+        <button type="button" disabled={terminalSecretBusy} onClick={() => {
+          setTerminalSecretBusy(true);
+          void window.desktopAgent.resolveTerminalSecret({ requestId: terminalSecret.requestId, action: 'cancel', remember: false })
+            .then(() => { setTerminalSecret(null); setTerminalSecretValue(''); })
+            .catch((cause) => setTerminalSecretError(cause instanceof Error ? cause.message : String(cause)))
+            .finally(() => setTerminalSecretBusy(false));
+        }}>取消</button>
+        <button type="button" disabled={terminalSecretBusy} onClick={() => {
+          setTerminalSecretBusy(true);
+          setTerminalSecretError('');
+          void window.desktopAgent.resolveTerminalSecret({ requestId: terminalSecret.requestId, action: 'import', remember: terminalSecretRemember })
+            .then(() => { setTerminalSecret(null); setTerminalSecretValue(''); })
+            .catch((cause) => setTerminalSecretError(cause instanceof Error ? cause.message : String(cause)))
+            .finally(() => setTerminalSecretBusy(false));
+        }}>从 Shell 配置导入</button>
+        <button className="primary" type="submit" disabled={terminalSecretBusy || !terminalSecretValue}>注入并继续</button>
       </div>
     </form></div>}
     {settingsOpen && <section className="settings-screen" aria-label="设置">
@@ -1729,15 +1805,26 @@ function App() {
           const status = extensionStatus.mcpServers.find((item) => item.serverId === server.id);
           const detail = server.transport === 'stdio' ? `${server.command} ${server.args.join(' ')}` : server.url;
           const oauth = server.transport === 'streamable_http' && server.auth?.type === 'oauth';
+          const capabilityText = `工作区 ${server.security?.workspaceAccess ?? 'none'} · 网络 ${server.security?.network ?? 'none'} · 沙箱 ${server.security?.sandboxMode ?? 'fallback'}`;
           const statusText = status?.state === 'connected'
             ? [`${status.toolCount} 个工具`, ...(status.resourceCount ? [`${status.resourceCount} 个资源`] : []), ...(status.promptCount ? [`${status.promptCount} 个提示词`] : [])].join(' · ')
-            : status?.state === 'connecting' ? '连接中' : status?.state === 'authorizing' ? '等待登录' : status?.state === 'auth_required' ? '需要登录' : status?.state === 'error' ? (status.error || '连接失败') : server.enabled ? '等待连接' : '已停用';
+            : status?.state === 'connecting' ? '连接中' : status?.state === 'trust_required' ? `需要信任此配置 · ${capabilityText}${status.fingerprint ? ` · ${status.fingerprint.slice(0, 12)}` : ''}${server.transport === 'stdio' && ['npx', 'uvx'].includes(server.command) ? ' · 可能下载并执行代码' : ''}` : status?.state === 'authorizing' ? '等待登录' : status?.state === 'auth_required' ? '需要登录' : status?.state === 'error' ? (status.error || '连接失败') : server.enabled ? '等待连接' : '已停用';
           return <article className="extension-item" key={server.id} title={detail}>
             <ExtensionIcon kind="mcp" />
             <div className="extension-item-copy"><strong>{server.name}</strong><span>{detail}</span></div>
             <span className={`extension-item-meta ${status?.state === 'error' ? 'failed' : ''}`}>{server.transport === 'stdio' ? '本地' : '远程'} · {statusText}</span>
             <div className="extension-item-actions">
-            {oauth && server.enabled && <button type="button" className="extension-auth-button" disabled={oauthBusyServerId === server.id || status?.state === 'authorizing'} onClick={async () => {
+            {status?.state === 'trust_required' && server.enabled && <button type="button" className="extension-auth-button" disabled={oauthBusyServerId === server.id} onClick={async () => {
+              setExtensionError(''); setOauthBusyServerId(server.id);
+              try {
+                await saveExtensionDraft();
+                await window.desktopAgent.trustMcpServer({ serverId: server.id });
+                await refreshExtensionStatus();
+              } catch (cause) {
+                setExtensionError(cause instanceof Error ? cause.message : String(cause));
+              } finally { setOauthBusyServerId(''); }
+            }}>{oauthBusyServerId === server.id ? '处理中…' : '信任并连接'}</button>}
+            {oauth && server.enabled && status?.state !== 'trust_required' && <button type="button" className="extension-auth-button" disabled={oauthBusyServerId === server.id || status?.state === 'authorizing'} onClick={async () => {
               setExtensionError(''); setOauthBusyServerId(server.id);
               try {
                 await saveExtensionDraft();
@@ -1748,7 +1835,7 @@ function App() {
                 setExtensionError(cause instanceof Error ? cause.message : String(cause));
               } finally { setOauthBusyServerId(''); }
             }}>{oauthBusyServerId === server.id || status?.state === 'authorizing' ? '处理中…' : status?.state === 'connected' ? '断开账号' : '连接账号'}</button>}
-            {server.enabled && status?.state !== 'auth_required' && <button type="button" className="extension-auth-button" disabled={oauthBusyServerId === server.id || status?.state === 'connecting' || status?.state === 'authorizing'} onClick={async () => {
+            {server.enabled && status?.state !== 'auth_required' && status?.state !== 'trust_required' && <button type="button" className="extension-auth-button" disabled={oauthBusyServerId === server.id || status?.state === 'connecting' || status?.state === 'authorizing'} onClick={async () => {
               setExtensionError(''); setOauthBusyServerId(server.id);
               try {
                 await saveExtensionDraft();
@@ -1758,6 +1845,15 @@ function App() {
                 setExtensionError(cause instanceof Error ? cause.message : String(cause));
               } finally { setOauthBusyServerId(''); }
             }}>{status?.state === 'connecting' ? '重连中…' : '重新连接'}</button>}
+            {server.enabled && status && status.state !== 'trust_required' && status.state !== 'disabled' && <button type="button" className="extension-auth-button" disabled={oauthBusyServerId === server.id} onClick={async () => {
+              setExtensionError(''); setOauthBusyServerId(server.id);
+              try {
+                await window.desktopAgent.revokeMcpServerTrust({ serverId: server.id });
+                await refreshExtensionStatus();
+              } catch (cause) {
+                setExtensionError(cause instanceof Error ? cause.message : String(cause));
+              } finally { setOauthBusyServerId(''); }
+            }}>撤销信任</button>}
             <button type="button" role="switch" aria-checked={server.enabled} aria-label={`${server.enabled ? '停用' : '启用'} ${server.name}`} className={`extension-switch ${server.enabled ? 'on' : ''}`} onClick={() => {
               const servers = extensionDraft.mcpServers.map((item) => item.id === server.id ? { ...item, enabled: !server.enabled } : item);
               setExtensionDraft((current) => ({ ...current, mcpServers: servers }));
@@ -1771,7 +1867,7 @@ function App() {
           && <div className="extension-empty-state"><span className="mcp-empty-illustration" aria-hidden="true"><i /><b /><em /></span><strong>{extensionSearch ? '没有匹配结果' : settingsSection === 'skills' ? '尚未发现 Skill' : '暂无 MCP 服务'}</strong><span>{extensionSearch ? '尝试其他关键词' : settingsSection === 'skills' ? '可通过 install_skill 或目录设置添加' : '点击右上角“添加”，在数据输入栏中配置服务'}</span></div>}
       </section>
       {extensionError && <div className="settings-error extension-error" role="alert">{extensionError}</div>}
-      <footer className="extensions-footer"><p>{settingsSection === 'mcp' ? '所有 MCP 工具执行前均需批准，请只配置可信服务。' : 'Skill 完整内容仅在模型调用 load_skill 后进入上下文。'}</p><div><button className="primary" type="submit">保存更改</button></div></footer>
+      <footer className="extensions-footer"><p>{settingsSection === 'mcp' ? 'MCP Server 配置需先按指纹信任；配置变化后会自动失效。工具默认逐次批准，也可仅授权当前会话。' : 'Skill 完整内容仅在模型调用 load_skill 后进入上下文。'}</p><div><button className="primary" type="submit">保存更改</button></div></footer>
       </div>
       </section>
       {extensionEditorOpen && settingsSection === 'mcp' && <aside className="mcp-data-panel" aria-label="MCP 数据输入栏">
@@ -1790,10 +1886,12 @@ function App() {
         </div>
         <details className="extension-example"><summary>查看配置格式</summary><pre>{`[
   { "id": "local", "name": "Local MCP", "enabled": true,
-    "transport": "stdio", "command": "npx", "args": ["-y", "server-package"] },
+    "transport": "stdio", "command": "npx", "args": ["-y", "server-package"],
+    "security": { "workspaceAccess": "none", "network": "none", "sandboxMode": "fallback" } },
   { "id": "remote", "name": "Remote MCP", "enabled": true,
     "transport": "streamable_http", "url": "https://example.com/mcp",
-    "versionNegotiation": "auto" }
+    "headers": { "Authorization": { "secretRef": { "provider": "env", "key": "MCP_AUTH" } } },
+    "security": { "network": "outbound", "trustedReadTools": ["search"] } }
 ]`}</pre></details>
       </aside>}
       </div>

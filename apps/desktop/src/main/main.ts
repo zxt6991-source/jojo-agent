@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  AcceptMemoryCandidateInputSchema, ApprovalInputSchema, BindSessionProjectInputSchema, BrowserDockActionSchema, BrowserDockLayoutSchema, BrowserRecordingRegistryActionInputSchema, BrowserRecordingRegistryInputSchema, BrowserRecordingStudioInputSchema, CreateSessionInputSchema, CreateSkillInputSchema, DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS, DEFAULT_MODEL_MAX_OUTPUT_TOKENS, DeleteMemoryEntryInputSchema, DuplicateBrowserRecordingInputSchema, GetExtensionStatusInputSchema, GetHookStatusInputSchema, GetMemoryStatusInputSchema, HookProjectActionInputSchema, ImportSkillInputSchema, IPC, ListModelsInputSchema, MAX_IMAGE_ATTACHMENTS, MAX_IMAGE_BYTES, McpServerIdInputSchema, OpenHookConfigInputSchema, RebuildMemoryIndexInputSchema, RebuildSemanticMemoryIndexInputSchema, RejectMemoryCandidateInputSchema, RenameSessionInputSchema, SaveBrowserRecordingInputSchema, SaveExtensionSettingsInputSchema, SaveMemorySettingsInputSchema, SaveSettingsInputSchema,
+  AcceptMemoryCandidateInputSchema, ApprovalInputSchema, BindSessionProjectInputSchema, BrowserDockActionSchema, BrowserDockLayoutSchema, BrowserRecordingRegistryActionInputSchema, BrowserRecordingRegistryInputSchema, BrowserRecordingStudioInputSchema, CreateSessionInputSchema, CreateSkillInputSchema, DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS, DEFAULT_MODEL_MAX_OUTPUT_TOKENS, DeleteMemoryEntryInputSchema, DuplicateBrowserRecordingInputSchema, GetExtensionStatusInputSchema, GetHookStatusInputSchema, GetMemoryStatusInputSchema, HookProjectActionInputSchema, ImportSkillInputSchema, IPC, ListModelsInputSchema, MAX_IMAGE_ATTACHMENTS, MAX_IMAGE_BYTES, McpServerIdInputSchema, OpenHookConfigInputSchema, RebuildMemoryIndexInputSchema, RebuildSemanticMemoryIndexInputSchema, RejectMemoryCandidateInputSchema, RenameSessionInputSchema, ResolveTerminalSecretInputSchema, SaveBrowserRecordingInputSchema, SaveExtensionSettingsInputSchema, SaveMemorySettingsInputSchema, SaveSettingsInputSchema,
   SessionIdInputSchema, SkillPathInputSchema, StartTurnInputSchema, UpdateSkillInputSchema, WorkflowRunActionInputSchema,
   WorkerCommandSchema, WorkerMessageSchema, serializedIpcBytes,
   type BrowserHealProposal, type BrowserHealRequest, type ExtensionStatus, type MemoryStatusSnapshot, type ProviderSettings, type SessionCompactionRecord, type WorkerCommand, type WorkerMessage, type WorkflowRunSnapshot
@@ -22,6 +22,7 @@ import { renderConversationTrajectoryMarkdown, trajectoryExportFilename } from '
 import { BrowserRuntime } from './browser-runtime';
 import { mapChromeCdpError, probeChromeCdp } from './browser-backends/chrome-cdp-client';
 import { SessionLifecycleManager } from './session-lifecycle';
+import { parseShellSecret } from './shell-secret-import';
 
 declare const MAIN_WINDOW_VITE_DEV_SERVER_URL: string | undefined;
 declare const MAIN_WINDOW_VITE_NAME: string;
@@ -40,6 +41,7 @@ let browserRuntime: BrowserRuntime | null = null;
 let secretPath: string;
 let legacySecretPath: string;
 let mcpOAuthSecretPath: string;
+let terminalSecretPath: string;
 let runtimeDatabasePath: string;
 let extensionStatus: ExtensionStatus = { mcpServers: [], skills: [] };
 let visibleSkillPaths = new Map<string, ExtensionStatus['skills'][number]>();
@@ -63,6 +65,7 @@ const memoryRequests = new Map<string, {
 }>();
 const workflowRuns = new Map<string, WorkflowRunSnapshot>();
 const browserSecretPrompts = new Map<string, { resolve: (value: string | undefined) => void }>();
+const terminalSecretRequests = new Map<string, { sessionId: string; name: string }>();
 const browserHealRequests = new Map<string, {
   resolve: (proposal: BrowserHealProposal) => void;
   reject: (error: Error) => void;
@@ -190,6 +193,40 @@ async function saveMcpOAuthCredentials(credentials: Record<string, unknown>): Pr
   await writeFile(mcpOAuthSecretPath, safeStorage.encryptString(JSON.stringify(credentials)), { mode: 0o600 });
 }
 
+async function readTerminalSecrets(): Promise<Record<string, string>> {
+  try {
+    if (!safeStorage.isEncryptionAvailable()) return {};
+    const encrypted = await readFile(terminalSecretPath);
+    const parsed: unknown = JSON.parse(safeStorage.decryptString(encrypted));
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    return Object.fromEntries(Object.entries(parsed).filter(([name, value]) => (
+      /^[A-Za-z_][A-Za-z0-9_]*$/u.test(name) && typeof value === 'string' && value.length > 0
+    ))) as Record<string, string>;
+  } catch { return {}; }
+}
+
+async function saveTerminalSecret(name: string, value: string): Promise<void> {
+  if (!safeStorage.isEncryptionAvailable()) throw new Error('Operating system secure storage is unavailable.');
+  const secrets = await readTerminalSecrets();
+  secrets[name] = value;
+  await mkdir(path.dirname(terminalSecretPath), { recursive: true });
+  await writeFile(terminalSecretPath, safeStorage.encryptString(JSON.stringify(secrets)), { mode: 0o600 });
+}
+
+async function importTerminalSecretFromShell(name: string): Promise<string> {
+  const candidates = ['.zshrc', '.zprofile', '.bashrc', '.bash_profile', '.profile'];
+  for (const candidate of candidates) {
+    const filePath = path.join(os.homedir(), candidate);
+    try {
+      const info = await stat(filePath);
+      if (!info.isFile() || info.size > 1024 * 1024) continue;
+      const value = parseShellSecret(await readFile(filePath, 'utf8'), name);
+      if (value) return value;
+    } catch { /* Missing or unreadable startup files are skipped. */ }
+  }
+  throw new Error(`未在受支持的 Shell 配置中找到可安全导入的 ${name}。仅支持静态 export NAME=value，不会执行 Shell。`);
+}
+
 async function updateMcpOAuthCredentials(serverId: string, credentials: unknown): Promise<void> {
   const all = await readMcpOAuthCredentials();
   if (credentials && typeof credentials === 'object' && Object.keys(credentials).length > 0) all[serverId] = credentials;
@@ -201,7 +238,8 @@ async function pushConfig(): Promise<void> {
   const apiKeys = await readApiKeys();
   const settings = await configStore.get(apiKeys);
   const mcpOAuthCredentials = await readMcpOAuthCredentials();
-  postWorkerCommand({ type: 'config.update', settings, apiKeys, mcpOAuthCredentials });
+  const terminalSecrets = await readTerminalSecrets();
+  postWorkerCommand({ type: 'config.update', settings, apiKeys, mcpOAuthCredentials, terminalSecrets });
 }
 
 function waitForWorker(requestId: string, timeoutMs = 120_000): Promise<void> {
@@ -245,6 +283,9 @@ function finishMemoryRequest(message: Extract<WorkerMessage, { type: 'memory.res
 
 async function stopSessionRuntime(sessionId: string): Promise<void> {
   if (!worker) return;
+  for (const [requestId, pending] of terminalSecretRequests) {
+    if (pending.sessionId === sessionId) terminalSecretRequests.delete(requestId);
+  }
   const requestId = crypto.randomUUID();
   const completion = waitForWorker(requestId);
   postWorkerCommand({ type: 'session.stop', requestId, sessionId });
@@ -449,6 +490,21 @@ function startWorker(): void {
         else finishMcpOAuth(message.requestId, new Error(message.error ?? 'MCP OAuth authorization failed.'));
       }).catch((error) => finishMcpOAuth(message.requestId, error instanceof Error ? error : new Error(String(error))));
     }
+    else if (message.type === 'terminal.secret.request') {
+      void (async () => {
+        const saved = (await readTerminalSecrets())[message.name];
+        if (saved) {
+          postWorkerCommand({ type: 'terminal.secret.resolve', requestId: message.requestId, value: saved });
+          return;
+        }
+        terminalSecretRequests.set(message.requestId, { sessionId: message.sessionId, name: message.name });
+        sendToRenderer(IPC.terminalSecretRequest, {
+          requestId: message.requestId,
+          name: message.name,
+          ...(message.description ? { description: message.description } : {})
+        });
+      })().catch(() => postWorkerCommand({ type: 'terminal.secret.resolve', requestId: message.requestId }));
+    }
     else if (message.type === 'browser.request') {
       const controller = new AbortController();
       browserRequestControllers.set(message.requestId, controller);
@@ -511,6 +567,7 @@ function startWorker(): void {
     for (const request of browserHealRequests.values()) request.reject(new Error(`Agent runtime exited (${code}).`));
     for (const controller of browserRequestControllers.values()) controller.abort(new Error(`Agent runtime exited (${code}).`));
     browserRequestControllers.clear();
+    terminalSecretRequests.clear();
     sendToRenderer(IPC.agentEvent, { type: 'turn.failed', code: 'worker_exit', message: `Agent runtime exited (${code}).` });
     worker = null;
     if (!quitting) setTimeout(startWorker, 1_000);
@@ -613,6 +670,9 @@ function registerIpc(): void {
   });
   ipcMain.handle(IPC.cancelTurn, async (event, raw) => {
     assertTrusted(event); const { sessionId } = SessionIdInputSchema.parse({ sessionId: raw });
+    for (const [requestId, pending] of terminalSecretRequests) {
+      if (pending.sessionId === sessionId) terminalSecretRequests.delete(requestId);
+    }
     postWorkerCommand({ type: 'turn.cancel', sessionId });
   });
   ipcMain.handle(IPC.listWorkflowRuns, async (event, raw) => {
@@ -959,6 +1019,23 @@ function registerIpc(): void {
     browserSecretPrompts.delete(input.requestId);
     pending.resolve(input.value?.trim() || undefined);
   });
+  ipcMain.handle(IPC.terminalSecretResolve, async (event, raw) => {
+    assertTrusted(event);
+    const input = ResolveTerminalSecretInputSchema.parse(raw);
+    const pending = terminalSecretRequests.get(input.requestId);
+    if (!pending) return;
+    let value: string | undefined;
+    if (input.action === 'submit') value = input.value;
+    else if (input.action === 'import') value = await importTerminalSecretFromShell(pending.name);
+    terminalSecretRequests.delete(input.requestId);
+    if (value && input.remember) await saveTerminalSecret(pending.name, value);
+    postWorkerCommand({
+      type: 'terminal.secret.resolve',
+      requestId: input.requestId,
+      ...(value ? { value } : {})
+    });
+    if (value && input.remember) await pushConfig();
+  });
   ipcMain.handle(IPC.connectMcpOAuth, async (event, raw) => {
     assertTrusted(event);
     const { serverId } = McpServerIdInputSchema.parse(raw);
@@ -980,6 +1057,24 @@ function registerIpc(): void {
     const requestId = crypto.randomUUID();
     const completion = waitForWorker(requestId);
     postWorkerCommand({ type: 'mcp.reconnect', requestId, serverId });
+    await completion;
+  });
+  ipcMain.handle(IPC.trustMcpServer, async (event, raw) => {
+    assertTrusted(event);
+    const { serverId } = McpServerIdInputSchema.parse(raw);
+    if (!worker) throw new Error('Agent runtime is not available.');
+    const requestId = crypto.randomUUID();
+    const completion = waitForWorker(requestId);
+    postWorkerCommand({ type: 'mcp.trust', requestId, serverId });
+    await completion;
+  });
+  ipcMain.handle(IPC.revokeMcpServerTrust, async (event, raw) => {
+    assertTrusted(event);
+    const { serverId } = McpServerIdInputSchema.parse(raw);
+    if (!worker) throw new Error('Agent runtime is not available.');
+    const requestId = crypto.randomUUID();
+    const completion = waitForWorker(requestId);
+    postWorkerCommand({ type: 'mcp.trust.revoke', requestId, serverId });
     await completion;
   });
   ipcMain.handle(IPC.getHookStatus, async (event, raw) => {
@@ -1069,6 +1164,7 @@ else {
     secretPath = path.join(dataDirectory, 'secrets', 'provider-keys.bin');
     legacySecretPath = path.join(dataDirectory, 'secrets', 'provider-key.bin');
     mcpOAuthSecretPath = path.join(dataDirectory, 'secrets', 'mcp-oauth.bin');
+    terminalSecretPath = path.join(dataDirectory, 'secrets', 'terminal-env.bin');
     runtimeDatabasePath = path.join(dataDirectory, 'runtime', 'agent-runtime.sqlite');
     registerIpc(); startWorker(); createWindow();
   });
@@ -1079,6 +1175,7 @@ else {
     for (const requestId of oauthRequests.keys()) finishMcpOAuth(requestId, new Error('Application is closing.'));
     for (const pending of browserSecretPrompts.values()) pending.resolve(undefined);
     browserSecretPrompts.clear();
+    terminalSecretRequests.clear();
     for (const request of browserHealRequests.values()) request.reject(new Error('Application is closing.'));
     for (const controller of browserRequestControllers.values()) controller.abort(new Error('Application is closing.'));
     browserRequestControllers.clear();

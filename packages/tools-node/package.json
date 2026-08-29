@@ -1,1 +1,1 @@
-{"name":"@desktop-agent/tools-node","version":"0.1.0","type":"module","exports":"./src/index.ts","dependencies":{"@desktop-agent/contracts":"workspace:*","zod":"^4.1.13"}}
+{"name":"@desktop-agent/tools-node","version":"0.1.0","type":"module","exports":"./src/index.ts","dependencies":{"@desktop-agent/contracts":"workspace:*","@desktop-agent/process-sandbox":"workspace:*","zod":"^4.1.13"}}

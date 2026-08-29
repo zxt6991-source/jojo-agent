@@ -32,6 +32,7 @@
       "@desktop-agent/hooks": ["packages/hooks/src/index.ts"],
       "@desktop-agent/providers": ["packages/providers/src/index.ts"],
       "@desktop-agent/tools-node": ["packages/tools-node/src/index.ts"],
+      "@desktop-agent/process-sandbox": ["packages/process-sandbox/src/index.ts"],
       "@desktop-agent/storage": ["packages/storage/src/index.ts"]
       ,"@desktop-agent/memory": ["packages/memory/src/index.ts"]
       ,"@desktop-agent/extensions": ["packages/extensions/src/index.ts"]

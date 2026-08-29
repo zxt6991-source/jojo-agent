@@ -120,7 +120,14 @@ describe('node tools', () => {
       SSH_AUTH_SOCK: '/tmp/agent.sock'
     });
 
-    expect(environment).toEqual({ PATH: '/usr/bin', SSH_AUTH_SOCK: '/tmp/agent.sock' });
+    expect(environment).toMatchObject({ HOME: '/home/jojo', TMPDIR: '/tmp', PWD: process.cwd() });
+    expect(environment.PATH).toContain('/usr/bin');
+    expect(environment).not.toHaveProperty('OPENAI_API_KEY');
+    expect(environment).not.toHaveProperty('PROVIDER_AUTH_TOKEN');
+    expect(environment).not.toHaveProperty('DATABASE_PASSWORD');
+    expect(environment).not.toHaveProperty('NODE_OPTIONS');
+    expect(environment).not.toHaveProperty('ELECTRON_RUN_AS_NODE');
+    expect(environment).not.toHaveProperty('SSH_AUTH_SOCK');
   });
 
   it('redacts credential assignments from terminal results and legacy history', () => {
@@ -133,7 +140,7 @@ describe('node tools', () => {
       'PATH=/usr/bin',
       'OPENAI_API_KEY=[REDACTED]',
       'export SERVICE_AUTH_TOKEN=[REDACTED]',
-      'SSH_AUTH_SOCK=/tmp/agent.sock'
+      'SSH_AUTH_SOCK=[REDACTED]'
     ].join('\n'));
   });
 
@@ -146,6 +153,62 @@ describe('node tools', () => {
     );
 
     expect(result).toMatchObject({ ok: false, code: 'permission_denied' });
+  });
+
+  it('includes a bounded terminal security plan in the approval request', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'desktop-agent-terminal-preview-'));
+    const decision = await new DefaultPermissionGate().check(
+      { id: 'preview', name: 'terminal', input: {
+        command: 'sh', args: ['-c', 'echo ok'], network: 'host', secretEnv: ['WEREAD_API_KEY']
+      } },
+      { sessionId: 's1', workingDirectory: root }
+    );
+    expect(decision).toMatchObject({
+      decision: 'ask',
+      request: { security: {
+        kind: 'terminal', command: 'sh', risk: 'high', network: 'host', secretEnv: ['WEREAD_API_KEY'],
+        capabilities: expect.arrayContaining(['workspace:write', 'network:outbound', 'credential:secret'])
+      } }
+    });
+  });
+
+  it('injects named broker secrets only after approval and redacts exact values', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'desktop-agent-terminal-secret-'));
+    const requested: string[] = [];
+    const progress: string[] = [];
+    const tool = new TerminalTool({
+      secretBroker: {
+        resolve: async (reference) => {
+          requested.push(reference.key);
+          return { value: 'weread-secret-value', dispose: () => undefined };
+        }
+      }
+    });
+    const result = await tool.execute({
+      command: process.execPath,
+      args: ['-e', 'console.log(process.env.WEREAD_API_KEY)'],
+      secretEnv: ['WEREAD_API_KEY']
+    }, { ...context(root, { approved: true }), onProgress: (text) => progress.push(text) });
+
+    expect(requested).toEqual(['WEREAD_API_KEY']);
+    expect(result).toMatchObject({ ok: true });
+    expect(result.content).toContain('[REDACTED]');
+    expect(result.content).not.toContain('weread-secret-value');
+    expect(progress.join('')).not.toContain('weread-secret-value');
+  });
+
+  it('redacts terminal progress before emitting it', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'desktop-agent-terminal-redact-'));
+    const progress: string[] = [];
+    const result = await new TerminalTool().execute({
+      command: process.execPath,
+      args: ['-e', 'console.log("API_TOKEN=secret-value"); console.log("Bearer abc.def.ghi")']
+    }, { ...context(root, { approved: true }), onProgress: (text) => progress.push(text) });
+    expect(result.content).not.toContain('secret-value');
+    expect(result.content).not.toContain('abc.def.ghi');
+    expect(progress.join('')).not.toContain('secret-value');
+    expect(progress.join('')).not.toContain('abc.def.ghi');
+    expect(progress.join('')).toContain('[REDACTED]');
   });
 
   it('captures terminal output and non-zero exits', async () => {

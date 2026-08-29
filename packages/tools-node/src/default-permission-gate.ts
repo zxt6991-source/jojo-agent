@@ -10,9 +10,14 @@ import { mutationErrorCode, prepareFileMutation } from './file-mutation.js';
 import { parseHttpUrl, UnsafeWebUrlError } from './web-url.js';
 import { isWebFetchSpillPath } from './web-fetch-storage.js';
 import { resolveWorkspacePath } from './workspace-paths.js';
+import { createProcessSandbox } from '@desktop-agent/process-sandbox';
+import { DefaultTerminalSecurityPolicy, type TerminalSecurityPolicy } from './terminal-security-policy.js';
 
 export class DefaultPermissionGate implements PermissionGate {
-  constructor(private readonly snapshots = new FileSnapshotRegistry()) {}
+  constructor(
+    private readonly snapshots = new FileSnapshotRegistry(),
+    private readonly terminalPolicy: TerminalSecurityPolicy = new DefaultTerminalSecurityPolicy(createProcessSandbox('fallback'))
+  ) {}
 
   async check(
     call: ToolCall,
@@ -105,17 +110,19 @@ export class DefaultPermissionGate implements PermissionGate {
     if (!parsed.success) return { decision: 'deny', reason: parsed.error.message, code: 'invalid_input' };
 
     try {
-      const resolved = await resolveWorkspacePath(context.workingDirectory, parsed.data.cwd);
-      if (!resolved.inside) {
-        return {
-          decision: 'deny',
-          reason: 'Terminal cwd is outside the working directory.'
-        };
-      }
-
+      const plan = await this.terminalPolicy.plan(parsed.data, { workingDirectory: context.workingDirectory });
       return {
         decision: 'ask',
-        request: this.createRequest(call, context.sessionId, 'Run a local command')
+        request: {
+          ...this.createRequest(call, context.sessionId, 'Run a local command'),
+          security: {
+            kind: 'terminal', command: plan.approval.executable,
+            argumentsPreview: plan.approval.argumentsPreview, cwd: plan.approval.cwd,
+            risk: plan.approval.risk, sandbox: plan.approval.sandboxStrength,
+            network: plan.approval.network, secretEnv: plan.approval.secretEnv,
+            capabilities: plan.approval.capabilities, reasons: plan.approval.reasons
+          }
+        }
       };
     } catch (error) {
       return this.denyError(error);

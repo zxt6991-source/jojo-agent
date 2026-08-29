@@ -16,6 +16,10 @@ export const TerminalInput = z.object({
   ),
   args: z.array(z.string()).max(100).default([]),
   cwd: z.string().default('.'),
+  network: z.enum(['none', 'host']).default('none'),
+  secretEnv: z.array(
+    z.string().trim().min(1).max(128).regex(/^[A-Za-z_][A-Za-z0-9_]*$/u)
+  ).max(20).default([]),
   timeoutMs: z.number().int().min(1_000).max(300_000).default(120_000)
 });
 
