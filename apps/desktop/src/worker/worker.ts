@@ -64,6 +64,10 @@ import { parse as parseYaml } from 'yaml';
 import { BrowserPermissionGate, BrowserToolBridge } from './browser-tools';
 import { UtilityModelBrowserHealingAdapter } from './browser-healing';
 import { createDesktopLeafAgentRunner, createDesktopWorkflowToolRuntime } from './orchestration-runtime';
+import {
+  ConversationGrantPermissionGate,
+  ConversationPermissionGrants
+} from './session-permission-grants';
 import { TurnTaskRegistry } from './turn-task-registry';
 import { projectRuntimeMessagesToLegacy, seedRuntimeLaneFromLegacy } from '../runtime/legacy-projection';
 
@@ -130,7 +134,8 @@ const memoryRuntime = new DurableMemoryRuntime(memoryStore, undefined, memoryCan
 const memoryReady = memoryStore.initialize().catch(() => undefined);
 const controllers = new Map<string, AbortController>();
 const turnTasks = new TurnTaskRegistry();
-const approvals = new Map<string, { resolve: (allowed: boolean) => void; sessionId: string }>();
+const approvals = new Map<string, { resolve: (allowed: boolean) => void; sessionId: string; request: ApprovalRequest }>();
+const conversationPermissionGrants = new ConversationPermissionGrants();
 const sessionHookRuntimes = new Map<string, HookRuntime>();
 const runtimeEnvironments = new RuntimeEnvironmentRegistry();
 const jojoRuntime = createJojoRuntime({
@@ -530,7 +535,7 @@ function waitForApproval(request: ApprovalRequest, signal: AbortSignal): Promise
     };
     const onAbort = () => finish(false);
     signal.addEventListener('abort', onAbort, { once: true });
-    approvals.set(request.requestId, { resolve: finish, sessionId: request.sessionId });
+    approvals.set(request.requestId, { resolve: finish, sessionId: request.sessionId, request });
   });
 }
 
@@ -546,6 +551,7 @@ async function startTurn(sessionId: string, text: string, images: ImageContentBl
   let controller: AbortController | null = null;
   let runtimeBinding: { dispose(): void } | undefined;
   let failureEmitted = false;
+  let terminalEvent: Extract<AgentEvent, { type: 'turn.completed' | 'turn.cancelled' | 'turn.failed' }> | undefined;
   try {
     release = store.acquire(sessionId);
     await extensionReady;
@@ -575,7 +581,16 @@ async function startTurn(sessionId: string, text: string, images: ImageContentBl
     controllers.set(sessionId, controller);
     const emitAgentEvent = (event: AgentEvent) => {
       if (event.type === 'turn.failed') failureEmitted = true;
+      if (event.type === 'turn.completed' || event.type === 'turn.cancelled' || event.type === 'turn.failed') {
+        terminalEvent = event;
+        return;
+      }
       post({ type: 'agent.event', event });
+    };
+    const flushTerminalEvent = () => {
+      if (!terminalEvent) return;
+      post({ type: 'agent.event', event: terminalEvent });
+      terminalEvent = undefined;
     };
     let loadedHooks = await loadHookRuntime({
       workingDirectory: session.workingDirectory,
@@ -708,20 +723,23 @@ async function startTurn(sessionId: string, text: string, images: ImageContentBl
       ] : [])
     ];
     const staticTools = [...toolRuntime.tools, ...memoryTools, ...browserBridge.tools(), ...orchestrationTools];
-    const permissionGate = new OrchestrationPermissionGate(
-      new BrowserPermissionGate(
-        new ExtensionPermissionGate(new MemoryPermissionGate(toolRuntime.permissionGate, memoryRoot)),
-        browserSettings,
-        async (recordingId, workingDirectory) => {
-          const entry = await browserRecordingRegistry.get(recordingId, workingDirectory);
-          return [
-            `Source: ${entry.source}${entry.source === 'project' ? ` (${entry.trust})` : ''}`,
-            `Domains: ${entry.effectSummary.domains.join(', ') || 'none'}`,
-            `Effects: ${entry.effectSummary.effects.join(', ') || 'none'}`
-          ].join('\n');
-        }
+    const permissionGate = new ConversationGrantPermissionGate(
+      new OrchestrationPermissionGate(
+        new BrowserPermissionGate(
+          new ExtensionPermissionGate(new MemoryPermissionGate(toolRuntime.permissionGate, memoryRoot)),
+          browserSettings,
+          async (recordingId, workingDirectory) => {
+            const entry = await browserRecordingRegistry.get(recordingId, workingDirectory);
+            return [
+              `Source: ${entry.source}${entry.source === 'project' ? ` (${entry.trust})` : ''}`,
+              `Domains: ${entry.effectSummary.domains.join(', ') || 'none'}`,
+              `Effects: ${entry.effectSummary.effects.join(', ') || 'none'}`
+            ].join('\n');
+          }
+        ),
+        (call, context) => describeWorkflowRecordingPlan(call, context.workingDirectory)
       ),
-      (call, context) => describeWorkflowRecordingPlan(call, context.workingDirectory)
+      conversationPermissionGrants
     );
     runtimeBinding = runtimeEnvironments.bind(sessionId, 'main', {
       provider: e2eMode ? createE2eProvider() : createProvider(providerConfig, apiKey),
@@ -767,6 +785,7 @@ async function startTurn(sessionId: string, text: string, images: ImageContentBl
         signal: controller.signal
       })).result;
       await projectRuntimeMessagesToLegacy(resumed.messages, commitRuntimeMessage);
+      flushTerminalEvent();
       if (resumed.status !== 'completed') return;
     }
     const lane = await runtimeSession.getLane('main');
@@ -783,6 +802,7 @@ async function startTurn(sessionId: string, text: string, images: ImageContentBl
       }
     })).result;
     await projectRuntimeMessagesToLegacy(completed.messages, commitRuntimeMessage);
+    flushTerminalEvent();
   } catch (error) {
     if (!failureEmitted) {
       post({ type: 'agent.event', event: {
@@ -816,6 +836,7 @@ async function stopSession(sessionId: string): Promise<void> {
   await agentRuntimeStore.deleteSession(sessionId);
   memoryRuntime.deleteSession(sessionId);
   sessionHookRuntimes.delete(sessionId);
+  conversationPermissionGrants.clear(sessionId);
 }
 
 parentPort.on('message', (event) => {
@@ -865,7 +886,11 @@ parentPort.on('message', (event) => {
       error: error instanceof Error ? error.message : String(error)
     }));
   } else if (command.type === 'approval.resolve') {
-    approvals.get(command.requestId)?.resolve(command.allow);
+    const pending = approvals.get(command.requestId);
+    if (pending && command.allow && (command.scope === 'similar' || command.scope === 'conversation')) {
+      conversationPermissionGrants.grant(pending.request, command.scope);
+    }
+    pending?.resolve(command.allow);
   } else if (command.type === 'mcp.oauth.start') {
     void extensionReady.then(
       () => mcpManager.startOAuth(command.serverId, command.requestId, command.redirectUrl, command.state)

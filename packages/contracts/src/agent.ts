@@ -47,6 +47,11 @@ export const ApprovalRequestSchema = z.object({
     additions: z.number().int().nonnegative(),
     deletions: z.number().int().nonnegative(),
     truncated: z.boolean().optional()
+  }).strict().optional(),
+  grant: z.object({
+    kind: z.literal('approval'),
+    key: z.string().min(1).max(512),
+    options: z.array(z.enum(['once', 'similar', 'conversation'])).min(1).max(3)
   }).strict().optional()
 }).strict();
 export type ApprovalRequest = z.infer<typeof ApprovalRequestSchema>;

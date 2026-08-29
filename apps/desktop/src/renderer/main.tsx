@@ -1,4 +1,4 @@
-import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import type {
   AgentEvent, ApprovalRequest, BrowserDockState, BrowserRecordingRegistrySnapshot, BrowserRecordingStudioDetail, ExtensionSettings, ExtensionStatus, HookSettingsSnapshot, ImageContentBlock, MemoryCandidateReviewEdit, MemorySettings, MemoryStatusSnapshot, Message, ProviderConfig, ProviderSettings, SessionCompactionRecord, SessionMeta, SkillDetail, SkillStatus, WorkflowRunSnapshot, WorkspaceChanges
@@ -583,6 +583,8 @@ function App() {
   const [inspectedId, setInspectedId] = useState<string | null>(null);
   const [turnStartedAt, setTurnStartedAt] = useState<number | null>(null);
   const [approval, setApproval] = useState<ApprovalRequest | null>(null);
+  const [approvalMenuOpen, setApprovalMenuOpen] = useState(false);
+  const [approvalResolving, setApprovalResolving] = useState(false);
   const runningRef = useRef(false);
   const [runningSessionId, setRunningSessionId] = useState<string | null>(null);
   const [error, setError] = useState('');
@@ -896,7 +898,7 @@ function App() {
       else if (event.type === 'text.delta' || event.type === 'tool.started' || event.type === 'tool.progress' || event.type === 'tool.finished') {
         setLiveSteps((steps) => applyLiveEvent(steps, event));
       }
-      else if (event.type === 'approval.required') setApproval(event.request);
+      else if (event.type === 'approval.required') { setApprovalMenuOpen(false); setApprovalResolving(false); setApproval(event.request); }
       else if (event.type === 'usage') setUsage((current) => ({
         input: current.input + (event.inputTokens ?? 0), output: current.output + (event.outputTokens ?? 0),
         cacheRead: current.cacheRead + (event.cacheReadInputTokens ?? 0), cacheWrite: current.cacheWrite + (event.cacheWriteInputTokens ?? 0)
@@ -993,18 +995,36 @@ function App() {
     setLiveSteps([]);
   };
 
+  const resolveApprovalChoice = useCallback(async (
+    request: ApprovalRequest,
+    allow: boolean,
+    scope: 'once' | 'similar' | 'conversation' = 'once'
+  ): Promise<void> => {
+    setApprovalResolving(true);
+    setError('');
+    try {
+      await window.desktopAgent.resolveApproval({ requestId: request.requestId, allow, scope });
+      setApprovalMenuOpen(false);
+      setApproval((current) => current?.requestId === request.requestId ? null : current);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setApprovalResolving(false);
+    }
+  }, []);
+
   useEffect(() => {
     if (!approval) return;
     const handleApprovalShortcut = (event: KeyboardEvent) => {
       if (event.key !== 'Escape' && event.key !== 'Enter') return;
       event.preventDefault();
       event.stopImmediatePropagation();
-      void window.desktopAgent.resolveApproval({ requestId: approval.requestId, allow: event.key === 'Enter' });
-      setApproval(null);
+      if (event.key === 'Escape' && approvalMenuOpen) { setApprovalMenuOpen(false); return; }
+      if (!approvalResolving) void resolveApprovalChoice(approval, event.key === 'Enter');
     };
     window.addEventListener('keydown', handleApprovalShortcut, true);
     return () => window.removeEventListener('keydown', handleApprovalShortcut, true);
-  }, [approval]);
+  }, [approval, approvalMenuOpen, approvalResolving, resolveApprovalChoice]);
 
   useEffect(() => {
     if (!selectedSkill) return;
@@ -1441,8 +1461,18 @@ function App() {
       <h2 id="approval-title">{approvalQuestion(approval)}</h2>
       {approval.preview ? <ApprovalDiff request={approval} /> : <pre className="approval-command">{approvalSummary(approval)}</pre>}
       <div className="approval-actions">
-        <button className="approval-reject" onClick={() => { void window.desktopAgent.resolveApproval({ requestId: approval.requestId, allow: false }); setApproval(null); }}><span>{approval.call.name === 'trust_project_hooks' ? '禁用项目 Hooks' : '拒绝'}</span><kbd>Esc</kbd></button>
-        <button className="approval-allow" onClick={() => { void window.desktopAgent.resolveApproval({ requestId: approval.requestId, allow: true }); setApproval(null); }}><span>{approval.call.name === 'trust_project_hooks' ? '信任此版本' : '允许一次'}</span><kbd>↵</kbd></button>
+        <button className="approval-reject" disabled={approvalResolving} onClick={() => void resolveApprovalChoice(approval, false)}><span>{approval.call.name === 'trust_project_hooks' ? '禁用项目 Hooks' : '拒绝'}</span><kbd>Esc</kbd></button>
+        <div className="approval-allow-wrap">
+          {approvalMenuOpen && approval.grant && <div className="approval-allow-menu" role="menu" aria-label="选择允许范围">
+            <button type="button" role="menuitem" disabled={approvalResolving} onClick={() => void resolveApprovalChoice(approval, true, 'once')}>允许一次</button>
+            {approval.grant.options.includes('similar') && <button type="button" role="menuitem" disabled={approvalResolving} onClick={() => void resolveApprovalChoice(approval, true, 'similar')}>允许类似命令</button>}
+            {approval.grant.options.includes('conversation') && <button type="button" role="menuitem" disabled={approvalResolving} onClick={() => void resolveApprovalChoice(approval, true, 'conversation')}>本次对话都允许</button>}
+          </div>}
+          <div className="approval-allow-split">
+            <button className="approval-allow approval-allow-main" disabled={approvalResolving} onClick={() => void resolveApprovalChoice(approval, true)}><span>{approval.call.name === 'trust_project_hooks' ? '信任此版本' : '允许一次'}</span><kbd>↵</kbd></button>
+            {approval.grant && <button type="button" className="approval-allow approval-allow-toggle" disabled={approvalResolving} aria-label="选择允许范围" aria-haspopup="menu" aria-expanded={approvalMenuOpen} onClick={() => setApprovalMenuOpen((open) => !open)}><span aria-hidden="true">⌄</span></button>}
+          </div>
+        </div>
       </div>
     </div></div>}
     {browserSecret && <div className="modal-backdrop"><form className="modal browser-secret-modal" role="dialog" aria-modal="true" aria-labelledby="browser-secret-title" onSubmit={(event) => {

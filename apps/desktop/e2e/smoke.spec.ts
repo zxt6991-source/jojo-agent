@@ -46,7 +46,11 @@ test('approval allow writes and approval deny has no side effect', async () => {
     await createSession(launched.page);
     await send(launched.page, 'E2E: approval allow');
     await expect(launched.page.getByRole('dialog')).toBeVisible();
-    await launched.page.getByRole('button', { name: /允许一次/ }).click();
+    await launched.page.getByRole('button', { name: '选择允许范围' }).click();
+    await expect(launched.page.getByRole('menuitem', { name: '允许一次' })).toBeVisible();
+    await expect(launched.page.getByRole('menuitem', { name: '允许类似命令' })).toBeVisible();
+    await expect(launched.page.getByRole('menuitem', { name: '本次对话都允许' })).toBeVisible();
+    await launched.page.getByRole('menuitem', { name: '允许一次' }).click();
     await expect(launched.page.getByText('approval handled')).toBeVisible();
     expect(await readFile(approvedTarget, 'utf8')).toBe('approved');
 

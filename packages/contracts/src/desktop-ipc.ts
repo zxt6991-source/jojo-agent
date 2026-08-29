@@ -49,7 +49,10 @@ const WorkerCommandBaseSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('session.stop'), requestId: IdSchema, sessionId: IdSchema }).strict(),
   z.object({ type: z.literal('workflow.cancel'), sessionId: IdSchema, workflowId: IdSchema }).strict(),
   z.object({ type: z.literal('workflow.resume'), requestId: IdSchema, sessionId: IdSchema, workflowId: IdSchema }).strict(),
-  z.object({ type: z.literal('approval.resolve'), requestId: IdSchema, allow: z.boolean() }).strict(),
+  z.object({
+    type: z.literal('approval.resolve'), requestId: IdSchema, allow: z.boolean(),
+    scope: z.enum(['once', 'similar', 'conversation']).default('once')
+  }).strict(),
   z.object({
     type: z.literal('config.update'), settings: ProviderSettingsSchema,
     apiKeys: z.record(z.string().min(1).max(256), z.string().max(100_000)),

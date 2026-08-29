@@ -167,7 +167,10 @@ export const BrowserActionSchema = z.discriminatedUnion('action', [
 export type BrowserAction = z.infer<typeof BrowserActionSchema>;
 
 export const SessionIdInputSchema = z.object({ sessionId: z.string() });
-export const ApprovalInputSchema = z.object({ requestId: z.string(), allow: z.boolean() });
+export const ApprovalInputSchema = z.object({
+  requestId: z.string(), allow: z.boolean(),
+  scope: z.enum(['once', 'similar', 'conversation']).default('once')
+});
 export const WorkflowRunActionInputSchema = z.object({
   sessionId: z.string().min(1),
   workflowId: z.string().min(1)

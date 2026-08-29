@@ -15,6 +15,8 @@ const commandSamples: unknown[] = [
   { type: 'workflow.cancel', sessionId: 's', workflowId: 'w' },
   { type: 'workflow.resume', requestId: 'r', sessionId: 's', workflowId: 'w' },
   { type: 'approval.resolve', requestId: 'r', allow: false },
+  { type: 'approval.resolve', requestId: 'r', allow: true, scope: 'similar' },
+  { type: 'approval.resolve', requestId: 'r', allow: true, scope: 'conversation' },
   { type: 'config.update', settings, apiKeys: {}, mcpOAuthCredentials: {} },
   { type: 'mcp.oauth.start', requestId: 'r', serverId: 'm', redirectUrl: 'http://127.0.0.1/callback', state: 'state' },
   { type: 'mcp.oauth.callback', requestId: 'r', serverId: 'm', callbackParams: 'code=ok' },

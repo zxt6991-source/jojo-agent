@@ -929,11 +929,22 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .approval-diff { max-height: min(42vh, 420px); }
 .approval-actions { display: flex; justify-content: flex-end; gap: 12px; margin-top: 29px; }
 .approval-actions button { min-height: 42px; display: inline-flex; align-items: center; gap: 10px; padding: 0 15px; border: 1px solid #dedfe2; border-radius: 22px; background: #ffffff; color: #27292d; font-size: 14px; font-weight: 610; }
-.approval-actions button:hover { background: #f4f4f5; }
+.approval-actions button:hover:not(:disabled) { background: #f4f4f5; }
+.approval-actions button:disabled { cursor: default; opacity: .62; }
 .approval-actions kbd { padding: 3px 7px; border: 0; border-radius: 8px; background: #eeeeef; color: #44474d; font: 12px "SFMono-Regular", monospace; box-shadow: none; }
 .approval-actions .approval-allow { padding-left: 18px; border-color: #1d1e20; background: #202124; color: #ffffff; }
-.approval-actions .approval-allow:hover { background: #0f1011; }
+.approval-actions .approval-allow:hover:not(:disabled) { background: #0f1011; }
 .approval-actions .approval-allow kbd { background: #383a3e; color: #ffffff; }
+.approval-allow-wrap { position: relative; }
+.approval-allow-split { display: flex; }
+.approval-actions .approval-allow-split button { margin: 0; }
+.approval-actions .approval-allow-split .approval-allow-main { border-radius: 22px 0 0 22px; border-right-color: #414349; }
+.approval-actions .approval-allow-split .approval-allow-main:only-child { border-radius: 22px; }
+.approval-actions .approval-allow-split .approval-allow-toggle { min-width: 43px; padding: 0 12px; justify-content: center; border-left: 0; border-radius: 0 22px 22px 0; color: #d7d8dc; }
+.approval-actions .approval-allow-toggle span { display: block; transform: translateY(-2px); font-size: 18px; line-height: 1; }
+.approval-allow-menu { position: absolute; right: 0; bottom: calc(100% + 10px); z-index: 2; width: 220px; padding: 7px; border: 1px solid #dedfe2; border-radius: 16px; background: #ffffff; box-shadow: 0 14px 36px rgba(28, 30, 35, .16); }
+.approval-actions .approval-allow-menu button { width: 100%; min-height: 40px; justify-content: flex-start; padding: 0 13px; border: 0; border-radius: 10px; background: transparent; color: #27292d; font-weight: 560; }
+.approval-actions .approval-allow-menu button:hover:not(:disabled) { background: #f1f2f4; }
 
 @keyframes backdrop-in { from { opacity: 0; } to { opacity: 1; } }
 @keyframes modal-in { from { opacity: 0; transform: translateY(7px) scale(.985); } to { opacity: 1; transform: none; } }
