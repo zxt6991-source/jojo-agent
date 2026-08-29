@@ -12,6 +12,7 @@ import {
   type ProjectIdentity,
   type SubAgentMemoryBinding,
   type WorkflowMemoryBinding,
+  type TeamMemberMemoryBinding,
   type PostToolUsePayload,
   type PreToolUseHookResult,
   type PreToolUsePayload,
@@ -96,7 +97,7 @@ export type RuntimeAgentRunOptions = CoreAgentRunOptions & {
   sessionMetadata?: Record<string, JsonValue>;
   memoryRuntime?: MemoryRuntime;
   projectIdentity?: ProjectIdentity;
-  memoryBinding?: SubAgentMemoryBinding | WorkflowMemoryBinding;
+  memoryBinding?: SubAgentMemoryBinding | WorkflowMemoryBinding | TeamMemberMemoryBinding;
   hooks?: HookRuntime;
   hookMeta?: {
     transport?: HookTransport;

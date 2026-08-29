@@ -6,7 +6,7 @@ import {
   RuntimeEnvironmentRegistry,
   type SharedRuntimeService
 } from '@desktop-agent/runtime-composition';
-import type { AgentEvent, HookRuntime, Message, ModelProvider, PermissionGate, ProviderConfig, SecretBroker } from '@desktop-agent/contracts';
+import type { AgentEvent, HookRuntime, Message, ModelProvider, PermissionGate, ProviderConfig, SecretBroker, Tool } from '@desktop-agent/contracts';
 import {
   accrueUsage,
   type AgentProfileRegistry,
@@ -17,8 +17,10 @@ import {
   OrchestrationError,
   resolveAgentToolPolicy,
   structuredOutputInstruction,
-  type LeafAgentRunRequest,
+  createLeafAgentRunnerAdapter,
   type LeafAgentRunner,
+  type OrchestratedAgentRunRequest,
+  type OrchestratedAgentRunner,
   type WorkflowToolRuntime
 } from '@desktop-agent/orchestration';
 import { createProvider } from '@desktop-agent/providers';
@@ -48,13 +50,14 @@ export type DesktopLeafAgentRunnerOptions = {
     audit: PermissionAuditSink;
     normalizer?: PermissionRequestNormalizer;
   };
-  createModelProvider?: (input: { runtime: ProviderRuntime; request: LeafAgentRunRequest }) => ModelProvider;
+  createModelProvider?: (input: { runtime: ProviderRuntime; request: OrchestratedAgentRunRequest }) => ModelProvider;
   resolveHooks?: (input: {
     sessionId: string;
     workingDirectory: string;
     signal: AbortSignal;
     onEvent: (event: AgentEvent) => void;
   }) => Promise<HookRuntime>;
+  resolveAdditionalTools?: (request: OrchestratedAgentRunRequest) => Tool[] | Promise<Tool[]>;
 };
 
 function finalAssistantText(messages: Message[]): string {
@@ -109,7 +112,7 @@ export function createDesktopWorkflowToolRuntime(options: {
   });
 }
 
-export function createDesktopLeafAgentRunner(options: DesktopLeafAgentRunnerOptions): LeafAgentRunner {
+export function createDesktopOrchestratedAgentRunner(options: DesktopLeafAgentRunnerOptions): OrchestratedAgentRunner {
   const profileRegistry = options.profileRegistry ?? createBuiltinAgentProfileRegistry();
   const runtimeStore = options.runtimeStore ?? new MemoryAgentRuntimeStore();
   const environments = options.runtimeService?.environments ?? new RuntimeEnvironmentRegistry();
@@ -124,13 +127,10 @@ export function createDesktopLeafAgentRunner(options: DesktopLeafAgentRunnerOpti
     telemetry: environments.telemetry,
     ...(options.memoryRuntime ? { memory: options.memoryRuntime } : {})
   });
-  const continuations = new Map<string, { request: LeafAgentRunRequest }>();
   const execute = async (
-    request: LeafAgentRunRequest,
-    task: string,
+    request: OrchestratedAgentRunRequest,
     signal: AbortSignal,
-    onEvent: Parameters<LeafAgentRunner['run']>[2],
-    continuationId?: string
+    onEvent: Parameters<OrchestratedAgentRunner['run']>[2]
   ) => {
       const profile = profileRegistry.get(request.profile, request.workingDirectory);
       const providerRuntime = options.resolveProvider(request.providerId);
@@ -143,6 +143,7 @@ export function createDesktopLeafAgentRunner(options: DesktopLeafAgentRunnerOpti
         trashDirectory: options.trashDirectory,
         ...(options.secretBroker ? { secretBroker: options.secretBroker } : {})
       });
+      const additionalTools = await options.resolveAdditionalTools?.(request) ?? [];
       const policy = resolveAgentToolPolicy(
         toolRuntime.tools.map((tool) => tool.definition.name),
         profile,
@@ -152,8 +153,14 @@ export function createDesktopLeafAgentRunner(options: DesktopLeafAgentRunnerOpti
         }
       );
       const allowedTools = new Set(policy.allowedTools);
+      for (const tool of additionalTools) {
+        const name = tool.definition.name;
+        if (request.tools?.deny?.includes(name)) continue;
+        if (request.tools?.allow && !request.tools.allow.includes(name)) continue;
+        allowedTools.add(name);
+      }
       const executionScope = { kind: 'workspace' as const, workingDirectory: request.workingDirectory };
-      const tools = toolRuntime.tools
+      const tools = [...toolRuntime.tools, ...additionalTools]
         .filter((tool) => allowedTools.has(tool.definition.name))
         .map((tool) => ({
           ...tool,
@@ -173,7 +180,7 @@ export function createDesktopLeafAgentRunner(options: DesktopLeafAgentRunnerOpti
       const provider = options.createModelProvider
         ? options.createModelProvider({ runtime: providerRuntime, request })
         : createProvider(providerRuntime.config, providerRuntime.apiKey);
-      const laneId = request.runtimeLane?.name ?? `agent:${request.id}`;
+      const laneId = request.laneId;
       const basePermissionGate: PermissionGate = toolRuntime.permissionGate;
       const scopedPermissionGate: PermissionGate = {
         check: (call, context) => basePermissionGate.check(call, {
@@ -225,28 +232,33 @@ export function createDesktopLeafAgentRunner(options: DesktopLeafAgentRunnerOpti
           ? await session.getLane(laneId)
           : await session.createLane({
               id: laneId,
-              parentLaneId: request.runtimeLane?.parentLane ?? 'main'
+              parentLaneId: request.parentLaneId ?? 'main'
             });
-        const workflowLane = request.runtimeLane?.name.startsWith('workflow:')
-          ? request.runtimeLane.name.split(':')
-          : undefined;
         const handle = await lane.run({
-          input: task,
+          input: request.task,
           model,
           providerId: request.providerId,
           actor: {
-            kind: workflowLane ? 'workflow' : 'subagent',
+            kind: request.actor.kind,
             id: request.id,
             profile: request.profile
           },
-          ...(workflowLane ? {
+          ...(request.actor.kind === 'workflow' ? {
             workflow: {
-              id: workflowLane[1] ?? request.id,
-              ...(workflowLane[2] ? { stepId: workflowLane[2] } : {})
+              id: request.actor.workflowId,
+              ...(request.actor.stepId ? { stepId: request.actor.stepId } : {})
+            }
+          } : {}),
+          ...(request.actor.kind === 'team_member' ? {
+            team: {
+              id: request.actor.teamId,
+              memberId: request.actor.memberId,
+              ...(request.actor.taskId ? { taskId: request.actor.taskId } : {})
             }
           } : {}),
           instructions: [
             profile.systemPrompt,
+            ...(request.additionalInstructions ?? []),
             ...(request.outputSchema ? [structuredOutputInstruction(request.outputSchema)] : [])
           ],
           signal,
@@ -266,13 +278,11 @@ export function createDesktopLeafAgentRunner(options: DesktopLeafAgentRunnerOpti
             { providerCode: code }
           );
         }
-        const nextContinuationId = request.continuable ? continuationId ?? `sac_${crypto.randomUUID()}` : undefined;
-        if (nextContinuationId) continuations.set(nextContinuationId, { request });
         return {
           result: result.finalText ?? finalAssistantText(result.messages),
           stopReason: result.stopReason ?? (result.status === 'cancelled' ? 'cancelled' : 'stop'),
           model,
-          ...(nextContinuationId ? { continuationId: nextContinuationId } : {}),
+          runId: result.runId,
           usage,
           incomplete: result.stopReason ? INCOMPLETE_STOP_REASONS.has(result.stopReason) : false
         };
@@ -281,14 +291,10 @@ export function createDesktopLeafAgentRunner(options: DesktopLeafAgentRunnerOpti
       }
   };
   return {
-    run: (request, signal, onEvent) => execute(request, request.task, signal, onEvent),
-    continue: async (continuationId, task, signal, onEvent) => {
-      const continuation = continuations.get(continuationId);
-      if (!continuation) throw new OrchestrationError('subagent_closed', `Sub-agent continuation is unavailable: ${continuationId}`);
-      return execute(continuation.request, task, signal, onEvent, continuationId);
-    },
-    close: async (continuationId) => {
-      continuations.delete(continuationId);
-    }
+    run: (request, signal, onEvent) => execute(request, signal, onEvent)
   };
+}
+
+export function createDesktopLeafAgentRunner(options: DesktopLeafAgentRunnerOptions): LeafAgentRunner {
+  return createLeafAgentRunnerAdapter(createDesktopOrchestratedAgentRunner(options));
 }

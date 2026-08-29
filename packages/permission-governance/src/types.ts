@@ -17,8 +17,9 @@ export interface GovernanceContext {
   sessionId: string;
   laneId: string;
   runId: string;
-  actor: { kind: 'main' | 'subagent' | 'workflow'; id?: string; profile?: string };
-  trigger: { kind: 'user' | 'api' | 'workflow' | 'subagent' | 'scheduler' | 'resume' };
+  actor: { kind: 'main' | 'subagent' | 'workflow' | 'team_member'; id?: string; profile?: string };
+  trigger: { kind: 'user' | 'api' | 'workflow' | 'subagent' | 'team_member' | 'scheduler' | 'resume' };
+  team?: { id: string; memberId: string; taskId?: string };
   workingDirectory: string;
   executionScope: ExecutionScope;
   interactive: boolean;

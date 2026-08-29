@@ -5,10 +5,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  AcceptMemoryCandidateInputSchema, ApprovalInputSchema, BindSessionProjectInputSchema, BrowserDockActionSchema, BrowserDockLayoutSchema, BrowserRecordingRegistryActionInputSchema, BrowserRecordingRegistryInputSchema, BrowserRecordingStudioInputSchema, CreateSessionInputSchema, CreateSkillInputSchema, DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS, DEFAULT_MODEL_MAX_OUTPUT_TOKENS, DeleteMemoryEntryInputSchema, DuplicateBrowserRecordingInputSchema, GetExtensionStatusInputSchema, GetHookStatusInputSchema, GetMemoryStatusInputSchema, GetPermissionGovernanceInputSchema, HookProjectActionInputSchema, ImportSkillInputSchema, IPC, ListModelsInputSchema, MAX_IMAGE_ATTACHMENTS, MAX_IMAGE_BYTES, McpServerIdInputSchema, OpenHookConfigInputSchema, PermissionGovernanceSnapshotSchema, RebuildMemoryIndexInputSchema, RebuildSemanticMemoryIndexInputSchema, RejectMemoryCandidateInputSchema, RenameSessionInputSchema, ResolveTerminalSecretInputSchema, SaveBrowserRecordingInputSchema, SaveExtensionSettingsInputSchema, SaveMemorySettingsInputSchema, SavePermissionPolicyInputSchema, SaveSettingsInputSchema,
+  AcceptMemoryCandidateInputSchema, ApprovalInputSchema, BindSessionProjectInputSchema, BrowserDockActionSchema, BrowserDockLayoutSchema, BrowserRecordingRegistryActionInputSchema, BrowserRecordingRegistryInputSchema, BrowserRecordingStudioInputSchema, CreateSessionInputSchema, CreateSkillInputSchema, DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS, DEFAULT_MODEL_MAX_OUTPUT_TOKENS, DeleteMemoryEntryInputSchema, DeleteTeamInputSchema, DuplicateBrowserRecordingInputSchema, GetExtensionStatusInputSchema, GetHookStatusInputSchema, GetMemoryStatusInputSchema, GetPermissionGovernanceInputSchema, HookProjectActionInputSchema, ImportSkillInputSchema, IPC, ListModelsInputSchema, ListTeamsInputSchema, MAX_IMAGE_ATTACHMENTS, MAX_IMAGE_BYTES, McpServerIdInputSchema, OpenHookConfigInputSchema, PermissionGovernanceSnapshotSchema, RebuildMemoryIndexInputSchema, RebuildSemanticMemoryIndexInputSchema, RejectMemoryCandidateInputSchema, RenameSessionInputSchema, ResolveTerminalSecretInputSchema, SaveBrowserRecordingInputSchema, SaveExtensionSettingsInputSchema, SaveMemorySettingsInputSchema, SavePermissionPolicyInputSchema, SaveSettingsInputSchema, SaveTeamInputSchema, SetTeamMemberEnabledInputSchema,
   SessionIdInputSchema, SkillPathInputSchema, StartTurnInputSchema, UpdateSkillInputSchema, WorkflowRunActionInputSchema,
   WorkerCommandSchema, WorkerMessageSchema, serializedIpcBytes,
-  type BrowserHealProposal, type BrowserHealRequest, type ExtensionStatus, type MemoryStatusSnapshot, type PermissionGovernanceSnapshot, type ProviderSettings, type SessionCompactionRecord, type WorkerCommand, type WorkerMessage, type WorkflowRunSnapshot
+  type BrowserHealProposal, type BrowserHealRequest, type ExtensionStatus, type MemoryStatusSnapshot, type PermissionGovernanceSnapshot, type ProviderSettings, type SessionCompactionRecord, type TeamSnapshot, type TeamStatusSnapshot, type WorkerCommand, type WorkerMessage, type WorkflowRunSnapshot
 } from '@desktop-agent/contracts';
 import { z } from 'zod';
 import { createProvider } from '@desktop-agent/providers';
@@ -61,6 +61,11 @@ const workerRequests = new Map<string, {
 }>();
 const memoryRequests = new Map<string, {
   resolve: (status: MemoryStatusSnapshot) => void;
+  reject: (error: Error) => void;
+  timer: ReturnType<typeof setTimeout>;
+}>();
+const teamRequests = new Map<string, {
+  resolve: (value: { teams?: TeamSnapshot[]; team?: TeamSnapshot; status?: TeamStatusSnapshot }) => void;
   reject: (error: Error) => void;
   timer: ReturnType<typeof setTimeout>;
 }>();
@@ -297,6 +302,33 @@ function finishMemoryRequest(message: Extract<WorkerMessage, { type: 'memory.res
   clearTimeout(request.timer);
   if (!message.ok || !message.status) request.reject(new Error(message.error ?? 'Memory request failed.'));
   else request.resolve(message.status as MemoryStatusSnapshot);
+}
+
+function requestTeam(command: Extract<WorkerCommand, {
+  type: 'team.list' | 'team.status' | 'team.save' | 'team.delete' | 'team.member.enabled'
+}>): Promise<{ teams?: TeamSnapshot[]; team?: TeamSnapshot; status?: TeamStatusSnapshot }> {
+  if (!worker) return Promise.reject(new Error('Agent runtime is not available.'));
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      teamRequests.delete(command.requestId);
+      reject(new Error('Team request timed out.'));
+    }, 30_000);
+    teamRequests.set(command.requestId, { resolve, reject, timer });
+    postWorkerCommand(command);
+  });
+}
+
+function finishTeamRequest(message: Extract<WorkerMessage, { type: 'team.result' }>): void {
+  const request = teamRequests.get(message.requestId);
+  if (!request) return;
+  teamRequests.delete(message.requestId);
+  clearTimeout(request.timer);
+  if (!message.ok) request.reject(new Error(message.error ?? 'Team request failed.'));
+  else request.resolve({
+    ...(message.teams ? { teams: message.teams as TeamSnapshot[] } : {}),
+    ...(message.team ? { team: message.team as TeamSnapshot } : {}),
+    ...(message.status ? { status: message.status as TeamStatusSnapshot } : {})
+  });
 }
 
 async function stopSessionRuntime(sessionId: string): Promise<void> {
@@ -572,6 +604,7 @@ function startWorker(): void {
       finishWorkerRequest(message.requestId, message.ok ? undefined : new Error(message.error ?? 'Hook runtime reload failed.'));
     }
     else if (message.type === 'memory.result') finishMemoryRequest(message);
+    else if (message.type === 'team.result') finishTeamRequest(message);
   });
   worker.on('exit', (code) => {
     for (const requestId of workerRequests.keys()) {
@@ -579,6 +612,11 @@ function startWorker(): void {
     }
     for (const [requestId, request] of memoryRequests) {
       memoryRequests.delete(requestId);
+      clearTimeout(request.timer);
+      request.reject(new Error(`Agent runtime exited (${code}).`));
+    }
+    for (const [requestId, request] of teamRequests) {
+      teamRequests.delete(requestId);
       clearTimeout(request.timer);
       request.reject(new Error(`Agent runtime exited (${code}).`));
     }
@@ -711,6 +749,44 @@ function registerIpc(): void {
     const completion = waitForWorker(requestId);
     postWorkerCommand({ type: 'workflow.resume', requestId, ...input });
     await completion;
+  });
+  ipcMain.handle(IPC.listTeams, async (event, raw) => {
+    assertTrusted(event);
+    const input = ListTeamsInputSchema.parse(raw ?? {});
+    const response = await requestTeam({
+      type: 'team.list', requestId: crypto.randomUUID(),
+      ...(input.workspace ? { workspace: input.workspace } : {})
+    });
+    return response.teams ?? [];
+  });
+  ipcMain.handle(IPC.getTeamStatus, async (event, raw) => {
+    assertTrusted(event);
+    const input = DeleteTeamInputSchema.parse(raw);
+    const response = await requestTeam({ type: 'team.status', requestId: crypto.randomUUID(), teamId: input.teamId });
+    if (!response.status) throw new Error('Team status returned no snapshot.');
+    return response.status;
+  });
+  ipcMain.handle(IPC.saveTeam, async (event, raw) => {
+    assertTrusted(event);
+    const input = SaveTeamInputSchema.parse(raw);
+    const response = await requestTeam({ type: 'team.save', requestId: crypto.randomUUID(), input });
+    if (!response.team) throw new Error('Team save returned no team.');
+    return response.team;
+  });
+  ipcMain.handle(IPC.deleteTeam, async (event, raw) => {
+    assertTrusted(event);
+    const input = DeleteTeamInputSchema.parse(raw);
+    await requestTeam({ type: 'team.delete', requestId: crypto.randomUUID(), teamId: input.teamId });
+  });
+  ipcMain.handle(IPC.setTeamMemberEnabled, async (event, raw) => {
+    assertTrusted(event);
+    const input = SetTeamMemberEnabledInputSchema.parse(raw);
+    const response = await requestTeam({
+      type: 'team.member.enabled', requestId: crypto.randomUUID(),
+      teamId: input.teamId, memberId: input.memberId, enabled: input.enabled
+    });
+    if (!response.team) throw new Error('Team member update returned no team.');
+    return response.team;
   });
   ipcMain.handle(IPC.resolveApproval, async (event, raw) => {
     assertTrusted(event); const input = ApprovalInputSchema.parse(raw);

@@ -14,6 +14,14 @@ const commandSamples: unknown[] = [
   { type: 'session.stop', requestId: 'r', sessionId: 's' },
   { type: 'workflow.cancel', sessionId: 's', workflowId: 'w' },
   { type: 'workflow.resume', requestId: 'r', sessionId: 's', workflowId: 'w' },
+  { type: 'team.list', requestId: 'r', workspace: '/tmp/project' },
+  { type: 'team.status', requestId: 'r', teamId: 'team' },
+  {
+    type: 'team.save', requestId: 'r',
+    input: { id: 'team', name: 'Team', workspace: '/tmp/project', members: [{ id: 'member', name: 'Member', profile: 'general' }], maxConcurrency: 2 }
+  },
+  { type: 'team.delete', requestId: 'r', teamId: 'team' },
+  { type: 'team.member.enabled', requestId: 'r', teamId: 'team', memberId: 'member', enabled: false },
   { type: 'approval.resolve', requestId: 'r', allow: false },
   { type: 'approval.resolve', requestId: 'r', allow: true, scope: 'session' },
   { type: 'approval.resolve', requestId: 'r', allow: true, scope: 'similar' },
@@ -47,6 +55,8 @@ const messageSamples: unknown[] = [
   { type: 'orchestration.event', event: { type: 'workflow.log', runId: 'w', level: 'info', message: 'ok', createdAt: new Date().toISOString() } },
   { type: 'session.stopped', requestId: 'r', sessionId: 's', ok: true },
   { type: 'workflow.action.result', requestId: 'r', ok: true },
+  { type: 'team.result', requestId: 'r', ok: true },
+  { type: 'orchestration.event', event: { type: 'team.deleted', teamId: 'team' } },
   { type: 'sessions.changed' },
   { type: 'extensions.status', status: { mcpServers: [], skills: [] } },
   { type: 'mcp.oauth.authorization', requestId: 'r', url: 'https://example.com/oauth' },

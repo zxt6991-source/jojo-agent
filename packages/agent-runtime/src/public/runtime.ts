@@ -8,7 +8,8 @@ import type {
   SubAgentMemoryBinding,
   ToolCall,
   Tool,
-  WorkflowMemoryBinding
+  WorkflowMemoryBinding,
+  TeamMemberMemoryBinding
 } from '@desktop-agent/contracts';
 import type {
   ExecutionScope,
@@ -70,6 +71,7 @@ export type RuntimeResolutionContext = {
   workingDirectory: string;
   actor?: RunRequest['actor'];
   workflow?: RunRequest['workflow'];
+  team?: RunRequest['team'];
 };
 
 export type RuntimeHostDescriptor = {
@@ -116,7 +118,7 @@ export interface RuntimeHookResolver {
 
 export type RuntimeRunContext = {
   projectIdentity?: ProjectIdentity;
-  memoryBinding?: SubAgentMemoryBinding | WorkflowMemoryBinding;
+  memoryBinding?: SubAgentMemoryBinding | WorkflowMemoryBinding | TeamMemberMemoryBinding;
 };
 
 export interface RuntimeRunContextResolver {
@@ -429,7 +431,8 @@ class DefaultAgentRuntime implements AgentRuntime {
       model: request.model,
       workingDirectory,
       ...(request.actor ? { actor: request.actor } : {}),
-      ...(request.workflow ? { workflow: request.workflow } : {})
+      ...(request.workflow ? { workflow: request.workflow } : {}),
+      ...(request.team ? { team: request.team } : {})
     };
     const [provider, toolSource, hooks, runContext] = await Promise.all([
       this.options.environment.providers.resolve(context),
@@ -506,7 +509,7 @@ class DefaultAgentRuntime implements AgentRuntime {
           sessionId, laneId, runId, source
         }, signal)
       } : {}),
-      emit: (event) => this.onAgentEvent(sessionId, laneId, runId, event, resuming, () => cancelReason),
+      emit: (event) => this.onAgentEvent(sessionId, laneId, runId, event, resuming, () => cancelReason, context),
       approve: (approvalRequest, signal) => this.options.environment.approval
         ? this.options.environment.approval.requestApproval(approvalRequest, context, signal)
         : Promise.resolve(false)
@@ -560,9 +563,19 @@ class DefaultAgentRuntime implements AgentRuntime {
     runId: string,
     event: AgentEvent,
     resuming: boolean,
-    cancelReason: () => string | undefined
+    cancelReason: () => string | undefined,
+    context: RuntimeResolutionContext
   ): void {
-    try { this.options.environment.telemetry?.diagnostic(event, { sessionId, laneId, runId }); }
+    try {
+      this.options.environment.telemetry?.diagnostic(event, {
+        sessionId,
+        laneId,
+        runId,
+        ...(context.actor ? { actor: context.actor } : {}),
+        ...(context.workflow ? { workflow: context.workflow } : {}),
+        ...(context.team ? { team: context.team } : {})
+      });
+    }
     catch { /* Observers never change runtime behavior. */ }
     let projected: RuntimeEvent[] = [];
     switch (event.type) {

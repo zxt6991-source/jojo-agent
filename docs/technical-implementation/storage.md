@@ -7,6 +7,8 @@
 
 Storage 提供 Agent Runtime、本地会话、Workflow Journal 与普通 Provider 配置的持久化实现。Runtime 使用 SQLite，其余兼容存储继续使用文件系统；本包不依赖 Electron。API Key 不属于本包，由 Desktop Main 使用操作系统安全存储管理。
 
+`SqliteTeamStore` 另外实现 Persistent Team 的定义、成员状态、委派任务和 Inbox，数据库位于 Electron `userData/runtime/teams.sqlite`。Team Task 只保存编排关系与结果索引；Transcript、Run 与 Usage 的事实源仍是 Agent Runtime Store。
+
 ## 2. Agent Runtime Store
 
 `SqliteAgentRuntimeStore` 是 Desktop 主执行路径的 Runtime Store，数据库位于 Electron `userData/runtime/agent-runtime.sqlite`。它实现 `AgentRuntimeStore`，持久化：
@@ -23,6 +25,10 @@ Storage 提供 Agent Runtime、本地会话、Workflow Journal 与普通 Provide
 ## 2.1 Hook Invocation Store
 
 `SqliteHookInvocationStore` 持久化 Hook 执行记录，数据库位于 Electron `userData/runtime/hooks.sqlite`。它实现 `HookInvocationStore`，供 `packages/hooks` 的 `DefaultHookRuntime` 去重和恢复异步副作用。表结构、lease 与事件语义见 [Hooks 技术实现方案](./hooks.md)。内存实现留在 `packages/hooks`，不经过本包。
+
+## 2.2 Team Store
+
+`SqliteTeamStore` 使用 WAL 与外键约束维护 `teams`、`team_members`、`team_tasks`、`team_messages`。更新 Team Definition 采用成员 upsert，只在成员确实被移除时级联清理该成员数据，不会因普通名称或配置修改删除历史 Task / Inbox。Inbox 的 `unread/read` 状态天然跨进程恢复。
 
 ## 3. 会话存储
 

@@ -222,6 +222,7 @@ export class SqlitePermissionGovernanceStore implements PermissionPolicyStore, P
       capabilities: request.facts.capabilities,
       operations: request.facts.operations,
       resourceScope: request.facts.resourceScope,
+      ...(request.context.team ? { team: request.context.team } : {}),
       ...(request.facts.terminal ? { terminal: request.facts.terminal } : {}),
       ...(request.facts.mcp ? { mcp: request.facts.mcp } : {}),
       ...(request.facts.browser ? { browser: request.facts.browser } : {})

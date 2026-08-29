@@ -1,10 +1,10 @@
 # Jojo Agent
 
-本地优先的 Electron Coding Agent。一次对话绑定一个本地目录，模型可检索和阅读项目；Main Agent、Sub-Agent 与 Workflow 的工具调用统一经过 Permission Governance，在既有安全边界之上按 ASK / AUTO / YOLO、Global / Workspace 规则和会话 Grant 做确定性决策，并记录可审计的安全摘要。Terminal 与 MCP stdio 进程通过共享 Process Sandbox 执行，MCP Server 还受配置指纹信任、HTTP SSRF 和细粒度审批边界保护。后台 Sub-Agent 与声明式 Workflow DAG 可并行执行只读分析，或在独立 Git Worktree 中写入且不自动 Merge。会话记忆、MCP / Skills、受控浏览器与生命周期 Hooks 都挂在同一套 Runtime 上。
+本地优先的 Electron Coding Agent。一次对话绑定一个本地目录，模型可检索和阅读项目；Main Agent、临时 Spawn、Persistent Team 与 Workflow 的工具调用统一经过 Permission Governance，在既有安全边界之上按 ASK / AUTO / YOLO、Global / Workspace 规则和会话 Grant 做确定性决策，并记录可审计的安全摘要。Terminal 与 MCP stdio 进程通过共享 Process Sandbox 执行，MCP Server 还受配置指纹信任、HTTP SSRF 和细粒度审批边界保护。后台 Spawn、持久 Team Member 与声明式 Workflow DAG 可并行执行只读分析，或在独立 Git Worktree 中写入且不自动 Merge。会话记忆、MCP / Skills、受控浏览器与生命周期 Hooks 都挂在同一套 Runtime 上。
 
 核心 Runtime 通过稳定的公共 API 和组合层同时服务 Electron、普通 Node 测试与无界面 Server Host，不依赖 Renderer 或 Electron IPC。
 
-上手细节见 [`docs/current-features.md`](./docs/current-features.md)。权限治理设计见 [`docs/Jojo-Agent-Permission-Governance.md`](./docs/Jojo-Agent-Permission-Governance.md)，Sub-Agent / Workflow 设计以 [`docs/subagent-workflow-unified-design-roadmap.md`](./docs/subagent-workflow-unified-design-roadmap.md) 为准；与代码冲突时以 Contracts、Runtime 和测试为准。早期 MVP 规划仍见 [`ts-desktop-agent-mvp-roadmap.md`](./ts-desktop-agent-mvp-roadmap.md)。
+上手细节见 [`docs/current-features.md`](./docs/current-features.md)。权限治理设计见 [`docs/Jojo-Agent-Permission-Governance.md`](./docs/Jojo-Agent-Permission-Governance.md)，Spawn / Team 设计见 [`docs/Jojo-Agent-Spawn-Team.md`](./docs/Jojo-Agent-Spawn-Team.md)，Sub-Agent / Workflow 的旧路线图见 [`docs/subagent-workflow-unified-design-roadmap.md`](./docs/subagent-workflow-unified-design-roadmap.md)；与代码冲突时以 Contracts、Runtime 和测试为准。
 
 ## 已实现
 
@@ -15,7 +15,7 @@
 - Runtime Composition 与 App Service：同一套 Runtime 可由 Electron Worker、普通 Node 程序和 `apps/server` 的 headless 入口复用；
 - Headless Network Server：版本化 Zod Protocol、Server Core、Control / Observer Lease、幂等 mutation、REST / WebSocket、远程审批与断线后 Run 查询恢复。默认开放 Runtime Run / Lane / 审批 / 图片 / Sub-Agent；Workflow、Browser、Memory 远程 API 尚未挂出；
 - Client SDK：`JojoClient` / `JojoSession` / `JojoRun` 远程对象模型，自动注入认证和幂等键，并以 WebSocket 事件 + REST Snapshot 恢复运行结果；
-- 十个主 Agent 文件 / 网页 / 终端工具：`read_file`、`list_files`、`grep`、`glob`、`web_search`、`web_fetch`、`write_file`、`edit_file`、`delete_file`、`terminal`；另有 Sub-Agent、Workflow、Memory、Browser、MCP / Skills 编排工具；
+- 十个主 Agent 文件 / 网页 / 终端工具：`read_file`、`list_files`、`grep`、`glob`、`web_search`、`web_fetch`、`write_file`、`edit_file`、`delete_file`、`terminal`；另有 Spawn、Team、Workflow、Memory、Browser、MCP / Skills 编排工具；
 - 工作目录边界、真实路径 / 符号链接检查、写前冲突检测、精确编辑与回收站；Terminal 不经过 Shell，使用参数数组、环境变量 allowlist、假 HOME / 独立临时目录、流式脱敏、超时与进程树回收；
 - 共享 `@desktop-agent/process-sandbox`：Linux Bubblewrap、macOS Seatbelt 和 Soft fallback；Terminal 网络默认为 `none`，需要联网的命令可申请 `host` 全局网络并由用户在审批中决定，strict 模式在强后端不可用时 fail closed，fallback 的宿主能力会进入审批风险预览。macOS Seatbelt 是敏感目录与网络强化，不等同于 Linux mount namespace 的最小 Host 可见性；
 - 会话删除通过 Main 生命周期门禁与 Storage tombstone / 跨实例串行化阻止晚到写入复活 JSONL；
@@ -31,6 +31,7 @@
 - 受控 CDP 浏览器（沙箱或附加本机 Chrome）、录制 / 回放 YAML、图片附件与视觉消息；
 - Markdown 记忆：`memory_status` / `memory_read` / `memory_search` / `memory_write` / `memory_forget` / `memory_restore`，候选治理与语义检索；用户记忆在 `~/.jojo/memory`；
 - 后台 Sub-Agent：Profile（`explore` / `general` / `code-review` / `synthesize`，可叠加 user/project）、Tool Policy、Continue / Send / Close、Structured Output；工具调用进入统一 Governance，actor / profile 会参与 Policy 与 Audit；
+- Persistent Team：稳定 Team / Member 身份与 Runtime Lane、SQLite Task / Inbox、同成员串行与跨成员并行、崩溃安全中断、Team Member Spawn Owner / Cancel 传播，以及 `team_list` / `team_status` / `team_delegate` / `team_wait` / `team_send` / `team_inbox`；设置页支持团队创建编辑、成员策略、运行时启停与任务状态；
 - Workflow DAG：依赖与并发、Timeout / Cancel、Retry、Typed Inputs、Tool Step、foreach / condition / 嵌套 Saved Workflow、Budget、资源组与 Provider 限流、JSONL Journal / Resume；
 - 可写 Agent 强制 Git Worktree 隔离，Branch / Diff 可审查，默认不自动 Merge；
 - WorkflowCard：步骤列表、依赖图、时间线、Usage、预算、错误码、结构化输出与 Isolation Diff；

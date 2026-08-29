@@ -7,7 +7,8 @@ import { ToolResultSchema } from './messages.js';
 import { MemoryKindSchema, MemoryStatusSchema } from './memory.js';
 import { MemoryCandidateReviewEditSchema, MemoryCandidateSchema } from './memory-candidate.js';
 import { SemanticIndexStatusSchema } from './memory-semantic.js';
-import { OrchestrationEventSchema } from './orchestration.js';
+import { OrchestrationEventSchema, TeamSnapshotSchema, TeamStatusSnapshotSchema } from './orchestration.js';
+import { SaveTeamInputSchema } from './desktop.js';
 import { ProviderSettingsSchema } from './persistence.js';
 
 export const MAX_WORKER_COMMAND_BYTES = 16 * 1024 * 1024;
@@ -49,6 +50,14 @@ const WorkerCommandBaseSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('session.stop'), requestId: IdSchema, sessionId: IdSchema }).strict(),
   z.object({ type: z.literal('workflow.cancel'), sessionId: IdSchema, workflowId: IdSchema }).strict(),
   z.object({ type: z.literal('workflow.resume'), requestId: IdSchema, sessionId: IdSchema, workflowId: IdSchema }).strict(),
+  z.object({ type: z.literal('team.list'), requestId: IdSchema, workspace: WorkingDirectorySchema.optional() }).strict(),
+  z.object({ type: z.literal('team.status'), requestId: IdSchema, teamId: IdSchema }).strict(),
+  z.object({ type: z.literal('team.save'), requestId: IdSchema, input: SaveTeamInputSchema }).strict(),
+  z.object({ type: z.literal('team.delete'), requestId: IdSchema, teamId: IdSchema }).strict(),
+  z.object({
+    type: z.literal('team.member.enabled'), requestId: IdSchema, teamId: IdSchema,
+    memberId: IdSchema, enabled: z.boolean()
+  }).strict(),
   z.object({
     type: z.literal('approval.resolve'), requestId: IdSchema, allow: z.boolean(),
     scope: z.enum(['once', 'session', 'similar', 'conversation']).default('once')
@@ -100,6 +109,11 @@ const WorkerMessageBaseSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('orchestration.event'), event: SizedOrchestrationEventSchema }).strict(),
   z.object({ type: z.literal('session.stopped'), requestId: IdSchema, sessionId: IdSchema, ok: z.boolean(), error: ErrorSchema.optional() }).strict(),
   z.object({ type: z.literal('workflow.action.result'), requestId: IdSchema, ok: z.boolean(), error: ErrorSchema.optional() }).strict(),
+  z.object({
+    type: z.literal('team.result'), requestId: IdSchema, ok: z.boolean(),
+    teams: z.array(TeamSnapshotSchema).max(1_000).optional(),
+    team: TeamSnapshotSchema.optional(), status: TeamStatusSnapshotSchema.optional(), error: ErrorSchema.optional()
+  }).strict(),
   z.object({ type: z.literal('sessions.changed') }).strict(),
   z.object({ type: z.literal('extensions.status'), status: ExtensionStatusSchema }).strict(),
   z.object({ type: z.literal('mcp.oauth.authorization'), requestId: IdSchema, url: z.string().url().max(4_096) }).strict(),

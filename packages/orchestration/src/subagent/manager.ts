@@ -19,7 +19,7 @@ import { AgentProfileRegistry, createBuiltinAgentProfileRegistry } from './profi
 import { AgentExecutionScheduler } from './scheduler.js';
 import { acquireResourceAndAgentSlots, ResourceGroupLimiter } from './resource-groups.js';
 import { ProviderSemaphore } from './provider-semaphore.js';
-import type { LeafAgentRunner, SubAgentStartRequest } from './types.js';
+import type { LeafAgentRunner, SpawnOwner, SubAgentStartRequest } from './types.js';
 
 const TERMINAL_STATES = new Set<SubAgentState>(['completed', 'failed', 'cancelled', 'timed_out', 'closed']);
 
@@ -100,7 +100,10 @@ export class SubAgentManager {
   }
 
   start(request: SubAgentStartRequest): SubAgentSnapshot {
-    if ((request.depth ?? 0) >= 1) throw new OrchestrationError('nested_subagent_forbidden', 'Nested sub-agents are not allowed.');
+    const depth = request.parent?.depth ?? request.depth ?? 0;
+    if (request.parent?.actor === 'subagent' || depth >= 1) {
+      throw new OrchestrationError('nested_subagent_forbidden', 'Spawned agents are leaf workers and cannot spawn another agent.');
+    }
     const profile = this.profileRegistry.get(request.profile, request.workingDirectory);
     const isolationType = resolveIsolationType({
       profile,
@@ -142,6 +145,13 @@ export class SubAgentManager {
         model: effectiveRequest.model,
         usage: emptyUsage(),
         incomplete: false,
+        depth,
+        ...(request.parent ? { parent: {
+          actor: request.parent.actor,
+          ...(request.parent.actorId ? { actorId: request.parent.actorId } : {}),
+          ...(request.parent.teamId ? { teamId: request.parent.teamId } : {})
+        } } : {}),
+        ...(request.owner ? { owner: { ...request.owner } } : {}),
         ...(effectiveRequest.resources ? { resourceGroup: effectiveRequest.resources.group } : {}),
         ...(effectiveRequest.memoryBinding ? { memory: structuredClone(effectiveRequest.memoryBinding) } : {}),
         rounds: [{ index: 1, input: request.task, usage: emptyUsage(), incomplete: false }]
@@ -195,6 +205,16 @@ export class SubAgentManager {
       .map((agent) => copySnapshot(agent.snapshot));
   }
 
+  countActiveOwnedBy(owner: SpawnOwner): number {
+    return [...this.agents.values()].filter((agent) => {
+      const candidate = agent.snapshot.owner;
+      return !TERMINAL_STATES.has(agent.snapshot.state)
+        && candidate?.kind === owner.kind
+        && candidate.id === owner.id
+        && candidate.teamId === owner.teamId;
+    }).length;
+  }
+
   cancel(id: string): SubAgentSnapshot | undefined {
     const live = this.agents.get(id);
     if (!live || TERMINAL_STATES.has(live.snapshot.state)) return live ? copySnapshot(live.snapshot) : undefined;
@@ -218,7 +238,9 @@ export class SubAgentManager {
     if (live.snapshot.state === 'queued' || live.snapshot.state === 'running') {
       throw new OrchestrationError('subagent_busy', `Sub-agent is busy: ${id}`);
     }
-    if (live.snapshot.state !== 'idle' || !live.continuationId || !this.runner.continue) {
+    const canContinue = (Boolean(live.continuationId) && Boolean(this.runner.continue))
+      || this.runner.laneBasedContinuation === true;
+    if (live.snapshot.state !== 'idle' || !canContinue) {
       throw new OrchestrationError('subagent_closed', `Sub-agent cannot continue: ${id}`);
     }
     const input = message.trim();
@@ -259,6 +281,15 @@ export class SubAgentManager {
   cancelSession(sessionId: string): void {
     for (const agent of this.agents.values()) {
       if (agent.snapshot.sessionId === sessionId) this.cancel(agent.snapshot.id);
+    }
+  }
+
+  cancelOwnedBy(owner: SpawnOwner): void {
+    for (const agent of this.agents.values()) {
+      const candidate = agent.snapshot.owner;
+      if (!candidate || candidate.kind !== owner.kind) continue;
+      if (candidate.id !== owner.id || candidate.teamId !== owner.teamId) continue;
+      this.cancel(agent.snapshot.id);
     }
   }
 
@@ -331,8 +362,8 @@ export class SubAgentManager {
         live.snapshot = { ...live.snapshot, rounds: this.updateCurrentRound(live.snapshot.rounds, { usage: roundUsage }) };
         this.notify(live);
       };
-      const result = continuation
-        ? await this.runner.continue!(live.continuationId!, withIsolationTask(message, live.isolationContext), controller.signal, handleEvent)
+      const result = continuation && live.continuationId && this.runner.continue
+        ? await this.runner.continue(live.continuationId, withIsolationTask(message, live.isolationContext), controller.signal, handleEvent)
         : await this.runner.run({
             id: live.snapshot.id,
             sessionId: request.sessionId,
@@ -369,13 +400,13 @@ export class SubAgentManager {
             usage: result.usage
           });
         } else {
-          this.finish(live, result.continuationId && this.runner.continue ? 'idle' : 'completed', baseUsage, {
+          this.finish(live, this.canContinue(result.continuationId) ? 'idle' : 'completed', baseUsage, {
             ...result,
             structuredResult: structured.value,
             schemaValid: true
           });
         }
-      } else this.finish(live, result.continuationId && this.runner.continue ? 'idle' : 'completed', baseUsage, result);
+      } else this.finish(live, this.canContinue(result.continuationId) ? 'idle' : 'completed', baseUsage, result);
     } catch (error) {
       if (live.settled) return;
       if (timedOut) this.finish(live, 'timed_out', baseUsage, { stopReason: 'timeout', error: 'Sub-agent timed out.', incomplete: true });
@@ -495,6 +526,10 @@ export class SubAgentManager {
     const continuationId = live.continuationId;
     live.continuationId = undefined;
     if (continuationId && this.runner.close) await this.runner.close(continuationId);
+  }
+
+  private canContinue(continuationId: string | undefined): boolean {
+    return this.runner.laneBasedContinuation === true || (Boolean(continuationId) && Boolean(this.runner.continue));
   }
 
   private notify(live: LiveSubAgent): void {

@@ -1,7 +1,8 @@
 import { z } from 'zod';
 import type { AgentEvent } from './agent';
 import type { Message } from './messages';
-import type { OrchestrationEvent, WorkflowRunSnapshot } from './orchestration';
+import { TeamMemberDefinitionSchema } from './orchestration';
+import type { OrchestrationEvent, TeamSnapshot, TeamStatusSnapshot, WorkflowRunSnapshot } from './orchestration';
 import type { ProviderSettings, SessionMeta } from './persistence';
 import { PermissionPolicyDocumentSchema, SESSION_TITLE_MAX_LENGTH } from './persistence';
 import { JsonValueSchema } from './execution-scope';
@@ -176,6 +177,24 @@ export const WorkflowRunActionInputSchema = z.object({
   sessionId: z.string().min(1),
   workflowId: z.string().min(1)
 });
+export const ListTeamsInputSchema = z.object({
+  workspace: z.string().trim().min(1).max(4_096).optional()
+}).strict();
+export const SaveTeamInputSchema = z.object({
+  id: z.string().trim().min(1).max(128).regex(/^[a-z][a-z0-9_-]*$/u),
+  name: z.string().trim().min(1).max(120),
+  description: z.string().max(2_000).optional(),
+  workspace: z.string().trim().min(1).max(4_096),
+  members: z.array(TeamMemberDefinitionSchema).min(1).max(32),
+  maxConcurrency: z.number().int().min(1).max(16).default(3),
+  expectedRevision: z.number().int().positive().optional()
+}).strict();
+export const DeleteTeamInputSchema = z.object({ teamId: z.string().min(1).max(128) }).strict();
+export const SetTeamMemberEnabledInputSchema = z.object({
+  teamId: z.string().min(1).max(128),
+  memberId: z.string().min(1).max(128),
+  enabled: z.boolean()
+}).strict();
 export const McpServerIdInputSchema = z.object({ serverId: z.string().trim().min(1).max(64) });
 export const SkillPathInputSchema = z.object({ path: z.string().trim().min(1).max(4_096) });
 export const CreateSkillInputSchema = z.object({
@@ -253,9 +272,9 @@ export const PermissionDecisionAuditItemSchema = z.object({
   sessionId: z.string().min(1).max(256),
   laneId: z.string().max(256).optional(),
   runId: z.string().max(256).optional(),
-  actorKind: z.enum(['main', 'subagent', 'workflow']),
+  actorKind: z.enum(['main', 'subagent', 'workflow', 'team_member']),
   actorId: z.string().max(256).optional(),
-  triggerKind: z.enum(['user', 'api', 'scheduler', 'workflow', 'subagent', 'resume']),
+  triggerKind: z.enum(['user', 'api', 'scheduler', 'workflow', 'subagent', 'team_member', 'resume']),
   toolName: z.string().min(1).max(256),
   toolSource: z.enum(['native', 'mcp', 'browser', 'memory', 'orchestration', 'skill', 'hook']),
   effect: z.enum(['allow', 'ask', 'deny']),
@@ -485,6 +504,11 @@ export type DesktopApi = {
   listWorkflowRuns(sessionId: string): Promise<WorkflowRunSnapshot[]>;
   cancelWorkflow(input: z.input<typeof WorkflowRunActionInputSchema>): Promise<void>;
   resumeWorkflow(input: z.input<typeof WorkflowRunActionInputSchema>): Promise<void>;
+  listTeams(input?: z.input<typeof ListTeamsInputSchema>): Promise<TeamSnapshot[]>;
+  getTeamStatus(input: z.input<typeof DeleteTeamInputSchema>): Promise<TeamStatusSnapshot>;
+  saveTeam(input: z.input<typeof SaveTeamInputSchema>): Promise<TeamSnapshot>;
+  deleteTeam(input: z.input<typeof DeleteTeamInputSchema>): Promise<void>;
+  setTeamMemberEnabled(input: z.input<typeof SetTeamMemberEnabledInputSchema>): Promise<TeamSnapshot>;
   resolveApproval(input: z.input<typeof ApprovalInputSchema>): Promise<void>;
   chooseDirectory(): Promise<string | null>;
   chooseImages(): Promise<ImageContentBlock[]>;
@@ -554,6 +578,11 @@ export const IPC = {
   listWorkflowRuns: 'orchestration:workflow-list',
   cancelWorkflow: 'orchestration:workflow-cancel',
   resumeWorkflow: 'orchestration:workflow-resume',
+  listTeams: 'orchestration:team-list',
+  getTeamStatus: 'orchestration:team-status',
+  saveTeam: 'orchestration:team-save',
+  deleteTeam: 'orchestration:team-delete',
+  setTeamMemberEnabled: 'orchestration:team-member-enabled',
   resolveApproval: 'agent:approval',
   chooseDirectory: 'system:choose-directory',
   chooseImages: 'system:choose-images',

@@ -14,7 +14,7 @@ export const BACKGROUND_AGENT_PERMISSION_RULES: PermissionRule[] = [
     id: 'builtin-background-workspace-write',
     effect: 'allow',
     match: {
-      actors: ['subagent', 'workflow'],
+      actors: ['subagent', 'workflow', 'team_member'],
       operations: ['write'],
       resourceScope: 'workspace'
     }
@@ -23,7 +23,7 @@ export const BACKGROUND_AGENT_PERMISSION_RULES: PermissionRule[] = [
     id: 'builtin-background-isolated-terminal',
     effect: 'allow',
     match: {
-      actors: ['subagent', 'workflow'],
+      actors: ['subagent', 'workflow', 'team_member'],
       tools: ['terminal'],
       risks: ['medium'],
       network: 'none',

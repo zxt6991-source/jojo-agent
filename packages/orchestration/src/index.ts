@@ -28,6 +28,30 @@ export { ResourceGroupLimiter, acquireResourceAndAgentSlots, workflowStepResourc
 export { createSubAgentTools } from './subagent/tools.js';
 export type { SubAgentToolOptions } from './subagent/tools.js';
 export type { LeafAgentRunner, LeafAgentRunRequest, LeafAgentRunResult, SubAgentStartRequest } from './subagent/types.js';
+export type { SpawnOwner, SpawnParent } from './subagent/types.js';
+export { createLeafAgentRunnerAdapter } from './agent/runner.js';
+export type {
+  OrchestratedActor,
+  OrchestratedAgentRunner,
+  OrchestratedAgentRunRequest,
+  OrchestratedAgentRunResult
+} from './agent/types.js';
+export type { TeamStore } from './team/store.js';
+export { MemoryTeamStore } from './team/memory-store.js';
+export { TeamManager } from './team/manager.js';
+export type { TeamManagerOptions } from './team/manager.js';
+export { resolveEffectiveAgentConfig } from './team/effective-config.js';
+export type { EffectiveAgentConfig } from './team/effective-config.js';
+export { buildTeamMemberInstructions, buildTeamTaskPrompt } from './team/prompt.js';
+export type {
+  TeamCreateRequest,
+  TeamDelegateRequest,
+  TeamSendMessageRequest,
+  TeamStatusSnapshot
+} from './team/types.js';
+export { createTeamTools } from './team/tools.js';
+export type { TeamToolOptions } from './team/tools.js';
+export { createTeamMemberTools } from './team/member-tools.js';
 export { WorkflowEngine, createInitialWorkflowSnapshot, createResumedWorkflowSnapshot } from './workflow/engine.js';
 export type { WorkflowEngineOptions } from './workflow/engine.js';
 export { WorkflowManager } from './workflow/manager.js';

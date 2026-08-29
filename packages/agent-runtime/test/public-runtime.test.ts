@@ -9,6 +9,37 @@ import { emptyProgressState } from '../src/operation/state.js';
 const allow: PermissionGate = { check: async () => ({ decision: 'allow' }) };
 
 describe('public runtime facade', () => {
+  it('propagates team member identity through every resolution context', async () => {
+    const contexts: Array<import('../src/index.js').RuntimeResolutionContext> = [];
+    const provider = new ScriptedProvider([[
+      { type: 'text_delta', text: 'team result' },
+      { type: 'response_completed', stopReason: 'stop' }
+    ]]);
+    const runtime = createAgentRuntime({
+      environment: {
+        host: { kind: 'test' },
+        providers: { resolve: (context) => { contexts.push(context); return provider; } },
+        tools: { resolve: (context) => { contexts.push(context); return { snapshot: () => [] }; } },
+        permissions: allow,
+        runContext: { resolve: (context) => { contexts.push(context); return {}; } }
+      }
+    });
+    const session = await runtime.openSession({
+      id: 'team:workspace:engineering',
+      executionScope: { kind: 'workspace', workingDirectory: '/workspace' }
+    });
+    const lane = await session.createLane({ id: 'member:architect', parentLaneId: 'main' });
+    await (await lane.run({
+      input: 'inspect architecture', providerId: 'provider', model: 'model',
+      actor: { kind: 'team_member', id: 'architect', profile: 'explore' },
+      team: { id: 'engineering', memberId: 'architect', taskId: 'tt_1' }
+    })).result;
+    expect(contexts).toHaveLength(3);
+    expect(contexts.every((context) => context.actor?.kind === 'team_member')).toBe(true);
+    expect(contexts.every((context) => context.team?.taskId === 'tt_1')).toBe(true);
+    await runtime.close();
+  });
+
   it('continues conversation through a lane and emits stable monotonic events', async () => {
     const provider = new ScriptedProvider([
       [

@@ -29,7 +29,7 @@ export const HookEnvelopeSchema = z.object({
   operationId: z.string().min(1),
   lane: z.string().min(1),
   agent: z.object({
-    kind: z.enum(['main', 'subagent', 'workflow']),
+    kind: z.enum(['main', 'subagent', 'workflow', 'team_member']),
     id: z.string().optional(),
     profile: z.string().optional()
   }),

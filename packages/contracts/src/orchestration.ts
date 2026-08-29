@@ -16,6 +16,15 @@ export const SubAgentMemoryBindingSchema = z.object({
   mode: z.enum(['project-minimal', 'none'])
 }).strict();
 
+export const TeamMemberMemoryBindingSchema = z.object({
+  projectIdentity: ProjectIdentitySchema.optional(),
+  teamId: z.string().min(1).max(128),
+  memberId: z.string().min(1).max(128),
+  memorySnapshotId: z.string().min(1),
+  mode: z.enum(['project-minimal', 'none'])
+}).strict();
+export type TeamMemberMemoryBinding = z.infer<typeof TeamMemberMemoryBindingSchema>;
+
 export const WorkflowMemoryBindingSchema = z.object({
   projectIdentity: ProjectIdentitySchema.optional(),
   memorySnapshotId: z.string().min(1),
@@ -120,6 +129,152 @@ export const IsolationSnapshotSchema = z.object({
 }).strict();
 export type IsolationSnapshot = z.infer<typeof IsolationSnapshotSchema>;
 
+const TeamIdSchema = z.string().trim().min(1).max(128).regex(/^[a-z][a-z0-9_-]*$/u);
+const TeamMemberIdSchema = z.string().trim().min(1).max(128).regex(/^[a-z][a-z0-9_-]*$/u);
+
+export const TeamMemberStateSchema = z.enum([
+  'idle', 'queued', 'running', 'waiting_approval', 'disabled', 'error'
+]);
+export type TeamMemberState = z.infer<typeof TeamMemberStateSchema>;
+
+export const TeamTaskStateSchema = z.enum([
+  'queued', 'running', 'waiting_approval', 'completed', 'failed', 'cancelled', 'interrupted'
+]);
+export type TeamTaskState = z.infer<typeof TeamTaskStateSchema>;
+
+export const TeamMessageKindSchema = z.enum(['task', 'note', 'question', 'result', 'system']);
+export type TeamMessageKind = z.infer<typeof TeamMessageKindSchema>;
+
+export const TeamMessageStatusSchema = z.enum(['unread', 'read']);
+export type TeamMessageStatus = z.infer<typeof TeamMessageStatusSchema>;
+
+export const TeamSpawnPolicySchema = z.object({
+  enabled: z.boolean(),
+  profiles: z.array(SubAgentProfileSchema).max(32).optional(),
+  maxActive: z.number().int().min(1).max(8).optional()
+}).strict();
+export type TeamSpawnPolicy = z.infer<typeof TeamSpawnPolicySchema>;
+
+export const TeamMemberDefinitionSchema = z.object({
+  id: TeamMemberIdSchema,
+  name: z.string().trim().min(1).max(120),
+  description: z.string().max(2_000).optional(),
+  profile: SubAgentProfileSchema,
+  providerId: z.string().trim().min(1).max(128).optional(),
+  model: z.string().trim().min(1).max(256).optional(),
+  systemPrompt: z.string().max(20_000).optional(),
+  readOnly: z.boolean().optional(),
+  tools: z.object({
+    allow: z.array(z.string().trim().min(1).max(64)).max(32).optional(),
+    deny: z.array(z.string().trim().min(1).max(64)).max(32).optional()
+  }).strict().optional(),
+  spawn: TeamSpawnPolicySchema.optional()
+}).strict();
+export type TeamMemberDefinition = z.infer<typeof TeamMemberDefinitionSchema>;
+
+export const TeamDefinitionSchema = z.object({
+  id: TeamIdSchema,
+  name: z.string().trim().min(1).max(120),
+  description: z.string().max(2_000).optional(),
+  workspace: z.string().min(1).max(4_096),
+  members: z.array(TeamMemberDefinitionSchema).min(1).max(32),
+  maxConcurrency: z.number().int().min(1).max(16).default(3),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime()
+}).strict().superRefine((team, context) => {
+  const ids = new Set<string>();
+  for (const member of team.members) {
+    if (ids.has(member.id)) {
+      context.addIssue({ code: 'custom', path: ['members'], message: `Duplicate team member id: ${member.id}` });
+    }
+    ids.add(member.id);
+  }
+});
+export type TeamDefinition = z.infer<typeof TeamDefinitionSchema>;
+
+export const TeamMemberSnapshotSchema = TeamMemberDefinitionSchema.extend({
+  laneId: z.string().min(1).max(256),
+  state: TeamMemberStateSchema,
+  revision: z.number().int().nonnegative(),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime()
+}).strict();
+export type TeamMemberSnapshot = z.infer<typeof TeamMemberSnapshotSchema>;
+
+export const TeamSnapshotSchema = z.object({
+  id: TeamIdSchema,
+  name: z.string().trim().min(1).max(120),
+  description: z.string().max(2_000).optional(),
+  workspace: z.string().min(1).max(4_096),
+  workspaceKey: z.string().min(1).max(256),
+  runtimeSessionId: z.string().min(1).max(512),
+  maxConcurrency: z.number().int().min(1).max(16),
+  revision: z.number().int().nonnegative(),
+  members: z.array(TeamMemberSnapshotSchema).max(32),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime()
+}).strict();
+export type TeamSnapshot = z.infer<typeof TeamSnapshotSchema>;
+
+export const TeamTaskSnapshotSchema = z.object({
+  id: z.string().min(1).max(256),
+  teamId: TeamIdSchema,
+  memberId: TeamMemberIdSchema,
+  parentSessionId: z.string().min(1).max(256).optional(),
+  parentRunId: z.string().min(1).max(256).optional(),
+  parentActorId: z.string().min(1).max(256).optional(),
+  runtimeRunId: z.string().min(1).max(256).optional(),
+  input: z.string().min(1).max(40_000),
+  state: TeamTaskStateSchema,
+  result: z.string().optional(),
+  structuredResult: z.unknown().optional(),
+  schemaValid: z.boolean().optional(),
+  errorCode: z.string().min(1).max(256).optional(),
+  error: z.string().max(100_000).optional(),
+  stopReason: z.string().max(4_000).optional(),
+  providerId: z.string().min(1).max(128),
+  model: z.string().min(1).max(256),
+  usage: UsageTotalsSchema,
+  incomplete: z.boolean().default(false),
+  isolation: IsolationSnapshotSchema.optional(),
+  createdAt: z.string().datetime(),
+  startedAt: z.string().datetime().optional(),
+  finishedAt: z.string().datetime().optional()
+}).strict();
+export type TeamTaskSnapshot = z.infer<typeof TeamTaskSnapshotSchema>;
+
+export const TeamMessageSchema = z.object({
+  id: z.string().min(1).max(256),
+  teamId: TeamIdSchema,
+  senderKind: z.enum(['main', 'team_member', 'system']),
+  senderId: z.string().min(1).max(256).optional(),
+  recipientMemberId: TeamMemberIdSchema,
+  kind: TeamMessageKindSchema,
+  subject: z.string().max(500).optional(),
+  content: z.string().min(1).max(40_000),
+  taskId: z.string().min(1).max(256).optional(),
+  status: TeamMessageStatusSchema,
+  createdAt: z.string().datetime(),
+  readAt: z.string().datetime().optional()
+}).strict();
+export type TeamMessage = z.infer<typeof TeamMessageSchema>;
+
+export const TeamStatusSnapshotSchema = z.object({
+  team: TeamSnapshotSchema,
+  activeTasks: z.array(TeamTaskSnapshotSchema).max(100),
+  queuedTasks: z.array(TeamTaskSnapshotSchema).max(100),
+  recentTasks: z.array(TeamTaskSnapshotSchema).max(20),
+  unreadMessages: z.number().int().nonnegative()
+}).strict();
+export type TeamStatusSnapshot = z.infer<typeof TeamStatusSnapshotSchema>;
+
+export const TeamErrorCodeSchema = z.enum([
+  'team_not_found', 'team_exists', 'team_member_not_found', 'team_member_disabled',
+  'team_member_busy', 'team_task_not_found', 'team_task_cancelled', 'team_runtime_failed',
+  'team_store_failed', 'team_message_not_found', 'team_concurrency_limit'
+]);
+export type TeamErrorCode = z.infer<typeof TeamErrorCodeSchema>;
+
 export const SubAgentErrorCodeSchema = z.enum([
   ...StructuredOutputErrorCodeSchema.options,
   ...IsolationErrorCodeSchema.options,
@@ -162,6 +317,17 @@ export const SubAgentSnapshotSchema = z.object({
   isolation: IsolationSnapshotSchema.optional(),
   resourceGroup: z.string().min(1).optional(),
   memory: SubAgentMemoryBindingSchema.optional(),
+  parent: z.object({
+    actor: z.enum(['main', 'team_member', 'workflow', 'subagent']),
+    actorId: z.string().min(1).optional(),
+    teamId: z.string().min(1).optional()
+  }).strict().optional(),
+  owner: z.object({
+    kind: z.enum(['main', 'team_member', 'workflow']),
+    id: z.string().min(1).optional(),
+    teamId: z.string().min(1).optional()
+  }).strict().optional(),
+  depth: z.number().int().nonnegative().default(0),
   rounds: z.array(SubAgentRoundSchema).default([])
 });
 export type SubAgentSnapshot = z.infer<typeof SubAgentSnapshotSchema>;
@@ -719,6 +885,11 @@ export type WorkflowRunSnapshot = z.infer<typeof WorkflowRunSnapshotSchema>;
 export const OrchestrationEventSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('subagent.changed'), subagent: SubAgentSnapshotSchema }),
   z.object({ type: z.literal('workflow.changed'), workflow: WorkflowRunSnapshotSchema }),
+  z.object({ type: z.literal('team.changed'), team: TeamSnapshotSchema }),
+  z.object({ type: z.literal('team.deleted'), teamId: TeamIdSchema }),
+  z.object({ type: z.literal('team.member.changed'), teamId: TeamIdSchema, member: TeamMemberSnapshotSchema }),
+  z.object({ type: z.literal('team.task.changed'), task: TeamTaskSnapshotSchema }),
+  z.object({ type: z.literal('team.message.created'), message: TeamMessageSchema }),
   z.object({
     type: z.literal('workflow.log'),
     runId: z.string().min(1),

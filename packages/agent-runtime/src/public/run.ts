@@ -11,7 +11,7 @@ export type RunBudget = {
 };
 
 export type RuntimeActor = {
-  kind: 'main' | 'subagent' | 'workflow';
+  kind: 'main' | 'subagent' | 'workflow' | 'team_member';
   id?: string;
   profile?: string;
 };
@@ -20,6 +20,12 @@ export type RuntimeWorkflowContext = {
   id: string;
   runId?: string;
   stepId?: string;
+};
+
+export type RuntimeTeamContext = {
+  id: string;
+  memberId: string;
+  taskId?: string;
 };
 
 export type RunRequest = {
@@ -33,6 +39,7 @@ export type RunRequest = {
   budget?: RunBudget;
   actor?: RuntimeActor;
   workflow?: RuntimeWorkflowContext;
+  team?: RuntimeTeamContext;
   signal?: AbortSignal;
 };
 
@@ -44,7 +51,14 @@ export interface RunHandle {
 
 /** Diagnostic compatibility channel; stable consumers should subscribe to RuntimeEventEnvelope. */
 export interface TelemetrySink {
-  diagnostic(event: AgentEvent, context: { sessionId: string; laneId: string; runId: string }): void;
+  diagnostic(event: AgentEvent, context: {
+    sessionId: string;
+    laneId: string;
+    runId: string;
+    actor?: RuntimeActor;
+    workflow?: RuntimeWorkflowContext;
+    team?: RuntimeTeamContext;
+  }): void;
 }
 
 export type { RuntimeInput, RuntimeInputBlock } from '@desktop-agent/contracts/runtime';

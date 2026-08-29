@@ -15,11 +15,13 @@ const READ_TOOLS = new Set([
   'read_file', 'list_files', 'glob', 'grep', 'web_search', 'web_fetch', 'load_skill',
   'memory_search', 'mcp_tool_manifest', 'mcp_tool_describe', 'mcp_list_resources',
   'mcp_read_resource', 'mcp_list_prompts', 'mcp_get_prompt', 'workflow_list',
-  'sub_agent_status', 'sub_agent_wait', 'workflow_status', 'workflow_wait'
+  'sub_agent_status', 'sub_agent_wait', 'workflow_status', 'workflow_wait',
+  'team_list', 'team_status', 'team_wait', 'team_inbox'
 ]);
 const WRITE_TOOLS = new Set(['write_file', 'edit_file', 'delete_file', 'save_memory']);
 const CONTROL_TOOLS = new Set([
   'sub_agent_start', 'sub_agent_cancel', 'sub_agent_send', 'sub_agent_close',
+  'team_delegate', 'team_send',
   'workflow_start', 'workflow_cancel', 'workflow_resume'
 ]);
 const BROWSER_READ_TOOLS = new Set([
@@ -50,7 +52,7 @@ function sourceFor(call: ToolCall, baseline: PermissionDecision): ToolSource {
   if (call.name.startsWith('mcp__') || call.name.startsWith('mcp_') || (baseline.decision === 'ask' && baseline.request.security?.kind === 'mcp')) return 'mcp';
   if (call.name.startsWith('browser_')) return 'browser';
   if (call.name.includes('memory')) return 'memory';
-  if (call.name.startsWith('sub_agent_') || call.name.startsWith('workflow_')) return 'orchestration';
+  if (call.name.startsWith('sub_agent_') || call.name.startsWith('workflow_') || call.name.startsWith('team_')) return 'orchestration';
   if (call.name === 'load_skill' || call.name === 'install_skill') return 'skill';
   if (call.name.includes('hook')) return 'hook';
   return 'native';
@@ -75,6 +77,8 @@ function contextFor(context: RuntimeResolutionContext): GovernanceContext {
     ? 'workflow' as const
     : actor.kind === 'subagent'
       ? 'subagent' as const
+      : actor.kind === 'team_member'
+        ? 'team_member' as const
       : 'user' as const;
   return {
     sessionId: context.sessionId,
@@ -82,6 +86,7 @@ function contextFor(context: RuntimeResolutionContext): GovernanceContext {
     runId: context.runId,
     actor,
     trigger: { kind: trigger },
+    ...(context.team ? { team: context.team } : {}),
     workingDirectory: context.workingDirectory,
     executionScope: context.executionScope,
     interactive: actor.kind === 'main' && trigger === 'user'
@@ -168,6 +173,7 @@ export class DefaultPermissionRequestNormalizer implements PermissionRequestNorm
       operation: operationIdentity(call, callInput, facts),
       actor: governanceContext.actor,
       trigger: governanceContext.trigger,
+      team: governanceContext.team,
       resourceScope: facts.resourceScope,
       terminal,
       mcp,
@@ -178,6 +184,7 @@ export class DefaultPermissionRequestNormalizer implements PermissionRequestNorm
       tool: call.name,
       actor: governanceContext.actor,
       trigger: governanceContext.trigger,
+      team: governanceContext.team,
       source,
       operations,
       risk,

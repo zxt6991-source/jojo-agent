@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import type {
-  AgentEvent, ApprovalRequest, BrowserDockState, BrowserRecordingRegistrySnapshot, BrowserRecordingStudioDetail, ExtensionSettings, ExtensionStatus, HookSettingsSnapshot, ImageContentBlock, MemoryCandidateReviewEdit, MemorySettings, MemoryStatusSnapshot, Message, PermissionGovernanceSnapshot, PermissionPolicyDocumentContract, ProviderConfig, ProviderSettings, SessionCompactionRecord, SessionMeta, SkillDetail, SkillStatus, WorkflowRunSnapshot, WorkspaceChanges
+  AgentEvent, ApprovalRequest, BrowserDockState, BrowserRecordingRegistrySnapshot, BrowserRecordingStudioDetail, DesktopApi, ExtensionSettings, ExtensionStatus, HookSettingsSnapshot, ImageContentBlock, MemoryCandidateReviewEdit, MemorySettings, MemoryStatusSnapshot, Message, PermissionGovernanceSnapshot, PermissionPolicyDocumentContract, ProviderConfig, ProviderSettings, SessionCompactionRecord, SessionMeta, SkillDetail, SkillStatus, TeamSnapshot, TeamStatusSnapshot, WorkflowRunSnapshot, WorkspaceChanges
 } from '@desktop-agent/contracts';
 import { DEFAULT_BROWSER_SETTINGS, DEFAULT_MEMORY_SETTINGS, DEFAULT_PROVIDERS, DEFAULT_SESSION_TITLE, projectNameFromDirectory } from '@desktop-agent/contracts';
 import {
@@ -16,6 +16,7 @@ import { browserDomainIssue, parseBrowserDomainList } from './browser-settings';
 import { HooksSettingsPage, hookStatusErrorMessage } from './HooksSettings';
 import { MemorySettingsPage } from './MemorySettings';
 import { PermissionsSettingsPage } from './PermissionsSettings';
+import { TeamSettingsPage } from './TeamSettings';
 import { ChatTranscript, ConversationViewTabs, Markdown, TrajectoryView } from './ConversationViews';
 import { Sidebar } from './Sidebar';
 import { WorkflowCard } from './WorkflowCard';
@@ -25,7 +26,7 @@ import './styles.css';
 
 type DiffLine = { type: 'addition' | 'deletion' | 'context' | 'hunk' | 'meta'; oldLine?: number; newLine?: number; text: string };
 const FOLLOW_THRESHOLD = 24;
-type SettingsSection = 'models' | 'permissions' | 'memory' | 'browser' | 'mcp' | 'skills' | 'hooks';
+type SettingsSection = 'models' | 'permissions' | 'memory' | 'teams' | 'browser' | 'mcp' | 'skills' | 'hooks';
 
 const defaultSettings: ProviderSettings = {
   activeProviderId: 'openai',
@@ -622,6 +623,12 @@ function App() {
   const [permissionError, setPermissionError] = useState('');
   const [permissionBusy, setPermissionBusy] = useState(false);
   const [permissionSnapshot, setPermissionSnapshot] = useState<PermissionGovernanceSnapshot | null>(null);
+  const [teams, setTeams] = useState<TeamSnapshot[]>([]);
+  const [selectedTeamId, setSelectedTeamId] = useState<string | null>(null);
+  const selectedTeamIdRef = useRef<string | null>(null);
+  const [teamStatus, setTeamStatus] = useState<TeamStatusSnapshot | null>(null);
+  const [teamError, setTeamError] = useState('');
+  const [teamBusy, setTeamBusy] = useState(false);
   const [memoryDraft, setMemoryDraft] = useState<MemorySettings>(structuredClone(DEFAULT_MEMORY_SETTINGS));
   const [memoryStatus, setMemoryStatus] = useState<MemoryStatusSnapshot | null>(null);
   const [memoryError, setMemoryError] = useState('');
@@ -755,6 +762,95 @@ function App() {
       setPermissionError(cause instanceof Error ? cause.message : String(cause));
     } finally {
       setPermissionBusy(false);
+    }
+  };
+
+  const teamWorkspace = (): string | undefined => {
+    const sessionId = activeIdRef.current;
+    return sessionId ? sessionDirectoriesRef.current.get(sessionId) : undefined;
+  };
+
+  const loadTeamStatus = async (teamId: string): Promise<void> => {
+    try {
+      setTeamStatus(await window.desktopAgent.getTeamStatus({ teamId }));
+    } catch (cause) {
+      setTeamStatus(null);
+      setTeamError(cause instanceof Error ? cause.message : String(cause));
+    }
+  };
+
+  const refreshTeams = async (): Promise<void> => {
+    const workspace = teamWorkspace();
+    if (!workspace) {
+      setTeams([]); setSelectedTeamId(null); setTeamStatus(null); setTeamError('');
+      return;
+    }
+    setTeamBusy(true); setTeamError('');
+    try {
+      const next = await window.desktopAgent.listTeams({ workspace });
+      setTeams(next);
+      const nextId = next.some((team) => team.id === selectedTeamId) ? selectedTeamId : (next[0]?.id ?? null);
+      setSelectedTeamId(nextId);
+      if (nextId) await loadTeamStatus(nextId);
+      else setTeamStatus(null);
+    } catch (cause) {
+      setTeamError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setTeamBusy(false);
+    }
+  };
+
+  const selectTeam = (teamId: string): void => {
+    setSelectedTeamId(teamId); setTeamError('');
+    void loadTeamStatus(teamId);
+  };
+
+  const saveTeam = async (input: Parameters<DesktopApi['saveTeam']>[0]): Promise<TeamSnapshot> => {
+    setTeamBusy(true); setTeamError('');
+    try {
+      const saved = await window.desktopAgent.saveTeam(input);
+      setTeams((current) => [...current.filter((team) => team.id !== saved.id), saved].sort((left, right) => left.name.localeCompare(right.name)));
+      setSelectedTeamId(saved.id);
+      await loadTeamStatus(saved.id);
+      return saved;
+    } catch (cause) {
+      setTeamError(cause instanceof Error ? cause.message : String(cause));
+      throw cause;
+    } finally {
+      setTeamBusy(false);
+    }
+  };
+
+  const deleteTeam = async (teamId: string): Promise<void> => {
+    setTeamBusy(true); setTeamError('');
+    try {
+      await window.desktopAgent.deleteTeam({ teamId });
+      const remaining = teams.filter((team) => team.id !== teamId);
+      setTeams(remaining);
+      const nextId = remaining[0]?.id ?? null;
+      setSelectedTeamId(nextId);
+      if (nextId) await loadTeamStatus(nextId);
+      else setTeamStatus(null);
+    } catch (cause) {
+      setTeamError(cause instanceof Error ? cause.message : String(cause));
+      throw cause;
+    } finally {
+      setTeamBusy(false);
+    }
+  };
+
+  const toggleTeamMember = async (teamId: string, memberId: string, enabled: boolean): Promise<TeamSnapshot> => {
+    setTeamBusy(true); setTeamError('');
+    try {
+      const saved = await window.desktopAgent.setTeamMemberEnabled({ teamId, memberId, enabled });
+      setTeams((current) => current.map((team) => team.id === saved.id ? saved : team));
+      await loadTeamStatus(teamId);
+      return saved;
+    } catch (cause) {
+      setTeamError(cause instanceof Error ? cause.message : String(cause));
+      throw cause;
+    } finally {
+      setTeamBusy(false);
     }
   };
 
@@ -963,6 +1059,29 @@ function App() {
       if (event.type === 'workflow.changed') {
         setWorkflows((current) => mergeWorkflowSnapshot(current, event.workflow));
       }
+      else if (event.type === 'team.changed') {
+        const sessionId = activeIdRef.current;
+        const workspace = sessionId ? sessionDirectoriesRef.current.get(sessionId) : undefined;
+        if (event.team.workspace === workspace) {
+          setTeams((current) => [...current.filter((team) => team.id !== event.team.id), event.team].sort((left, right) => left.name.localeCompare(right.name)));
+        }
+      }
+      else if (event.type === 'team.deleted') {
+        setTeams((current) => current.filter((team) => team.id !== event.teamId));
+        if (selectedTeamIdRef.current === event.teamId) setTeamStatus(null);
+      }
+      else if (event.type === 'team.member.changed') {
+        setTeams((current) => current.map((team) => team.id === event.teamId
+          ? { ...team, members: team.members.map((member) => member.id === event.member.id ? event.member : member) }
+          : team));
+        if (selectedTeamIdRef.current === event.teamId) void loadTeamStatus(event.teamId);
+      }
+      else if (event.type === 'team.task.changed' && selectedTeamIdRef.current === event.task.teamId) {
+        void loadTeamStatus(event.task.teamId);
+      }
+      else if (event.type === 'team.message.created' && selectedTeamIdRef.current === event.message.teamId) {
+        void loadTeamStatus(event.message.teamId);
+      }
     });
     const offEvents = window.desktopAgent.onAgentEvent((event: AgentEvent) => {
       if (event.type === 'turn.started') {
@@ -1003,6 +1122,8 @@ function App() {
     return () => { offSessions(); offExtensions(); offSecret(); offTerminalSecret(); offDock(); offOrchestration(); offEvents(); };
   }, []);
 
+  useEffect(() => { selectedTeamIdRef.current = selectedTeamId; }, [selectedTeamId]);
+
   useEffect(() => {
     const toggleSidebar = (event: KeyboardEvent) => {
       if (event.key.toLowerCase() !== 'b' || (!event.metaKey && !event.ctrlKey) || event.altKey || event.shiftKey) return;
@@ -1028,6 +1149,11 @@ function App() {
   useEffect(() => {
     if (!settingsOpen || settingsSection !== 'memory') return;
     void refreshMemoryStatus();
+  }, [settingsOpen, settingsSection, activeId]);
+
+  useEffect(() => {
+    if (!settingsOpen || settingsSection !== 'teams') return;
+    void refreshTeams();
   }, [settingsOpen, settingsSection, activeId]);
 
   useEffect(() => {
@@ -1348,6 +1474,7 @@ function App() {
     setExtensionError(''); setExtensionSearch(''); setExtensionEditorOpen(false);
     void refreshExtensionStatus(active?.workingDirectory);
     if (section === 'permissions') void refreshPermissionGovernance();
+    if (section === 'teams') void refreshTeams();
     if (section === 'browser') void refreshBrowserRecordings(active?.workingDirectory);
     setSettingsSection(section);
     setSettingsOpen(true);
@@ -1633,6 +1760,7 @@ function App() {
           <button type="button" className={settingsSection === 'models' ? 'active' : ''} onClick={() => { setSettingsSection('models'); setExtensionEditorOpen(false); }}><span aria-hidden="true">◇</span> 模型</button>
           <button type="button" className={settingsSection === 'permissions' ? 'active' : ''} onClick={() => { setSettingsSection('permissions'); setExtensionEditorOpen(false); void refreshPermissionGovernance(); }}><span aria-hidden="true">⌁</span> 权限</button>
           <button type="button" className={settingsSection === 'memory' ? 'active' : ''} onClick={() => { setSettingsSection('memory'); setExtensionEditorOpen(false); }}><span aria-hidden="true">◈</span> Memory</button>
+          <button type="button" className={settingsSection === 'teams' ? 'active' : ''} onClick={() => { setSettingsSection('teams'); setExtensionEditorOpen(false); void refreshTeams(); }}><span aria-hidden="true">♙</span> 团队</button>
           <button type="button" className={settingsSection === 'browser' ? 'active' : ''} onClick={() => { setSettingsSection('browser'); setExtensionEditorOpen(false); void refreshBrowserRecordings(active?.workingDirectory); }}><span aria-hidden="true">◎</span> 浏览器</button>
           <button type="button" className={settingsSection === 'skills' ? 'active' : ''} onClick={() => { setSettingsSection('skills'); setExtensionSearch(''); setExtensionEditorOpen(false); }}><span aria-hidden="true">⬡</span> 技能</button>
           <button type="button" className={settingsSection === 'mcp' ? 'active' : ''} onClick={() => { setSettingsSection('mcp'); setExtensionSearch(''); setExtensionEditorOpen(false); }}><span aria-hidden="true">⌘</span> MCP 服务</button>
@@ -1640,7 +1768,7 @@ function App() {
         </nav>
       </aside>
       <main className="settings-main">
-        <header className="settings-topbar"><strong>{settingsSection === 'models' ? '模型' : settingsSection === 'permissions' ? '权限' : settingsSection === 'memory' ? 'Memory' : settingsSection === 'browser' ? '浏览器' : settingsSection === 'skills' ? '技能' : settingsSection === 'hooks' ? 'Hooks' : 'MCP 服务'}</strong></header>
+        <header className="settings-topbar"><strong>{settingsSection === 'models' ? '模型' : settingsSection === 'permissions' ? '权限' : settingsSection === 'memory' ? 'Memory' : settingsSection === 'teams' ? '团队' : settingsSection === 'browser' ? '浏览器' : settingsSection === 'skills' ? '技能' : settingsSection === 'hooks' ? 'Hooks' : 'MCP 服务'}</strong></header>
         <div className="settings-page-body">
     {settingsSection === 'models' && <form className="settings-content model-settings-page" aria-labelledby="settings-title" onSubmit={async (event) => {
       event.preventDefault();
@@ -1741,6 +1869,19 @@ function App() {
           setMemoryBusy(false);
         }
       }}
+    />}
+    {settingsSection === 'teams' && <TeamSettingsPage
+      {...(active?.workingDirectory ? { workspace: active.workingDirectory } : {})}
+      teams={teams}
+      selectedTeamId={selectedTeamId}
+      status={teamStatus}
+      busy={teamBusy}
+      error={teamError}
+      onSelect={selectTeam}
+      onRefresh={() => { void refreshTeams(); }}
+      onSave={saveTeam}
+      onDelete={deleteTeam}
+      onToggleMember={toggleTeamMember}
     />}
     {settingsSection === 'browser' && <BrowserSettingsPage
       enabled={extensionDraft.browser.enabled}

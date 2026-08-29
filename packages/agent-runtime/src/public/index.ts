@@ -28,6 +28,7 @@ export type {
   RuntimeActor,
   RuntimeInput,
   RuntimeInputBlock,
+  RuntimeTeamContext,
   RuntimeWorkflowContext,
   TelemetrySink
 } from './run.js';

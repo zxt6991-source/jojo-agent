@@ -18,8 +18,8 @@ export const PermissionRuleSchema = z.object({
   id: z.string().min(1).max(256),
   effect: z.enum(['allow', 'ask', 'deny']),
   match: z.object({
-    actors: z.array(z.enum(['main', 'subagent', 'workflow'])).optional(),
-    triggers: z.array(z.enum(['user', 'api', 'scheduler', 'workflow', 'subagent', 'resume'])).optional(),
+    actors: z.array(z.enum(['main', 'subagent', 'workflow', 'team_member'])).optional(),
+    triggers: z.array(z.enum(['user', 'api', 'scheduler', 'workflow', 'subagent', 'team_member', 'resume'])).optional(),
     sources: z.array(z.enum(['native', 'mcp', 'browser', 'memory', 'orchestration', 'skill', 'hook'])).optional(),
     tools: z.array(z.string().min(1).max(256)).optional(),
     operations: z.array(z.enum(['read', 'write', 'execute', 'network', 'external_effect', 'install', 'trust', 'control'])).optional(),

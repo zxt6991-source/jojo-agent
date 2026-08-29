@@ -4,7 +4,8 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./sqlite-runtime-store": "./src/sqlite-runtime-store.ts"
+    "./sqlite-runtime-store": "./src/sqlite-runtime-store.ts",
+    "./sqlite-team-store": "./src/sqlite-team-store.ts"
   },
   "dependencies": {
     "@desktop-agent/agent-runtime": "workspace:*",

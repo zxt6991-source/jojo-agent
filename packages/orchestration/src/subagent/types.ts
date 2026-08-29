@@ -43,6 +43,8 @@ export type LeafAgentRunResult = {
 };
 
 export interface LeafAgentRunner {
+  /** Stable Runtime Lane is the continuation identity; repeat run() with the same lane. */
+  readonly laneBasedContinuation?: boolean;
   run(
     request: LeafAgentRunRequest,
     signal: AbortSignal,
@@ -73,5 +75,21 @@ export type SubAgentStartRequest = {
   isolation?: IsolationConfig;
   resources?: WorkflowResourceGroup;
   depth?: number;
+  parent?: SpawnParent;
+  owner?: SpawnOwner;
   memoryBinding?: SubAgentMemoryBinding;
+};
+
+export type SpawnParent = {
+  actor: 'main' | 'team_member' | 'workflow' | 'subagent';
+  actorId?: string;
+  teamId?: string;
+  parentSpawnId?: string;
+  depth: number;
+};
+
+export type SpawnOwner = {
+  kind: 'main' | 'team_member' | 'workflow';
+  id?: string;
+  teamId?: string;
 };

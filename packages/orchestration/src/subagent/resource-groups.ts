@@ -23,6 +23,16 @@ export class ResourceGroupLimiter {
     return limiter;
   }
 
+  reconfigure(resources: WorkflowResourceGroup): AgentExecutionScheduler {
+    const existing = this.groups.get(resources.group);
+    if (existing?.activeCount || existing?.queuedCount) {
+      throw new OrchestrationError('resource_group_conflict', `Resource group ${resources.group} is active and cannot be reconfigured.`);
+    }
+    const limiter = new AgentExecutionScheduler(resources.maxConcurrency);
+    this.groups.set(resources.group, limiter);
+    return limiter;
+  }
+
   acquire(resources: WorkflowResourceGroup, signal: AbortSignal): Promise<() => void> {
     return this.register(resources).acquire(signal);
   }

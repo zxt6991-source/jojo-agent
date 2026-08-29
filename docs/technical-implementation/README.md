@@ -23,7 +23,7 @@
 | `packages/server-http` | `@desktop-agent/server-http` | Fastify REST / WebSocket Transport | [HTTP API / Client SDK](../jojo-http-api-server-client-sdk-final-design-code-aligned-v2.md) |
 | `packages/client` | `@desktop-agent/client` | 不依赖 Runtime 的 `JojoClient` / `JojoSession` / `JojoRun` SDK | [HTTP API / Client SDK](../jojo-http-api-server-client-sdk-final-design-code-aligned-v2.md) |
 | 上下文管理 | 多包协作 | token 预算、大结果回收、历史压缩与截断续写 | [上下文管理](./context-management.md) |
-| `packages/orchestration` | `@desktop-agent/orchestration` | Sub-Agent、Workflow Engine、Isolation、Saved Workflow | [统一设计路线图](../subagent-workflow-unified-design-roadmap.md) |
+| `packages/orchestration` | `@desktop-agent/orchestration` | Spawn、Persistent Team、Workflow Engine、Isolation、Saved Workflow | [Spawn / Team](../Jojo-Agent-Spawn-Team.md)、[统一设计路线图](../subagent-workflow-unified-design-roadmap.md) |
 | `packages/providers` | `@desktop-agent/providers` | Chat Completions 与 Embedding 协议适配 | [Providers](./providers.md) |
 | Phase 2 横切能力 | 多包协作 | Provider 配置、模型发现与上下文稳定性 | [Phase 2 方案](../phase-2-multi-provider-context.md) |
 | `packages/tools-node` | `@desktop-agent/tools-node` | 本地文件、目录、公开网页检索、终端工具及权限 Gate | [Tools Node](./tools-node.md) |
@@ -85,7 +85,7 @@ flowchart TB
 - `permission-governance` 实现 `GovernanceRuntimePermissionGate`，包装既有 Native / MCP / Browser / Memory / Orchestration Gate；它把 baseline 决策和 Runtime actor / workflow 上下文归一化为统一事实，再执行不可绕过的安全边界、用户 Policy、Session Grant 与 ASK / AUTO / YOLO。Desktop 已接入 Main、Sub-Agent、Workflow Agent 和直接 Workflow Tool Step；Headless Server 尚未接入该持久化 Policy / Audit 组合。
 - `app-service` 把 Runtime 转成会话 / Run / 审批 / 恢复的应用服务；`server-core` 补 Lease、幂等与授权；`server-http` 暴露 REST 与 `/api/v1/events` WebSocket。
 - `packages/client` 只依赖 `server-protocol`，不依赖 Runtime。
-- `apps/desktop` 的 Utility Process Worker 完成 Desktop 侧依赖注入（Orchestration、Memory、MCP/Skills、Browser、Hooks），再进入 Runtime。
+- `apps/desktop` 的 Utility Process Worker 完成 Desktop 侧依赖注入（Spawn / Team / Workflow、Memory、MCP/Skills、Browser、Hooks），再进入 Runtime。Team 使用独立持久 Session / Lane 与 `runtime/teams.sqlite`，不随聊天 Session 删除；Main / Preload / Worker 的严格 IPC 支持 Team CRUD、状态查询和成员启停，Renderer 设置页提供对应控制面。
 - `tools-node` 和 `extensions` 共用 `process-sandbox`。Terminal 始终通过它执行；Desktop MCP stdio 强制通过它启动，避免各自维护不同的环境、进程树和平台隔离逻辑。
 - `apps/server` 导出 `createHeadlessServer()` / `createNetworkServer()`，默认监听 `127.0.0.1:7788`；非回环地址必须同时启用 `allowRemote` 并配置 token。当前默认能力为 Runtime Run / Lane / 审批 / 图片 / Sub-Agent；Workflow、Browser、Memory 远程 API 尚未开放。
 

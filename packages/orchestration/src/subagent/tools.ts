@@ -2,6 +2,7 @@ import type { SubAgentMemoryBinding, SubAgentSnapshot, Tool, ToolResult } from '
 import { z } from 'zod';
 import { orchestrationErrorCode } from '../errors.js';
 import { SubAgentManager } from './manager.js';
+import type { SpawnOwner, SpawnParent } from './types.js';
 
 const ToolPolicyInput = z.object({
   allow: z.array(z.string().min(1).max(64)).max(32).optional(),
@@ -38,6 +39,12 @@ export type SubAgentToolOptions = {
     workingDirectory: string;
     profile: string;
   }) => Promise<SubAgentMemoryBinding | undefined>;
+  spawnContext?: {
+    parent: SpawnParent;
+    owner: SpawnOwner;
+    allowedProfiles?: string[];
+    maxActive?: number;
+  };
 };
 
 function result(ok: boolean, content: unknown, code?: string): ToolResult {
@@ -90,6 +97,14 @@ export function createSubAgentTools(manager: SubAgentManager, options: SubAgentT
         const parsed = StartInput.safeParse(input);
         if (!parsed.success) return result(false, parsed.error.message, 'invalid_input');
         try {
+          if (options.spawnContext?.allowedProfiles
+            && !options.spawnContext.allowedProfiles.includes(parsed.data.profile)) {
+            return result(false, `Spawn profile is not allowed: ${parsed.data.profile}`, 'spawn_profile_not_allowed');
+          }
+          if (options.spawnContext?.maxActive !== undefined
+            && manager.countActiveOwnedBy(options.spawnContext.owner) >= options.spawnContext.maxActive) {
+            return result(false, 'Spawn owner has reached its active worker limit.', 'spawn_limit_reached');
+          }
           const memoryBinding = await options.resolveMemoryBinding?.({
             sessionId: context.sessionId,
             workingDirectory: context.workingDirectory,
@@ -114,7 +129,11 @@ export function createSubAgentTools(manager: SubAgentManager, options: SubAgentT
             ...(parsed.data.resources ? { resources: parsed.data.resources } : {}),
             ...(parsed.data.outputSchema ? { outputSchema: parsed.data.outputSchema } : {}),
             ...(memoryBinding ? { memoryBinding } : {}),
-            depth: 0
+            depth: options.spawnContext?.parent.depth ?? 0,
+            ...(options.spawnContext ? {
+              parent: options.spawnContext.parent,
+              owner: options.spawnContext.owner
+            } : {})
           });
           return result(true, { id: snapshot.id, state: snapshot.state, label: snapshot.label });
         } catch (error) {

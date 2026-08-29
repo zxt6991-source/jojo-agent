@@ -182,7 +182,20 @@ Worker 与界面进程分离，因此 Agent 运行异常不必直接获得 Rende
 | `synthesize` | 无工具 | 汇总上游步骤证据 |
 | `general` | 可写，强制独立 Git Worktree | 在隔离分支完成工程任务，默认不 Merge |
 
-可叠加 `~/.jojo/agents/*.md` 与项目 `.jojo/agents/*.md`（项目覆盖用户，再覆盖 builtin）。Sub-Agent 使用独立上下文与 Usage，不能再派生 Sub-Agent 或 Workflow。工具：`sub_agent_start`、`sub_agent_wait`、`sub_agent_status`、`sub_agent_cancel`、`sub_agent_send`、`sub_agent_close`。
+可叠加 `~/.jojo/agents/*.md` 与项目 `.jojo/agents/*.md`（项目覆盖用户，再覆盖 builtin）。这组能力的产品语义是临时 Spawn，兼容工具名仍为 `sub_agent_start`、`sub_agent_wait`、`sub_agent_status`、`sub_agent_cancel`、`sub_agent_send`、`sub_agent_close`。续接身份已经改为稳定 Runtime Lane，不再依赖 Desktop Worker 内存中的 continuation map。Spawn 本身仍是 Leaf；Team Member 可在成员策略允许时 Spawn Leaf Worker。
+
+### 5.3.1 Persistent Team
+
+Team 是绑定 Workspace 的长期 Agent Identity。Team / Member / Task / Inbox 保存到 `runtime/teams.sqlite`；每个成员使用稳定的隐藏 Runtime Session 与 `member:<id>` Lane，因此多次委派可继承成员自己的历史。成员空闲时不占线程或模型循环。
+
+- 同一成员的任务严格串行，不同成员可在 Team、Provider 与全局并发限制内并行；
+- `team_send` 只写持久 Inbox，不会自动唤醒收件人；只有 `team_delegate` 会启动成员运行；
+- 可写成员任务按 Task 创建 Git Worktree，结果保留 Branch、changed files 与 diff；
+- Team Member 使用 `actor.kind=team_member` 与 Team Context 进入 Permission Governance；
+- 启动恢复时，无法确认安全恢复的 `running` / `waiting_approval` 任务标记为 `interrupted`，不会静默重放副作用；
+- 成员允许 Spawn 时可配置 Profile allowlist 与 active limit；取消 Team Task 会取消该成员拥有的 Spawn。
+
+主 Agent 工具：`team_list`、`team_status`、`team_delegate`、`team_wait`、`team_send`、`team_inbox`。普通成员只获得自己的 Inbox / Send 视图及策略允许的 Spawn 工具，不获得 Team 结构管理或 Workflow 启动权限。Desktop 设置页可按当前 Workspace 创建、编辑和删除 Team，配置成员 Profile / 模型 / Tool Policy / Spawn Policy，运行时启停成员，并查看活跃、排队和最近任务。
 
 ### 5.4 Workflow DAG
 
