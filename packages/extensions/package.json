@@ -8,6 +8,7 @@
     "@desktop-agent/hooks": "workspace:*",
     "@desktop-agent/orchestration": "workspace:*",
     "@desktop-agent/providers": "workspace:*",
+    "@desktop-agent/process-sandbox": "workspace:*",
     "@modelcontextprotocol/client": "2.0.0",
     "yaml": "^2.9.0",
     "zod": "^4.1.13"

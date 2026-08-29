@@ -49,7 +49,10 @@ const WorkerCommandBaseSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('session.stop'), requestId: IdSchema, sessionId: IdSchema }).strict(),
   z.object({ type: z.literal('workflow.cancel'), sessionId: IdSchema, workflowId: IdSchema }).strict(),
   z.object({ type: z.literal('workflow.resume'), requestId: IdSchema, sessionId: IdSchema, workflowId: IdSchema }).strict(),
-  z.object({ type: z.literal('approval.resolve'), requestId: IdSchema, allow: z.boolean() }).strict(),
+  z.object({
+    type: z.literal('approval.resolve'), requestId: IdSchema, allow: z.boolean(),
+    scope: z.enum(['once', 'session', 'similar', 'conversation']).default('once')
+  }).strict(),
   z.object({
     type: z.literal('config.update'), settings: ProviderSettingsSchema,
     apiKeys: z.record(z.string().min(1).max(256), z.string().max(100_000)),
@@ -59,6 +62,8 @@ const WorkerCommandBaseSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('mcp.oauth.callback'), requestId: IdSchema, serverId: IdSchema, callbackParams: z.string().max(100_000) }).strict(),
   z.object({ type: z.literal('mcp.oauth.disconnect'), requestId: IdSchema, serverId: IdSchema }).strict(),
   z.object({ type: z.literal('mcp.reconnect'), requestId: IdSchema, serverId: IdSchema }).strict(),
+  z.object({ type: z.literal('mcp.trust'), requestId: IdSchema, serverId: IdSchema }).strict(),
+  z.object({ type: z.literal('mcp.trust.revoke'), requestId: IdSchema, serverId: IdSchema }).strict(),
   z.object({ type: z.literal('browser.heal.request'), requestId: IdSchema, sessionId: IdSchema, request: BrowserHealRequestSchema }).strict(),
   z.object({ type: z.literal('browser.progress'), requestId: IdSchema, text: z.string().min(1).max(20_000) }).strict(),
   z.object({ type: z.literal('browser.result'), requestId: IdSchema, result: ToolResultSchema.optional(), error: ErrorSchema.optional() }).strict(),

@@ -22,6 +22,7 @@ export { SqliteHookInvocationStore } from './sqlite-hook-invocation-store.js';
 export { SqliteMemoryCandidateStore } from './sqlite-memory-candidate-store.js';
 export { SqliteSemanticMemoryBackend } from './sqlite-semantic-memory-backend.js';
 export { SqliteServerStateStore } from './sqlite-server-state-store.js';
+export { SqliteMcpTrustStore } from './sqlite-mcp-trust-store.js';
 export { SERVER_STATE_SCHEMA_VERSION } from './server-state-schema.js';
 export { SqliteAgentRuntimeStore } from './sqlite-runtime-store.js';
 

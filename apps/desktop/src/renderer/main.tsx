@@ -1,4 +1,4 @@
-import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import type {
   AgentEvent, ApprovalRequest, BrowserDockState, BrowserRecordingRegistrySnapshot, BrowserRecordingStudioDetail, ExtensionSettings, ExtensionStatus, HookSettingsSnapshot, ImageContentBlock, MemoryCandidateReviewEdit, MemorySettings, MemoryStatusSnapshot, Message, ProviderConfig, ProviderSettings, SessionCompactionRecord, SessionMeta, SkillDetail, SkillStatus, WorkflowRunSnapshot, WorkspaceChanges
@@ -70,7 +70,7 @@ function skillScope(skill: SkillStatus): string {
 }
 
 function approvalTitle(request: ApprovalRequest): string {
-  if (request.call.name.startsWith('mcp__')) return '调用外部 MCP 工具';
+  if (request.security?.kind === 'mcp' || request.call.name.startsWith('mcp__') || request.call.name.startsWith('mcp_')) return '调用外部 MCP 工具';
   if (request.call.name === 'browser_open') return '打开网页';
   if (request.call.name === 'browser_download') return '下载网页文件';
   if (request.call.name === 'browser_eval') return '执行网页脚本';
@@ -85,7 +85,7 @@ function approvalTitle(request: ApprovalRequest): string {
 
 function approvalToolLabel(request: ApprovalRequest): string {
   if (request.call.name === 'trust_project_hooks') return 'Hooks';
-  if (request.call.name.startsWith('mcp__')) return 'MCP';
+  if (request.security?.kind === 'mcp' || request.call.name.startsWith('mcp__') || request.call.name.startsWith('mcp_')) return 'MCP';
   if (request.call.name.startsWith('browser_')) return '浏览器';
   if (request.call.name === 'terminal') return '终端';
   if (request.call.name === 'read_file') return '文件';
@@ -393,6 +393,21 @@ function BrowserSettingsPage({
 
 function approvalSummary(request: ApprovalRequest): string {
   if (request.preview) return request.preview.path;
+  if (request.security?.kind === 'terminal') {
+    const command = [request.security.command, ...request.security.argumentsPreview].map(quoteCommandPart).join(' ');
+    return [command, `cwd: ${request.security.cwd}`, `risk: ${request.security.risk}`,
+      `sandbox: ${request.security.sandbox}`, `capabilities: ${request.security.capabilities.join(', ')}`,
+      ...request.security.reasons.map((reason) => `- ${reason}`)].join('\n');
+  }
+  if (request.security?.kind === 'mcp') {
+    return [
+      `${request.security.serverName} (${request.security.serverId})`,
+      `tool: ${request.security.toolName}`,
+      `risk: ${request.security.risk}`,
+      `capabilities: ${request.security.capabilities.join(', ') || 'none'}`,
+      ...request.security.reasons.map((reason) => `- ${reason}`)
+    ].join('\n');
+  }
   const input = request.call.input;
   if (!input || typeof input !== 'object' || Array.isArray(input)) return JSON.stringify(input);
   const record = input as Record<string, unknown>;
@@ -583,6 +598,8 @@ function App() {
   const [inspectedId, setInspectedId] = useState<string | null>(null);
   const [turnStartedAt, setTurnStartedAt] = useState<number | null>(null);
   const [approval, setApproval] = useState<ApprovalRequest | null>(null);
+  const [approvalMenuOpen, setApprovalMenuOpen] = useState(false);
+  const [approvalResolving, setApprovalResolving] = useState(false);
   const runningRef = useRef(false);
   const [runningSessionId, setRunningSessionId] = useState<string | null>(null);
   const [error, setError] = useState('');
@@ -896,7 +913,7 @@ function App() {
       else if (event.type === 'text.delta' || event.type === 'tool.started' || event.type === 'tool.progress' || event.type === 'tool.finished') {
         setLiveSteps((steps) => applyLiveEvent(steps, event));
       }
-      else if (event.type === 'approval.required') setApproval(event.request);
+      else if (event.type === 'approval.required') { setApprovalMenuOpen(false); setApprovalResolving(false); setApproval(event.request); }
       else if (event.type === 'usage') setUsage((current) => ({
         input: current.input + (event.inputTokens ?? 0), output: current.output + (event.outputTokens ?? 0),
         cacheRead: current.cacheRead + (event.cacheReadInputTokens ?? 0), cacheWrite: current.cacheWrite + (event.cacheWriteInputTokens ?? 0)
@@ -993,18 +1010,36 @@ function App() {
     setLiveSteps([]);
   };
 
+  const resolveApprovalChoice = useCallback(async (
+    request: ApprovalRequest,
+    allow: boolean,
+    scope: 'once' | 'similar' | 'conversation' = 'once'
+  ): Promise<void> => {
+    setApprovalResolving(true);
+    setError('');
+    try {
+      await window.desktopAgent.resolveApproval({ requestId: request.requestId, allow, scope });
+      setApprovalMenuOpen(false);
+      setApproval((current) => current?.requestId === request.requestId ? null : current);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setApprovalResolving(false);
+    }
+  }, []);
+
   useEffect(() => {
     if (!approval) return;
     const handleApprovalShortcut = (event: KeyboardEvent) => {
       if (event.key !== 'Escape' && event.key !== 'Enter') return;
       event.preventDefault();
       event.stopImmediatePropagation();
-      void window.desktopAgent.resolveApproval({ requestId: approval.requestId, allow: event.key === 'Enter' });
-      setApproval(null);
+      if (event.key === 'Escape' && approvalMenuOpen) { setApprovalMenuOpen(false); return; }
+      if (!approvalResolving) void resolveApprovalChoice(approval, event.key === 'Enter');
     };
     window.addEventListener('keydown', handleApprovalShortcut, true);
     return () => window.removeEventListener('keydown', handleApprovalShortcut, true);
-  }, [approval]);
+  }, [approval, approvalMenuOpen, approvalResolving, resolveApprovalChoice]);
 
   useEffect(() => {
     if (!selectedSkill) return;
@@ -1441,8 +1476,18 @@ function App() {
       <h2 id="approval-title">{approvalQuestion(approval)}</h2>
       {approval.preview ? <ApprovalDiff request={approval} /> : <pre className="approval-command">{approvalSummary(approval)}</pre>}
       <div className="approval-actions">
-        <button className="approval-reject" onClick={() => { void window.desktopAgent.resolveApproval({ requestId: approval.requestId, allow: false }); setApproval(null); }}><span>{approval.call.name === 'trust_project_hooks' ? '禁用项目 Hooks' : '拒绝'}</span><kbd>Esc</kbd></button>
-        <button className="approval-allow" onClick={() => { void window.desktopAgent.resolveApproval({ requestId: approval.requestId, allow: true }); setApproval(null); }}><span>{approval.call.name === 'trust_project_hooks' ? '信任此版本' : '允许一次'}</span><kbd>↵</kbd></button>
+        <button className="approval-reject" disabled={approvalResolving} onClick={() => void resolveApprovalChoice(approval, false)}><span>{approval.call.name === 'trust_project_hooks' ? '禁用项目 Hooks' : '拒绝'}</span><kbd>Esc</kbd></button>
+        <div className="approval-allow-wrap">
+          {approvalMenuOpen && approval.grant && <div className="approval-allow-menu" role="menu" aria-label="选择允许范围">
+            <button type="button" role="menuitem" disabled={approvalResolving} onClick={() => void resolveApprovalChoice(approval, true, 'once')}>允许一次</button>
+            {approval.grant.options.includes('similar') && <button type="button" role="menuitem" disabled={approvalResolving} onClick={() => void resolveApprovalChoice(approval, true, 'similar')}>允许类似命令</button>}
+            {approval.grant.options.includes('conversation') && <button type="button" role="menuitem" disabled={approvalResolving} onClick={() => void resolveApprovalChoice(approval, true, 'conversation')}>本次对话都允许</button>}
+          </div>}
+          <div className="approval-allow-split">
+            <button className="approval-allow approval-allow-main" disabled={approvalResolving} onClick={() => void resolveApprovalChoice(approval, true)}><span>{approval.call.name === 'trust_project_hooks' ? '信任此版本' : '允许一次'}</span><kbd>↵</kbd></button>
+            {approval.grant && <button type="button" className="approval-allow approval-allow-toggle" disabled={approvalResolving} aria-label="选择允许范围" aria-haspopup="menu" aria-expanded={approvalMenuOpen} onClick={() => setApprovalMenuOpen((open) => !open)}><span aria-hidden="true">⌄</span></button>}
+          </div>
+        </div>
       </div>
     </div></div>}
     {browserSecret && <div className="modal-backdrop"><form className="modal browser-secret-modal" role="dialog" aria-modal="true" aria-labelledby="browser-secret-title" onSubmit={(event) => {
@@ -1699,15 +1744,26 @@ function App() {
           const status = extensionStatus.mcpServers.find((item) => item.serverId === server.id);
           const detail = server.transport === 'stdio' ? `${server.command} ${server.args.join(' ')}` : server.url;
           const oauth = server.transport === 'streamable_http' && server.auth?.type === 'oauth';
+          const capabilityText = `工作区 ${server.security?.workspaceAccess ?? 'none'} · 网络 ${server.security?.network ?? 'none'} · 沙箱 ${server.security?.sandboxMode ?? 'fallback'}`;
           const statusText = status?.state === 'connected'
             ? [`${status.toolCount} 个工具`, ...(status.resourceCount ? [`${status.resourceCount} 个资源`] : []), ...(status.promptCount ? [`${status.promptCount} 个提示词`] : [])].join(' · ')
-            : status?.state === 'connecting' ? '连接中' : status?.state === 'authorizing' ? '等待登录' : status?.state === 'auth_required' ? '需要登录' : status?.state === 'error' ? (status.error || '连接失败') : server.enabled ? '等待连接' : '已停用';
+            : status?.state === 'connecting' ? '连接中' : status?.state === 'trust_required' ? `需要信任此配置 · ${capabilityText}${status.fingerprint ? ` · ${status.fingerprint.slice(0, 12)}` : ''}${server.transport === 'stdio' && ['npx', 'uvx'].includes(server.command) ? ' · 可能下载并执行代码' : ''}` : status?.state === 'authorizing' ? '等待登录' : status?.state === 'auth_required' ? '需要登录' : status?.state === 'error' ? (status.error || '连接失败') : server.enabled ? '等待连接' : '已停用';
           return <article className="extension-item" key={server.id} title={detail}>
             <ExtensionIcon kind="mcp" />
             <div className="extension-item-copy"><strong>{server.name}</strong><span>{detail}</span></div>
             <span className={`extension-item-meta ${status?.state === 'error' ? 'failed' : ''}`}>{server.transport === 'stdio' ? '本地' : '远程'} · {statusText}</span>
             <div className="extension-item-actions">
-            {oauth && server.enabled && <button type="button" className="extension-auth-button" disabled={oauthBusyServerId === server.id || status?.state === 'authorizing'} onClick={async () => {
+            {status?.state === 'trust_required' && server.enabled && <button type="button" className="extension-auth-button" disabled={oauthBusyServerId === server.id} onClick={async () => {
+              setExtensionError(''); setOauthBusyServerId(server.id);
+              try {
+                await saveExtensionDraft();
+                await window.desktopAgent.trustMcpServer({ serverId: server.id });
+                await refreshExtensionStatus();
+              } catch (cause) {
+                setExtensionError(cause instanceof Error ? cause.message : String(cause));
+              } finally { setOauthBusyServerId(''); }
+            }}>{oauthBusyServerId === server.id ? '处理中…' : '信任并连接'}</button>}
+            {oauth && server.enabled && status?.state !== 'trust_required' && <button type="button" className="extension-auth-button" disabled={oauthBusyServerId === server.id || status?.state === 'authorizing'} onClick={async () => {
               setExtensionError(''); setOauthBusyServerId(server.id);
               try {
                 await saveExtensionDraft();
@@ -1718,7 +1774,7 @@ function App() {
                 setExtensionError(cause instanceof Error ? cause.message : String(cause));
               } finally { setOauthBusyServerId(''); }
             }}>{oauthBusyServerId === server.id || status?.state === 'authorizing' ? '处理中…' : status?.state === 'connected' ? '断开账号' : '连接账号'}</button>}
-            {server.enabled && status?.state !== 'auth_required' && <button type="button" className="extension-auth-button" disabled={oauthBusyServerId === server.id || status?.state === 'connecting' || status?.state === 'authorizing'} onClick={async () => {
+            {server.enabled && status?.state !== 'auth_required' && status?.state !== 'trust_required' && <button type="button" className="extension-auth-button" disabled={oauthBusyServerId === server.id || status?.state === 'connecting' || status?.state === 'authorizing'} onClick={async () => {
               setExtensionError(''); setOauthBusyServerId(server.id);
               try {
                 await saveExtensionDraft();
@@ -1728,6 +1784,15 @@ function App() {
                 setExtensionError(cause instanceof Error ? cause.message : String(cause));
               } finally { setOauthBusyServerId(''); }
             }}>{status?.state === 'connecting' ? '重连中…' : '重新连接'}</button>}
+            {server.enabled && status && status.state !== 'trust_required' && status.state !== 'disabled' && <button type="button" className="extension-auth-button" disabled={oauthBusyServerId === server.id} onClick={async () => {
+              setExtensionError(''); setOauthBusyServerId(server.id);
+              try {
+                await window.desktopAgent.revokeMcpServerTrust({ serverId: server.id });
+                await refreshExtensionStatus();
+              } catch (cause) {
+                setExtensionError(cause instanceof Error ? cause.message : String(cause));
+              } finally { setOauthBusyServerId(''); }
+            }}>撤销信任</button>}
             <button type="button" role="switch" aria-checked={server.enabled} aria-label={`${server.enabled ? '停用' : '启用'} ${server.name}`} className={`extension-switch ${server.enabled ? 'on' : ''}`} onClick={() => {
               const servers = extensionDraft.mcpServers.map((item) => item.id === server.id ? { ...item, enabled: !server.enabled } : item);
               setExtensionDraft((current) => ({ ...current, mcpServers: servers }));
@@ -1741,7 +1806,7 @@ function App() {
           && <div className="extension-empty-state"><span className="mcp-empty-illustration" aria-hidden="true"><i /><b /><em /></span><strong>{extensionSearch ? '没有匹配结果' : settingsSection === 'skills' ? '尚未发现 Skill' : '暂无 MCP 服务'}</strong><span>{extensionSearch ? '尝试其他关键词' : settingsSection === 'skills' ? '可通过 install_skill 或目录设置添加' : '点击右上角“添加”，在数据输入栏中配置服务'}</span></div>}
       </section>
       {extensionError && <div className="settings-error extension-error" role="alert">{extensionError}</div>}
-      <footer className="extensions-footer"><p>{settingsSection === 'mcp' ? '所有 MCP 工具执行前均需批准，请只配置可信服务。' : 'Skill 完整内容仅在模型调用 load_skill 后进入上下文。'}</p><div><button className="primary" type="submit">保存更改</button></div></footer>
+      <footer className="extensions-footer"><p>{settingsSection === 'mcp' ? 'MCP Server 配置需先按指纹信任；配置变化后会自动失效。工具默认逐次批准，也可仅授权当前会话。' : 'Skill 完整内容仅在模型调用 load_skill 后进入上下文。'}</p><div><button className="primary" type="submit">保存更改</button></div></footer>
       </div>
       </section>
       {extensionEditorOpen && settingsSection === 'mcp' && <aside className="mcp-data-panel" aria-label="MCP 数据输入栏">
@@ -1760,10 +1825,12 @@ function App() {
         </div>
         <details className="extension-example"><summary>查看配置格式</summary><pre>{`[
   { "id": "local", "name": "Local MCP", "enabled": true,
-    "transport": "stdio", "command": "npx", "args": ["-y", "server-package"] },
+    "transport": "stdio", "command": "npx", "args": ["-y", "server-package"],
+    "security": { "workspaceAccess": "none", "network": "none", "sandboxMode": "fallback" } },
   { "id": "remote", "name": "Remote MCP", "enabled": true,
     "transport": "streamable_http", "url": "https://example.com/mcp",
-    "versionNegotiation": "auto" }
+    "headers": { "Authorization": { "secretRef": { "provider": "env", "key": "MCP_AUTH" } } },
+    "security": { "network": "outbound", "trustedReadTools": ["search"] } }
 ]`}</pre></details>
       </aside>}
       </div>

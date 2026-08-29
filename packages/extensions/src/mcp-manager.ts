@@ -14,18 +14,30 @@ import {
   type Tool as McpSdkTool
 } from '@modelcontextprotocol/client';
 import { getDefaultEnvironment, StdioClientTransport } from '@modelcontextprotocol/client/stdio';
+import { createProcessSandbox, type ProcessSandbox } from '@desktop-agent/process-sandbox';
 import { z } from 'zod';
 import type {
   McpServerConfig,
   McpServerStatus,
+  McpTrustStore,
+  SecretBroker,
+  SecurityApprovalPreview,
   Tool,
+  ToolCall,
   ToolResult
 } from '@desktop-agent/contracts';
 import { DesktopMcpOAuthProvider, type McpOAuthCredentials } from './mcp-oauth.js';
+import { McpResultNormalizer } from './mcp-security/result-normalizer.js';
+import { mcpServerFingerprint, type McpFingerprintResult } from './mcp-security/fingerprint.js';
+import { mcpStdioSandboxSpec, SandboxedStdioTransport } from './mcp-security/sandboxed-stdio.js';
+import { createSafeMcpFetch, McpHttpTargetPolicy } from './mcp-security/http-target-policy.js';
+import { EnvironmentSecretBroker, resolveMcpConfigValues } from './mcp-security/secret-broker.js';
 
 const CONNECT_TIMEOUT_MS = 15_000;
 const TOOL_CATALOG_CONTEXT_RATIO = 0.08;
 const CONNECT_RETRY_DELAYS_MS = [250, 750] as const;
+const MCP_INSTRUCTION_MAX_BYTES = 8 * 1024;
+const resultNormalizer = new McpResultNormalizer();
 const ManifestInput = z.object({
   query: z.string().trim().max(500).default(''),
   serverId: z.string().trim().max(64).optional()
@@ -52,6 +64,9 @@ export type McpConnectionEvents = {
 export type McpConnectionOptions = {
   events?: McpConnectionEvents;
   session?: McpSessionState;
+  processSandbox?: ProcessSandbox;
+  secretBroker?: SecretBroker;
+  httpTargetPolicy?: McpHttpTargetPolicy;
 };
 
 export type McpClientConnection = {
@@ -78,6 +93,13 @@ export type McpOAuthCallbacks = {
   onCredentials(serverId: string, credentials: McpOAuthCredentials): void;
 };
 
+export type McpManagerOptions = {
+  trustStore?: McpTrustStore;
+  enforceStdioSandbox?: boolean;
+  secretBroker?: SecretBroker;
+  httpTargetPolicy?: McpHttpTargetPolicy;
+};
+
 function connectionError(error: unknown): string {
   return (error instanceof Error ? error.message : String(error)).slice(0, 1_000);
 }
@@ -87,6 +109,20 @@ async function defaultConnectionFactory(
   authProvider?: OAuthClientProvider,
   options: McpConnectionOptions = {}
 ): Promise<McpClientConnection> {
+  const secretBroker = options.secretBroker ?? new EnvironmentSecretBroker();
+  const httpTargetPolicy = options.httpTargetPolicy ?? new McpHttpTargetPolicy();
+  const httpTarget = config.transport === 'streamable_http'
+    ? await httpTargetPolicy.validate(config.url, { allowPrivate: config.security?.network === 'private' })
+    : undefined;
+  const leases: Array<{ dispose(): void }> = [];
+  const env = config.transport === 'stdio'
+    ? await resolveMcpConfigValues(config.env, secretBroker, `MCP stdio ${config.id}`, (name) => /(?:^|_)(?:API_?KEY|AUTH(?:ORIZATION)?|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?|PRIVATE_?KEY|ACCESS_?KEY)(?:_|$)/iu.test(name))
+    : undefined;
+  if (env) leases.push(env);
+  const headers = config.transport === 'streamable_http'
+    ? await resolveMcpConfigValues(config.headers, secretBroker, `MCP HTTP ${config.id}`, (name) => /^(?:authorization|cookie|proxy-authorization|x-api-key|x-auth-token)$/iu.test(name))
+    : undefined;
+  if (headers) leases.push(headers);
   const client = new Client(
     { name: 'desktop-agent', version: '0.1.0' },
     {
@@ -100,32 +136,42 @@ async function defaultConnectionFactory(
       }
     }
   );
-  const transport = config.transport === 'stdio'
-    ? new StdioClientTransport({
-        command: config.command,
-        args: config.args,
-        ...(config.cwd ? { cwd: config.cwd } : {}),
-        ...(config.env ? { env: { ...getDefaultEnvironment(), ...config.env } } : {}),
-        stderr: 'pipe'
-      })
-    : new StreamableHTTPClientTransport(new URL(config.url), {
-        ...(config.headers ? { requestInit: { headers: config.headers } } : {}),
-        ...(authProvider ? { authProvider } : {}),
-        ...(options.session?.sessionId ? { sessionId: options.session.sessionId } : {}),
-        ...(options.session?.protocolVersion ? { protocolVersion: options.session.protocolVersion } : {}),
-        reconnectionOptions: {
-          initialReconnectionDelay: 500,
-          maxReconnectionDelay: 5_000,
-          reconnectionDelayGrowFactor: 2,
-          maxRetries: 3
-        }
-      });
+  let transport: SandboxedStdioTransport | StdioClientTransport | StreamableHTTPClientTransport;
+  try {
+    transport = config.transport === 'stdio'
+      ? options.processSandbox
+        ? new SandboxedStdioTransport(options.processSandbox, mcpStdioSandboxSpec(config, env?.values))
+        : new StdioClientTransport({
+          command: config.command,
+          args: config.args,
+          ...(config.cwd ? { cwd: config.cwd } : {}),
+          ...(env ? { env: { ...getDefaultEnvironment(), ...env.values } } : {}),
+          stderr: 'pipe'
+          })
+      : new StreamableHTTPClientTransport(httpTarget!, {
+          ...(headers ? { requestInit: { headers: headers.values } } : {}),
+          fetch: createSafeMcpFetch(httpTargetPolicy, { allowPrivate: config.security?.network === 'private' }),
+          ...(authProvider ? { authProvider } : {}),
+          ...(options.session?.sessionId ? { sessionId: options.session.sessionId } : {}),
+          ...(options.session?.protocolVersion ? { protocolVersion: options.session.protocolVersion } : {}),
+          reconnectionOptions: {
+            initialReconnectionDelay: 500,
+            maxReconnectionDelay: 5_000,
+            reconnectionDelayGrowFactor: 2,
+            maxRetries: 3
+          }
+        });
+  } catch (error) {
+    leases.forEach((lease) => lease.dispose());
+    throw error;
+  }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(new Error('MCP connection timed out.')), CONNECT_TIMEOUT_MS);
   try {
     await client.connect(transport, { signal: controller.signal, timeout: CONNECT_TIMEOUT_MS });
   } catch (error) {
     await client.close().catch(() => undefined);
+    leases.forEach((lease) => lease.dispose());
     throw error;
   } finally {
     clearTimeout(timer);
@@ -147,7 +193,7 @@ async function defaultConnectionFactory(
         ...(protocolVersion ? { protocolVersion } : {})
       };
     },
-    close: () => client.close(),
+    close: async () => { try { await client.close(); } finally { leases.forEach((lease) => lease.dispose()); } },
     ...(instructions ? { instructions } : {})
   };
 }
@@ -161,37 +207,7 @@ function exposedName(serverId: string, toolName: string): string {
 }
 
 function mcpContentResult(result: Pick<CallToolResult, 'content' | 'structuredContent' | 'isError'>): ToolResult {
-  const contentBlocks: NonNullable<ToolResult['contentBlocks']> = [];
-  for (const block of result.content) {
-    if (block.type === 'text') {
-      contentBlocks.push({ type: 'text', text: block.text });
-    } else if (block.type === 'resource_link') {
-      contentBlocks.push({ type: 'text', text: `[resource ${block.name}: ${block.uri}]` });
-    } else if (block.type === 'resource') {
-      const resource = block.resource;
-      if ('text' in resource) contentBlocks.push({ type: 'text', text: resource.text });
-      else if (resource.mimeType?.startsWith('image/')) {
-        contentBlocks.push({ type: 'image', data: resource.blob, mimeType: resource.mimeType, altText: resource.uri });
-      } else contentBlocks.push({ type: 'text', text: `[binary resource: ${resource.uri}]` });
-    } else if (block.type === 'image') {
-      contentBlocks.push({ type: 'image', data: block.data, mimeType: block.mimeType });
-    } else if (block.type === 'audio') {
-      contentBlocks.push({ type: 'text', text: `[audio: ${block.mimeType}, ${block.data.length} base64 characters]` });
-    } else {
-      contentBlocks.push({ type: 'text', text: JSON.stringify(block) });
-    }
-  }
-  if (result.structuredContent !== undefined) {
-    contentBlocks.push({ type: 'text', text: JSON.stringify(result.structuredContent, null, 2) });
-  }
-  const text = contentBlocks.map((block) => block.type === 'text'
-    ? block.text
-    : `[image attached: ${block.mimeType}${block.altText ? `, ${block.altText}` : ''}]`
-  ).filter(Boolean).join('\n').slice(0, 1_000_000) || '(MCP tool returned no content)';
-  return {
-    callId: '', ok: result.isError !== true, content: text, contentBlocks,
-    ...(result.isError === true ? { code: 'mcp_tool_error' } : {})
-  };
+  return resultNormalizer.normalize(result);
 }
 
 type ToolEntry = {
@@ -200,20 +216,26 @@ type ToolEntry = {
   exposedName: string;
   searchText: string;
   tool: Tool;
+  readOnlyHint: boolean;
+  trustedRead: boolean;
 };
 
 function createToolEntry(
   server: McpServerConfig,
   sdkTool: McpSdkTool,
+  allowTrustedRead: boolean,
   call: (serverId: string, name: string, input: Record<string, unknown>, signal: AbortSignal) => Promise<ToolResult>
 ): ToolEntry {
   const name = exposedName(server.id, sdkTool.name);
   const description = `[MCP: ${server.name}] ${sdkTool.description ?? sdkTool.title ?? sdkTool.name}`;
+  const readOnlyHint = sdkTool.annotations?.readOnlyHint === true;
+  const trustedRead = allowTrustedRead && readOnlyHint && (server.security?.trustedReadTools ?? []).includes(sdkTool.name);
   const schema = sdkTool.inputSchema && typeof sdkTool.inputSchema === 'object'
     ? sdkTool.inputSchema as Record<string, unknown>
     : { type: 'object' };
   const tool: Tool = {
     replay: 'never',
+    risk: trustedRead ? 'read' : 'external_side_effect',
     definition: { name, description, inputSchema: schema },
     async execute(input, context): Promise<ToolResult> {
       const argumentsValue = input && typeof input === 'object' && !Array.isArray(input)
@@ -227,7 +249,9 @@ function createToolEntry(
     remoteName: sdkTool.name,
     exposedName: name,
     searchText: `${server.name} ${sdkTool.name} ${sdkTool.title ?? ''} ${sdkTool.description ?? ''}`.toLowerCase(),
-    tool
+    tool,
+    readOnlyHint,
+    trustedRead
   };
 }
 
@@ -265,6 +289,8 @@ export class McpManager {
   private configs: McpServerConfig[] = [];
   private oauthCredentials: Record<string, McpOAuthCredentials> = {};
   private pendingOAuth = new Map<string, { serverId: string; provider: DesktopMcpOAuthProvider }>();
+  private fingerprints = new Map<string, McpFingerprintResult>();
+  private trustedServers = new Set<string>();
 
   constructor(
     private readonly onStatus: (statuses: McpServerStatus[]) => void = () => undefined,
@@ -272,10 +298,48 @@ export class McpManager {
     private readonly oauthCallbacks: McpOAuthCallbacks = {
       onAuthorization: () => undefined,
       onCredentials: () => undefined
-    }
+    },
+    private readonly security: McpManagerOptions = {}
   ) {}
 
   getStatuses(): McpServerStatus[] { return this.statuses.map((status) => ({ ...status })); }
+
+  describeApproval(call: ToolCall): SecurityApprovalPreview | undefined {
+    const input = call.input && typeof call.input === 'object' && !Array.isArray(call.input)
+      ? call.input as Record<string, unknown>
+      : {};
+    const exposedName = call.name === 'mcp_tool_call' && typeof input.name === 'string' ? input.name : call.name;
+    const entry = this.entries.find((candidate) => candidate.exposedName === exposedName);
+    const serverId = entry?.serverId ?? (typeof input.serverId === 'string' ? input.serverId : undefined);
+    const config = serverId ? this.configs.find((candidate) => candidate.id === serverId) : undefined;
+    if (!serverId || !config) return undefined;
+    const reasons = ['MCP tool metadata and output are controlled by the external server.'];
+    if (entry?.trustedRead) reasons.push('Local policy explicitly trusts this read-only tool and the server reports readOnlyHint=true.');
+    else if (entry?.readOnlyHint) reasons.push('The server reports readOnlyHint=true; this is an untrusted hint and does not bypass approval.');
+    if (config.security?.workspaceAccess && config.security.workspaceAccess !== 'none') {
+      reasons.push(`Server workspace access: ${config.security.workspaceAccess}.`);
+    }
+    if (config.security?.network && config.security.network !== 'none') reasons.push(`Server network access: ${config.security.network}.`);
+    return {
+      kind: 'mcp', serverId, serverName: config.name,
+      toolName: entry?.remoteName ?? call.name,
+      risk: entry?.trustedRead ? 'read' : 'external_side_effect',
+      capabilities: this.fingerprints.get(serverId)?.capabilities ?? [],
+      reasons
+    };
+  }
+
+  approvalGrantKey(call: ToolCall): string | undefined {
+    const input = call.input && typeof call.input === 'object' && !Array.isArray(call.input)
+      ? call.input as Record<string, unknown>
+      : {};
+    const exposedName = call.name === 'mcp_tool_call' && typeof input.name === 'string' ? input.name : call.name;
+    const entry = this.entries.find((candidate) => candidate.exposedName === exposedName);
+    const fingerprint = entry ? this.fingerprints.get(entry.serverId)?.fingerprint : undefined;
+    return entry && fingerprint
+      ? `mcp:${createHash('sha256').update(JSON.stringify([entry.serverId, fingerprint, entry.exposedName])).digest('hex')}`
+      : undefined;
+  }
 
   async configure(configs: McpServerConfig[], oauthCredentials: Record<string, McpOAuthCredentials> = {}): Promise<void> {
     await this.close();
@@ -285,6 +349,8 @@ export class McpManager {
     this.resources.clear();
     this.resourceTemplates.clear();
     this.prompts.clear();
+    this.fingerprints.clear();
+    this.trustedServers.clear();
     for (const [serverId, session] of this.sessions) {
       const config = configs.find((item) => item.id === serverId);
       if (!config || session.configSignature !== configSignature(config)) this.sessions.delete(serverId);
@@ -299,15 +365,19 @@ export class McpManager {
     await Promise.all(configs.map(async (config, index) => {
       if (!config.enabled) return;
       const oauth = config.transport === 'streamable_http' && config.auth?.type === 'oauth';
-      const credentials = oauth ? this.oauthCredentials[config.id] : undefined;
-      if (oauth && !credentialsHaveTokens(credentials)) {
-        this.statuses[index] = {
-          serverId: config.id, name: config.name, state: 'auth_required', toolCount: 0, authType: 'oauth'
-        };
-        this.notify();
-        return;
-      }
       try {
+        if (!await this.isTrusted(config)) {
+          this.statuses[index] = this.trustRequiredStatus(config, oauth);
+          return;
+        }
+        const credentials = oauth ? this.oauthCredentials[config.id] : undefined;
+        if (oauth && !credentialsHaveTokens(credentials)) {
+          this.statuses[index] = {
+            serverId: config.id, name: config.name, state: 'auth_required', toolCount: 0, authType: 'oauth',
+            ...this.statusFingerprint(config.id)
+          };
+          return;
+        }
         await this.connectServer(config, index, oauth, credentials);
       } catch (error) {
         this.statuses[index] = {
@@ -316,6 +386,7 @@ export class McpManager {
           state: 'error',
           toolCount: 0,
           ...(oauth ? { authType: 'oauth' as const } : {}),
+          ...this.statusFingerprint(config.id),
           error: connectionError(error)
         };
       }
@@ -344,19 +415,27 @@ export class McpManager {
         ...(config.transport === 'streamable_http' && config.auth?.type === 'oauth' ? { authType: 'oauth' as const } : {})
       };
       this.notify();
-      const credentials = this.oauthCredentials[config.id];
       const oauth = config.transport === 'streamable_http' && config.auth?.type === 'oauth';
-      if (oauth && !credentialsHaveTokens(credentials)) {
-        this.statuses[index] = { serverId: config.id, name: config.name, state: 'auth_required', toolCount: 0, authType: 'oauth' };
-        this.notify();
-        return;
-      }
       try {
+        if (!await this.isTrusted(config)) {
+          this.statuses[index] = this.trustRequiredStatus(config, oauth);
+          this.notify();
+          return;
+        }
+        const credentials = this.oauthCredentials[config.id];
+        if (oauth && !credentialsHaveTokens(credentials)) {
+          this.statuses[index] = {
+            serverId: config.id, name: config.name, state: 'auth_required', toolCount: 0, authType: 'oauth',
+            ...this.statusFingerprint(config.id)
+          };
+          this.notify();
+          return;
+        }
         await this.connectServer(config, index, oauth, credentials);
       } catch (error) {
         this.statuses[index] = {
           serverId: config.id, name: config.name, state: 'error', toolCount: 0,
-          ...(oauth ? { authType: 'oauth' as const } : {}), error: connectionError(error)
+          ...(oauth ? { authType: 'oauth' as const } : {}), ...this.statusFingerprint(config.id), error: connectionError(error)
         };
       }
       this.notify();
@@ -402,6 +481,11 @@ export class McpManager {
         const session = this.sessions.get(config.id);
         connected = await this.connectionFactory(connectionConfig, authProvider, {
           events,
+          ...(config.transport === 'stdio' && this.security.enforceStdioSandbox
+            ? { processSandbox: createProcessSandbox(config.security?.sandboxMode ?? 'fallback') }
+            : {}),
+          ...(this.security.secretBroker ? { secretBroker: this.security.secretBroker } : {}),
+          ...(this.security.httpTargetPolicy ? { httpTargetPolicy: this.security.httpTargetPolicy } : {}),
           ...(session ? { session } : {})
         });
         break;
@@ -428,6 +512,7 @@ export class McpManager {
       if (session) this.sessions.set(config.id, { ...session, configSignature: configSignature(config) });
       this.statuses[statusIndex] = {
         serverId: config.id, name: config.name, state: 'connected', toolCount: tools.length,
+        ...this.statusFingerprint(config.id),
         ...((resourceResult?.resources.length ?? 0) + (templateResult?.resourceTemplates.length ?? 0) > 0
           ? { resourceCount: (resourceResult?.resources.length ?? 0) + (templateResult?.resourceTemplates.length ?? 0) }
           : {}),
@@ -442,7 +527,12 @@ export class McpManager {
 
   private replaceTools(config: McpServerConfig, tools: McpSdkTool[]): void {
     this.entries = this.entries.filter((entry) => entry.serverId !== config.id);
-    this.entries.push(...tools.map((tool) => createToolEntry(config, tool, (serverId, name, input, signal) => this.callRemoteTool(serverId, name, input, signal))));
+    this.entries.push(...tools.map((tool) => createToolEntry(
+      config,
+      tool,
+      this.trustedServers.has(config.id),
+      (serverId, name, input, signal) => this.callRemoteTool(serverId, name, input, signal)
+    )));
     this.updateConnectedStatus(config.id);
   }
 
@@ -479,6 +569,7 @@ export class McpManager {
     if (!config || config.transport !== 'streamable_http' || config.auth?.type !== 'oauth') {
       throw new Error(`MCP server “${serverId}” is not configured for OAuth.`);
     }
+    if (!await this.isTrusted(config)) throw new Error(`mcp_trust_required: MCP server “${serverId}” must be trusted before OAuth.`);
     const index = this.configs.findIndex((item) => item.id === serverId);
     this.statuses[index] = { serverId, name: config.name, state: 'authorizing', toolCount: 0, authType: 'oauth' };
     this.notify();
@@ -489,8 +580,11 @@ export class McpManager {
     const provider = this.createOAuthProvider(serverId, redirectUrl, state, config.auth.scopes, config.auth.resourceOrigins, credentials, requestId);
     this.pendingOAuth.set(requestId, { serverId, provider });
     try {
+      const targetPolicy = this.security.httpTargetPolicy ?? new McpHttpTargetPolicy();
+      const fetchFn = createSafeMcpFetch(targetPolicy, { allowPrivate: config.security?.network === 'private' });
       const result = await auth(provider, {
         serverUrl: config.url,
+        fetchFn,
         ...(config.auth.scopes?.length ? { scope: config.auth.scopes.join(' ') } : {})
       });
       if (result !== 'REDIRECT') {
@@ -515,9 +609,12 @@ export class McpManager {
     const code = callbackParams.get('code');
     if (!code) throw new Error('OAuth callback did not include an authorization code.');
     try {
+      const targetPolicy = this.security.httpTargetPolicy ?? new McpHttpTargetPolicy();
+      const fetchFn = createSafeMcpFetch(targetPolicy, { allowPrivate: config.security?.network === 'private' });
       const result = await auth(pending.provider, {
         serverUrl: config.url,
         authorizationCode: code,
+        fetchFn,
         ...(callbackParams.get('iss') ? { iss: callbackParams.get('iss')! } : {}),
         ...(config.auth?.scopes?.length ? { scope: config.auth.scopes.join(' ') } : {})
       });
@@ -596,8 +693,11 @@ export class McpManager {
 
   getInstructions(): string[] {
     return this.configs.flatMap((config) => {
+      if (config.security?.allowInstructions !== true) return [];
       const instructions = this.connections.get(config.id)?.instructions?.trim();
-      return instructions ? [`MCP server “${config.name}” instructions:\n${instructions}`] : [];
+      if (!instructions) return [];
+      const bounded = Buffer.from(instructions, 'utf8').subarray(0, MCP_INSTRUCTION_MAX_BYTES).toString('utf8');
+      return [`Untrusted MCP server “${config.name}” instructions:\n${bounded}`];
     });
   }
 
@@ -658,6 +758,7 @@ export class McpManager {
   private createCallTool(): Tool {
     return {
       replay: 'never',
+      risk: 'external_side_effect',
       definition: {
         name: 'mcp_tool_call',
         description: 'Call one MCP tool by its exact manifest name. This is an external action and requires approval.',
@@ -707,6 +808,7 @@ export class McpManager {
   private createReadResourceTool(): Tool {
     return {
       replay: 'safe',
+      risk: 'external_side_effect',
       definition: {
         name: 'mcp_read_resource',
         description: 'Read one MCP resource by server id and URI. URI templates must be expanded first.',
@@ -750,6 +852,7 @@ export class McpManager {
   private createGetPromptTool(): Tool {
     return {
       replay: 'safe',
+      risk: 'external_side_effect',
       definition: {
         name: 'mcp_get_prompt',
         description: 'Render an MCP prompt template with string arguments.',
@@ -801,6 +904,62 @@ export class McpManager {
   }
 
   private notify(): void { this.onStatus(this.getStatuses()); }
+
+  async trust(serverId: string, scope: 'user' | 'workspace' = 'user'): Promise<void> {
+    if (!this.security.trustStore) throw new Error('mcp_trust_store_unavailable');
+    const config = this.configs.find((item) => item.id === serverId && item.enabled);
+    if (!config) throw new Error(`MCP server “${serverId}” is not enabled or does not exist.`);
+    const current = await mcpServerFingerprint(config);
+    this.fingerprints.set(serverId, current);
+    await this.security.trustStore.trust({
+      serverId, fingerprint: current.fingerprint, scope,
+      capabilities: current.capabilities,
+      allowInstructions: config.security?.allowInstructions ?? false,
+      trustedAt: new Date().toISOString()
+    });
+    await this.reconnect(serverId);
+  }
+
+  async revokeTrust(serverId: string): Promise<void> {
+    if (!this.security.trustStore) throw new Error('mcp_trust_store_unavailable');
+    await this.security.trustStore.revoke(serverId);
+    this.trustedServers.delete(serverId);
+    const connection = this.connections.get(serverId);
+    this.connections.delete(serverId);
+    if (connection) await connection.close().catch(() => undefined);
+    this.entries = this.entries.filter((entry) => entry.serverId !== serverId);
+    this.resources.delete(serverId);
+    this.resourceTemplates.delete(serverId);
+    this.prompts.delete(serverId);
+    const config = this.configs.find((item) => item.id === serverId);
+    const index = this.statuses.findIndex((status) => status.serverId === serverId);
+    if (config?.enabled && index >= 0) this.statuses[index] = this.trustRequiredStatus(config, config.transport === 'streamable_http' && config.auth?.type === 'oauth');
+    this.notify();
+  }
+
+  private async isTrusted(config: McpServerConfig): Promise<boolean> {
+    const current = await mcpServerFingerprint(config);
+    this.fingerprints.set(config.id, current);
+    if (!this.security.trustStore) return true;
+    const grant = await this.security.trustStore.get(config.id);
+    const trusted = grant?.fingerprint === current.fingerprint;
+    if (trusted) this.trustedServers.add(config.id);
+    else this.trustedServers.delete(config.id);
+    return trusted;
+  }
+
+  private statusFingerprint(serverId: string): { fingerprint?: string } {
+    if (!this.security.trustStore) return {};
+    const fingerprint = this.fingerprints.get(serverId)?.fingerprint;
+    return fingerprint ? { fingerprint } : {};
+  }
+
+  private trustRequiredStatus(config: McpServerConfig, oauth: boolean): McpServerStatus {
+    return {
+      serverId: config.id, name: config.name, state: 'trust_required', toolCount: 0,
+      ...(oauth ? { authType: 'oauth' as const } : {}), ...this.statusFingerprint(config.id)
+    };
+  }
 }
 
 function credentialsHaveTokens(credentials: McpOAuthCredentials | undefined): boolean {

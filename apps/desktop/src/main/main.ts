@@ -982,6 +982,24 @@ function registerIpc(): void {
     postWorkerCommand({ type: 'mcp.reconnect', requestId, serverId });
     await completion;
   });
+  ipcMain.handle(IPC.trustMcpServer, async (event, raw) => {
+    assertTrusted(event);
+    const { serverId } = McpServerIdInputSchema.parse(raw);
+    if (!worker) throw new Error('Agent runtime is not available.');
+    const requestId = crypto.randomUUID();
+    const completion = waitForWorker(requestId);
+    postWorkerCommand({ type: 'mcp.trust', requestId, serverId });
+    await completion;
+  });
+  ipcMain.handle(IPC.revokeMcpServerTrust, async (event, raw) => {
+    assertTrusted(event);
+    const { serverId } = McpServerIdInputSchema.parse(raw);
+    if (!worker) throw new Error('Agent runtime is not available.');
+    const requestId = crypto.randomUUID();
+    const completion = waitForWorker(requestId);
+    postWorkerCommand({ type: 'mcp.trust.revoke', requestId, serverId });
+    await completion;
+  });
   ipcMain.handle(IPC.getHookStatus, async (event, raw) => {
     assertTrusted(event);
     const input = GetHookStatusInputSchema.parse(raw ?? {});

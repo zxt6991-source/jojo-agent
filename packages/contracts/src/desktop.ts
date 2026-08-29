@@ -167,7 +167,10 @@ export const BrowserActionSchema = z.discriminatedUnion('action', [
 export type BrowserAction = z.infer<typeof BrowserActionSchema>;
 
 export const SessionIdInputSchema = z.object({ sessionId: z.string() });
-export const ApprovalInputSchema = z.object({ requestId: z.string(), allow: z.boolean() });
+export const ApprovalInputSchema = z.object({
+  requestId: z.string(), allow: z.boolean(),
+  scope: z.enum(['once', 'session', 'similar', 'conversation']).default('once')
+});
 export const WorkflowRunActionInputSchema = z.object({
   sessionId: z.string().min(1),
   workflowId: z.string().min(1)
@@ -445,6 +448,8 @@ export type DesktopApi = {
   connectMcpOAuth(input: z.input<typeof McpServerIdInputSchema>): Promise<void>;
   disconnectMcpOAuth(input: z.input<typeof McpServerIdInputSchema>): Promise<void>;
   reconnectMcp(input: z.input<typeof McpServerIdInputSchema>): Promise<void>;
+  trustMcpServer(input: z.input<typeof McpServerIdInputSchema>): Promise<void>;
+  revokeMcpServerTrust(input: z.input<typeof McpServerIdInputSchema>): Promise<void>;
   getHookStatus(input?: z.input<typeof GetHookStatusInputSchema>): Promise<HookSettingsSnapshot>;
   reloadHooks(input?: z.input<typeof GetHookStatusInputSchema>): Promise<HookSettingsSnapshot>;
   trustProjectHooks(input: z.input<typeof HookProjectActionInputSchema>): Promise<HookSettingsSnapshot>;
@@ -510,6 +515,8 @@ export const IPC = {
   connectMcpOAuth: 'extensions:mcp-oauth-connect',
   disconnectMcpOAuth: 'extensions:mcp-oauth-disconnect',
   reconnectMcp: 'extensions:mcp-reconnect',
+  trustMcpServer: 'extensions:mcp-trust',
+  revokeMcpServerTrust: 'extensions:mcp-trust-revoke',
   getHookStatus: 'hooks:status',
   reloadHooks: 'hooks:reload',
   trustProjectHooks: 'hooks:trust',
