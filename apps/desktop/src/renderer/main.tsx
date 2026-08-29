@@ -396,6 +396,8 @@ function approvalSummary(request: ApprovalRequest): string {
   if (request.security?.kind === 'terminal') {
     const command = [request.security.command, ...request.security.argumentsPreview].map(quoteCommandPart).join(' ');
     return [command, `cwd: ${request.security.cwd}`, `risk: ${request.security.risk}`,
+      `network: ${request.security.network === 'host' ? '全局网络' : '禁用'}`,
+      `secrets: ${request.security.secretEnv.join(', ') || 'none'}`,
       `sandbox: ${request.security.sandbox}`, `capabilities: ${request.security.capabilities.join(', ')}`,
       ...request.security.reasons.map((reason) => `- ${reason}`)].join('\n');
   }
@@ -632,6 +634,11 @@ function App() {
   const [hookBusy, setHookBusy] = useState(false);
   const [browserSecret, setBrowserSecret] = useState<{ requestId: string; name: string; description?: string } | null>(null);
   const [browserSecretValue, setBrowserSecretValue] = useState('');
+  const [terminalSecret, setTerminalSecret] = useState<{ requestId: string; name: string; description?: string } | null>(null);
+  const [terminalSecretValue, setTerminalSecretValue] = useState('');
+  const [terminalSecretRemember, setTerminalSecretRemember] = useState(true);
+  const [terminalSecretBusy, setTerminalSecretBusy] = useState(false);
+  const [terminalSecretError, setTerminalSecretError] = useState('');
   const [extensionSearch, setExtensionSearch] = useState('');
   const [extensionEditorOpen, setExtensionEditorOpen] = useState(false);
   const [selectedSkill, setSelectedSkill] = useState<SkillStatus | null>(null);
@@ -898,6 +905,13 @@ function App() {
       setBrowserSecret(request);
       setBrowserSecretValue('');
     });
+    const offTerminalSecret = window.desktopAgent.onTerminalSecretRequest((request) => {
+      setTerminalSecret(request);
+      setTerminalSecretValue('');
+      setTerminalSecretRemember(true);
+      setTerminalSecretBusy(false);
+      setTerminalSecretError('');
+    });
     const offDock = window.desktopAgent.onBrowserDockState((state) => setBrowserDock(state));
     const offOrchestration = window.desktopAgent.onOrchestrationEvent((event) => {
       if (event.type === 'workflow.changed') {
@@ -937,10 +951,10 @@ function App() {
         && (event.event === 'memory.embedding.completed' || event.event === 'memory.embedding.failed')) {
         void window.desktopAgent.getMemoryStatus(memoryDirectoryInput()).then(setMemoryStatus).catch(() => undefined);
       }
-      else if (event.type === 'turn.failed') { setError(event.message); runningRef.current = false; setRunningSessionId(null); setTurnStartedAt(null); setApproval(null); void reloadActive(); }
-      else if (event.type === 'turn.completed' || event.type === 'turn.cancelled') { runningRef.current = false; setRunningSessionId(null); setTurnStartedAt(null); setApproval(null); void reloadActive(); }
+      else if (event.type === 'turn.failed') { setError(event.message); runningRef.current = false; setRunningSessionId(null); setTurnStartedAt(null); setApproval(null); setTerminalSecret(null); void reloadActive(); }
+      else if (event.type === 'turn.completed' || event.type === 'turn.cancelled') { runningRef.current = false; setRunningSessionId(null); setTurnStartedAt(null); setApproval(null); setTerminalSecret(null); void reloadActive(); }
     });
-    return () => { offSessions(); offExtensions(); offSecret(); offDock(); offOrchestration(); offEvents(); };
+    return () => { offSessions(); offExtensions(); offSecret(); offTerminalSecret(); offDock(); offOrchestration(); offEvents(); };
   }, []);
 
   useEffect(() => {
@@ -1189,7 +1203,7 @@ function App() {
   }));
   const sessionBusy = runningSessionId === activeId;
   const showProjectPicker = active?.projectBound === false && messages.length === 0 && !sessionBusy;
-  const overlayOpen = settingsOpen || Boolean(approval) || Boolean(browserSecret) || skillCreateOpen || Boolean(selectedSkill) || projectPickerOpen;
+  const overlayOpen = settingsOpen || Boolean(approval) || Boolean(browserSecret) || Boolean(terminalSecret) || skillCreateOpen || Boolean(selectedSkill) || projectPickerOpen;
   const visibleDock = browserDock && activeId && browserDock.sessionId === activeId ? browserDock : null;
   const browsing = Boolean(visibleDock);
   const visibleWorkflows = useMemo(() => workflowsForSession(workflows, activeId), [workflows, activeId]);
@@ -1474,6 +1488,10 @@ function App() {
     {approval && <div className="approval-layer"><div className="approval-panel" role="dialog" aria-modal="true" aria-labelledby="approval-title">
       <div className="approval-tool"><span className="approval-tool-icon" aria-hidden="true">›_</span><span>{approvalToolLabel(approval)}</span></div>
       <h2 id="approval-title">{approvalQuestion(approval)}</h2>
+      {approval.security?.kind === 'terminal' && (approval.security.network === 'host' || approval.security.secretEnv.length > 0) && <div className="approval-security-warning">
+        {approval.security.network === 'host' && <span>此命令将使用主机全局网络。</span>}
+        {approval.security.secretEnv.length > 0 && <span>批准后注入密钥：{approval.security.secretEnv.join(', ')}</span>}
+      </div>}
       {approval.preview ? <ApprovalDiff request={approval} /> : <pre className="approval-command">{approvalSummary(approval)}</pre>}
       <div className="approval-actions">
         <button className="approval-reject" disabled={approvalResolving} onClick={() => void resolveApprovalChoice(approval, false)}><span>{approval.call.name === 'trust_project_hooks' ? '禁用项目 Hooks' : '拒绝'}</span><kbd>Esc</kbd></button>
@@ -1510,6 +1528,49 @@ function App() {
           setBrowserSecretValue('');
         }}>取消</button>
         <button className="primary" type="submit">继续回放</button>
+      </div>
+    </form></div>}
+    {terminalSecret && <div className="modal-backdrop"><form className="modal browser-secret-modal" role="dialog" aria-modal="true" aria-labelledby="terminal-secret-title" onSubmit={(event) => {
+      event.preventDefault();
+      setTerminalSecretBusy(true);
+      setTerminalSecretError('');
+      void window.desktopAgent.resolveTerminalSecret({
+        requestId: terminalSecret.requestId,
+        action: 'submit',
+        value: terminalSecretValue,
+        remember: terminalSecretRemember
+      }).then(() => {
+        setTerminalSecret(null);
+        setTerminalSecretValue('');
+      }).catch((cause) => setTerminalSecretError(cause instanceof Error ? cause.message : String(cause)))
+        .finally(() => setTerminalSecretBusy(false));
+    }}>
+      <div className="modal-tag">Secret Broker</div>
+      <h2 id="terminal-secret-title">终端或 MCP 需要 {terminalSecret.name}</h2>
+      <p>密钥只会在批准后注入目标进程，不会进入模型上下文、命令参数或授权规则。</p>
+      {terminalSecret.description && <p>{terminalSecret.description}</p>}
+      <label>密钥
+        <input type="password" autoFocus value={terminalSecretValue} disabled={terminalSecretBusy} onChange={(event) => setTerminalSecretValue(event.target.value)} />
+      </label>
+      <label className="terminal-secret-remember"><input type="checkbox" checked={terminalSecretRemember} disabled={terminalSecretBusy} onChange={(event) => setTerminalSecretRemember(event.target.checked)} /> 使用系统安全存储记住此密钥</label>
+      {terminalSecretError && <div className="settings-error" role="alert">{terminalSecretError}</div>}
+      <div className="modal-actions terminal-secret-actions">
+        <button type="button" disabled={terminalSecretBusy} onClick={() => {
+          setTerminalSecretBusy(true);
+          void window.desktopAgent.resolveTerminalSecret({ requestId: terminalSecret.requestId, action: 'cancel', remember: false })
+            .then(() => { setTerminalSecret(null); setTerminalSecretValue(''); })
+            .catch((cause) => setTerminalSecretError(cause instanceof Error ? cause.message : String(cause)))
+            .finally(() => setTerminalSecretBusy(false));
+        }}>取消</button>
+        <button type="button" disabled={terminalSecretBusy} onClick={() => {
+          setTerminalSecretBusy(true);
+          setTerminalSecretError('');
+          void window.desktopAgent.resolveTerminalSecret({ requestId: terminalSecret.requestId, action: 'import', remember: terminalSecretRemember })
+            .then(() => { setTerminalSecret(null); setTerminalSecretValue(''); })
+            .catch((cause) => setTerminalSecretError(cause instanceof Error ? cause.message : String(cause)))
+            .finally(() => setTerminalSecretBusy(false));
+        }}>从 Shell 配置导入</button>
+        <button className="primary" type="submit" disabled={terminalSecretBusy || !terminalSecretValue}>注入并继续</button>
       </div>
     </form></div>}
     {settingsOpen && <section className="settings-screen" aria-label="设置">

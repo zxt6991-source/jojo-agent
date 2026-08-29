@@ -107,11 +107,11 @@ flowchart TB
 - Renderer 调用 Main 的 IPC 输入先经 Zod Schema 校验。Main ↔ Worker 的命令和事件同样经 `packages/contracts/src/desktop-ipc.ts` 运行时校验，默认上限 16 MiB；非法或超大消息会被拒绝并记为协议违规。
 - Preload 推送给 Renderer 的 Agent / Orchestration / Browser 事件再次经 Schema 过滤，畸形负载不会进入 UI。
 - Renderer 保持 sandbox、Context Isolation，且不直接获得 Node.js 能力。
-- API Key 与普通配置分离，由 Electron `safeStorage` 加密；MCP OAuth token 同样走安全存储。MCP 敏感 env / Header 禁止明文配置，改用 `SecretReference` 在连接时解析；当前通用 Broker 支持 `env` provider。
+- API Key 与普通配置分离，由 Electron `safeStorage` 加密；Terminal / MCP 命名密钥和 MCP OAuth token 同样走安全存储。Terminal 通过 `secretEnv` 只声明名称，MCP 敏感 env / Header 禁止明文配置并改用 `SecretReference`；Desktop Worker 复用交互式 Secret Broker，缺少值时可由用户输入或主动从 Shell 启动文件静态导入，主进程不会执行或 `source` 这些文件。
 - 文件访问先解析真实路径，防止 `..` 与符号链接绕过工作目录边界。
-- Terminal 默认不经过 Shell，并逐次审批；审批预览来自与实际执行共用的 `TerminalSecurityPlan`，展示命令、cwd、风险、Sandbox Strength 与能力，避免审批内容和执行参数分叉。Renderer 的分裂按钮支持一次、相似规则和整段对话三种 scope；相似规则只保存哈希，对话 scope 只保存在 Worker 内存中并随会话停止清理。
+- Terminal 默认不经过 Shell，并逐次审批；审批预览来自与实际执行共用的 `TerminalSecurityPlan`，展示命令、cwd、风险、Sandbox Strength、`none` / `host` 网络模式与命名密钥，避免审批内容和执行参数分叉。Renderer 的分裂按钮支持一次、相似规则和整段对话三种 scope；相似规则只保存绑定 executable / 子命令族 / cwd / network / secretEnv 名称的哈希，对话 scope 只保存在 Worker 内存中并随会话停止清理。
 - `process-sandbox` 只继承 allowlist 环境，隔离 HOME / TMP，统一流式脱敏、超时和进程树终止。Linux strong 后端使用 Bubblewrap；macOS 使用 Seatbelt 强化敏感目录与网络边界；其他平台或后端不可用时，strict fail closed，fallback 明确报告 soft 与宿主能力。macOS 后端不等同于 Linux mount namespace 的最小 Host 可见性。
-- Terminal 和 MCP stdio 的 strong 默认网络策略为 `none`；MCP workspace 按 `none` / `read` / `write` 映射为隔离 cwd、只读或可写边界。域名 allowlist、OCI、Windows 强隔离和 cgroup 资源限制仍是后续能力。
+- Terminal 和 MCP stdio 的 strong 默认网络策略为 `none`；Terminal 可在工具输入中显式申请 `host` 全局网络，审批通过后仅对该执行开放。MCP workspace 按 `none` / `read` / `write` 映射为隔离 cwd、只读或可写边界。固定域名工具不是 Skill 的前置要求；域名 allowlist 可作为后续可选能力，OCI、Windows 强隔离和 cgroup 资源限制也仍待实现。
 - MCP Server 默认必须通过配置指纹信任；command / args / URL、Secret Ref 标识及安全能力变化会使 Trust Grant 失效。Server Instructions 默认关闭，动态工具元数据始终视为不可信提示。
 - MCP HTTP 默认只允许 HTTPS，显式 loopback 可使用 HTTP；连接与 OAuth 流程都执行 DNS 全地址分类、基于 network grant 的私网 / link-local 判断（Metadata 永久拒绝）和 Redirect 逐跳复验，跨 Origin Redirect 会移除敏感 Header。
 - MCP 工具默认按 `external_side_effect` 逐次审批；相似规则绑定当前 Server 指纹与精确工具名，整段对话 scope 可放行当前对话中的普通审批，但不会绕过项目 Hooks 的持久版本信任。可信只读必须同时满足有效 Server Trust、本地 `trustedReadTools` 和远端 `readOnlyHint=true`；Resource 与 Prompt 不继承该豁免。

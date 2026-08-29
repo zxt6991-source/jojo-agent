@@ -391,6 +391,21 @@ export const BrowserSecretRequestSchema = z.object({
   requestId: z.string().min(1).max(256), name: z.string().min(1).max(256), description: z.string().max(4_000).optional()
 }).strict();
 
+export const TerminalSecretRequestSchema = z.object({
+  requestId: z.string().min(1).max(256), name: z.string().min(1).max(256), description: z.string().max(4_000).optional()
+}).strict();
+
+export const ResolveTerminalSecretInputSchema = z.object({
+  requestId: z.string().min(1).max(256),
+  action: z.enum(['submit', 'import', 'cancel']),
+  value: z.string().max(100_000).optional(),
+  remember: z.boolean().default(true)
+}).strict().superRefine((input, context) => {
+  if (input.action === 'submit' && !input.value) {
+    context.addIssue({ code: 'custom', path: ['value'], message: 'Secret value is required.' });
+  }
+});
+
 export type SessionCompactionRecord = {
   id: string;
   createdAt: string;
@@ -445,6 +460,7 @@ export type DesktopApi = {
   saveBrowserRecording(input: z.input<typeof SaveBrowserRecordingInputSchema>): Promise<BrowserRecordingStudioDetail>;
   duplicateBrowserRecording(input: z.input<typeof DuplicateBrowserRecordingInputSchema>): Promise<BrowserRecordingStudioDetail>;
   resolveBrowserSecret(input: { requestId: string; value?: string }): Promise<void>;
+  resolveTerminalSecret(input: z.input<typeof ResolveTerminalSecretInputSchema>): Promise<void>;
   connectMcpOAuth(input: z.input<typeof McpServerIdInputSchema>): Promise<void>;
   disconnectMcpOAuth(input: z.input<typeof McpServerIdInputSchema>): Promise<void>;
   reconnectMcp(input: z.input<typeof McpServerIdInputSchema>): Promise<void>;
@@ -460,6 +476,7 @@ export type DesktopApi = {
   onSessionsChanged(listener: () => void): () => void;
   onExtensionsChanged(listener: () => void): () => void;
   onBrowserSecretRequest(listener: (request: { requestId: string; name: string; description?: string }) => void): () => void;
+  onTerminalSecretRequest(listener: (request: { requestId: string; name: string; description?: string }) => void): () => void;
   onBrowserDockState(listener: (state: BrowserDockState | null) => void): () => void;
 };
 
@@ -512,6 +529,8 @@ export const IPC = {
   duplicateBrowserRecording: 'browser:recording-duplicate',
   browserSecretRequest: 'browser:secret-request',
   browserSecretResolve: 'browser:secret-resolve',
+  terminalSecretRequest: 'terminal:secret-request',
+  terminalSecretResolve: 'terminal:secret-resolve',
   connectMcpOAuth: 'extensions:mcp-oauth-connect',
   disconnectMcpOAuth: 'extensions:mcp-oauth-disconnect',
   reconnectMcp: 'extensions:mcp-reconnect',

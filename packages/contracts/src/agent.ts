@@ -40,6 +40,8 @@ const TerminalSecurityApprovalPreviewSchema = z.object({
   argumentsPreview: z.array(z.string().max(500)).max(20), cwd: z.string().max(4_096),
   risk: z.enum(['medium', 'high', 'critical']),
   sandbox: z.enum(['strong', 'container', 'soft', 'none']),
+  network: z.enum(['none', 'host']),
+  secretEnv: z.array(z.string().min(1).max(128)).max(20),
   capabilities: z.array(z.string().max(128)).max(50),
   reasons: z.array(z.string().max(2_000)).max(50)
 }).strict();

@@ -119,6 +119,7 @@ export class DefaultPermissionGate implements PermissionGate {
             kind: 'terminal', command: plan.approval.executable,
             argumentsPreview: plan.approval.argumentsPreview, cwd: plan.approval.cwd,
             risk: plan.approval.risk, sandbox: plan.approval.sandboxStrength,
+            network: plan.approval.network, secretEnv: plan.approval.secretEnv,
             capabilities: plan.approval.capabilities, reasons: plan.approval.reasons
           }
         }

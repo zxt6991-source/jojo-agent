@@ -56,8 +56,10 @@ const WorkerCommandBaseSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('config.update'), settings: ProviderSettingsSchema,
     apiKeys: z.record(z.string().min(1).max(256), z.string().max(100_000)),
-    mcpOAuthCredentials: z.record(z.string().min(1).max(256), BoundedJsonValueSchema)
+    mcpOAuthCredentials: z.record(z.string().min(1).max(256), BoundedJsonValueSchema),
+    terminalSecrets: z.record(z.string().min(1).max(256), z.string().max(100_000))
   }).strict(),
+  z.object({ type: z.literal('terminal.secret.resolve'), requestId: IdSchema, value: z.string().max(100_000).optional() }).strict(),
   z.object({ type: z.literal('mcp.oauth.start'), requestId: IdSchema, serverId: IdSchema, redirectUrl: z.string().url().max(4_096), state: IdSchema }).strict(),
   z.object({ type: z.literal('mcp.oauth.callback'), requestId: IdSchema, serverId: IdSchema, callbackParams: z.string().max(100_000) }).strict(),
   z.object({ type: z.literal('mcp.oauth.disconnect'), requestId: IdSchema, serverId: IdSchema }).strict(),
@@ -103,6 +105,10 @@ const WorkerMessageBaseSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('mcp.oauth.authorization'), requestId: IdSchema, url: z.string().url().max(4_096) }).strict(),
   z.object({ type: z.literal('mcp.oauth.credentials'), serverId: IdSchema, credentials: BoundedJsonValueSchema }).strict(),
   z.object({ type: z.literal('mcp.oauth.result'), requestId: IdSchema, ok: z.boolean(), error: ErrorSchema.optional() }).strict(),
+  z.object({
+    type: z.literal('terminal.secret.request'), requestId: IdSchema, sessionId: IdSchema,
+    name: z.string().min(1).max(256), description: z.string().max(4_000).optional()
+  }).strict(),
   z.object({ type: z.literal('browser.request'), requestId: IdSchema, sessionId: IdSchema, action: BrowserActionSchema, approved: z.boolean() }).strict(),
   z.object({ type: z.literal('browser.cancel'), requestId: IdSchema }).strict(),
   z.object({ type: z.literal('browser.heal.result'), requestId: IdSchema, proposal: BrowserHealProposalSchema.optional(), error: ErrorSchema.optional() }).strict(),

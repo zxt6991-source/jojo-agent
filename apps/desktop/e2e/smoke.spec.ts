@@ -67,6 +67,32 @@ test('approval allow writes and approval deny has no side effect', async () => {
   }
 });
 
+test('approves host network and injects a named Terminal secret without persisting it in history', async () => {
+  const dataDirectory = await mkdtemp(path.join(os.tmpdir(), 'jojo-electron-e2e-'));
+  const launched = await launchElectron(dataDirectory);
+  try {
+    await createSession(launched.page);
+    await send(launched.page, 'E2E: terminal secret');
+    const approval = launched.page.getByRole('dialog');
+    await expect(approval).toContainText('此命令将使用主机全局网络');
+    await expect(approval).toContainText('WEREAD_API_KEY');
+    await approval.getByRole('button', { name: /允许一次/ }).click();
+
+    const secretDialog = launched.page.getByRole('dialog');
+    await expect(secretDialog.getByRole('heading', { name: /WEREAD_API_KEY/ })).toBeVisible();
+    await secretDialog.getByRole('textbox', { name: '密钥' }).fill('e2e-secret-value');
+    await secretDialog.getByRole('checkbox').uncheck();
+    await secretDialog.getByRole('button', { name: '注入并继续' }).click();
+    await expect(launched.page.getByText('terminal secret handled')).toBeVisible();
+
+    const sessions = await launched.page.evaluate(() => window.desktopAgent.listSessions());
+    const journal = await readFile(path.join(dataDirectory, 'sessions', `${sessions[0]!.id}.jsonl`), 'utf8');
+    expect(journal).not.toContain('e2e-secret-value');
+  } finally {
+    await launched.app.close();
+  }
+});
+
 test('cancels a slow turn', async () => {
   const dataDirectory = await mkdtemp(path.join(os.tmpdir(), 'jojo-electron-e2e-'));
   const launched = await launchElectron(dataDirectory);

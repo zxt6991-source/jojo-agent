@@ -6,7 +6,7 @@ import {
   RuntimeEnvironmentRegistry,
   type SharedRuntimeService
 } from '@desktop-agent/runtime-composition';
-import type { AgentEvent, HookRuntime, Message, ModelProvider, PermissionGate, ProviderConfig } from '@desktop-agent/contracts';
+import type { AgentEvent, HookRuntime, Message, ModelProvider, PermissionGate, ProviderConfig, SecretBroker } from '@desktop-agent/contracts';
 import {
   accrueUsage,
   type AgentProfileRegistry,
@@ -31,6 +31,7 @@ type ProviderRuntime = { config: ProviderConfig; apiKey: string };
 export type DesktopLeafAgentRunnerOptions = {
   resolveProvider(providerId: string): ProviderRuntime | undefined;
   trashDirectory: string;
+  secretBroker?: SecretBroker;
   profileRegistry?: AgentProfileRegistry;
   runtimeStore?: AgentRuntimeStore;
   memoryRuntime?: MemoryRuntime;
@@ -58,8 +59,11 @@ function finalAssistantText(messages: Message[]): string {
   return '';
 }
 
-export function createDesktopWorkflowToolRuntime(options: { trashDirectory: string }): WorkflowToolRuntime {
-  const runtime = createDefaultToolRuntime({ trashDirectory: options.trashDirectory });
+export function createDesktopWorkflowToolRuntime(options: { trashDirectory: string; secretBroker?: SecretBroker }): WorkflowToolRuntime {
+  const runtime = createDefaultToolRuntime({
+    trashDirectory: options.trashDirectory,
+    ...(options.secretBroker ? { secretBroker: options.secretBroker } : {})
+  });
   return createWorkflowToolRuntime({
     tools: runtime.tools,
     permissionGate: new NonInteractivePermissionGate(runtime.permissionGate)
@@ -96,7 +100,10 @@ export function createDesktopLeafAgentRunner(options: DesktopLeafAgentRunnerOpti
       if (!providerRuntime.config.models.includes(model)) {
         throw new OrchestrationError('provider_error', `Model ${model} is not configured.`);
       }
-      const toolRuntime = createDefaultToolRuntime({ trashDirectory: options.trashDirectory });
+      const toolRuntime = createDefaultToolRuntime({
+        trashDirectory: options.trashDirectory,
+        ...(options.secretBroker ? { secretBroker: options.secretBroker } : {})
+      });
       const policy = resolveAgentToolPolicy(
         toolRuntime.tools.map((tool) => tool.definition.name),
         profile,

@@ -17,14 +17,14 @@
 - Client SDK：`JojoClient` / `JojoSession` / `JojoRun` 远程对象模型，自动注入认证和幂等键，并以 WebSocket 事件 + REST Snapshot 恢复运行结果；
 - 十个主 Agent 文件 / 网页 / 终端工具：`read_file`、`list_files`、`grep`、`glob`、`web_search`、`web_fetch`、`write_file`、`edit_file`、`delete_file`、`terminal`；另有 Sub-Agent、Workflow、Memory、Browser、MCP / Skills 编排工具；
 - 工作目录边界、真实路径 / 符号链接检查、写前冲突检测、精确编辑与回收站；Terminal 不经过 Shell，使用参数数组、环境变量 allowlist、假 HOME / 独立临时目录、流式脱敏、超时与进程树回收；
-- 共享 `@desktop-agent/process-sandbox`：Linux Bubblewrap、macOS Seatbelt 和 Soft fallback；strong 后端默认关闭网络并按显式规则开放工作区，strict 模式在强后端不可用时 fail closed，fallback 的宿主能力会进入审批风险预览。macOS Seatbelt 是敏感目录与网络强化，不等同于 Linux mount namespace 的最小 Host 可见性；
+- 共享 `@desktop-agent/process-sandbox`：Linux Bubblewrap、macOS Seatbelt 和 Soft fallback；Terminal 网络默认为 `none`，需要联网的命令可申请 `host` 全局网络并由用户在审批中决定，strict 模式在强后端不可用时 fail closed，fallback 的宿主能力会进入审批风险预览。macOS Seatbelt 是敏感目录与网络强化，不等同于 Linux mount namespace 的最小 Host 可见性；
 - 会话删除通过 Main 生命周期门禁与 Storage tombstone / 跨实例串行化阻止晚到写入复活 JSONL；
 - Desktop IPC 边界使用严格 Zod Schema 和负载大小限制，覆盖 Main ↔ Worker 命令与事件，以及 Preload 推送到 Renderer 的消息；非法消息会被拒绝并记录协议违规；
-- 主会话文件修改与 Terminal 默认逐次审批；审批展示命令、cwd、风险、沙箱强度和能力，允许范围可选“允许一次”“允许类似命令”或“本次对话都允许”，后两者只在当前对话的内存状态中生效；工作区外读取默认逐次审批；
+- 主会话文件修改与 Terminal 默认逐次审批；审批展示命令、cwd、风险、沙箱强度、网络模式和密钥名称，允许范围可选“允许一次”“允许类似命令”或“本次对话都允许”，后两者只在当前对话的内存状态中生效；相似授权绑定网络模式与密钥名称，不能从离线授权扩大为联网或凭据授权；工作区外读取默认逐次审批；
 - 多会话侧边栏、对话 / 轨迹视图、Markdown 消毒、审批弹窗、停止、加密 API Key；
 - MCP（stdio / Streamable HTTP，含 OAuth）与本地 `SKILL.md`；Server 连接前按安全身份指纹信任，安全身份变化自动失效，stdio 复用 Process Sandbox，Server Instructions 默认不进入上下文；远程 MCP 默认只允许 HTTPS（显式 loopback HTTP 例外），DNS、私网 / Metadata 地址和每次 Redirect 都会重新校验；
 - MCP 工具默认按外部副作用审批；“允许类似命令”绑定当前 Server 配置指纹与精确工具，“本次对话都允许”则覆盖当前对话中的普通交互审批。只有已信任 Server、本地 `trustedReadTools` 策略与 `readOnlyHint=true` 同时满足时才按可信只读处理。大工具集自动切换 manifest + describe/call，Resource / Prompt 仍保持不可信与默认逐次审批；
-- MCP 结果有总量边界；敏感 env / Header 明文配置会被拒绝，可通过运行时 `SecretReference` 注入（当前通用 Broker 支持 `env` provider），OAuth Token 继续由 Electron `safeStorage` 加密；
+- MCP 结果有总量边界；敏感 env / Header 明文配置会被拒绝，可通过运行时 `SecretReference` 注入。Desktop Secret Broker 与 Terminal 共用系统安全存储；缺少命名密钥时用户可直接输入，或主动从 `.zshrc` 等 Shell 配置静态导入（不会执行启动脚本），OAuth Token 继续由 Electron `safeStorage` 加密；
 - 受控 CDP 浏览器（沙箱或附加本机 Chrome）、录制 / 回放 YAML、图片附件与视觉消息；
 - Markdown 记忆：`memory_status` / `memory_read` / `memory_search` / `memory_write` / `memory_forget` / `memory_restore`，候选治理与语义检索；用户记忆在 `~/.jojo/memory`；
 - 后台 Sub-Agent：Profile（`explore` / `general` / `code-review` / `synthesize`，可叠加 user/project）、Tool Policy、Continue / Send / Close、Structured Output；
@@ -33,7 +33,7 @@
 - WorkflowCard：步骤列表、依赖图、时间线、Usage、预算、错误码、结构化输出与 Isolation Diff；
 - 生命周期 Hooks：用户 `~/.jojo/hooks.yml`、项目 `.jojo/hooks.yml`（fingerprint 信任 / 可禁用）、设置页状态与 Reload。
 
-尚未实现：`jojo serve` 独立 CLI 产品化、Worker Runtime Backend、Workflow / Browser / Memory 远程 API、可视化 Workflow 编辑器、pipeline / human / HTTP Step、Scheduler、专用 Git 提交工具、自动更新与云同步。Process Sandbox 后续项还包括 Windows 强隔离、OCI Backend、域名级网络代理、cgroup 资源限制，以及通用 `desktop` / `keychain` SecretBroker。
+尚未实现：`jojo serve` 独立 CLI 产品化、Worker Runtime Backend、Workflow / Browser / Memory 远程 API、可视化 Workflow 编辑器、pipeline / human / HTTP Step、Scheduler、专用 Git 提交工具、自动更新与云同步。Process Sandbox 后续项还包括 Windows 强隔离、OCI Backend、可选域名级网络代理、cgroup 资源限制，以及系统 Keychain provider。
 
 ## 开发
 
@@ -50,7 +50,7 @@ pnpm dev
 2. 选择一个本地项目目录创建会话（可写 Sub-Agent / Workflow 需要 Git 仓库）；
 3. 在输入框右下角选择本轮模型后发送任务。可用「＋」添加最多 4 张图片。
 
-项目内检索和公开网页搜索 / 抓取默认允许；主会话的文件修改会先展示 Diff，Terminal 默认弹出带沙箱能力说明的审批。审批菜单可选择仅允许一次、允许同类命令或允许本次对话；对话授权不会持久化，项目 Hooks 的版本信任也不会被它绕过。MCP 首次连接或安全配置变化后需要重新信任。浏览器、MCP、Skills、记忆与 Hooks 的配置见 [`docs/current-features.md`](./docs/current-features.md)。
+项目内检索和公开网页搜索 / 抓取默认允许；主会话的文件修改会先展示 Diff，Terminal 默认弹出带沙箱能力说明的审批。命令可显式申请主机全局网络和命名密钥，审批会醒目标示；审批菜单可选择仅允许一次、允许同类命令或允许本次对话。对话授权不会持久化，项目 Hooks 的版本信任也不会被它绕过。MCP 首次连接或安全配置变化后需要重新信任。浏览器、MCP、Skills、记忆与 Hooks 的配置见 [`docs/current-features.md`](./docs/current-features.md)。
 
 常用命令：
 
@@ -190,7 +190,7 @@ packages/memory/          Markdown 记忆、候选治理、语义检索与 Runti
 
 各 Workspace 的职责、依赖方向与安全边界见 [`docs/technical-implementation/`](./docs/technical-implementation/README.md)。
 
-会话、普通配置、JSONL、Runtime SQLite、MCP Trust Grant 和浏览器下载 / 录制在 Electron `userData`。API Key 与 MCP OAuth 凭据由操作系统安全存储加密；普通配置和 JSONL 不含明文密钥。MCP env / Header 的敏感字段只接受 Secret Reference，通用运行时当前支持从进程环境按需租用。用户级 Hooks、Agent Profile、Saved Workflow 和记忆分别在 `~/.jojo/`（`hooks.yml`、`agents/`、`workflows/`、`memory/`）。
+会话、普通配置、JSONL、Runtime SQLite、MCP Trust Grant 和浏览器下载 / 录制在 Electron `userData`。API Key、Terminal / MCP 命名密钥与 MCP OAuth 凭据由操作系统安全存储加密；普通配置和 JSONL 不含明文密钥。Terminal 通过 `secretEnv` 只提交名称，MCP env / Header 的敏感字段只接受 Secret Reference；缺失值可由用户输入或从 Shell 配置静态导入。用户级 Hooks、Agent Profile、Saved Workflow 和记忆分别在 `~/.jojo/`（`hooks.yml`、`agents/`、`workflows/`、`memory/`）。
 
 ## 当前验证范围
 

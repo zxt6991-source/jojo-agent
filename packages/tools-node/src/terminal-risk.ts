@@ -22,7 +22,7 @@ export function classifyTerminalCommand(command: string): TerminalRiskClassifica
   }
   if (NETWORK_TOOLS.has(executable)) {
     risk = 'high';
-    reasons.push('This executable commonly uses the network; outbound network access is denied by the default profile.');
+    reasons.push('This executable commonly uses the network; the selected Terminal network policy is enforced at execution time.');
   }
   if (DESTRUCTIVE_TOOLS.has(executable)) {
     risk = 'critical';

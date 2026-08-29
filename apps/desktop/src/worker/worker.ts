@@ -66,6 +66,7 @@ import { BrowserPermissionGate, BrowserToolBridge } from './browser-tools';
 import { UtilityModelBrowserHealingAdapter } from './browser-healing';
 import { createDesktopLeafAgentRunner, createDesktopWorkflowToolRuntime } from './orchestration-runtime';
 import { TurnTaskRegistry } from './turn-task-registry';
+import { InteractiveTerminalSecretBroker } from './terminal-secret-broker';
 import {
   ConversationGrantPermissionGate,
   ConversationPermissionGrants,
@@ -206,6 +207,9 @@ const post = (message: WorkerMessage) => {
   }
   parentPort.postMessage(parsed.data);
 };
+const terminalSecretBroker = new InteractiveTerminalSecretBroker((request) => {
+  post({ type: 'terminal.secret.request', ...request });
+});
 const executionScheduler = new AgentExecutionScheduler(4);
 const resourceGroups = new ResourceGroupLimiter();
 const providerSemaphore = new ProviderSemaphore();
@@ -221,6 +225,7 @@ const leafAgentRunner = createDesktopLeafAgentRunner({
     return config && apiKey ? { config, apiKey } : undefined;
   },
   trashDirectory: path.join(dataDirectory, 'trash'),
+  secretBroker: terminalSecretBroker,
   profileRegistry,
   runtimeStore: agentRuntimeStore,
   memoryRuntime,
@@ -292,7 +297,10 @@ const workflowManager = new WorkflowManager(
   new WorkflowEngine(leafAgentRunner, executionScheduler, {
     profileRegistry,
     isolation: isolationManager,
-    toolRuntime: createDesktopWorkflowToolRuntime({ trashDirectory: path.join(dataDirectory, 'trash') }),
+    toolRuntime: createDesktopWorkflowToolRuntime({
+      trashDirectory: path.join(dataDirectory, 'trash'),
+      secretBroker: terminalSecretBroker
+    }),
     savedWorkflows: savedWorkflowRegistry,
     resourceGroups,
     providers: providerSemaphore,
@@ -348,7 +356,7 @@ const mcpManager = new McpManager((mcpServers) => {
 }, undefined, {
   onAuthorization: (requestId, url) => post({ type: 'mcp.oauth.authorization', requestId, url }),
   onCredentials: (serverId, credentials) => post({ type: 'mcp.oauth.credentials', serverId, credentials })
-}, { trustStore: mcpTrustStore, enforceStdioSandbox: true });
+}, { trustStore: mcpTrustStore, enforceStdioSandbox: true, secretBroker: terminalSecretBroker });
 
 function globalSkillDirectories(settings: ProviderSettings): SkillDirectory[] {
   return [
@@ -372,9 +380,11 @@ async function reloadOrchestrationAssets(projectRoot?: string): Promise<void> {
 async function applyRuntimeConfig(
   settings: ProviderSettings,
   apiKeys: Record<string, string>,
-  mcpOAuthCredentials: Record<string, unknown>
+  mcpOAuthCredentials: Record<string, unknown>,
+  terminalSecrets: Record<string, string>
 ): Promise<void> {
   runtime = { settings, apiKeys };
+  terminalSecretBroker.replace(terminalSecrets);
   memoryRuntime.updateSettings(settings.memory);
   memoryService.updateSettings(settings.memory);
   await reloadOrchestrationAssets();
@@ -454,6 +464,23 @@ function createE2eProvider(): ModelProvider {
         return;
       }
       const hasToolResult = request.messages.some((message) => message.content.some((block) => block.type === 'tool_result'));
+      if (prompt.includes('E2E: terminal secret') && !hasToolResult) {
+        yield {
+          type: 'tool_call_completed' as const,
+          call: {
+            id: `e2e-terminal-${crypto.randomUUID()}`,
+            name: 'terminal',
+            input: {
+              command: 'node',
+              args: ['-e', 'console.log(process.env.WEREAD_API_KEY)'],
+              network: 'host',
+              secretEnv: ['WEREAD_API_KEY']
+            }
+          }
+        };
+        yield { type: 'response_completed' as const, stopReason: 'tool_calls' };
+        return;
+      }
       if (prompt.includes('E2E: approval') && !hasToolResult) {
         const target = prompt.includes('deny') ? 'e2e-denied.txt' : 'e2e-approved.txt';
         yield {
@@ -463,7 +490,12 @@ function createE2eProvider(): ModelProvider {
         yield { type: 'response_completed' as const, stopReason: 'tool_calls' };
         return;
       }
-      yield { type: 'text_delta' as const, text: prompt.includes('E2E: approval') ? 'approval handled' : 'hello from offline e2e' };
+      yield {
+        type: 'text_delta' as const,
+        text: prompt.includes('E2E: terminal secret')
+          ? 'terminal secret handled'
+          : prompt.includes('E2E: approval') ? 'approval handled' : 'hello from offline e2e'
+      };
       yield { type: 'response_completed' as const, stopReason: 'stop' };
     }
   };
@@ -648,7 +680,10 @@ async function startTurn(sessionId: string, text: string, images: ImageContentBl
       if (status.state === 'invalid') console.warn(`Hook config is invalid: ${status.path}: ${status.error ?? 'unknown error'}`);
     }
     await maybeGenerateTitle(sessionId, session.workingDirectory, session.title, history, text, controller.signal);
-    const toolRuntime = createDefaultToolRuntime({ trashDirectory: path.join(dataDirectory, 'trash') });
+    const toolRuntime = createDefaultToolRuntime({
+      trashDirectory: path.join(dataDirectory, 'trash'),
+      secretBroker: terminalSecretBroker
+    });
     const skillDirectories: SkillDirectory[] = [
       ...(projectBound ? [
         { path: path.join(session.workingDirectory, '.codex', 'skills'), origin: 'project' as const },
@@ -834,6 +869,7 @@ function launchTurn(sessionId: string, text: string, images: ImageContentBlock[]
 
 async function stopSession(sessionId: string): Promise<void> {
   controllers.get(sessionId)?.abort();
+  terminalSecretBroker.cancelSession(sessionId);
   for (const approval of approvals.values()) {
     if (approval.sessionId === sessionId) approval.resolve(false);
   }
@@ -861,14 +897,17 @@ parentPort.on('message', (event) => {
   }
   const command = parsed.data;
   if (command.type === 'config.update') extensionReady = extensionReady.then(
-    () => applyRuntimeConfig(command.settings, command.apiKeys, command.mcpOAuthCredentials)
+    () => applyRuntimeConfig(command.settings, command.apiKeys, command.mcpOAuthCredentials, command.terminalSecrets)
   ).catch((error) => {
     post({ type: 'worker.error', message: error instanceof Error ? error.message : String(error) });
   });
   else if (command.type === 'turn.start') launchTurn(command.payload.sessionId, command.payload.text, command.payload.images, command.payload.providerId, command.payload.model);
   else if (command.type === 'turn.cancel') {
     controllers.get(command.sessionId)?.abort();
+    terminalSecretBroker.cancelSession(command.sessionId);
     for (const approval of approvals.values()) if (approval.sessionId === command.sessionId) approval.resolve(false);
+  } else if (command.type === 'terminal.secret.resolve') {
+    terminalSecretBroker.resolveRequest(command.requestId, command.value);
   } else if (command.type === 'session.stop') {
     void stopSession(command.sessionId)
       .then(() => {

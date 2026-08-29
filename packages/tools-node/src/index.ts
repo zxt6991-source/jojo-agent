@@ -1,4 +1,4 @@
-import type { Tool } from '@desktop-agent/contracts';
+import type { SecretBroker, Tool } from '@desktop-agent/contracts';
 import os from 'node:os';
 import path from 'node:path';
 import { DefaultPermissionGate } from './default-permission-gate.js';
@@ -51,6 +51,7 @@ export type DefaultToolOptions = {
   sandboxMode?: SandboxMode;
   sandbox?: ProcessSandbox;
   terminalPolicy?: TerminalSecurityPolicy;
+  secretBroker?: SecretBroker;
 };
 
 export function createDefaultTools(options: DefaultToolOptions = {}): Tool[] {
@@ -68,7 +69,7 @@ export function createDefaultTools(options: DefaultToolOptions = {}): Tool[] {
     new WriteFileTool(snapshots, trashDirectory),
     new EditFileTool(snapshots, trashDirectory),
     new DeleteFileTool(snapshots, trashDirectory),
-    new TerminalTool({ sandbox, policy: terminalPolicy })
+    new TerminalTool({ sandbox, policy: terminalPolicy, ...(options.secretBroker ? { secretBroker: options.secretBroker } : {}) })
   ];
 }
 

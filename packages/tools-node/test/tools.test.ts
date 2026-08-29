@@ -158,13 +158,43 @@ describe('node tools', () => {
   it('includes a bounded terminal security plan in the approval request', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'desktop-agent-terminal-preview-'));
     const decision = await new DefaultPermissionGate().check(
-      { id: 'preview', name: 'terminal', input: { command: 'sh', args: ['-c', 'echo ok'] } },
+      { id: 'preview', name: 'terminal', input: {
+        command: 'sh', args: ['-c', 'echo ok'], network: 'host', secretEnv: ['WEREAD_API_KEY']
+      } },
       { sessionId: 's1', workingDirectory: root }
     );
     expect(decision).toMatchObject({
       decision: 'ask',
-      request: { security: { kind: 'terminal', command: 'sh', risk: 'high', capabilities: expect.arrayContaining(['workspace:write']) } }
+      request: { security: {
+        kind: 'terminal', command: 'sh', risk: 'high', network: 'host', secretEnv: ['WEREAD_API_KEY'],
+        capabilities: expect.arrayContaining(['workspace:write', 'network:outbound', 'credential:secret'])
+      } }
     });
+  });
+
+  it('injects named broker secrets only after approval and redacts exact values', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'desktop-agent-terminal-secret-'));
+    const requested: string[] = [];
+    const progress: string[] = [];
+    const tool = new TerminalTool({
+      secretBroker: {
+        resolve: async (reference) => {
+          requested.push(reference.key);
+          return { value: 'weread-secret-value', dispose: () => undefined };
+        }
+      }
+    });
+    const result = await tool.execute({
+      command: process.execPath,
+      args: ['-e', 'console.log(process.env.WEREAD_API_KEY)'],
+      secretEnv: ['WEREAD_API_KEY']
+    }, { ...context(root, { approved: true }), onProgress: (text) => progress.push(text) });
+
+    expect(requested).toEqual(['WEREAD_API_KEY']);
+    expect(result).toMatchObject({ ok: true });
+    expect(result.content).toContain('[REDACTED]');
+    expect(result.content).not.toContain('weread-secret-value');
+    expect(progress.join('')).not.toContain('weread-secret-value');
   });
 
   it('redacts terminal progress before emitting it', async () => {

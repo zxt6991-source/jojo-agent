@@ -8,7 +8,7 @@ import { resolveWorkspacePath } from './workspace-paths.js';
 
 export type TerminalCapability =
   | 'workspace:read' | 'workspace:write' | 'network:outbound' | 'process:spawn'
-  | 'credential:ssh-agent' | 'host:filesystem' | 'host:network';
+  | 'credential:secret' | 'credential:ssh-agent' | 'host:filesystem' | 'host:network';
 export type TerminalRisk = 'medium' | 'high' | 'critical';
 export type ParsedTerminalInput = z.infer<typeof TerminalInput>;
 
@@ -22,6 +22,8 @@ export type TerminalSecurityPlan = {
     argumentsPreview: string[];
     cwd: string;
     sandboxStrength: SandboxStrength;
+    network: 'none' | 'host';
+    secretEnv: string[];
     capabilities: TerminalCapability[];
     risk: TerminalRisk;
     reasons: string[];
@@ -46,6 +48,18 @@ export class DefaultTerminalSecurityPolicy implements TerminalSecurityPolicy {
     const softFallback = probe.strength === 'soft' || probe.strength === 'none';
     const capabilities = [...classification.capabilities];
     let risk = classification.risk;
+    if (input.network === 'host') {
+      capabilities.push('network:outbound');
+      if (risk === 'medium') risk = 'high';
+      reasons.push('The user-requested profile grants unrestricted outbound host network access to this process.');
+    } else {
+      reasons.push('Outbound network access is disabled for this process.');
+    }
+    if (input.secretEnv.length > 0) {
+      capabilities.push('credential:secret');
+      if (risk === 'medium') risk = 'high';
+      reasons.push(`The process requests ${input.secretEnv.length} named secret environment variable(s).`);
+    }
     if (softFallback) {
       capabilities.push('host:filesystem', 'host:network');
       if (risk === 'medium') risk = 'high';
@@ -58,7 +72,7 @@ export class DefaultTerminalSecurityPolicy implements TerminalSecurityPolicy {
       args: [...input.args],
       env: createSandboxEnvironment({ workingDirectory: resolved.target }),
       mounts: [{ path: workspace.target, mode: 'rw' }],
-      network: { mode: 'none' },
+      network: { mode: input.network },
       fakeHome: true,
       tmpfs: true,
       resources: { timeoutMs: input.timeoutMs, maxOutputBytes: this.maxOutputBytes }
@@ -73,6 +87,8 @@ export class DefaultTerminalSecurityPolicy implements TerminalSecurityPolicy {
         argumentsPreview: approvalArguments(input.args),
         cwd: path.relative(workspace.target, resolved.target) || '.',
         sandboxStrength: probe.strength,
+        network: input.network,
+        secretEnv: [...input.secretEnv].sort(),
         capabilities: [...capabilities],
         risk,
         reasons

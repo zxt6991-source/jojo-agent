@@ -95,4 +95,18 @@ describe('conversation approval grants', () => {
       decision: 'ask', request: { grant: { options: ['once', 'conversation'] } }
     });
   });
+
+  it('does not broaden a similar grant across network or secret boundaries', () => {
+    const offline = defaultSimilarApprovalKey({
+      id: 'offline', name: 'terminal', input: { command: 'pnpm', args: ['test'], network: 'none', secretEnv: [] }
+    }, context);
+    const online = defaultSimilarApprovalKey({
+      id: 'online', name: 'terminal', input: { command: 'pnpm', args: ['test'], network: 'host', secretEnv: [] }
+    }, context);
+    const withSecret = defaultSimilarApprovalKey({
+      id: 'secret', name: 'terminal', input: { command: 'pnpm', args: ['test'], network: 'none', secretEnv: ['TOKEN'] }
+    }, context);
+    expect(online).not.toBe(offline);
+    expect(withSecret).not.toBe(offline);
+  });
 });

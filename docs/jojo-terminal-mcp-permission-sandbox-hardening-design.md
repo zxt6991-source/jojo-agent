@@ -1,6 +1,6 @@
 # Jojo Agent Terminal / MCP 权限与沙箱加固技术实现设计（Code-Aligned）
 
-> 状态：建议作为 Terminal / MCP Security Hardening 的正式实施基线  
+> 状态：已实施；本页同时记录后续增强项
 > 校准日期：2026-08-29  
 > 当前代码基线：`zxt6991-source/jojo-agent@be395977d5d509460a9433baf438122a54c6326c`
 >
@@ -18,6 +18,21 @@
 > 核心目标：
 >
 > **把 Jojo 当前“审批后直接执行”的 Terminal / MCP 安全模型升级为“审批负责用户授权，Sandbox 负责强制边界，Trust 负责 MCP Server 身份与能力，Secret Broker 负责凭据”的纵深防御模型。**
+
+## 0.1 2026-08-29 产品决策修订
+
+当前实现采用兼容优先的两态能力，不要求既有 Skill 重写为固定域名 HTTP 工具：
+
+```text
+Terminal network: none（默认） | host（命令显式申请并由用户审批）
+Terminal secretEnv: 只声明环境变量名称，值由 Desktop Secret Broker 在审批后注入
+Skill capability declaration: 可选增强，不是运行前置条件
+固定域名 HTTP 工具: 可选增强，不是 Skill 唯一联网方式
+```
+
+`host` 表示目标进程获得主机全局出站网络，因此审批预览必须显著展示，风险至少为 High。“允许类似命令”的指纹必须绑定 executable / 子命令族 / cwd / network / secretEnv 名称，不能把离线授权扩成联网授权，也不能增加密钥名称。
+
+Desktop Secret Broker 支持系统安全存储和用户主动点击“从 Shell 配置导入”。Shell 导入只静态解析 `export NAME=value` 等简单赋值，不执行或 `source` `.zshrc`；密钥值不得进入 Tool Call、模型上下文、审批、Grant 指纹、日志或历史。MCP 的 `SecretReference` 继续适用，并复用同一 Broker。
 
 ---
 
@@ -1220,22 +1235,24 @@ Runtime Event
 
 ---
 
-# 25. Terminal 默认不提供 Secret
+# 25. Terminal 按名称提供 Secret
 
-第一阶段 Terminal：
+Terminal 默认不继承 Host Secret；需要凭据的命令通过输入声明名称：
 
 ```text
-secretRefs = none
+secretEnv = [WEREAD_API_KEY]
 ```
 
-以后若要支持：
+批准后，Desktop Secret Broker 从系统安全存储取值；不存在时由用户输入，或由用户主动从 Shell 配置静态导入。只有被声明的名称会被注入，并且注入值加入精确流式脱敏集合。
+
+以后若要进一步细分：
 
 ```text
 git push
 cloud CLI
 ```
 
-应建显式 Capability：
+可增加显式 Capability：
 
 ```text
 credential:ssh-agent
@@ -1243,7 +1260,7 @@ credential:github
 credential:aws
 ```
 
-而不是恢复：
+但不能恢复：
 
 ```text
 inherit process.env
@@ -1517,6 +1534,10 @@ type TerminalApprovalPreview = {
     | 'container'
     | 'soft'
     | 'none';
+
+  network: 'none' | 'host';
+
+  secretEnv: string[];
 
   capabilities: string[];
 
@@ -2850,6 +2871,7 @@ Remote Code Execution
 | Terminal workspace command | Ask | Strong | Approval 后执行 |
 | Terminal shell | Ask / High | Strong | Approval 后执行 |
 | Terminal network | Ask / High | Strong + net | 默认无网络 |
+| Terminal named secret | Ask / High | Secret Broker + exact redaction | 默认不继承，按名称注入 |
 | Terminal host filesystem | Critical | Host escape | Server deny |
 | Trusted MCP stdio | Tool Ask | Strong | 可运行 |
 | Untrusted MCP stdio | N/A | N/A | 不启动 |
@@ -3634,6 +3656,10 @@ Host HOME 默认不可读
 Host Secret 默认不可见
 
 默认无网络
+
+host 网络只在命令显式申请并经用户审批后开放
+
+Secret 只按名称申请并在审批后注入
 
 默认无 SSH Agent
 
