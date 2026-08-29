@@ -58,8 +58,8 @@ export class ExtensionPermissionGate implements PermissionGate {
       && call.name !== 'mcp_read_resource'
       && call.name !== 'mcp_get_prompt') return this.base.check(call, context);
     const grantKey = mcpToolGrantKey(call) ? this.identifyMcpGrant(call) : undefined;
-    if (grantKey && this.sessionGrants.has(context.sessionId, grantKey)) return { decision: 'allow' };
     const security = this.describeMcpApproval(call);
+    if (grantKey && security?.kind === 'mcp' && this.sessionGrants.has(context.sessionId, grantKey)) return { decision: 'allow' };
     if (security?.kind === 'mcp' && security.risk === 'read') return { decision: 'allow' };
     const request: ApprovalRequest = {
       requestId: crypto.randomUUID(),

@@ -16,6 +16,8 @@ import {
   MemorySettingsSchema,
   ProviderSettingsSchema,
   ExtensionSettingsSchema,
+  PermissionPolicyDocumentSchema,
+  SavePermissionPolicyInputSchema,
   SaveSettingsInputSchema,
   SessionRecordSchema,
   StartTurnInputSchema,
@@ -51,6 +53,7 @@ describe('contracts', () => {
       activeProviderId: 'openai',
       providers: DEFAULT_PROVIDERS,
       utilityModel: { providerId: 'openai', model: 'gpt-5-mini' },
+      permissions: { mode: 'ask' },
       memory: DEFAULT_MEMORY_SETTINGS,
       extensions: { mcpServers: [], skills: { directories: [], disabled: [] }, browser: { ...DEFAULT_BROWSER_SETTINGS } }
     });
@@ -60,8 +63,9 @@ describe('contracts', () => {
         id: 'custom', name: 'Custom', protocol: 'openai_chat_completions', baseUrl: 'https://example.com/v1',
         model: 'model', models: ['model', 'other'], contextWindowTokens: 32_000, maxOutputTokens: 2_000
       },
-      utilityModel: { providerId: 'custom', model: 'model' }
-    })).toMatchObject({ activeProviderId: 'custom', provider: { model: 'model' } });
+      utilityModel: { providerId: 'custom', model: 'model' },
+      permissions: { mode: 'auto' }
+    })).toMatchObject({ activeProviderId: 'custom', provider: { model: 'model' }, permissions: { mode: 'auto' } });
     expect(() => SaveSettingsInputSchema.parse({})).toThrow();
   });
 
@@ -83,6 +87,22 @@ describe('contracts', () => {
       indexScratchpad: false,
       rerankEnabled: false
     });
+  });
+
+  it('accepts deterministic permission rules and requires workspace identity', () => {
+    expect(PermissionPolicyDocumentSchema.parse({
+      version: 1,
+      rules: [{
+        id: 'deny-scheduler-secrets', effect: 'deny',
+        match: { actors: ['main'], triggers: ['scheduler'], hasSecrets: true }
+      }]
+    })).toMatchObject({ rules: [{ id: 'deny-scheduler-secrets' }] });
+    expect(() => PermissionPolicyDocumentSchema.parse({
+      version: 1, rules: [{ id: 'unsafe-expression', effect: 'allow', match: { expression: 'true' } }]
+    })).toThrow();
+    expect(() => SavePermissionPolicyInputSchema.parse({
+      scope: 'workspace', mode: 'ask', document: { version: 1, rules: [] }
+    })).toThrow(/working directory/u);
   });
 
   it('validates MCP transports and rejects duplicate server ids', () => {

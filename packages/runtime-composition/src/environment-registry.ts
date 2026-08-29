@@ -10,12 +10,12 @@ import type {
   TelemetrySink,
   ToolResolver
 } from '@desktop-agent/agent-runtime';
-import { NoopHookRuntime, type HookRuntime, type ModelProvider, type PermissionGate } from '@desktop-agent/contracts';
+import { NoopHookRuntime, type HookRuntime, type ModelProvider } from '@desktop-agent/contracts';
 
 export type RuntimeExecutionEnvironment = {
   provider: ModelProvider;
   tools: RuntimeToolSource;
-  permissions: PermissionGate;
+  permissions: RuntimePermissionGate;
   hooks?: HookRuntime;
   telemetry?: TelemetrySink;
   runContext?: RuntimeRunContext;
@@ -52,9 +52,8 @@ export class RuntimeEnvironmentRegistry {
         ? context.executionScope.workingDirectory
         : '';
       return environment.permissions.check(call, {
-        sessionId: context.sessionId,
-        workingDirectory,
-        executionScope: context.executionScope
+        ...context,
+        workingDirectory
       });
     }
   };

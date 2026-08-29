@@ -665,6 +665,41 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .browser-domain-editor input:disabled { cursor: default; }
 .browser-domain-hint { margin: 10px 0 12px; color: #8b8f96; font-size: 11px; line-height: 1.5; }
 .browser-mode-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 16px 24px 22px; background: #ffffff; }
+.permission-mode-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.permission-mode-warning { margin: 0; padding: 12px 24px; border-top: 1px solid #f0dfb8; background: #fff8e9; color: #76571f; font-size: 11px; line-height: 1.5; }
+.permission-settings-error { margin: 14px 24px; }
+.permission-mode-pill.ask { background: #fff4e4; color: #9a6b24; }
+.permission-mode-pill.auto { background: #e8f2fe; color: #2f6fbd; }
+.permission-mode-pill.yolo { background: #fff1f1; color: #b2464b; }
+.permission-settings-page .settings-heading > button { min-height: 38px; padding: 0 15px; border: 1px solid #d7d8dc; border-radius: 9px; background: #fff; color: #555960; font-size: 12px; font-weight: 600; }
+.permission-settings-page .settings-heading > button:disabled { opacity: .5; }
+.permission-scope-tabs { display: flex; align-items: center; gap: 7px; padding: 14px 24px; border-bottom: 1px solid #ececee; background: #fff; }
+.permission-scope-tabs button { min-height: 32px; padding: 0 13px; border: 1px solid #d8d9dd; border-radius: 8px; background: #fff; color: #686c73; font-size: 11px; font-weight: 650; }
+.permission-scope-tabs button.active { border-color: #7182cf; background: #f2f5ff; color: #4054ae; }
+.permission-scope-tabs button:disabled { opacity: .4; }
+.permission-scope-tabs > span { margin-left: auto; color: #92969d; font: 10px/1 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.permission-workspace-path { display: block; overflow: hidden; padding: 10px 24px; border-bottom: 1px solid #ececee; background: #f7f7f8; color: #686c73; font: 10px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.permission-rule-editor { padding: 18px 24px; border-top: 1px solid #ececee; background: #fff; }
+.permission-rule-editor label { display: block; margin-bottom: 8px; color: #454950; font-size: 12px; font-weight: 650; }
+.permission-rule-editor textarea { box-sizing: border-box; width: 100%; min-height: 220px; resize: vertical; padding: 13px 14px; border: 1px solid #d8d9dd; border-radius: 10px; outline: none; background: #f8f8f9; color: #292b30; font: 11px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; tab-size: 2; }
+.permission-rule-editor textarea:focus { border-color: #7182cf; background: #fff; }
+.permission-rule-editor p { margin: 8px 0 0; color: #92969d; font-size: 10px; line-height: 1.5; }
+.permission-audit-count { display: grid; min-width: 28px; height: 28px; place-items: center; padding: 0 7px; border-radius: 8px; background: #f1f1f2; color: #646870; font-size: 11px; font-weight: 650; }
+.permission-audit-list { background: #fff; }
+.permission-audit-list article { display: grid; grid-template-columns: 60px minmax(0, 1fr) auto; align-items: center; gap: 13px; padding: 14px 18px; border-top: 1px solid #ececee; }
+.permission-audit-list article:first-child { border-top: 0; }
+.permission-effect { display: inline-flex; justify-content: center; padding: 5px 7px; border-radius: 7px; font-size: 9px; font-weight: 750; letter-spacing: .04em; }
+.permission-effect.allow { background: #e8f4ea; color: #2f7a3e; }
+.permission-effect.ask { background: #fff4e4; color: #9a6b24; }
+.permission-effect.deny { background: #fff1f1; color: #b2464b; }
+.permission-audit-main { display: flex; min-width: 0; flex-direction: column; gap: 3px; }
+.permission-audit-main strong { color: #292b30; font-size: 12px; }
+.permission-audit-main > span { overflow: hidden; color: #62666e; font: 10px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.permission-audit-main small { color: #969aa1; font-size: 9px; }
+.permission-audit-meta { display: flex; align-items: flex-end; flex-direction: column; gap: 5px; color: #969aa1; font-size: 9px; }
+.permission-audit-meta > span { padding: 3px 6px; border-radius: 5px; background: #f1f1f2; color: #666a72; font-weight: 650; }
+.permission-audit-meta .risk-high, .permission-audit-meta .risk-critical { background: #fff1f1; color: #b2464b; }
+.permission-audit-empty { margin: 0; padding: 28px 24px; color: #92969d; font-size: 11px; text-align: center; }
 .browser-mode-option { display: flex; flex-direction: row; align-items: flex-start; gap: 10px; margin: 0; padding: 14px 16px; border: 1px solid #d8d9dd; border-radius: 12px; background: #fff; text-align: left; cursor: pointer; }
 .browser-mode-option.selected { border-color: #7182cf; background: #f6f8ff; }
 .browser-mode-option input[type="radio"] { flex: 0 0 auto; box-sizing: border-box; width: 15px; height: 15px; margin: 3px 0 0; padding: 0; border: 0; accent-color: #5269d8; }
@@ -676,6 +711,10 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .terminal-secret-remember input { width: 15px !important; height: 15px !important; margin: 0; accent-color: #202124; }
 .terminal-secret-actions { flex-wrap: wrap; }
 .approval-security-warning { display: flex; flex-direction: column; gap: 4px; margin: 0 0 14px; padding: 10px 12px; border: 1px solid #ead8af; border-radius: 10px; background: #fff8e9; color: #76571f; font-size: 12px; line-height: 1.45; }
+.approval-governance { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 0 0 14px; padding: 10px 12px; border: 1px solid #dbe1f2; border-radius: 10px; background: #f5f7fd; color: #4d5771; font-size: 11px; }
+.approval-governance.locked { border-color: #ead8af; background: #fff8e9; color: #76571f; }
+.approval-governance span { display: inline-flex; gap: 5px; }
+.approval-governance strong { font-weight: 650; }
 .browser-domain-body .settings-error { margin: 0 0 10px; }
 .browser-recording-card > .settings-section-title button { min-height: 30px; padding: 0 11px; border: 1px solid #d7d8dc; border-radius: 8px; background: #fff; color: #555960; font-size: 10px; font-weight: 650; }
 .browser-recording-card > .settings-section-title button:disabled { cursor: default; opacity: .5; }

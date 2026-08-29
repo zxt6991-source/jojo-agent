@@ -11,6 +11,12 @@ import {
   SubAgentManager,
   WorkflowEngine
 } from '@desktop-agent/orchestration';
+import {
+  BackgroundAgentPermissionPolicyStore,
+  MemoryPermissionAuditSink,
+  PermissionGovernanceEngine,
+  StaticPermissionPolicyStore
+} from '@desktop-agent/permission-governance';
 import { createDesktopLeafAgentRunner } from './orchestration-runtime.js';
 
 const managers: IsolationManager[] = [];
@@ -64,6 +70,13 @@ async function createHarness() {
   const trashDirectory = await mkdtemp(path.join(os.tmpdir(), 'jojo-write-e2e-trash-'));
   const isolation = new IsolationManager({ worktreeRoot });
   managers.push(isolation);
+  const audit = new MemoryPermissionAuditSink();
+  const governance = {
+    engine: new PermissionGovernanceEngine({
+      policyStore: new BackgroundAgentPermissionPolicyStore(new StaticPermissionPolicyStore())
+    }),
+    audit
+  };
   const runner = createDesktopLeafAgentRunner({
     trashDirectory,
     resolveProvider: () => ({ config: providerConfig, apiKey: 'test-key' }),
@@ -86,14 +99,15 @@ async function createHarness() {
           { type: 'response_completed', stopReason: 'stop' }
         ]
       ]);
-    }
+    },
+    governance
   });
-  return { repo, isolation, runner };
+  return { repo, isolation, runner, audit, governance };
 }
 
 describe('Electron worker writable agents', () => {
   it('runs three general agents through the desktop runner, writes via write_file, and never touches the main tree', async () => {
-    const { repo, isolation, runner } = await createHarness();
+    const { repo, isolation, runner, audit } = await createHarness();
     const before = fingerprint(repo);
     const engine = new WorkflowEngine(runner, new AgentExecutionScheduler(4), { isolation });
     const final = await engine.run({
@@ -124,10 +138,15 @@ describe('Electron worker writable agents', () => {
     expect(final.steps.every((step) => step.isolation?.diff?.includes('export const'))).toBe(true);
     expect(fingerprint(repo)).toBe(before);
     await expect(readFile(path.join(repo, 'README.md'), 'utf8')).resolves.toBe('hello\n');
+    expect(audit.records).toHaveLength(3);
+    expect(audit.records.every(({ request, decision }) => request.context.actor.kind === 'workflow'
+      && request.context.actor.profile === 'general'
+      && decision.effect === 'allow'
+      && decision.policyRuleId === 'builtin-background-workspace-write')).toBe(true);
   });
 
   it('lets a writable sub-agent write inside its worktree and refuses an escaped path', async () => {
-    const { repo, isolation } = await createHarness();
+    const { repo, isolation, governance } = await createHarness();
     const before = fingerprint(repo);
     const outside = await mkdtemp(path.join(os.tmpdir(), 'jojo-write-e2e-outside-'));
     const escapedRunner = createDesktopLeafAgentRunner({
@@ -149,7 +168,8 @@ describe('Electron worker writable agents', () => {
           { type: 'text_delta', text: 'attempted escape' },
           { type: 'response_completed', stopReason: 'stop' }
         ]
-      ])
+      ]),
+      governance
     });
     const manager = new SubAgentManager(escapedRunner, new AgentExecutionScheduler(1), () => undefined, { isolation });
     const agent = manager.start({
@@ -166,5 +186,9 @@ describe('Electron worker writable agents', () => {
     expect(manager.get(agent.id)?.isolation?.hasChanges).toBe(false);
     expect(fingerprint(repo)).toBe(before);
     await expect(readFile(path.join(outside, 'secret.txt'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(governance.audit.records.at(-1)).toMatchObject({
+      request: { context: { actor: { kind: 'subagent', profile: 'general' } } },
+      decision: { effect: 'deny', locked: true, source: 'security_boundary' }
+    });
   });
 });

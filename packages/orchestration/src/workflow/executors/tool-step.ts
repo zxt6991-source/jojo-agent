@@ -47,6 +47,11 @@ export class ToolStepExecutor implements WorkflowStepExecutor {
       input,
       sessionId: context.request.sessionId,
       workingDirectory: context.request.workingDirectory,
+      workflowRunId: context.request.id,
+      workflowId: context.request.definition.name,
+      workflowStepId: step.id,
+      providerId: context.request.providerId,
+      model: context.request.model,
       signal: context.signal
     });
     if (context.signal.aborted) {

@@ -23,6 +23,8 @@ export { SqliteMemoryCandidateStore } from './sqlite-memory-candidate-store.js';
 export { SqliteSemanticMemoryBackend } from './sqlite-semantic-memory-backend.js';
 export { SqliteServerStateStore } from './sqlite-server-state-store.js';
 export { SqliteMcpTrustStore } from './sqlite-mcp-trust-store.js';
+export { SqlitePermissionGovernanceStore } from './sqlite-permission-governance-store.js';
+export type { PermissionPolicyProfileInput } from './sqlite-permission-governance-store.js';
 export { SERVER_STATE_SCHEMA_VERSION } from './server-state-schema.js';
 export { SqliteAgentRuntimeStore } from './sqlite-runtime-store.js';
 
@@ -51,6 +53,7 @@ const StoredConfigV3Schema = z.object({
   activeProviderId: z.string().min(1),
   providers: z.array(StoredProviderSchema).min(1),
   utilityModel: z.object({ providerId: z.string().min(1), model: z.string().min(1) }),
+  permissions: z.unknown().optional(),
   memory: z.unknown().optional(),
   extensions: z.unknown().optional()
 });
@@ -265,6 +268,7 @@ export class JsonConfigStore {
         activeProviderId: activeProvider.id,
         providers,
         utilityModel,
+        ...(stored.permissions !== undefined ? { permissions: stored.permissions } : {}),
         ...(stored.memory !== undefined ? { memory: stored.memory } : {}),
         ...(stored.extensions !== undefined ? { extensions: stored.extensions } : {})
       });
@@ -286,6 +290,7 @@ export class JsonConfigStore {
       activeProviderId: validSettings.activeProviderId,
       providers: validSettings.providers.map(({ hasApiKey: _hasApiKey, ...provider }) => provider),
       utilityModel: validSettings.utilityModel,
+      permissions: validSettings.permissions,
       memory: validSettings.memory,
       extensions: validSettings.extensions
     };

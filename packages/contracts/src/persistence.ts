@@ -8,6 +8,35 @@ export const SESSION_TITLE_MAX_LENGTH = 120;
 export const DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS = 128_000;
 export const DEFAULT_MODEL_MAX_OUTPUT_TOKENS = 8_192;
 
+export const PermissionSettingsSchema = z.object({
+  mode: z.enum(['ask', 'auto', 'yolo']).default('ask')
+}).strict();
+export type PermissionSettings = z.infer<typeof PermissionSettingsSchema>;
+export const DEFAULT_PERMISSION_SETTINGS: PermissionSettings = { mode: 'ask' };
+
+export const PermissionRuleSchema = z.object({
+  id: z.string().min(1).max(256),
+  effect: z.enum(['allow', 'ask', 'deny']),
+  match: z.object({
+    actors: z.array(z.enum(['main', 'subagent', 'workflow'])).optional(),
+    triggers: z.array(z.enum(['user', 'api', 'scheduler', 'workflow', 'subagent', 'resume'])).optional(),
+    sources: z.array(z.enum(['native', 'mcp', 'browser', 'memory', 'orchestration', 'skill', 'hook'])).optional(),
+    tools: z.array(z.string().min(1).max(256)).optional(),
+    operations: z.array(z.enum(['read', 'write', 'execute', 'network', 'external_effect', 'install', 'trust', 'control'])).optional(),
+    risks: z.array(z.enum(['low', 'medium', 'high', 'critical'])).optional(),
+    network: z.enum(['none', 'host']).optional(),
+    hasSecrets: z.boolean().optional(),
+    resourceScope: z.enum(['workspace', 'outside_workspace', 'external', 'none']).optional()
+  }).strict()
+}).strict();
+export type PermissionRuleContract = z.infer<typeof PermissionRuleSchema>;
+
+export const PermissionPolicyDocumentSchema = z.object({
+  version: z.literal(1),
+  rules: z.array(PermissionRuleSchema).max(10_000)
+}).strict();
+export type PermissionPolicyDocumentContract = z.infer<typeof PermissionPolicyDocumentSchema>;
+
 export function projectNameFromDirectory(workingDirectory: string): string {
   return workingDirectory.split(/[\\/]/).filter(Boolean).pop() ?? workingDirectory;
 }
@@ -91,6 +120,7 @@ export const ProviderSettingsSchema = z.object({
   activeProviderId: z.string().min(1).default('openai'),
   providers: z.array(ProviderConfigSchema).min(1).default(() => DEFAULT_PROVIDERS.map((provider) => ({ ...provider }))),
   utilityModel: ModelSelectionSchema.default({ providerId: 'openai', model: 'gpt-5-mini' }),
+  permissions: PermissionSettingsSchema.default({ ...DEFAULT_PERMISSION_SETTINGS }),
   memory: MemorySettingsSchema.default(() => structuredClone(DEFAULT_MEMORY_SETTINGS)),
   extensions: ExtensionSettingsSchema.default({
     mcpServers: [], skills: { directories: [], disabled: [] }, browser: { ...DEFAULT_BROWSER_SETTINGS }

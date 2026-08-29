@@ -1,10 +1,11 @@
 import type { PermissionGate, Tool } from '@desktop-agent/contracts';
 import { WORKFLOW_TOOL_STEP_ALLOWLIST } from './tool-step.js';
-import type { WorkflowToolRuntime } from './types.js';
+import type { WorkflowToolPermissionGate, WorkflowToolRuntime } from './types.js';
 
 export function createWorkflowToolRuntime(options: {
   tools: Iterable<Tool>;
   permissionGate: PermissionGate;
+  contextualPermissionGate?: WorkflowToolPermissionGate;
 }): WorkflowToolRuntime {
   const tools = new Map([...options.tools].map((tool) => [tool.definition.name, tool]));
   return {
@@ -20,10 +21,12 @@ export function createWorkflowToolRuntime(options: {
         return { ok: false, content: `Workflow tool is not registered: ${invocation.name}`, code: 'tool_not_allowed' };
       }
       const call = { id: `wf_tool_${crypto.randomUUID()}`, name: invocation.name, input: invocation.input };
-      const decision = await options.permissionGate.check(call, {
-        sessionId: invocation.sessionId,
-        workingDirectory: invocation.workingDirectory
-      });
+      const decision = options.contextualPermissionGate
+        ? await options.contextualPermissionGate.check(call, invocation)
+        : await options.permissionGate.check(call, {
+            sessionId: invocation.sessionId,
+            workingDirectory: invocation.workingDirectory
+          });
       if (decision.decision !== 'allow') {
         const reason = decision.decision === 'deny'
           ? decision.reason

@@ -92,6 +92,7 @@ describe('JsonConfigStore', () => {
         })
       ]),
       utilityModel: { providerId: 'openai', model: 'legacy-model' },
+      permissions: { mode: 'ask' },
       memory: DEFAULT_MEMORY_SETTINGS,
       extensions: { mcpServers: [], skills: { directories: [], disabled: [] }, browser: { ...DEFAULT_BROWSER_SETTINGS } }
     });
@@ -135,6 +136,7 @@ describe('JsonConfigStore', () => {
       models: ['model-a', 'model-b'], hasApiKey: true
     };
     settings.utilityModel = { providerId: 'openai', model: 'model-a' };
+    settings.permissions = { mode: 'yolo' };
     settings.memory = { ...settings.memory, enabled: false, recoveryRetentionDays: 14 };
     settings.extensions = {
       mcpServers: [{ id: 'files', name: 'Files', enabled: true, transport: 'stdio', command: 'node', args: ['server.js'] }],
@@ -151,8 +153,10 @@ describe('JsonConfigStore', () => {
     });
     expect(stored.extensions).toEqual(settings.extensions);
     expect(stored.memory).toEqual(settings.memory);
+    expect(stored.permissions).toEqual({ mode: 'yolo' });
     expect(JSON.stringify(stored)).not.toContain('hasApiKey');
     await expect(store.get()).resolves.toMatchObject({
+      permissions: { mode: 'yolo' },
       providers: expect.arrayContaining([expect.objectContaining({ id: 'openai', hasApiKey: false })])
     });
   });

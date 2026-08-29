@@ -61,6 +61,9 @@ importers:
       '@desktop-agent/orchestration':
         specifier: workspace:*
         version: link:../../packages/orchestration
+      '@desktop-agent/permission-governance':
+        specifier: workspace:*
+        version: link:../../packages/permission-governance
       '@desktop-agent/providers':
         specifier: workspace:*
         version: link:../../packages/providers
@@ -280,6 +283,18 @@ importers:
         specifier: ^4.1.13
         version: 4.4.3
 
+  packages/permission-governance:
+    dependencies:
+      '@desktop-agent/agent-runtime':
+        specifier: workspace:*
+        version: link:../agent-runtime
+      '@desktop-agent/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      zod:
+        specifier: ^4.1.13
+        version: 4.4.3
+
   packages/process-sandbox: {}
 
   packages/providers:
@@ -350,6 +365,9 @@ importers:
       '@desktop-agent/memory':
         specifier: workspace:*
         version: link:../memory
+      '@desktop-agent/permission-governance':
+        specifier: workspace:*
+        version: link:../permission-governance
       '@desktop-agent/server-protocol':
         specifier: workspace:*
         version: link:../server-protocol

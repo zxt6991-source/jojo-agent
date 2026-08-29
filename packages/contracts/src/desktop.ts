@@ -3,7 +3,8 @@ import type { AgentEvent } from './agent';
 import type { Message } from './messages';
 import type { OrchestrationEvent, WorkflowRunSnapshot } from './orchestration';
 import type { ProviderSettings, SessionMeta } from './persistence';
-import { SESSION_TITLE_MAX_LENGTH } from './persistence';
+import { PermissionPolicyDocumentSchema, SESSION_TITLE_MAX_LENGTH } from './persistence';
+import { JsonValueSchema } from './execution-scope';
 import type { WorkspaceChanges } from './workspace';
 import { ExtensionSettingsSchema } from './integrations';
 import type { ExtensionSettings, ExtensionStatus, SkillDetail, SkillOperationResult } from './integrations';
@@ -216,8 +217,64 @@ export const SaveSettingsInputSchema = z.object({
     maxOutputTokens: z.number().int().min(256).max(128_000)
   }),
   utilityModel: z.object({ providerId: z.string().min(1), model: z.string().min(1) }),
+  permissions: z.object({ mode: z.enum(['ask', 'auto', 'yolo']) }).strict().optional(),
   apiKey: z.string().trim().min(1).optional()
 });
+
+export const GetPermissionGovernanceInputSchema = z.object({
+  workingDirectory: z.string().trim().min(1).max(4_096).optional(),
+  sessionId: z.string().min(1).max(256).optional(),
+  limit: z.number().int().min(1).max(200).default(50)
+}).strict();
+
+export const SavePermissionPolicyInputSchema = z.object({
+  scope: z.enum(['global', 'workspace']),
+  workingDirectory: z.string().trim().min(1).max(4_096).optional(),
+  mode: z.enum(['ask', 'auto', 'yolo']),
+  document: PermissionPolicyDocumentSchema
+}).strict().superRefine((input, context) => {
+  if (input.scope === 'workspace' && !input.workingDirectory) {
+    context.addIssue({ code: 'custom', path: ['workingDirectory'], message: 'Workspace policy requires a working directory.' });
+  }
+});
+
+export const PermissionPolicyProfileSnapshotSchema = z.object({
+  scope: z.enum(['global', 'workspace']),
+  mode: z.enum(['ask', 'auto', 'yolo']),
+  document: PermissionPolicyDocumentSchema,
+  revision: z.number().int().nonnegative(),
+  updatedAt: z.string().datetime().optional()
+}).strict();
+export type PermissionPolicyProfileSnapshot = z.infer<typeof PermissionPolicyProfileSnapshotSchema>;
+
+export const PermissionDecisionAuditItemSchema = z.object({
+  id: z.string().min(1).max(256),
+  createdAt: z.string().datetime(),
+  sessionId: z.string().min(1).max(256),
+  laneId: z.string().max(256).optional(),
+  runId: z.string().max(256).optional(),
+  actorKind: z.enum(['main', 'subagent', 'workflow']),
+  actorId: z.string().max(256).optional(),
+  triggerKind: z.enum(['user', 'api', 'scheduler', 'workflow', 'subagent', 'resume']),
+  toolName: z.string().min(1).max(256),
+  toolSource: z.enum(['native', 'mcp', 'browser', 'memory', 'orchestration', 'skill', 'hook']),
+  effect: z.enum(['allow', 'ask', 'deny']),
+  locked: z.boolean(),
+  source: z.enum(['security_boundary', 'hard_floor', 'mandatory_approval', 'user_policy', 'session_grant', 'mode', 'baseline']),
+  reasonCode: z.string().min(1).max(256),
+  policyRuleId: z.string().max(256).optional(),
+  requestFingerprint: z.string().min(1).max(256),
+  risk: z.enum(['low', 'medium', 'high', 'critical']),
+  metadata: JsonValueSchema.optional()
+}).strict();
+export type PermissionDecisionAuditItem = z.infer<typeof PermissionDecisionAuditItemSchema>;
+
+export const PermissionGovernanceSnapshotSchema = z.object({
+  global: PermissionPolicyProfileSnapshotSchema,
+  workspace: PermissionPolicyProfileSnapshotSchema.optional(),
+  recentDecisions: z.array(PermissionDecisionAuditItemSchema).max(200)
+}).strict();
+export type PermissionGovernanceSnapshot = z.infer<typeof PermissionGovernanceSnapshotSchema>;
 
 export const ListModelsInputSchema = z.object({
   protocol: z.literal('openai_chat_completions'),
@@ -434,6 +491,8 @@ export type DesktopApi = {
   getSettings(): Promise<ProviderSettings>;
   listModels(input: z.input<typeof ListModelsInputSchema>): Promise<string[]>;
   saveSettings(input: z.input<typeof SaveSettingsInputSchema>): Promise<ProviderSettings>;
+  getPermissionGovernance(input?: z.input<typeof GetPermissionGovernanceInputSchema>): Promise<PermissionGovernanceSnapshot>;
+  savePermissionPolicy(input: z.input<typeof SavePermissionPolicyInputSchema>): Promise<PermissionGovernanceSnapshot>;
   getExtensionStatus(input?: z.input<typeof GetExtensionStatusInputSchema>): Promise<ExtensionStatus>;
   getSkillDetail(input: z.input<typeof SkillPathInputSchema>): Promise<SkillDetail>;
   createSkill(input: z.input<typeof CreateSkillInputSchema>): Promise<SkillOperationResult>;
@@ -501,6 +560,8 @@ export const IPC = {
   getSettings: 'settings:get',
   listModels: 'models:list',
   saveSettings: 'settings:save',
+  getPermissionGovernance: 'permissions:get',
+  savePermissionPolicy: 'permissions:save',
   getExtensionStatus: 'extensions:status',
   getSkillDetail: 'extensions:skill-detail',
   createSkill: 'extensions:skill-create',

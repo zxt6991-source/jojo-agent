@@ -78,6 +78,21 @@ describe('conversation approval grants', () => {
     expect(decision.request).not.toHaveProperty('grant');
   });
 
+  it('does not let a conversation grant bypass a baseline deny', async () => {
+    const grants = new ConversationPermissionGrants();
+    grants.grant({
+      requestId: 'seed', sessionId: context.sessionId,
+      call: { id: 'seed-call', name: 'terminal', input: {} }, reason: 'seed',
+      grant: { kind: 'approval', key: 'approval:seed', options: ['once', 'conversation'] }
+    }, 'conversation');
+    const gate = new ConversationGrantPermissionGate({
+      check: async () => ({ decision: 'deny', reason: 'hard boundary', code: 'permission_denied' })
+    }, grants);
+    await expect(gate.check({ id: 'denied', name: 'terminal', input: { command: 'pnpm' } }, context)).resolves.toEqual({
+      decision: 'deny', reason: 'hard boundary', code: 'permission_denied'
+    });
+  });
+
   it('groups external file reads by operation and parent directory', () => {
     const first = defaultSimilarApprovalKey({ id: 'one', name: 'read_file', input: { path: '../skills/a.md' } }, context);
     const second = defaultSimilarApprovalKey({ id: 'two', name: 'read_file', input: { path: '../skills/b.md' } }, context);

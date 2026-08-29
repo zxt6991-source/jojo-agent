@@ -194,22 +194,54 @@ describe('createWorkflowToolRuntime', () => {
     expect(runtime.has('terminal')).toBe(false);
 
     const denied = await runtime.execute({
-      name: 'list_files', input: { path: '..' }, sessionId: 'session', workingDirectory: process.cwd(), signal: new AbortController().signal
+      name: 'list_files', input: { path: '..' }, sessionId: 'session', workingDirectory: process.cwd(),
+      workflowRunId: 'run', workflowId: 'workflow', workflowStepId: 'step', providerId: 'provider', model: 'model',
+      signal: new AbortController().signal
     });
     expect(denied).toMatchObject({ ok: false, code: 'permission_denied' });
     expect(executed).toEqual([]);
 
     const blocked = await runtime.execute({
-      name: 'terminal', input: { command: 'ls' }, sessionId: 'session', workingDirectory: process.cwd(), signal: new AbortController().signal
+      name: 'terminal', input: { command: 'ls' }, sessionId: 'session', workingDirectory: process.cwd(),
+      workflowRunId: 'run', workflowId: 'workflow', workflowStepId: 'step', providerId: 'provider', model: 'model',
+      signal: new AbortController().signal
     });
     expect(blocked).toMatchObject({ ok: false, code: 'tool_not_allowed' });
     expect(executed).toEqual([]);
 
     const ok = await runtime.execute({
-      name: 'list_files', input: { path: '.' }, sessionId: 'session', workingDirectory: process.cwd(), signal: new AbortController().signal
+      name: 'list_files', input: { path: '.' }, sessionId: 'session', workingDirectory: process.cwd(),
+      workflowRunId: 'run', workflowId: 'workflow', workflowStepId: 'step', providerId: 'provider', model: 'model',
+      signal: new AbortController().signal
     });
     expect(ok).toEqual({ ok: true, content: 'dir src' });
     expect(executed).toEqual(['list_files']);
+  });
+
+  it('passes complete workflow identity to a contextual permission gate', async () => {
+    const listFiles: Tool = {
+      definition: { name: 'list_files', description: 'List', inputSchema: { type: 'object' } },
+      execute: async () => ({ callId: '', ok: true, content: 'dir src' })
+    };
+    const contextualPermissionGate = {
+      check: vi.fn(async () => ({ decision: 'allow' as const }))
+    };
+    const runtime = createWorkflowToolRuntime({
+      tools: [listFiles],
+      permissionGate: { check: async () => ({ decision: 'deny', reason: 'legacy gate should not run' }) },
+      contextualPermissionGate
+    });
+    const invocation = {
+      name: 'list_files', input: { path: '.' }, sessionId: 'session', workingDirectory: process.cwd(),
+      workflowRunId: 'run-1', workflowId: 'workflow-1', workflowStepId: 'step-1',
+      providerId: 'provider', model: 'model', signal: new AbortController().signal
+    };
+
+    await expect(runtime.execute(invocation)).resolves.toMatchObject({ ok: true });
+    expect(contextualPermissionGate.check).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'list_files' }),
+      invocation
+    );
   });
 });
 

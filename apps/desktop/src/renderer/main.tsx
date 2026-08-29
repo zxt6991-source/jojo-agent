@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import type {
-  AgentEvent, ApprovalRequest, BrowserDockState, BrowserRecordingRegistrySnapshot, BrowserRecordingStudioDetail, ExtensionSettings, ExtensionStatus, HookSettingsSnapshot, ImageContentBlock, MemoryCandidateReviewEdit, MemorySettings, MemoryStatusSnapshot, Message, ProviderConfig, ProviderSettings, SessionCompactionRecord, SessionMeta, SkillDetail, SkillStatus, WorkflowRunSnapshot, WorkspaceChanges
+  AgentEvent, ApprovalRequest, BrowserDockState, BrowserRecordingRegistrySnapshot, BrowserRecordingStudioDetail, ExtensionSettings, ExtensionStatus, HookSettingsSnapshot, ImageContentBlock, MemoryCandidateReviewEdit, MemorySettings, MemoryStatusSnapshot, Message, PermissionGovernanceSnapshot, PermissionPolicyDocumentContract, ProviderConfig, ProviderSettings, SessionCompactionRecord, SessionMeta, SkillDetail, SkillStatus, WorkflowRunSnapshot, WorkspaceChanges
 } from '@desktop-agent/contracts';
 import { DEFAULT_BROWSER_SETTINGS, DEFAULT_MEMORY_SETTINGS, DEFAULT_PROVIDERS, DEFAULT_SESSION_TITLE, projectNameFromDirectory } from '@desktop-agent/contracts';
 import {
@@ -15,6 +15,7 @@ import {
 import { browserDomainIssue, parseBrowserDomainList } from './browser-settings';
 import { HooksSettingsPage, hookStatusErrorMessage } from './HooksSettings';
 import { MemorySettingsPage } from './MemorySettings';
+import { PermissionsSettingsPage } from './PermissionsSettings';
 import { ChatTranscript, ConversationViewTabs, Markdown, TrajectoryView } from './ConversationViews';
 import { Sidebar } from './Sidebar';
 import { WorkflowCard } from './WorkflowCard';
@@ -24,12 +25,13 @@ import './styles.css';
 
 type DiffLine = { type: 'addition' | 'deletion' | 'context' | 'hunk' | 'meta'; oldLine?: number; newLine?: number; text: string };
 const FOLLOW_THRESHOLD = 24;
-type SettingsSection = 'models' | 'memory' | 'browser' | 'mcp' | 'skills' | 'hooks';
+type SettingsSection = 'models' | 'permissions' | 'memory' | 'browser' | 'mcp' | 'skills' | 'hooks';
 
 const defaultSettings: ProviderSettings = {
   activeProviderId: 'openai',
   providers: DEFAULT_PROVIDERS.map((provider) => ({ ...provider })),
   utilityModel: { providerId: 'openai', model: 'gpt-5-mini' },
+  permissions: { mode: 'ask' },
   memory: structuredClone(DEFAULT_MEMORY_SETTINGS),
   extensions: { mcpServers: [], skills: { directories: [], disabled: [] }, browser: { ...DEFAULT_BROWSER_SETTINGS } }
 };
@@ -617,6 +619,9 @@ function App() {
   const [contextWindowInput, setContextWindowInput] = useState(String(providerById(defaultSettings, defaultSettings.activeProviderId).contextWindowTokens));
   const [maxOutputInput, setMaxOutputInput] = useState(String(providerById(defaultSettings, defaultSettings.activeProviderId).maxOutputTokens));
   const [settingsError, setSettingsError] = useState('');
+  const [permissionError, setPermissionError] = useState('');
+  const [permissionBusy, setPermissionBusy] = useState(false);
+  const [permissionSnapshot, setPermissionSnapshot] = useState<PermissionGovernanceSnapshot | null>(null);
   const [memoryDraft, setMemoryDraft] = useState<MemorySettings>(structuredClone(DEFAULT_MEMORY_SETTINGS));
   const [memoryStatus, setMemoryStatus] = useState<MemoryStatusSnapshot | null>(null);
   const [memoryError, setMemoryError] = useState('');
@@ -732,6 +737,47 @@ function App() {
       setMemoryError(cause instanceof Error ? cause.message : String(cause));
     } finally {
       setMemoryBusy(false);
+    }
+  };
+
+  const refreshPermissionGovernance = async (): Promise<void> => {
+    const sessionId = activeIdRef.current ?? undefined;
+    const workingDirectory = sessionId ? sessionDirectoriesRef.current.get(sessionId) : undefined;
+    setPermissionBusy(true);
+    setPermissionError('');
+    try {
+      setPermissionSnapshot(await window.desktopAgent.getPermissionGovernance({
+        ...(workingDirectory ? { workingDirectory } : {}),
+        ...(sessionId ? { sessionId } : {}),
+        limit: 50
+      }));
+    } catch (cause) {
+      setPermissionError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setPermissionBusy(false);
+    }
+  };
+
+  const savePermissionPolicy = async (input: {
+    scope: 'global' | 'workspace';
+    workingDirectory?: string;
+    mode: 'ask' | 'auto' | 'yolo';
+    document: PermissionPolicyDocumentContract;
+  }): Promise<void> => {
+    setPermissionBusy(true);
+    setPermissionError('');
+    try {
+      const next = await window.desktopAgent.savePermissionPolicy(input);
+      setPermissionSnapshot(next);
+      if (input.scope === 'global') {
+        setSettings((current) => ({ ...current, permissions: { mode: input.mode } }));
+        setSettingsDraft((current) => ({ ...current, permissions: { mode: input.mode } }));
+      }
+    } catch (cause) {
+      setPermissionError(cause instanceof Error ? cause.message : String(cause));
+      throw cause;
+    } finally {
+      setPermissionBusy(false);
     }
   };
 
@@ -1290,7 +1336,7 @@ function App() {
 
   const openSettings = (section: SettingsSection = 'models') => {
     const provider = providerById(settings, settings.activeProviderId);
-    setSettingsDraft(settings); setApiKey(''); setModelsFresh(true); setModelsError(''); setSettingsError('');
+    setSettingsDraft(settings); setApiKey(''); setModelsFresh(true); setModelsError(''); setSettingsError(''); setPermissionError('');
     setContextWindowInput(String(provider.contextWindowTokens));
     setMaxOutputInput(String(provider.maxOutputTokens));
     setExtensionDraft(settings.extensions);
@@ -1301,6 +1347,7 @@ function App() {
     setMemoryStatus(null); setMemoryError('');
     setExtensionError(''); setExtensionSearch(''); setExtensionEditorOpen(false);
     void refreshExtensionStatus(active?.workingDirectory);
+    if (section === 'permissions') void refreshPermissionGovernance();
     if (section === 'browser') void refreshBrowserRecordings(active?.workingDirectory);
     setSettingsSection(section);
     setSettingsOpen(true);
@@ -1461,7 +1508,7 @@ function App() {
           <textarea value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="随心输入" rows={2}
             onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void send(); } }} />
           <div className="composer-toolbar">
-            <div className="composer-context"><span className="approval-status">⌁ 文件修改与 Terminal 需批准</span>{contextUsage && <span className={`context-status ${contextUsage.overCapacity ? 'over-capacity' : ''}`} title={contextUsage.overCapacity ? `固定指令与工具定义约 ${contextUsage.fixed} tokens，已超过可用目标 ${contextUsage.target} tokens。请提高上下文窗口或减少工具。` : contextUsage.compacted ? `已压缩 ${contextUsage.compacted} 条历史消息；消息预算 ${contextUsage.messageBudget} tokens` : `上下文估算；消息预算 ${contextUsage.messageBudget} tokens`}>{contextUsage.overCapacity ? '容量不足 · ' : ''}{Math.round(contextUsage.estimated / 1000)}k / {Math.round(contextUsage.window / 1000)}k{contextUsage.maxIterations > 0 ? ` · Loop ${contextUsage.iteration}/${contextUsage.maxIterations}${contextUsage.finalResponseOnly ? ' 收尾' : ''}` : ''}</span>}{(usage.input > 0 || usage.output > 0) && <span className="context-status" title={`缓存读取 ${usage.cacheRead} · 缓存写入 ${usage.cacheWrite}`}>↑{usage.input} ↓{usage.output}</span>}</div>
+            <div className="composer-context"><span className="approval-status">⌁ 权限 {settings.permissions.mode.toUpperCase()}</span>{contextUsage && <span className={`context-status ${contextUsage.overCapacity ? 'over-capacity' : ''}`} title={contextUsage.overCapacity ? `固定指令与工具定义约 ${contextUsage.fixed} tokens，已超过可用目标 ${contextUsage.target} tokens。请提高上下文窗口或减少工具。` : contextUsage.compacted ? `已压缩 ${contextUsage.compacted} 条历史消息；消息预算 ${contextUsage.messageBudget} tokens` : `上下文估算；消息预算 ${contextUsage.messageBudget} tokens`}>{contextUsage.overCapacity ? '容量不足 · ' : ''}{Math.round(contextUsage.estimated / 1000)}k / {Math.round(contextUsage.window / 1000)}k{contextUsage.maxIterations > 0 ? ` · Loop ${contextUsage.iteration}/${contextUsage.maxIterations}${contextUsage.finalResponseOnly ? ' 收尾' : ''}` : ''}</span>}{(usage.input > 0 || usage.output > 0) && <span className="context-status" title={`缓存读取 ${usage.cacheRead} · 缓存写入 ${usage.cacheWrite}`}>↑{usage.input} ↓{usage.output}</span>}</div>
             <div className="composer-actions">
               <button className="attach" type="button" aria-label="添加图片" title="添加图片（最多 4 张，每张 10 MB）" disabled={sessionBusy || attachments.length >= 4} onClick={async () => {
                 try {
@@ -1488,6 +1535,12 @@ function App() {
     {approval && <div className="approval-layer"><div className="approval-panel" role="dialog" aria-modal="true" aria-labelledby="approval-title">
       <div className="approval-tool"><span className="approval-tool-icon" aria-hidden="true">›_</span><span>{approvalToolLabel(approval)}</span></div>
       <h2 id="approval-title">{approvalQuestion(approval)}</h2>
+      {approval.governance && <div className={`approval-governance ${approval.governance.locked ? 'locked' : ''}`}>
+        <span><strong>原因</strong>{approval.governance.reasonCode}</span>
+        <span><strong>风险</strong>{approval.governance.risk}</span>
+        <span><strong>来源</strong>{approval.governance.source}</span>
+        {approval.governance.locked && <span><strong>约束</strong>强制审批</span>}
+      </div>}
       {approval.security?.kind === 'terminal' && (approval.security.network === 'host' || approval.security.secretEnv.length > 0) && <div className="approval-security-warning">
         {approval.security.network === 'host' && <span>此命令将使用主机全局网络。</span>}
         {approval.security.secretEnv.length > 0 && <span>批准后注入密钥：{approval.security.secretEnv.join(', ')}</span>}
@@ -1496,14 +1549,14 @@ function App() {
       <div className="approval-actions">
         <button className="approval-reject" disabled={approvalResolving} onClick={() => void resolveApprovalChoice(approval, false)}><span>{approval.call.name === 'trust_project_hooks' ? '禁用项目 Hooks' : '拒绝'}</span><kbd>Esc</kbd></button>
         <div className="approval-allow-wrap">
-          {approvalMenuOpen && approval.grant && <div className="approval-allow-menu" role="menu" aria-label="选择允许范围">
+          {approvalMenuOpen && approval.grant && approval.grant.options.length > 1 && <div className="approval-allow-menu" role="menu" aria-label="选择允许范围">
             <button type="button" role="menuitem" disabled={approvalResolving} onClick={() => void resolveApprovalChoice(approval, true, 'once')}>允许一次</button>
             {approval.grant.options.includes('similar') && <button type="button" role="menuitem" disabled={approvalResolving} onClick={() => void resolveApprovalChoice(approval, true, 'similar')}>允许类似命令</button>}
             {approval.grant.options.includes('conversation') && <button type="button" role="menuitem" disabled={approvalResolving} onClick={() => void resolveApprovalChoice(approval, true, 'conversation')}>本次对话都允许</button>}
           </div>}
           <div className="approval-allow-split">
             <button className="approval-allow approval-allow-main" disabled={approvalResolving} onClick={() => void resolveApprovalChoice(approval, true)}><span>{approval.call.name === 'trust_project_hooks' ? '信任此版本' : '允许一次'}</span><kbd>↵</kbd></button>
-            {approval.grant && <button type="button" className="approval-allow approval-allow-toggle" disabled={approvalResolving} aria-label="选择允许范围" aria-haspopup="menu" aria-expanded={approvalMenuOpen} onClick={() => setApprovalMenuOpen((open) => !open)}><span aria-hidden="true">⌄</span></button>}
+            {approval.grant && approval.grant.options.length > 1 && <button type="button" className="approval-allow approval-allow-toggle" disabled={approvalResolving} aria-label="选择允许范围" aria-haspopup="menu" aria-expanded={approvalMenuOpen} onClick={() => setApprovalMenuOpen((open) => !open)}><span aria-hidden="true">⌄</span></button>}
           </div>
         </div>
       </div>
@@ -1578,6 +1631,7 @@ function App() {
         <button className="settings-back" type="button" onClick={() => setSettingsOpen(false)}><span aria-hidden="true">←</span> 返回</button>
         <nav aria-label="设置分类">
           <button type="button" className={settingsSection === 'models' ? 'active' : ''} onClick={() => { setSettingsSection('models'); setExtensionEditorOpen(false); }}><span aria-hidden="true">◇</span> 模型</button>
+          <button type="button" className={settingsSection === 'permissions' ? 'active' : ''} onClick={() => { setSettingsSection('permissions'); setExtensionEditorOpen(false); void refreshPermissionGovernance(); }}><span aria-hidden="true">⌁</span> 权限</button>
           <button type="button" className={settingsSection === 'memory' ? 'active' : ''} onClick={() => { setSettingsSection('memory'); setExtensionEditorOpen(false); }}><span aria-hidden="true">◈</span> Memory</button>
           <button type="button" className={settingsSection === 'browser' ? 'active' : ''} onClick={() => { setSettingsSection('browser'); setExtensionEditorOpen(false); void refreshBrowserRecordings(active?.workingDirectory); }}><span aria-hidden="true">◎</span> 浏览器</button>
           <button type="button" className={settingsSection === 'skills' ? 'active' : ''} onClick={() => { setSettingsSection('skills'); setExtensionSearch(''); setExtensionEditorOpen(false); }}><span aria-hidden="true">⬡</span> 技能</button>
@@ -1586,7 +1640,7 @@ function App() {
         </nav>
       </aside>
       <main className="settings-main">
-        <header className="settings-topbar"><strong>{settingsSection === 'models' ? '模型' : settingsSection === 'memory' ? 'Memory' : settingsSection === 'browser' ? '浏览器' : settingsSection === 'skills' ? '技能' : settingsSection === 'hooks' ? 'Hooks' : 'MCP 服务'}</strong></header>
+        <header className="settings-topbar"><strong>{settingsSection === 'models' ? '模型' : settingsSection === 'permissions' ? '权限' : settingsSection === 'memory' ? 'Memory' : settingsSection === 'browser' ? '浏览器' : settingsSection === 'skills' ? '技能' : settingsSection === 'hooks' ? 'Hooks' : 'MCP 服务'}</strong></header>
         <div className="settings-page-body">
     {settingsSection === 'models' && <form className="settings-content model-settings-page" aria-labelledby="settings-title" onSubmit={async (event) => {
       event.preventDefault();
@@ -1648,6 +1702,14 @@ function App() {
       <div className="settings-actions"><button className="primary" type="submit" disabled={modelsLoading}>保存模型设置</button></div>
       </section>
     </form>}
+    {settingsSection === 'permissions' && <PermissionsSettingsPage
+      snapshot={permissionSnapshot}
+      busy={permissionBusy}
+      error={permissionError}
+      {...(active?.workingDirectory ? { workingDirectory: active.workingDirectory } : {})}
+      onRefresh={() => { void refreshPermissionGovernance(); }}
+      onSave={savePermissionPolicy}
+    />}
     {settingsSection === 'memory' && <MemorySettingsPage
       draft={memoryDraft}
       saved={settings.memory}

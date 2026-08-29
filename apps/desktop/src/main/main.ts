@@ -5,16 +5,16 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  AcceptMemoryCandidateInputSchema, ApprovalInputSchema, BindSessionProjectInputSchema, BrowserDockActionSchema, BrowserDockLayoutSchema, BrowserRecordingRegistryActionInputSchema, BrowserRecordingRegistryInputSchema, BrowserRecordingStudioInputSchema, CreateSessionInputSchema, CreateSkillInputSchema, DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS, DEFAULT_MODEL_MAX_OUTPUT_TOKENS, DeleteMemoryEntryInputSchema, DuplicateBrowserRecordingInputSchema, GetExtensionStatusInputSchema, GetHookStatusInputSchema, GetMemoryStatusInputSchema, HookProjectActionInputSchema, ImportSkillInputSchema, IPC, ListModelsInputSchema, MAX_IMAGE_ATTACHMENTS, MAX_IMAGE_BYTES, McpServerIdInputSchema, OpenHookConfigInputSchema, RebuildMemoryIndexInputSchema, RebuildSemanticMemoryIndexInputSchema, RejectMemoryCandidateInputSchema, RenameSessionInputSchema, ResolveTerminalSecretInputSchema, SaveBrowserRecordingInputSchema, SaveExtensionSettingsInputSchema, SaveMemorySettingsInputSchema, SaveSettingsInputSchema,
+  AcceptMemoryCandidateInputSchema, ApprovalInputSchema, BindSessionProjectInputSchema, BrowserDockActionSchema, BrowserDockLayoutSchema, BrowserRecordingRegistryActionInputSchema, BrowserRecordingRegistryInputSchema, BrowserRecordingStudioInputSchema, CreateSessionInputSchema, CreateSkillInputSchema, DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS, DEFAULT_MODEL_MAX_OUTPUT_TOKENS, DeleteMemoryEntryInputSchema, DuplicateBrowserRecordingInputSchema, GetExtensionStatusInputSchema, GetHookStatusInputSchema, GetMemoryStatusInputSchema, GetPermissionGovernanceInputSchema, HookProjectActionInputSchema, ImportSkillInputSchema, IPC, ListModelsInputSchema, MAX_IMAGE_ATTACHMENTS, MAX_IMAGE_BYTES, McpServerIdInputSchema, OpenHookConfigInputSchema, PermissionGovernanceSnapshotSchema, RebuildMemoryIndexInputSchema, RebuildSemanticMemoryIndexInputSchema, RejectMemoryCandidateInputSchema, RenameSessionInputSchema, ResolveTerminalSecretInputSchema, SaveBrowserRecordingInputSchema, SaveExtensionSettingsInputSchema, SaveMemorySettingsInputSchema, SavePermissionPolicyInputSchema, SaveSettingsInputSchema,
   SessionIdInputSchema, SkillPathInputSchema, StartTurnInputSchema, UpdateSkillInputSchema, WorkflowRunActionInputSchema,
   WorkerCommandSchema, WorkerMessageSchema, serializedIpcBytes,
-  type BrowserHealProposal, type BrowserHealRequest, type ExtensionStatus, type MemoryStatusSnapshot, type ProviderSettings, type SessionCompactionRecord, type WorkerCommand, type WorkerMessage, type WorkflowRunSnapshot
+  type BrowserHealProposal, type BrowserHealRequest, type ExtensionStatus, type MemoryStatusSnapshot, type PermissionGovernanceSnapshot, type ProviderSettings, type SessionCompactionRecord, type WorkerCommand, type WorkerMessage, type WorkflowRunSnapshot
 } from '@desktop-agent/contracts';
 import { z } from 'zod';
 import { createProvider } from '@desktop-agent/providers';
 import { createSkillSource, discoverSkills, parseSkillSource, skillId, userSkillDirectories, type SkillDirectory } from '@desktop-agent/extensions';
 import { EMPTY_HOOK_CONFIG, FileHookTrustStore, loadHookSettings } from '@desktop-agent/hooks';
-import { JsonConfigStore, JsonlSessionStore } from '@desktop-agent/storage';
+import { JsonConfigStore, JsonlSessionStore, SqlitePermissionGovernanceStore } from '@desktop-agent/storage';
 import { SqliteAgentRuntimeStore } from '@desktop-agent/storage/sqlite-runtime-store';
 import { createProjectIdentity } from '@desktop-agent/memory';
 import { collectWorkspaceChanges } from './workspace-changes';
@@ -37,6 +37,7 @@ let worker: UtilityProcess | null = null;
 let quitting = false;
 let sessionStore: JsonlSessionStore;
 let configStore: JsonConfigStore;
+let permissionGovernanceStore: SqlitePermissionGovernanceStore;
 let browserRuntime: BrowserRuntime | null = null;
 let secretPath: string;
 let legacySecretPath: string;
@@ -94,6 +95,23 @@ function postWorkerCommand(command: WorkerCommand): boolean {
   if (!worker) return false;
   worker.postMessage(parsed.data);
   return true;
+}
+
+function permissionGovernanceSnapshot(input: {
+  workingDirectory?: string;
+  sessionId?: string;
+  limit?: number;
+}): PermissionGovernanceSnapshot {
+  return PermissionGovernanceSnapshotSchema.parse({
+    global: permissionGovernanceStore.getProfile('global'),
+    ...(input.workingDirectory
+      ? { workspace: permissionGovernanceStore.getProfile('workspace', input.workingDirectory) }
+      : {}),
+    recentDecisions: permissionGovernanceStore.listAudit({
+      ...(input.sessionId ? { sessionId: input.sessionId } : {}),
+      ...(input.limit !== undefined ? { limit: input.limit } : {})
+    })
+  });
 }
 
 function requestBrowserHeal(
@@ -722,6 +740,34 @@ function registerIpc(): void {
     }));
   });
   ipcMain.handle(IPC.getSettings, async (event) => { assertTrusted(event); return configStore.get(await readApiKeys()); });
+  ipcMain.handle(IPC.getPermissionGovernance, async (event, raw) => {
+    assertTrusted(event);
+    const input = GetPermissionGovernanceInputSchema.parse(raw ?? {});
+    return permissionGovernanceSnapshot({
+      ...(input.workingDirectory ? { workingDirectory: input.workingDirectory } : {}),
+      ...(input.sessionId ? { sessionId: input.sessionId } : {}),
+      limit: input.limit
+    });
+  });
+  ipcMain.handle(IPC.savePermissionPolicy, async (event, raw) => {
+    assertTrusted(event);
+    const input = SavePermissionPolicyInputSchema.parse(raw);
+    permissionGovernanceStore.saveProfile({
+      scope: input.scope,
+      ...(input.workingDirectory ? { scopeKey: input.workingDirectory } : {}),
+      mode: input.mode,
+      document: input.document
+    });
+    if (input.scope === 'global') {
+      const apiKeys = await readApiKeys();
+      const current = await configStore.get(apiKeys);
+      await configStore.save({ ...current, permissions: { mode: input.mode } });
+      await pushConfig();
+    }
+    return permissionGovernanceSnapshot({
+      ...(input.workingDirectory ? { workingDirectory: input.workingDirectory } : {})
+    });
+  });
   ipcMain.handle(IPC.listModels, async (event, raw) => {
     assertTrusted(event);
     const input = ListModelsInputSchema.parse(raw);
@@ -747,6 +793,7 @@ function registerIpc(): void {
       : [...current.providers, provider];
     const settings = {
       activeProviderId: input.activeProviderId, providers, utilityModel: input.utilityModel,
+      permissions: input.permissions ?? current.permissions,
       memory: current.memory, extensions: current.extensions
     };
     await configStore.save(settings);
@@ -1157,6 +1204,7 @@ else {
     const dataDirectory = app.getPath('userData');
     sessionStore = new JsonlSessionStore(path.join(dataDirectory, 'sessions'));
     configStore = new JsonConfigStore(path.join(dataDirectory, 'config.json'));
+    permissionGovernanceStore = new SqlitePermissionGovernanceStore(path.join(dataDirectory, 'runtime', 'permissions.sqlite'));
     browserRuntime = new BrowserRuntime(dataDirectory, promptBrowserSecret, {
       window: () => mainWindow,
       onDock: (state) => sendToRenderer(IPC.browserDockState, state)
@@ -1180,6 +1228,7 @@ else {
     for (const controller of browserRequestControllers.values()) controller.abort(new Error('Application is closing.'));
     browserRequestControllers.clear();
     browserRuntime?.close();
+    permissionGovernanceStore?.close();
     worker?.kill();
   });
 }

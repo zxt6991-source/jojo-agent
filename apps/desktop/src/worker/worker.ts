@@ -21,6 +21,13 @@ import {
   userSkillDirectories
 } from '@desktop-agent/extensions';
 import { createProvider, OpenAICompatibleEmbeddingProvider } from '@desktop-agent/providers';
+import {
+  BackgroundAgentPermissionPolicyStore,
+  DefaultPermissionRequestNormalizer,
+  GovernanceRuntimePermissionGate,
+  MemoryPermissionGrantStore,
+  PermissionGovernanceEngine
+} from '@desktop-agent/permission-governance';
 import { FileHookTrustStore, loadHookRuntime } from '@desktop-agent/hooks';
 import {
   createMemoryTools,
@@ -57,6 +64,7 @@ import {
   SqliteHookInvocationStore,
   SqliteMemoryCandidateStore,
   SqliteMcpTrustStore,
+  SqlitePermissionGovernanceStore,
   SqliteSemanticMemoryBackend
 } from '@desktop-agent/storage';
 import { SqliteAgentRuntimeStore } from '@desktop-agent/storage/sqlite-runtime-store';
@@ -67,11 +75,6 @@ import { UtilityModelBrowserHealingAdapter } from './browser-healing';
 import { createDesktopLeafAgentRunner, createDesktopWorkflowToolRuntime } from './orchestration-runtime';
 import { TurnTaskRegistry } from './turn-task-registry';
 import { InteractiveTerminalSecretBroker } from './terminal-secret-broker';
-import {
-  ConversationGrantPermissionGate,
-  ConversationPermissionGrants,
-  defaultSimilarApprovalKey
-} from './session-permission-grants';
 import { projectRuntimeMessagesToLegacy, seedRuntimeLaneFromLegacy } from '../runtime/legacy-projection';
 
 type ParentPort = { on(event: 'message', listener: (event: { data: unknown }) => void): void; postMessage(message: WorkerMessage): void };
@@ -87,6 +90,12 @@ const store = new JsonlSessionStore(path.join(dataDirectory, 'sessions'));
 const agentRuntimeStore = new SqliteAgentRuntimeStore(path.join(dataDirectory, 'runtime', 'agent-runtime.sqlite'));
 const hookInvocationStore = new SqliteHookInvocationStore(path.join(dataDirectory, 'runtime', 'hooks.sqlite'));
 const mcpTrustStore = new SqliteMcpTrustStore(path.join(dataDirectory, 'runtime', 'mcp-trust.sqlite'));
+const permissionGovernanceStore = new SqlitePermissionGovernanceStore(path.join(dataDirectory, 'runtime', 'permissions.sqlite'));
+const permissionGrantStore = new MemoryPermissionGrantStore();
+const permissionGovernanceEngine = new PermissionGovernanceEngine({
+  policyStore: new BackgroundAgentPermissionPolicyStore(permissionGovernanceStore),
+  grantStore: permissionGrantStore
+});
 const hookTrustStore = new FileHookTrustStore(path.join(os.homedir(), '.jojo', 'hooks-trust.json'));
 const memoryRoot = path.join(os.homedir(), '.jojo', 'memory');
 const memoryIndex = new MemoryIndex(path.join(dataDirectory, 'runtime', 'memory.sqlite'));
@@ -139,7 +148,6 @@ const memoryReady = memoryStore.initialize().catch(() => undefined);
 const controllers = new Map<string, AbortController>();
 const turnTasks = new TurnTaskRegistry();
 const approvals = new Map<string, { resolve: (allowed: boolean) => void; sessionId: string; request: ApprovalRequest }>();
-const conversationPermissionGrants = new ConversationPermissionGrants();
 const sessionHookRuntimes = new Map<string, HookRuntime>();
 const runtimeEnvironments = new RuntimeEnvironmentRegistry();
 const jojoRuntime = createJojoRuntime({
@@ -230,6 +238,10 @@ const leafAgentRunner = createDesktopLeafAgentRunner({
   runtimeStore: agentRuntimeStore,
   memoryRuntime,
   runtimeService: { runtime: jojoRuntime, environments: runtimeEnvironments },
+  governance: {
+    engine: permissionGovernanceEngine,
+    audit: permissionGovernanceStore
+  },
   resolveHooks: async ({ sessionId, workingDirectory, signal, onEvent }) => sessionHookRuntimes.get(sessionId)
     ?? (await loadHookRuntime({ workingDirectory, invocationStore: hookInvocationStore, trustStore: hookTrustStore, signal, emit: onEvent })).runtime
 });
@@ -299,7 +311,11 @@ const workflowManager = new WorkflowManager(
     isolation: isolationManager,
     toolRuntime: createDesktopWorkflowToolRuntime({
       trashDirectory: path.join(dataDirectory, 'trash'),
-      secretBroker: terminalSecretBroker
+      secretBroker: terminalSecretBroker,
+      governance: {
+        engine: permissionGovernanceEngine,
+        audit: permissionGovernanceStore
+      }
     }),
     savedWorkflows: savedWorkflowRegistry,
     resourceGroups,
@@ -384,6 +400,7 @@ async function applyRuntimeConfig(
   terminalSecrets: Record<string, string>
 ): Promise<void> {
   runtime = { settings, apiKeys };
+  permissionGovernanceStore.setGlobalMode(settings.permissions.mode);
   terminalSecretBroker.replace(terminalSecrets);
   memoryRuntime.updateSettings(settings.memory);
   memoryService.updateSettings(settings.memory);
@@ -649,7 +666,15 @@ async function startTurn(sessionId: string, text: string, images: ImageContentBl
             commands: untrustedProject.commands ?? []
           }
         },
-        reason: '信任此版本的项目 Hooks（配置变化后将重新询问）'
+        reason: '信任此版本的项目 Hooks（配置变化后将重新询问）',
+        governance: {
+          decisionId: crypto.randomUUID(),
+          requestFingerprint: `hook:${untrustedProject.fingerprint}`,
+          source: 'mandatory_approval',
+          reasonCode: 'project_hook_trust_requires_confirmation',
+          risk: 'high',
+          locked: true
+        }
       };
       emitAgentEvent({ type: 'approval.required', request });
       const allowed = await waitForApproval(request, controller.signal);
@@ -761,7 +786,7 @@ async function startTurn(sessionId: string, text: string, images: ImageContentBl
       ] : [])
     ];
     const staticTools = [...toolRuntime.tools, ...memoryTools, ...browserBridge.tools(), ...orchestrationTools];
-    const permissionGate = new ConversationGrantPermissionGate(
+    const legacyPermissionGate =
       new OrchestrationPermissionGate(
         new BrowserPermissionGate(
           new ExtensionPermissionGate(
@@ -781,9 +806,12 @@ async function startTurn(sessionId: string, text: string, images: ImageContentBl
           }
         ),
         (call, context) => describeWorkflowRecordingPlan(call, context.workingDirectory)
-      ),
-      conversationPermissionGrants,
-      (call, context) => mcpManager.approvalGrantKey(call) ?? defaultSimilarApprovalKey(call, context)
+      );
+    const permissionGate = new GovernanceRuntimePermissionGate(
+      legacyPermissionGate,
+      permissionGovernanceEngine,
+      new DefaultPermissionRequestNormalizer(),
+      permissionGovernanceStore
     );
     runtimeBinding = runtimeEnvironments.bind(sessionId, 'main', {
       provider: e2eMode ? createE2eProvider() : createProvider(providerConfig, apiKey),
@@ -911,7 +939,7 @@ parentPort.on('message', (event) => {
   } else if (command.type === 'session.stop') {
     void stopSession(command.sessionId)
       .then(() => {
-        conversationPermissionGrants.clear(command.sessionId);
+        permissionGrantStore.clearSession(command.sessionId);
         post({ type: 'session.stopped', requestId: command.requestId, sessionId: command.sessionId, ok: true });
       })
       .catch((error) => post({
@@ -937,8 +965,13 @@ parentPort.on('message', (event) => {
     }));
   } else if (command.type === 'approval.resolve') {
     const pending = approvals.get(command.requestId);
-    if (pending && command.allow && (command.scope === 'session' || command.scope === 'similar' || command.scope === 'conversation')) {
-      conversationPermissionGrants.grant(pending.request, command.scope === 'session' ? 'similar' : command.scope);
+    if (pending?.request.governance && command.allow && !pending.request.governance.locked
+      && (command.scope === 'session' || command.scope === 'similar' || command.scope === 'conversation')) {
+      permissionGrantStore.grantApproval(
+        pending.request.sessionId,
+        pending.request.governance.requestFingerprint,
+        command.scope === 'session' ? 'similar' : command.scope
+      );
     }
     pending?.resolve(command.allow);
   } else if (command.type === 'mcp.oauth.start') {

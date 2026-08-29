@@ -230,6 +230,19 @@ describe('Skills', () => {
     })).resolves.toMatchObject({ decision: 'ask' });
     expect(base.check).not.toHaveBeenCalled();
   });
+
+  it('revalidates MCP security facts before honoring a legacy session grant', async () => {
+    const grants = new McpSessionPermissionGrants();
+    grants.grant('session-1', 'mcp__demo__read');
+    const gate = new ExtensionPermissionGate(
+      { check: async () => ({ decision: 'deny', reason: 'unknown' }) },
+      grants,
+      () => undefined
+    );
+    await expect(gate.check({ id: 'call', name: 'mcp__demo__read', input: {} }, {
+      sessionId: 'session-1', workingDirectory: process.cwd()
+    })).resolves.toMatchObject({ decision: 'ask' });
+  });
 });
 
 describe('McpManager', () => {

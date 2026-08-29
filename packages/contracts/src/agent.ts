@@ -57,6 +57,17 @@ export const SecurityApprovalPreviewSchema = z.discriminatedUnion('kind', [
 ]);
 export type SecurityApprovalPreview = z.infer<typeof SecurityApprovalPreviewSchema>;
 
+export const GovernanceApprovalMetadataSchema = z.object({
+  decisionId: z.string().min(1).max(256),
+  requestFingerprint: z.string().min(1).max(256),
+  source: z.enum(['mandatory_approval', 'user_policy', 'mode', 'baseline']),
+  reasonCode: z.string().min(1).max(256),
+  risk: z.enum(['low', 'medium', 'high', 'critical']),
+  locked: z.boolean(),
+  policyRuleId: z.string().min(1).max(256).optional()
+}).strict();
+export type GovernanceApprovalMetadata = z.infer<typeof GovernanceApprovalMetadataSchema>;
+
 export const ApprovalRequestSchema = z.object({
   requestId: z.string().min(1).max(256),
   sessionId: z.string().min(1).max(256),
@@ -71,6 +82,7 @@ export const ApprovalRequestSchema = z.object({
     truncated: z.boolean().optional()
   }).strict().optional(),
   security: SecurityApprovalPreviewSchema.optional(),
+  governance: GovernanceApprovalMetadataSchema.optional(),
   grant: z.object({
     kind: z.enum(['mcp_tool', 'approval']), key: z.string().min(1).max(512),
     options: z.array(z.enum(['once', 'session', 'similar', 'conversation'])).min(1).max(4)

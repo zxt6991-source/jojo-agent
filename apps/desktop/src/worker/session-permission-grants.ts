@@ -44,10 +44,10 @@ export class ConversationGrantPermissionGate implements PermissionGate {
     call: ToolCall,
     context: { sessionId: string; workingDirectory: string }
   ): Promise<PermissionDecision> {
-    const key = this.similarKey(call, context);
-    if (call.name !== 'trust_project_hooks' && this.grants.allows(context.sessionId, key)) return { decision: 'allow' };
     const decision = await this.base.check(call, context);
     if (decision.decision !== 'ask' || call.name === 'trust_project_hooks') return decision;
+    const key = this.similarKey(call, context);
+    if (this.grants.allows(context.sessionId, key)) return { decision: 'allow' };
     return {
       decision: 'ask',
       request: {

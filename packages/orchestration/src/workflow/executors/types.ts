@@ -1,6 +1,8 @@
 import type {
   AgentEvent,
   IsolationSnapshot,
+  PermissionDecision,
+  ToolCall,
   UsageTotals,
   WorkflowStep,
   WorkflowStepErrorCode,
@@ -43,8 +45,17 @@ export type WorkflowToolInvocation = {
   input: Record<string, unknown>;
   sessionId: string;
   workingDirectory: string;
+  workflowRunId: string;
+  workflowId: string;
+  workflowStepId: string;
+  providerId: string;
+  model: string;
   signal: AbortSignal;
 };
+
+export interface WorkflowToolPermissionGate {
+  check(call: ToolCall, invocation: WorkflowToolInvocation): Promise<PermissionDecision>;
+}
 
 export type WorkflowToolInvocationResult = {
   ok: boolean;

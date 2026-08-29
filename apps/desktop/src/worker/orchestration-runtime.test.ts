@@ -4,7 +4,11 @@ import { createAgentRuntime } from '@desktop-agent/agent-runtime';
 import { MemoryAgentRuntimeStore } from '@desktop-agent/agent-runtime/spi';
 import { WorkflowDefinitionSchema, type PermissionGate, type ProviderConfig } from '@desktop-agent/contracts';
 import { AgentExecutionScheduler, SubAgentManager, WorkflowEngine } from '@desktop-agent/orchestration';
-import { createDesktopLeafAgentRunner } from './orchestration-runtime.js';
+import {
+  MemoryPermissionAuditSink,
+  PermissionGovernanceEngine
+} from '@desktop-agent/permission-governance';
+import { createDesktopLeafAgentRunner, createDesktopWorkflowToolRuntime } from './orchestration-runtime.js';
 
 const providerConfig: ProviderConfig = {
   id: 'test-provider',
@@ -46,6 +50,31 @@ async function seedMainLane(runtimeStore: MemoryAgentRuntimeStore, sessionId = '
 }
 
 describe('desktop leaf agent runtime', () => {
+  it('audits direct workflow tool steps with run and step identity', async () => {
+    const audit = new MemoryPermissionAuditSink();
+    const runtime = createDesktopWorkflowToolRuntime({
+      trashDirectory: process.cwd(),
+      governance: { engine: new PermissionGovernanceEngine(), audit }
+    });
+
+    await expect(runtime.execute({
+      name: 'list_files', input: { path: '.' }, sessionId: 'workflow-session', workingDirectory: process.cwd(),
+      workflowRunId: 'run-1', workflowId: 'workflow-1', workflowStepId: 'files',
+      providerId: 'test-provider', model: 'test-model', signal: new AbortController().signal
+    })).resolves.toMatchObject({ ok: true });
+    expect(audit.records).toHaveLength(1);
+    expect(audit.records[0]).toMatchObject({
+      request: {
+        context: {
+          sessionId: 'workflow-session', laneId: 'workflow:workflow-1:files', runId: 'run-1',
+          actor: { kind: 'workflow', id: 'run-1', profile: 'tool-step' }
+        },
+        call: { name: 'list_files' }
+      },
+      decision: { effect: 'allow', source: 'baseline' }
+    });
+  });
+
   it('shares the parent runtime tree and continues on one child lane', async () => {
     const runtimeStore = new MemoryAgentRuntimeStore();
     await seedMainLane(runtimeStore);

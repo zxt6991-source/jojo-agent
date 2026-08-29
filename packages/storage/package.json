@@ -11,6 +11,7 @@
     "@desktop-agent/app-service": "workspace:*",
     "@desktop-agent/contracts": "workspace:*",
     "@desktop-agent/memory": "workspace:*",
+    "@desktop-agent/permission-governance": "workspace:*",
     "@desktop-agent/server-protocol": "workspace:*",
     "zod": "^4.1.13"
   }

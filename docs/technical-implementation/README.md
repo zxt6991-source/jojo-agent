@@ -16,6 +16,7 @@
 | `packages/agent` | `@desktop-agent/agent` | 模型、消息、工具执行原语与兼容入口 | [Agent](./agent.md) |
 | `packages/agent-runtime` | `@desktop-agent/agent-runtime` | 公共 Runtime API、Durable Operation、Lane、恢复与测试 Contract Suite | [Runtime 最终设计](../jojo-general-agent-runtime-harness-final-design.md)、[公共边界](../jojo-runtime-public-boundary-stabilization-final-design.md) |
 | `packages/runtime-composition` | `@desktop-agent/runtime-composition` | 把 Provider / Tool / Permission / Memory / Hook 注入 Runtime | [公共边界](../jojo-runtime-public-boundary-stabilization-final-design.md) |
+| `packages/permission-governance` | `@desktop-agent/permission-governance` | 统一权限事实、Hard Floor、Policy、Mode、Grant 与 Audit | [Permission Governance](../Jojo-Agent-Permission-Governance.md) |
 | `packages/app-service` | `@desktop-agent/app-service` | 面向 Desktop / Server Transport 的 Runtime 应用服务、审批与恢复 | [HTTP API / Client SDK](../jojo-http-api-server-client-sdk-final-design-code-aligned-v2.md) |
 | `packages/server-protocol` | `@desktop-agent/server-protocol` | REST / WebSocket 共用的版本化 Zod Protocol | [HTTP API / Client SDK](../jojo-http-api-server-client-sdk-final-design-code-aligned-v2.md) |
 | `packages/server-core` | `@desktop-agent/server-core` | Connection、Lease、Idempotency、AuthZ 与命令协调 | [HTTP API / Client SDK](../jojo-http-api-server-client-sdk-final-design-code-aligned-v2.md) |
@@ -27,7 +28,7 @@
 | Phase 2 横切能力 | 多包协作 | Provider 配置、模型发现与上下文稳定性 | [Phase 2 方案](../phase-2-multi-provider-context.md) |
 | `packages/tools-node` | `@desktop-agent/tools-node` | 本地文件、目录、公开网页检索、终端工具及权限 Gate | [Tools Node](./tools-node.md) |
 | `packages/process-sandbox` | `@desktop-agent/process-sandbox` | Terminal / MCP stdio 共用的进程隔离、环境 allowlist、脱敏与平台后端 | [Terminal / MCP 权限与沙箱加固](../jojo-terminal-mcp-permission-sandbox-hardening-design.md) |
-| `packages/storage` | `@desktop-agent/storage` | SQLite Runtime / Server State / MCP Trust、JSONL Session / Workflow Journal 与 JSON 配置 | [Storage](./storage.md) |
+| `packages/storage` | `@desktop-agent/storage` | SQLite Runtime / Server State / MCP Trust / Permission Policy 与 Audit、JSONL Session / Workflow Journal 与 JSON 配置 | [Storage](./storage.md) |
 | `packages/memory` | `@desktop-agent/memory` | Markdown 记忆、候选治理、语义检索与 Memory 工具 | [Memory M4](../jojo-agent-memory-m4-compaction-orchestration-design.md)、[M5](../jojo-agent-memory-m5-candidate-governance-design.md)、[M6](../jojo-agent-memory-m6-semantic-retrieval-design.md) |
 | `packages/extensions` | `@desktop-agent/extensions` | MCP 客户端、信任与网络安全策略、延迟工具目录、本地 Skills；包内另有尚未接入 Desktop 的 Extension Host | [MCP 与 Skills](./extensions.md)、[Extension 契约](../jojo-extension-contract-v2-code-aligned.md) |
 | `packages/hooks` | `@desktop-agent/hooks` | 生命周期 Hook Engine、hooks.yml 加载与项目信任 | [Hooks](./hooks.md) |
@@ -42,11 +43,13 @@
 flowchart TB
     Client["packages/client"] --> Protocol["server-protocol"]
     Desktop["apps/desktop"] --> Composition["runtime-composition"]
+    Desktop --> Governance["permission-governance"]
     Server["apps/server"] --> Http["server-http"]
     Http --> Core["server-core"]
     Core --> App["app-service"]
     App --> Composition
     Composition --> Runtime["agent-runtime"]
+    Governance --> Runtime
     Runtime --> Agent["agent"]
     Desktop --> Orchestration["orchestration"]
     Desktop --> Memory["memory"]
@@ -69,6 +72,8 @@ flowchart TB
     Tools --> Contracts
     Providers --> Contracts
     Storage --> Contracts
+    Governance --> Contracts
+    Storage --> Governance
     Hooks --> Contracts
 ```
 
@@ -77,6 +82,7 @@ flowchart TB
 - `contracts` 是所有模块共享的稳定边界，含消息、权限、Runtime、Extension、Orchestration、Memory 与 Desktop IPC Schema。
 - `agent` 只提供平台无关的执行原语；`agent-runtime` 在其上实现 Durable Operation、Lane 和 `RunHandle`，导出 `AgentRuntime` / `RuntimeSession` / `RuntimeLane`，并通过 `./testing`、`./spi` 子路径提供 Contract Suite 与存储 SPI。它不直接依赖 Electron、具体 Provider、工具、存储或 Hook Engine。
 - `runtime-composition` 用 `createJojoRuntime()` 注入 Provider、Tool、Permission、Approval、Memory、Hook 和可选 Capability。
+- `permission-governance` 实现 `GovernanceRuntimePermissionGate`，包装既有 Native / MCP / Browser / Memory / Orchestration Gate；它把 baseline 决策和 Runtime actor / workflow 上下文归一化为统一事实，再执行不可绕过的安全边界、用户 Policy、Session Grant 与 ASK / AUTO / YOLO。Desktop 已接入 Main、Sub-Agent、Workflow Agent 和直接 Workflow Tool Step；Headless Server 尚未接入该持久化 Policy / Audit 组合。
 - `app-service` 把 Runtime 转成会话 / Run / 审批 / 恢复的应用服务；`server-core` 补 Lease、幂等与授权；`server-http` 暴露 REST 与 `/api/v1/events` WebSocket。
 - `packages/client` 只依赖 `server-protocol`，不依赖 Runtime。
 - `apps/desktop` 的 Utility Process Worker 完成 Desktop 侧依赖注入（Orchestration、Memory、MCP/Skills、Browser、Hooks），再进入 Runtime。
@@ -89,8 +95,8 @@ flowchart TB
 
 1. Renderer 通过 Preload 暴露的 `DesktopApi` 发起 `startTurn`。
 2. Main 用 Zod Schema 校验 IPC 来源和输入，再把 `WorkerCommand` 发给 Utility Process Worker；命令与回程消息都受 `WorkerCommandSchema` / `WorkerMessageSchema` 和字节上限约束。
-3. Worker 从 Storage 读取会话，将 Provider、Tools、Permission Gate、Orchestration、Memory、Browser、Hooks 和 Runtime Store 注入 `createJojoRuntime()`；Terminal 与 MCP stdio 同时注入共享 Process Sandbox，MCP 连接前读取 SQLite Trust Grant 并验证配置指纹。
-4. Agent Runtime 持久化状态迁移并流式消费 Provider 事件；遇到 Tool Call 时先记录 effect intent，再经过 Permission Gate 执行或等待批准。
+3. Worker 从 Storage 读取会话，将 Provider、Tools、Permission Governance、Approval Broker、Orchestration、Memory、Browser、Hooks 和 Runtime Store 注入 `createJojoRuntime()`；Terminal 与 MCP stdio 同时注入共享 Process Sandbox，MCP 连接前读取 SQLite Trust Grant 并验证配置指纹。
+4. Agent Runtime 持久化状态迁移并流式消费 Provider 事件；遇到 Tool Call 时先记录 effect intent，再由 Domain Gate 生成 baseline `allow / ask / deny`。Governance 结合 actor、trigger、risk、resource scope、Global / Workspace Policy、Grant 与 Mode 给出最终决策，并把脱敏记录写入 SQLite；`ask` 继续交给原有 Approval Broker。
 5. 用户消息、助手消息和工具结果逐条追加到 JSONL；Agent / Orchestration 事件经 Main 转发给 Renderer。Preload 对推送到页面的事件再做一次 Schema 校验。
 6. Renderer 把消息折叠为对话 / 轨迹视图，展示增量文本、工具行、审批对话框、WorkflowCard 与 Memory 状态，并在一轮结束后读取 Git 工作区变更。
 
@@ -107,6 +113,11 @@ flowchart TB
 - Renderer 调用 Main 的 IPC 输入先经 Zod Schema 校验。Main ↔ Worker 的命令和事件同样经 `packages/contracts/src/desktop-ipc.ts` 运行时校验，默认上限 16 MiB；非法或超大消息会被拒绝并记为协议违规。
 - Preload 推送给 Renderer 的 Agent / Orchestration / Browser 事件再次经 Schema 过滤，畸形负载不会进入 UI。
 - Renderer 保持 sandbox、Context Isolation，且不直接获得 Node.js 能力。
+- Permission Governance 的固定决策顺序为：baseline deny / Hard Floor → 用户 DENY → Mandatory Approval → 用户 ASK → Session Grant → 用户 ALLOW → Mode / baseline。底层安全拒绝不可被任何用户规则、Grant、AUTO 或 YOLO 覆盖；Workspace 对 ALLOW / ASK 比 Global 更具体，任意作用域的 DENY 始终优先。
+- Policy 使用 `packages/contracts` 中的严格 Zod Schema，V1 仅支持 actor、trigger、source、tool、operation、risk、network、hasSecrets 与 resourceScope 的确定性匹配，不执行表达式、正则或用户 evaluator。Global / Workspace versioned document 存入 Electron `userData/runtime/permissions.sqlite`；Workspace key 来自规范化目录的 SHA-256，而不是项目内可提交文件，因此仓库不能自授权。
+- ASK 保持 baseline 普通审批；AUTO 只自动批准工作区写入，以及 strong / container 沙箱中 `risk=medium`、`network=none`、不使用密钥的 Terminal；YOLO 只消除普通审批。工作区外访问、Skill 安装、项目 Hook 信任、弱沙箱 critical Terminal 与 host network + secret 组合属于 Mandatory Approval。
+- Session Grant 只存在 Worker 内存中，分为 once、similar 与 conversation；稳定 fingerprint / grant class 包含 actor、操作身份和安全能力，Terminal 额外绑定 executable、子命令、cwd、network、secretEnv 名称与 sandbox requirement，MCP 额外绑定 Server security fingerprint、tool 与 risk。Grant 不会把离线能力扩成联网能力，也不能跨 actor 或绕过 baseline deny。
+- Permission Audit 记录 session、lane、run、actor、trigger、tool/source、effect、decision source、reason、risk、policy rule、fingerprint 和脱敏 metadata；只保留密钥变量名，不持久化 Secret value。Desktop Permissions 页面可编辑 Global / Workspace JSON Policy、查看 revision 和当前会话的 Recent Decisions。
 - API Key 与普通配置分离，由 Electron `safeStorage` 加密；Terminal / MCP 命名密钥和 MCP OAuth token 同样走安全存储。Terminal 通过 `secretEnv` 只声明名称，MCP 敏感 env / Header 禁止明文配置并改用 `SecretReference`；Desktop Worker 复用交互式 Secret Broker，缺少值时可由用户输入或主动从 Shell 启动文件静态导入，主进程不会执行或 `source` 这些文件。
 - 文件访问先解析真实路径，防止 `..` 与符号链接绕过工作目录边界。
 - Terminal 默认不经过 Shell，并逐次审批；审批预览来自与实际执行共用的 `TerminalSecurityPlan`，展示命令、cwd、风险、Sandbox Strength、`none` / `host` 网络模式与命名密钥，避免审批内容和执行参数分叉。Renderer 的分裂按钮支持一次、相似规则和整段对话三种 scope；相似规则只保存绑定 executable / 子命令族 / cwd / network / secretEnv 名称的哈希，对话 scope 只保存在 Worker 内存中并随会话停止清理。
@@ -116,7 +127,7 @@ flowchart TB
 - MCP HTTP 默认只允许 HTTPS，显式 loopback 可使用 HTTP；连接与 OAuth 流程都执行 DNS 全地址分类、基于 network grant 的私网 / link-local 判断（Metadata 永久拒绝）和 Redirect 逐跳复验，跨 Origin Redirect 会移除敏感 Header。
 - MCP 工具默认按 `external_side_effect` 逐次审批；相似规则绑定当前 Server 指纹与精确工具名，整段对话 scope 可放行当前对话中的普通审批，但不会绕过项目 Hooks 的持久版本信任。可信只读必须同时满足有效 Server Trust、本地 `trustedReadTools` 和远端 `readOnlyHint=true`；Resource 与 Prompt 不继承该豁免。
 - 会话消息采用追加写 JSONL，单会话同一时间只允许一轮运行；删除走 Main 生命周期门禁与 Storage tombstone，阻止晚到写入复活记录。
-- 可写 Sub-Agent / Workflow 必须在 Git Worktree 中执行，默认不自动 Merge。
+- 可写 Sub-Agent / Workflow 必须在 Git Worktree 中执行，默认不自动 Merge；其工具调用与直接 Workflow Tool Step 使用同一 Governance Engine，审计包含 actor / profile / workflow run / step。内置后台规则只允许工作区写入和无网络、无密钥的隔离 medium Terminal，用户 Workspace / Global ASK 或 DENY 可以进一步收紧。
 - 单元测试由根目录 Vitest 统一发现；类型检查和 ESLint 同样在根目录执行。CI 另跑 Electron E2E（Xvfb）和 Linux `electron-forge package`。
 
 ## 变更规则

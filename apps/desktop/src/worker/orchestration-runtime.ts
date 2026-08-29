@@ -1,4 +1,4 @@
-import type { AgentRuntime } from '@desktop-agent/agent-runtime';
+import type { AgentRuntime, RuntimePermissionGate } from '@desktop-agent/agent-runtime';
 import { MemoryAgentRuntimeStore, type AgentRuntimeStore } from '@desktop-agent/agent-runtime/spi';
 import type { MemoryRuntime } from '@desktop-agent/agent-runtime';
 import {
@@ -22,6 +22,13 @@ import {
   type WorkflowToolRuntime
 } from '@desktop-agent/orchestration';
 import { createProvider } from '@desktop-agent/providers';
+import {
+  DefaultPermissionRequestNormalizer,
+  GovernanceRuntimePermissionGate,
+  type PermissionAuditSink,
+  type PermissionGovernanceEngine,
+  type PermissionRequestNormalizer
+} from '@desktop-agent/permission-governance';
 import { createDefaultToolRuntime } from '@desktop-agent/tools-node';
 
 const INCOMPLETE_STOP_REASONS = new Set(['max_iterations', 'length', 'max_tokens']);
@@ -36,6 +43,11 @@ export type DesktopLeafAgentRunnerOptions = {
   runtimeStore?: AgentRuntimeStore;
   memoryRuntime?: MemoryRuntime;
   runtimeService?: SharedRuntimeService;
+  governance?: {
+    engine: PermissionGovernanceEngine;
+    audit: PermissionAuditSink;
+    normalizer?: PermissionRequestNormalizer;
+  };
   createModelProvider?: (input: { runtime: ProviderRuntime; request: LeafAgentRunRequest }) => ModelProvider;
   resolveHooks?: (input: {
     sessionId: string;
@@ -59,14 +71,41 @@ function finalAssistantText(messages: Message[]): string {
   return '';
 }
 
-export function createDesktopWorkflowToolRuntime(options: { trashDirectory: string; secretBroker?: SecretBroker }): WorkflowToolRuntime {
+export function createDesktopWorkflowToolRuntime(options: {
+  trashDirectory: string;
+  secretBroker?: SecretBroker;
+  governance?: DesktopLeafAgentRunnerOptions['governance'];
+}): WorkflowToolRuntime {
   const runtime = createDefaultToolRuntime({
     trashDirectory: options.trashDirectory,
     ...(options.secretBroker ? { secretBroker: options.secretBroker } : {})
   });
+  const governanceGate = options.governance
+    ? new GovernanceRuntimePermissionGate(
+        runtime.permissionGate,
+        options.governance.engine,
+        options.governance.normalizer ?? new DefaultPermissionRequestNormalizer(),
+        options.governance.audit
+      )
+    : undefined;
   return createWorkflowToolRuntime({
     tools: runtime.tools,
-    permissionGate: new NonInteractivePermissionGate(runtime.permissionGate)
+    permissionGate: new NonInteractivePermissionGate(runtime.permissionGate),
+    ...(governanceGate ? {
+      contextualPermissionGate: {
+        check: (call, invocation) => governanceGate.check(call, {
+          sessionId: invocation.sessionId,
+          laneId: `workflow:${invocation.workflowId}:${invocation.workflowStepId}`,
+          runId: invocation.workflowRunId,
+          providerId: invocation.providerId,
+          model: invocation.model,
+          workingDirectory: invocation.workingDirectory,
+          executionScope: { kind: 'workspace', workingDirectory: invocation.workingDirectory },
+          actor: { kind: 'workflow', id: invocation.workflowRunId, profile: 'tool-step' },
+          workflow: { id: invocation.workflowId, stepId: invocation.workflowStepId }
+        })
+      }
+    } : {})
   });
 }
 
@@ -142,7 +181,14 @@ export function createDesktopLeafAgentRunner(options: DesktopLeafAgentRunnerOpti
           executionScope
         })
       };
-      const permissionGate = new NonInteractivePermissionGate(scopedPermissionGate);
+      const permissionGate: RuntimePermissionGate = options.governance
+        ? new GovernanceRuntimePermissionGate(
+            scopedPermissionGate,
+            options.governance.engine,
+            options.governance.normalizer ?? new DefaultPermissionRequestNormalizer(),
+            options.governance.audit
+          )
+        : new NonInteractivePermissionGate(scopedPermissionGate);
       const binding = environments.bind(request.sessionId, laneId, {
         provider,
         tools: { snapshot: () => tools },
