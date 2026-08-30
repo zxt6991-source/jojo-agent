@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ProviderConfig, SessionMeta } from '@desktop-agent/contracts';
-import { createScheduleDraft, scheduleInputFromDraft } from './SchedulerSettings';
+import { createScheduleDraft, scheduleInputFromDraft, scheduleRunDetails } from './SchedulerSettings';
 
 const sessions: SessionMeta[] = [{
   id: 'session-1',
@@ -69,6 +69,18 @@ describe('scheduler settings draft', () => {
       providerId: 'openai',
       model: 'gpt-5',
       workflow: { kind: 'saved', name: 'architecture-review', args: { focus: 'scheduler' } }
+    });
+  });
+
+  it('exposes persisted run output and distinguishes empty completions from errors', () => {
+    expect(scheduleRunDetails({ status: 'completed', resultPreview: 'scheduled answer' })).toEqual({
+      kind: 'result', label: '查看结果', content: 'scheduled answer'
+    });
+    expect(scheduleRunDetails({ status: 'completed' })).toEqual({
+      kind: 'empty', label: '执行结果', content: '执行已完成，但没有产生文本输出。'
+    });
+    expect(scheduleRunDetails({ status: 'failed', error: 'provider failed' })).toEqual({
+      kind: 'error', label: '查看错误详情', content: 'provider failed'
     });
   });
 });

@@ -214,6 +214,45 @@ function runStateLabel(status: ScheduleRunContract['status']): string {
   })[status];
 }
 
+export function scheduleRunDetails(
+  run: Pick<ScheduleRunContract, 'status' | 'resultPreview' | 'error'>
+): { kind: 'result' | 'error' | 'empty'; label: string; content: string } | undefined {
+  if (run.resultPreview) return { kind: 'result', label: '查看结果', content: run.resultPreview };
+  if (run.error) return { kind: 'error', label: '查看错误详情', content: run.error };
+  if (run.status === 'completed') {
+    return { kind: 'empty', label: '执行结果', content: '执行已完成，但没有产生文本输出。' };
+  }
+  return undefined;
+}
+
+function ScheduleRunHistoryItem({
+  run,
+  busy,
+  onCancel
+}: {
+  run: ScheduleRunContract;
+  busy: boolean;
+  onCancel(runId: string): Promise<void>;
+}) {
+  const details = scheduleRunDetails(run);
+  return <article>
+    <span className={`automation-run-state ${run.status}`}>{runStateLabel(run.status)}</span>
+    <div>
+      <strong>{new Date(run.scheduledFor).toLocaleString()}</strong>
+      <small>{run.trigger === 'manual' ? '手动运行' : run.trigger === 'misfire' ? '离线补跑' : '定时触发'}{run.error ? ` · ${run.error}` : ''}</small>
+    </div>
+    <time>{run.finishedAt ? new Date(run.finishedAt).toLocaleString() : run.startedAt ? new Date(run.startedAt).toLocaleString() : ''}</time>
+    {ACTIVE_STATES.has(run.status) && <button type="button" disabled={busy} onClick={() => void onCancel(run.id)}>
+      取消
+    </button>}
+    {details?.kind === 'empty' && <p className="automation-run-empty">{details.content}</p>}
+    {details && details.kind !== 'empty' && <details className={`automation-run-detail ${details.kind}`}>
+      <summary>{details.label}</summary>
+      <pre>{details.content}</pre>
+    </details>}
+  </article>;
+}
+
 export function SchedulerSettingsPage({
   sessions, providers, teams, schedules, selectedScheduleId, runs, busy, error,
   onSelect, onRefresh, onSave, onDelete, onEnabled, onRunNow, onCancelRun
@@ -301,7 +340,15 @@ export function SchedulerSettingsPage({
 
         {selected && !creating && <section className="settings-section-card automation-history">
           <div className="settings-section-title with-meta"><div><h2>运行历史</h2><p>最近 100 次执行；等待批准的任务可在主界面完成授权。</p></div><span>{runs.length}</span></div>
-          <div className="automation-run-list">{runs.map((run) => <article key={run.id}><span className={`automation-run-state ${run.status}`}>{runStateLabel(run.status)}</span><div><strong>{new Date(run.scheduledFor).toLocaleString()}</strong><small>{run.trigger === 'manual' ? '手动运行' : run.trigger === 'misfire' ? '离线补跑' : '定时触发'}{run.error ? ` · ${run.error}` : ''}</small></div><time>{run.finishedAt ? new Date(run.finishedAt).toLocaleString() : run.startedAt ? new Date(run.startedAt).toLocaleString() : ''}</time>{ACTIVE_STATES.has(run.status) && <button type="button" disabled={busy} onClick={() => void onCancelRun(run.id).catch((cause) => setLocalError(cause instanceof Error ? cause.message : String(cause)))}>取消</button>}</article>)}{runs.length === 0 && <div className="automation-list-empty">还没有运行记录</div>}</div>
+          <div className="automation-run-list">{runs.map((run) => <ScheduleRunHistoryItem
+            key={run.id}
+            run={run}
+            busy={busy}
+            onCancel={async (runId) => {
+              try { await onCancelRun(runId); }
+              catch (cause) { setLocalError(cause instanceof Error ? cause.message : String(cause)); }
+            }}
+          />)}{runs.length === 0 && <div className="automation-list-empty">还没有运行记录</div>}</div>
         </section>}
       </div>
     </div>}
