@@ -7,6 +7,7 @@ import type {
 export type TeamCreateRequest = TeamDefinition;
 
 export type TeamDelegateRequest = {
+  taskId?: string;
   teamId: string;
   memberId: string;
   task: string;

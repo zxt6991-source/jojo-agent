@@ -65,6 +65,7 @@ function taskFromRow(row: Row): TeamTaskSnapshot {
     ...(optionalText(row.parent_session_id) ? { parentSessionId: row.parent_session_id } : {}),
     ...(optionalText(row.parent_run_id) ? { parentRunId: row.parent_run_id } : {}),
     ...(optionalText(row.parent_actor_id) ? { parentActorId: row.parent_actor_id } : {}),
+    ...(optionalText(row.request_fingerprint) ? { requestFingerprint: row.request_fingerprint } : {}),
     ...(optionalText(row.runtime_run_id) ? { runtimeRunId: row.runtime_run_id } : {}),
     input: row.input,
     state: row.status,
@@ -126,7 +127,8 @@ export class SqliteTeamStore {
       );
       CREATE TABLE IF NOT EXISTS team_tasks (
         id TEXT PRIMARY KEY, team_id TEXT NOT NULL, member_id TEXT NOT NULL,
-        parent_session_id TEXT, parent_run_id TEXT, parent_actor_id TEXT, runtime_run_id TEXT,
+        parent_session_id TEXT, parent_run_id TEXT, parent_actor_id TEXT,
+        request_fingerprint TEXT, runtime_run_id TEXT,
         input TEXT NOT NULL, status TEXT NOT NULL, result TEXT, structured_result_json TEXT,
         schema_valid INTEGER, error_code TEXT, error TEXT, stop_reason TEXT,
         provider_id TEXT NOT NULL, model TEXT NOT NULL,
@@ -144,6 +146,10 @@ export class SqliteTeamStore {
       CREATE INDEX IF NOT EXISTS idx_team_messages_inbox
         ON team_messages(team_id, recipient_member_id, status, created_at);
     `);
+    const taskColumns = this.database.prepare('PRAGMA table_info(team_tasks)').all() as Row[];
+    if (!taskColumns.some((column) => column.name === 'request_fingerprint')) {
+      this.database.exec('ALTER TABLE team_tasks ADD COLUMN request_fingerprint TEXT;');
+    }
   }
 
   async createTeam(input: TeamSnapshot): Promise<TeamSnapshot> {
@@ -344,7 +350,7 @@ export class SqliteTeamStore {
   private writeTask(mode: 'INSERT' | 'UPDATE', task: TeamTaskSnapshot): void {
     const values = [
       task.teamId, task.memberId, task.parentSessionId ?? null, task.parentRunId ?? null,
-      task.parentActorId ?? null, task.runtimeRunId ?? null, task.input, task.state,
+      task.parentActorId ?? null, task.requestFingerprint ?? null, task.runtimeRunId ?? null, task.input, task.state,
       task.result ?? null, task.structuredResult === undefined ? null : JSON.stringify(task.structuredResult),
       task.schemaValid === undefined ? null : task.schemaValid ? 1 : 0,
       task.errorCode ?? null, task.error ?? null, task.stopReason ?? null, task.providerId, task.model,
@@ -355,16 +361,16 @@ export class SqliteTeamStore {
     if (mode === 'INSERT') {
       this.database.prepare(`
         INSERT INTO team_tasks(id, team_id, member_id, parent_session_id, parent_run_id,
-          parent_actor_id, runtime_run_id, input, status, result, structured_result_json,
+          parent_actor_id, request_fingerprint, runtime_run_id, input, status, result, structured_result_json,
           schema_valid, error_code, error, stop_reason, provider_id, model, usage_json, incomplete,
           isolation_json, created_at, started_at, finished_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(task.id, ...values);
       return;
     }
     const result = this.database.prepare(`
       UPDATE team_tasks SET team_id=?, member_id=?, parent_session_id=?, parent_run_id=?,
-        parent_actor_id=?, runtime_run_id=?, input=?, status=?, result=?, structured_result_json=?,
+        parent_actor_id=?, request_fingerprint=?, runtime_run_id=?, input=?, status=?, result=?, structured_result_json=?,
         schema_valid=?, error_code=?, error=?, stop_reason=?, provider_id=?, model=?, usage_json=?, incomplete=?,
         isolation_json=?, created_at=?, started_at=?, finished_at=? WHERE id=?
     `).run(...values, task.id);

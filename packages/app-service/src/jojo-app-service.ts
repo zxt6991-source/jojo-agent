@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { AgentRuntime, RunHandle, RunRequest } from '@desktop-agent/agent-runtime';
+import type { AgentRuntime, RunHandle, RunRequest, RuntimeTriggerContext } from '@desktop-agent/agent-runtime';
 import type { RuntimeEventEnvelope } from '@desktop-agent/contracts/runtime';
 import type {
   ApprovalDecision,
@@ -32,6 +32,15 @@ export type JojoAppServiceOptions = {
   now?: () => Date;
 };
 
+export type StartRunOptions = {
+  runId?: string;
+  trigger?: RuntimeTriggerContext;
+  metadata?: {
+    scheduleId?: string;
+    scheduleRunId?: string;
+  };
+};
+
 export interface JojoAppService {
   listSessions(ctx: RequestContext): Promise<ServerSessionSummary[]>;
   createSession(ctx: RequestContext, input: CreateSessionInput): Promise<ServerSessionSnapshot>;
@@ -42,7 +51,7 @@ export interface JojoAppService {
   ): Promise<ServerSessionSnapshot>;
   getSession(ctx: RequestContext, sessionId: string): Promise<ServerSessionSnapshot>;
   getTranscript(ctx: RequestContext, sessionId: string, input?: TranscriptQuery): Promise<TranscriptPage>;
-  startRun(ctx: RequestContext, sessionId: string, input: StartRunInput): Promise<RunSnapshot>;
+  startRun(ctx: RequestContext, sessionId: string, input: StartRunInput, options?: StartRunOptions): Promise<RunSnapshot>;
   getRun(ctx: RequestContext, sessionId: string, runId: string): Promise<RunSnapshot>;
   cancelRun(ctx: RequestContext, sessionId: string, runId: string, reason?: string): Promise<void>;
   listApprovals(ctx: RequestContext, sessionId: string): Promise<PendingApprovalSnapshot[]>;
@@ -178,8 +187,18 @@ class DefaultJojoAppService implements JojoAppService {
     };
   }
 
-  async startRun(_ctx: RequestContext, sessionId: string, input: StartRunInput): Promise<RunSnapshot> {
-    const runId = this.idGenerator();
+  async startRun(_ctx: RequestContext, sessionId: string, input: StartRunInput, options: StartRunOptions = {}): Promise<RunSnapshot> {
+    const runId = options.runId ?? this.idGenerator();
+    const trigger = options.trigger ?? { kind: 'api' as const };
+    const originKind = trigger.kind === 'scheduler' ? 'scheduler' as const : trigger.kind === 'user' ? 'user' as const : 'api' as const;
+    const requestMeta = {
+      ...(input.budget ? { budget: compactBudget(input.budget) } : {}),
+      origin: {
+        kind: originKind,
+        ...(options.metadata?.scheduleId ? { scheduleId: options.metadata.scheduleId } : {}),
+        ...(options.metadata?.scheduleRunId ? { scheduleRunId: options.metadata.scheduleRunId } : {})
+      }
+    };
     const accepted = await this.stateStore.runs.createAccepted({
       id: runId,
       sessionId,
@@ -187,7 +206,7 @@ class DefaultJojoAppService implements JojoAppService {
       providerId: input.providerId,
       model: input.model,
       inputHash: createHash('sha256').update(stableJson(input.input)).digest('hex'),
-      ...(input.budget ? { requestMeta: { budget: compactBudget(input.budget) } } : {})
+      requestMeta
     });
     this.emit({ type: 'run.updated', run: toRunSnapshot(accepted) });
     const starting = await this.stateStore.runs.markStarting(runId, accepted.version);
@@ -209,6 +228,7 @@ class DefaultJojoAppService implements JojoAppService {
         providerId: input.providerId,
         model: input.model,
         actor: { kind: 'main' },
+        trigger,
         ...(input.instructions ? { instructions: input.instructions } : {}),
         ...(budget ? { budget } : {})
       };

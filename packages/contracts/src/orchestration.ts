@@ -223,6 +223,7 @@ export const TeamTaskSnapshotSchema = z.object({
   parentSessionId: z.string().min(1).max(256).optional(),
   parentRunId: z.string().min(1).max(256).optional(),
   parentActorId: z.string().min(1).max(256).optional(),
+  requestFingerprint: z.string().length(64).optional(),
   runtimeRunId: z.string().min(1).max(256).optional(),
   input: z.string().min(1).max(40_000),
   state: TeamTaskStateSchema,

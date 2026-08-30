@@ -200,10 +200,32 @@ export class TeamManager {
       ...(request.maxIterations !== undefined ? { maxIterations: request.maxIterations } : {}),
       ...(request.timeoutMs !== undefined ? { timeoutMs: request.timeoutMs } : {})
     });
+    const requestFingerprint = createHash('sha256').update(JSON.stringify({
+      teamId: request.teamId,
+      memberId: request.memberId,
+      task: taskInput,
+      parent: request.parent,
+      providerId: effective.providerId,
+      model: effective.model,
+      timeoutMs: request.timeoutMs ?? null,
+      maxIterations: request.maxIterations ?? null,
+      outputSchema: request.outputSchema ?? null,
+      memoryBinding: request.memoryBinding ?? null
+    })).digest('hex');
+    if (request.taskId) {
+      const existing = await this.store.getTask(request.taskId);
+      if (existing) {
+        if (existing.requestFingerprint !== requestFingerprint) {
+          throw new OrchestrationError('team_task_conflict', `Team task id is already bound to different input: ${request.taskId}`);
+        }
+        return existing;
+      }
+    }
     const task: TeamTaskSnapshot = {
-      id: `tt_${crypto.randomUUID()}`,
+      id: request.taskId ?? `tt_${crypto.randomUUID()}`,
       teamId: team.id,
       memberId: member.id,
+      requestFingerprint,
       parentSessionId: request.parent.sessionId,
       ...(request.parent.runId ? { parentRunId: request.parent.runId } : {}),
       ...(request.parent.actorId ? { parentActorId: request.parent.actorId } : {}),
@@ -250,6 +272,8 @@ export class TeamManager {
     }
     return Promise.all(ids.map(async (id) => (await this.store.getTask(id))!));
   }
+
+  getTask(id: string): Promise<TeamTaskSnapshot | undefined> { return this.store.getTask(id); }
 
   async cancel(id: string): Promise<TeamTaskSnapshot> {
     const task = await this.store.getTask(id);

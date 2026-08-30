@@ -18,8 +18,9 @@ export const electronNodeConfig: UserConfig = {
       '@desktop-agent/contracts/runtime': fileURLToPath(new URL('../../packages/contracts/src/runtime.ts', import.meta.url)),
       '@desktop-agent/contracts': fileURLToPath(new URL('../../packages/contracts/src/index.ts', import.meta.url)),
       '@desktop-agent/hooks': fileURLToPath(new URL('../../packages/hooks/src/index.ts', import.meta.url)),
-      '@desktop-agent/memory': fileURLToPath(new URL('../../packages/memory/src/index.ts', import.meta.url))
-      ,'@desktop-agent/runtime-composition': fileURLToPath(new URL('../../packages/runtime-composition/src/index.ts', import.meta.url))
+      '@desktop-agent/memory': fileURLToPath(new URL('../../packages/memory/src/index.ts', import.meta.url)),
+      '@desktop-agent/runtime-composition': fileURLToPath(new URL('../../packages/runtime-composition/src/index.ts', import.meta.url)),
+      '@desktop-agent/scheduler': fileURLToPath(new URL('../../packages/scheduler/src/index.ts', import.meta.url))
     }
   },
   build: {

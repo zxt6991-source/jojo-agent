@@ -21,6 +21,7 @@ export type WorkflowExecutionRequest = {
 };
 
 export type WorkflowStartRequest = Omit<WorkflowExecutionRequest, 'id' | 'createdAt' | 'definition' | 'args'> & {
+  id?: string;
   definition?: unknown;
   name?: string;
   args?: unknown;

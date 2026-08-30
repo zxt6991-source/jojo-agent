@@ -40,6 +40,35 @@ describe('public runtime facade', () => {
     await runtime.close();
   });
 
+  it('propagates an explicit scheduler trigger through every resolution context', async () => {
+    const contexts: Array<import('../src/index.js').RuntimeResolutionContext> = [];
+    const runtime = createAgentRuntime({
+      environment: {
+        host: { kind: 'test' },
+        providers: { resolve: (context) => {
+          contexts.push(context);
+          return new ScriptedProvider([[
+            { type: 'text_delta', text: 'scheduled result' },
+            { type: 'response_completed', stopReason: 'stop' }
+          ]]);
+        } },
+        tools: { resolve: (context) => { contexts.push(context); return { snapshot: () => [] }; } },
+        permissions: allow,
+        runContext: { resolve: (context) => { contexts.push(context); return {}; } }
+      }
+    });
+    const session = await runtime.openSession({ id: 'scheduled-session', executionScope: { kind: 'none' } });
+    await (await (await session.getLane()).run({
+      input: 'scheduled task', providerId: 'provider', model: 'model',
+      actor: { kind: 'main' }, trigger: { kind: 'scheduler', id: 'sr_1' }
+    })).result;
+
+    expect(contexts).toHaveLength(3);
+    expect(contexts.every((context) => context.trigger?.kind === 'scheduler')).toBe(true);
+    expect(contexts.every((context) => context.trigger?.id === 'sr_1')).toBe(true);
+    await runtime.close();
+  });
+
   it('continues conversation through a lane and emits stable monotonic events', async () => {
     const provider = new ScriptedProvider([
       [

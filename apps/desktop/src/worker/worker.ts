@@ -8,7 +8,7 @@ import {
   WorkflowDefinitionSchema,
   isPlaceholderSessionTitle, sessionTitleFromPrompt,
   WorkerCommandSchema, WorkerMessageSchema, serializedIpcBytes,
-  type AgentEvent, type ApprovalRequest, type HookRuntime, type ImageContentBlock, type Message, type ModelProvider, type ModelRequest, type ModelSelection, type ProviderSettings, type SkillStatus, type ToolCall, type WorkflowDefinition, type WorkerMessage
+  type AgentEvent, type ApprovalRequest, type HookRuntime, type ImageContentBlock, type Message, type ModelProvider, type ModelRequest, type ModelSelection, type OrchestrationEvent, type ProviderSettings, type SkillStatus, type ToolCall, type WorkflowDefinition, type WorkerMessage
 } from '@desktop-agent/contracts';
 import {
   createInstallSkillTool,
@@ -21,6 +21,12 @@ import {
   userSkillDirectories
 } from '@desktop-agent/extensions';
 import { createProvider, OpenAICompatibleEmbeddingProvider } from '@desktop-agent/providers';
+import type {
+  AgentScheduleTarget,
+  CreateScheduleInput,
+  ScheduleDispatchRequest,
+  ScheduleTarget
+} from '@desktop-agent/scheduler';
 import {
   BackgroundAgentPermissionPolicyStore,
   DefaultPermissionRequestNormalizer,
@@ -78,6 +84,7 @@ import { parse as parseYaml } from 'yaml';
 import { BrowserPermissionGate, BrowserToolBridge } from './browser-tools';
 import { UtilityModelBrowserHealingAdapter } from './browser-healing';
 import { createDesktopOrchestratedAgentRunner, createDesktopWorkflowToolRuntime } from './orchestration-runtime';
+import { createDesktopSchedulerRuntime } from './scheduler-runtime';
 import { TurnTaskRegistry } from './turn-task-registry';
 import { InteractiveTerminalSecretBroker } from './terminal-secret-broker';
 import { projectRuntimeMessagesToLegacy, seedRuntimeLaneFromLegacy } from '../runtime/legacy-projection';
@@ -179,6 +186,8 @@ const jojoRuntime = createJojoRuntime({
 let skillStatuses: SkillStatus[] = [];
 let extensionReady: Promise<void> = Promise.resolve();
 let mcpConfigSignature = '';
+let resolveRuntimeConfigReady: (() => void) | undefined;
+const runtimeConfigReady = new Promise<void>((resolve) => { resolveRuntimeConfigReady = resolve; });
 
 function redactLegacyTerminalOutput(messages: Message[]): Message[] {
   return messages.map((message) => ({
@@ -220,6 +229,17 @@ const post = (message: WorkerMessage) => {
     return;
   }
   parentPort.postMessage(parsed.data);
+};
+const orchestrationListeners = new Set<(event: OrchestrationEvent) => void>();
+const emitOrchestrationEvent = (event: OrchestrationEvent): void => {
+  post({ type: 'orchestration.event', event });
+  for (const listener of orchestrationListeners) {
+    try { listener(event); } catch { /* Observers are isolated. */ }
+  }
+};
+const subscribeOrchestration = (listener: (event: OrchestrationEvent) => void): (() => void) => {
+  orchestrationListeners.add(listener);
+  return () => orchestrationListeners.delete(listener);
 };
 const terminalSecretBroker = new InteractiveTerminalSecretBroker((request) => {
   post({ type: 'terminal.secret.request', ...request });
@@ -280,7 +300,7 @@ const leafAgentRunner = createLeafAgentRunnerAdapter(orchestratedAgentRunner);
 const subAgentManager = new SubAgentManager(
   leafAgentRunner,
   executionScheduler,
-  (event) => post({ type: 'orchestration.event', event }),
+  emitOrchestrationEvent,
   {
     profileRegistry,
     isolation: isolationManager,
@@ -300,7 +320,7 @@ const teamManager = new TeamManager(
   teamStore,
   orchestratedAgentRunner,
   executionScheduler,
-  (event) => post({ type: 'orchestration.event', event }),
+  emitOrchestrationEvent,
   {
     profileRegistry,
     isolation: isolationManager,
@@ -407,7 +427,7 @@ const workflowManager = new WorkflowManager(
       }
     }
   }),
-  (event) => post({ type: 'orchestration.event', event }),
+  emitOrchestrationEvent,
   {
     persistence: new JsonlWorkflowStore(path.join(dataDirectory, 'workflows', 'runs')),
     savedWorkflows: savedWorkflowRegistry,
@@ -447,6 +467,11 @@ async function applyRuntimeConfig(
   terminalSecrets: Record<string, string>
 ): Promise<void> {
   runtime = { settings, apiKeys };
+  // The scheduler may now restore persisted occurrences. Dispatch preparation
+  // still awaits the complete extensionReady chain, so resolving here avoids a
+  // permanent startup wait when an optional extension later fails to configure.
+  resolveRuntimeConfigReady?.();
+  resolveRuntimeConfigReady = undefined;
   permissionGovernanceStore.setGlobalMode(settings.permissions.mode);
   terminalSecretBroker.replace(terminalSecrets);
   memoryRuntime.updateSettings(settings.memory);
@@ -961,6 +986,213 @@ async function stopSession(sessionId: string): Promise<void> {
   sessionHookRuntimes.delete(sessionId);
 }
 
+function scheduledAgentConfiguration(target: AgentScheduleTarget) {
+  if (!runtime) throw new Error('schedule_target_invalid: Model settings are unavailable.');
+  const providerConfig = runtime.settings.providers.find((provider) => provider.id === target.providerId);
+  if (!providerConfig) throw new Error(`schedule_target_invalid: Provider "${target.providerId}" does not exist.`);
+  if (!providerConfig.models.includes(target.model)) {
+    throw new Error(`schedule_target_invalid: Model "${target.model}" is not available for ${providerConfig.name}.`);
+  }
+  const apiKey = e2eMode ? 'e2e-offline-key' : runtime.apiKeys[target.providerId];
+  if (!apiKey) throw new Error(`schedule_target_invalid: Configure the ${providerConfig.name} API key first.`);
+  return { providerConfig, apiKey };
+}
+
+function compactScheduleInput(input: object): CreateScheduleInput {
+  // IPC is already Zod-validated. The JSON round-trip only removes optional
+  // properties materialized as `undefined` by schema inference so they match
+  // the scheduler core's exact-optional domain types.
+  return JSON.parse(JSON.stringify(input)) as CreateScheduleInput;
+}
+
+async function validateScheduleTarget(target: ScheduleTarget): Promise<void> {
+  if (target.kind === 'workflow') {
+    scheduledAgentConfiguration({
+      kind: 'agent', sessionId: target.sessionId, input: { content: [{ type: 'text', text: 'workflow' }] },
+      providerId: target.providerId, model: target.model
+    });
+    const session = await store.get(target.sessionId);
+    if (!session) throw new Error(`schedule_target_not_found: Session ${target.sessionId} does not exist.`);
+    if (path.resolve(session.workingDirectory) !== path.resolve(target.workingDirectory)) {
+      throw new Error('schedule_target_invalid: Workflow working directory must match its session.');
+    }
+    await reloadOrchestrationAssets(target.workingDirectory);
+    const workflowTarget = target.workflow;
+    if (workflowTarget.kind === 'saved') {
+      const available = workflowManager.listSaved(target.workingDirectory);
+      if (!available.some((workflow) => workflow.name === workflowTarget.name)) {
+        throw new Error(`schedule_target_not_found: Saved workflow ${workflowTarget.name} does not exist.`);
+      }
+    } else {
+      WorkflowDefinitionSchema.parse(workflowTarget.definition);
+    }
+    return;
+  }
+  if (target.kind === 'team_member') {
+    const team = await teamManager.get(target.teamId);
+    if (!team) throw new Error(`schedule_target_not_found: Team ${target.teamId} does not exist.`);
+    const member = team.members.find((candidate) => candidate.id === target.memberId);
+    if (!member) throw new Error(`schedule_target_not_found: Team member ${target.teamId}/${target.memberId} does not exist.`);
+    if (member.state === 'disabled') throw new Error(`schedule_target_invalid: Team member ${target.memberId} is disabled.`);
+    if (target.providerId || target.model) {
+      if (!target.providerId || !target.model) throw new Error('schedule_target_invalid: Team provider and model must be set together.');
+      scheduledAgentConfiguration({
+        kind: 'agent', sessionId: target.parentSessionId, input: { content: [{ type: 'text', text: target.task }] },
+        providerId: target.providerId, model: target.model
+      });
+    }
+    return;
+  }
+  scheduledAgentConfiguration(target);
+  const session = await store.get(target.sessionId);
+  if (!session) throw new Error(`schedule_target_not_found: Session ${target.sessionId} does not exist.`);
+  if (target.lane?.mode === 'main' && target.lane.id) {
+    throw new Error('schedule_target_invalid: A main lane target cannot specify a custom lane id.');
+  }
+}
+
+async function prepareScheduledAgent(
+  input: ScheduleDispatchRequest<AgentScheduleTarget>,
+  laneId: string
+): Promise<{ dispose(): void }> {
+  await extensionReady;
+  await teamReady;
+  await memoryReady;
+  const { providerConfig, apiKey } = scheduledAgentConfiguration(input.target);
+  const session = await store.get(input.target.sessionId);
+  if (!session) throw new Error(`schedule_target_not_found: Session ${input.target.sessionId} does not exist.`);
+  const projectBound = session.projectBound !== false;
+  const projectIdentity = projectBound
+    ? session.projectIdentity ?? await createProjectIdentity(session.workingDirectory)
+    : undefined;
+  await reloadOrchestrationAssets(projectBound ? session.workingDirectory : undefined);
+  const history = redactLegacyTerminalOutput(await store.messages(session.id));
+  const publicRuntime = await jojoRuntime;
+  await publicRuntime.openSession({
+    id: session.id,
+    executionScope: { kind: 'workspace', workingDirectory: session.workingDirectory },
+    ...(projectIdentity ? {
+      metadata: { projectIdentity: projectIdentity as unknown as import('@desktop-agent/contracts/runtime').JsonValue }
+    } : {})
+  });
+  await seedRuntimeLaneFromLegacy(agentRuntimeStore, session.id, history);
+
+  const preparationController = new AbortController();
+  const emitScheduledAgentEvent = (event: AgentEvent) => {
+    // Background runs have their own Scheduler event stream. Only approvals
+    // enter the foreground Agent channel so they do not overwrite an active
+    // interactive conversation's running state.
+    if (event.type === 'approval.required') post({ type: 'agent.event', event });
+  };
+  const loadedHooks = await loadHookRuntime({
+    workingDirectory: session.workingDirectory,
+    includeProject: projectBound,
+    invocationStore: hookInvocationStore,
+    trustStore: hookTrustStore,
+    signal: preparationController.signal,
+    emit: emitScheduledAgentEvent
+  });
+  sessionHookRuntimes.set(session.id, loadedHooks.runtime);
+  const toolRuntime = createDefaultToolRuntime({
+    trashDirectory: path.join(dataDirectory, 'trash'),
+    secretBroker: terminalSecretBroker
+  });
+  const skills = await discoverSkills([
+    ...(projectBound ? [
+      { path: path.join(session.workingDirectory, '.codex', 'skills'), origin: 'project' as const },
+      { path: path.join(session.workingDirectory, '.agents', 'skills'), origin: 'project' as const }
+    ] : []),
+    ...globalSkillDirectories(runtime!.settings)
+  ], runtime!.settings.extensions.skills.disabled);
+  const skillTool = createSkillTool(skills, { loadedSkillIds: loadedSkillIdsFromHistory(history) });
+  const orchestrationTools = [
+    ...createSubAgentTools(subAgentManager, {
+      providerId: input.target.providerId,
+      model: input.target.model
+    }),
+    ...createTeamTools(teamManager, {
+      providerId: input.target.providerId,
+      model: input.target.model
+    }),
+    ...createWorkflowTools(workflowManager, {
+      providerId: input.target.providerId,
+      model: input.target.model
+    })
+  ];
+  const memoryTools = runtime!.settings.memory.enabled
+    ? createMemoryTools(memoryService).filter((tool) => runtime!.settings.memory.search.enabled || tool.definition.name !== 'memory_search')
+    : [];
+  const staticTools = [
+    ...toolRuntime.tools,
+    ...memoryTools,
+    ...browserBridge.tools(),
+    ...orchestrationTools,
+    ...(skillTool ? [skillTool] : [])
+  ];
+  const legacyPermissionGate = new OrchestrationPermissionGate(
+    new BrowserPermissionGate(
+      new ExtensionPermissionGate(
+        new MemoryPermissionGate(toolRuntime.permissionGate, memoryRoot),
+        undefined,
+        (call) => mcpManager.describeApproval(call),
+        (call) => mcpManager.approvalGrantKey(call)
+      ),
+      browserSettings,
+      async (recordingId, workingDirectory) => {
+        const entry = await browserRecordingRegistry.get(recordingId, workingDirectory);
+        return [
+          `Source: ${entry.source}${entry.source === 'project' ? ` (${entry.trust})` : ''}`,
+          `Domains: ${entry.effectSummary.domains.join(', ') || 'none'}`,
+          `Effects: ${entry.effectSummary.effects.join(', ') || 'none'}`
+        ].join('\n');
+      }
+    ),
+    (call, context) => describeWorkflowRecordingPlan(call, context.workingDirectory)
+  );
+  const permissionGate = new GovernanceRuntimePermissionGate(
+    legacyPermissionGate,
+    permissionGovernanceEngine,
+    new DefaultPermissionRequestNormalizer(),
+    permissionGovernanceStore
+  );
+  const binding = runtimeEnvironments.bind(session.id, laneId, {
+    provider: e2eMode ? createE2eProvider() : createProvider(providerConfig, apiKey),
+    tools: { snapshot: (context) => [...staticTools, ...mcpManager.getTools(context)] },
+    permissions: permissionGate,
+    hooks: loadedHooks.runtime,
+    ...(projectIdentity ? { runContext: { projectIdentity } } : {}),
+    telemetry: { diagnostic: emitScheduledAgentEvent }
+  });
+  return {
+    dispose: () => {
+      binding.dispose();
+      preparationController.abort(new DOMException('Schedule run environment released.', 'AbortError'));
+    }
+  };
+}
+
+const workflowReady = workflowManager.restore().catch((error) => {
+  post({ type: 'worker.error', message: `Workflow restore failed: ${error instanceof Error ? error.message : String(error)}` });
+});
+const schedulerReady = Promise.all([workflowReady, teamReady, jojoRuntime, runtimeConfigReady]).then(
+  ([, , activeRuntime]) => createDesktopSchedulerRuntime({
+    dataDirectory,
+    runtime: activeRuntime,
+    teamManager,
+    workflowManager,
+    subscribeOrchestration,
+    prepareAgent: prepareScheduledAgent,
+    validateTarget: validateScheduleTarget,
+    emit: (scheduleEvent) => post({ type: 'scheduler.event', event: scheduleEvent })
+  })
+);
+void schedulerReady
+  .catch((error) => post({
+    type: 'worker.error',
+    message: `Scheduler initialization failed: ${error instanceof Error ? error.message : String(error)}`
+  }))
+  .finally(() => post({ type: 'ready' }));
+
 parentPort.on('message', (event) => {
   const parsed = WorkerCommandSchema.safeParse(event.data);
   if (!parsed.success) {
@@ -1133,6 +1365,81 @@ parentPort.on('message', (event) => {
         type: 'team.result', requestId: command.requestId, ok: false,
         error: error instanceof Error ? error.message : String(error)
       }));
+  } else if (command.type === 'scheduler.list') {
+    void schedulerReady
+      .then(({ service }) => service.list())
+      .then((schedules) => post({ type: 'scheduler.result', requestId: command.requestId, ok: true, schedules }))
+      .catch((error) => post({
+        type: 'scheduler.result', requestId: command.requestId, ok: false,
+        error: error instanceof Error ? error.message : String(error)
+      }));
+  } else if (command.type === 'scheduler.get') {
+    void schedulerReady
+      .then(({ service }) => service.get(command.scheduleId))
+      .then((schedule) => post({ type: 'scheduler.result', requestId: command.requestId, ok: true, schedule }))
+      .catch((error) => post({
+        type: 'scheduler.result', requestId: command.requestId, ok: false,
+        error: error instanceof Error ? error.message : String(error)
+      }));
+  } else if (command.type === 'scheduler.save') {
+    void schedulerReady.then(({ service }) => {
+      const { scheduleId, expectedRevision, ...input } = command.input;
+      const compacted = compactScheduleInput(input);
+      return scheduleId
+        ? service.update(scheduleId, {
+            ...compacted,
+            ...(expectedRevision !== undefined ? { expectedRevision } : {})
+          })
+        : service.create(compacted, { id: 'desktop-user', type: 'user' });
+    }).then((schedule) => post({ type: 'scheduler.result', requestId: command.requestId, ok: true, schedule }))
+      .catch((error) => post({
+        type: 'scheduler.result', requestId: command.requestId, ok: false,
+        error: error instanceof Error ? error.message : String(error)
+      }));
+  } else if (command.type === 'scheduler.delete') {
+    void schedulerReady
+      .then(({ service }) => service.delete(command.scheduleId))
+      .then(() => post({ type: 'scheduler.result', requestId: command.requestId, ok: true }))
+      .catch((error) => post({
+        type: 'scheduler.result', requestId: command.requestId, ok: false,
+        error: error instanceof Error ? error.message : String(error)
+      }));
+  } else if (command.type === 'scheduler.enabled') {
+    void schedulerReady
+      .then(({ service }) => service.setEnabled(
+        command.input.scheduleId,
+        command.input.enabled,
+        command.input.expectedRevision
+      ))
+      .then((schedule) => post({ type: 'scheduler.result', requestId: command.requestId, ok: true, schedule }))
+      .catch((error) => post({
+        type: 'scheduler.result', requestId: command.requestId, ok: false,
+        error: error instanceof Error ? error.message : String(error)
+      }));
+  } else if (command.type === 'scheduler.run-now') {
+    void schedulerReady
+      .then(({ service }) => service.runNow(command.scheduleId))
+      .then((run) => post({ type: 'scheduler.result', requestId: command.requestId, ok: true, run }))
+      .catch((error) => post({
+        type: 'scheduler.result', requestId: command.requestId, ok: false,
+        error: error instanceof Error ? error.message : String(error)
+      }));
+  } else if (command.type === 'scheduler.runs.list') {
+    void schedulerReady
+      .then(({ service }) => service.listRuns(command.scheduleId, { limit: 100 }))
+      .then((runs) => post({ type: 'scheduler.result', requestId: command.requestId, ok: true, runs }))
+      .catch((error) => post({
+        type: 'scheduler.result', requestId: command.requestId, ok: false,
+        error: error instanceof Error ? error.message : String(error)
+      }));
+  } else if (command.type === 'scheduler.run.cancel') {
+    void schedulerReady
+      .then(({ service }) => service.cancelRun(command.runId))
+      .then(() => post({ type: 'scheduler.result', requestId: command.requestId, ok: true }))
+      .catch((error) => post({
+        type: 'scheduler.result', requestId: command.requestId, ok: false,
+        error: error instanceof Error ? error.message : String(error)
+      }));
   } else if (command.type === 'memory.status') {
     void memoryReady
       .then(() => memoryStatus(command.workingDirectory))
@@ -1190,6 +1497,7 @@ parentPort.on('message', (event) => {
 
 process.once('SIGTERM', () => {
   void Promise.allSettled([
+    schedulerReady.then((activeScheduler) => activeScheduler.close()),
     mcpManager.close(),
     semanticMemoryService.idle(),
     jojoRuntime.then((activeRuntime) => activeRuntime.close())
@@ -1203,7 +1511,3 @@ process.once('SIGTERM', () => {
     process.exit(0);
   });
 });
-
-void workflowManager.restore()
-  .catch((error) => post({ type: 'worker.error', message: `Workflow restore failed: ${error instanceof Error ? error.message : String(error)}` }))
-  .finally(() => post({ type: 'ready' }));

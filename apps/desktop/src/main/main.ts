@@ -6,9 +6,10 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   AcceptMemoryCandidateInputSchema, ApprovalInputSchema, BindSessionProjectInputSchema, BrowserDockActionSchema, BrowserDockLayoutSchema, BrowserRecordingRegistryActionInputSchema, BrowserRecordingRegistryInputSchema, BrowserRecordingStudioInputSchema, CreateSessionInputSchema, CreateSkillInputSchema, DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS, DEFAULT_MODEL_MAX_OUTPUT_TOKENS, DeleteMemoryEntryInputSchema, DeleteTeamInputSchema, DuplicateBrowserRecordingInputSchema, GetExtensionStatusInputSchema, GetHookStatusInputSchema, GetMemoryStatusInputSchema, GetPermissionGovernanceInputSchema, HookProjectActionInputSchema, ImportSkillInputSchema, IPC, ListModelsInputSchema, ListTeamsInputSchema, MAX_IMAGE_ATTACHMENTS, MAX_IMAGE_BYTES, McpServerIdInputSchema, OpenHookConfigInputSchema, PermissionGovernanceSnapshotSchema, RebuildMemoryIndexInputSchema, RebuildSemanticMemoryIndexInputSchema, RejectMemoryCandidateInputSchema, RenameSessionInputSchema, ResolveTerminalSecretInputSchema, SaveBrowserRecordingInputSchema, SaveExtensionSettingsInputSchema, SaveMemorySettingsInputSchema, SavePermissionPolicyInputSchema, SaveSettingsInputSchema, SaveTeamInputSchema, SetTeamMemberEnabledInputSchema,
+  SaveScheduleInputSchema, ScheduleIdInputSchema, ScheduleRunIdInputSchema, SetScheduleEnabledInputSchema,
   SessionIdInputSchema, SkillPathInputSchema, StartTurnInputSchema, UpdateSkillInputSchema, WorkflowRunActionInputSchema,
   WorkerCommandSchema, WorkerMessageSchema, serializedIpcBytes,
-  type BrowserHealProposal, type BrowserHealRequest, type ExtensionStatus, type MemoryStatusSnapshot, type PermissionGovernanceSnapshot, type ProviderSettings, type SessionCompactionRecord, type TeamSnapshot, type TeamStatusSnapshot, type WorkerCommand, type WorkerMessage, type WorkflowRunSnapshot
+  type BrowserHealProposal, type BrowserHealRequest, type ExtensionStatus, type MemoryStatusSnapshot, type PermissionGovernanceSnapshot, type ProviderSettings, type ScheduleContract, type ScheduleRunContract, type SessionCompactionRecord, type TeamSnapshot, type TeamStatusSnapshot, type WorkerCommand, type WorkerMessage, type WorkflowRunSnapshot
 } from '@desktop-agent/contracts';
 import { z } from 'zod';
 import { createProvider } from '@desktop-agent/providers';
@@ -66,6 +67,17 @@ const memoryRequests = new Map<string, {
 }>();
 const teamRequests = new Map<string, {
   resolve: (value: { teams?: TeamSnapshot[]; team?: TeamSnapshot; status?: TeamStatusSnapshot }) => void;
+  reject: (error: Error) => void;
+  timer: ReturnType<typeof setTimeout>;
+}>();
+type SchedulerResponse = {
+  schedules?: ScheduleContract[];
+  schedule?: ScheduleContract;
+  runs?: ScheduleRunContract[];
+  run?: ScheduleRunContract;
+};
+const schedulerRequests = new Map<string, {
+  resolve: (value: SchedulerResponse) => void;
   reject: (error: Error) => void;
   timer: ReturnType<typeof setTimeout>;
 }>();
@@ -331,6 +343,35 @@ function finishTeamRequest(message: Extract<WorkerMessage, { type: 'team.result'
   });
 }
 
+function requestScheduler(command: Extract<WorkerCommand, {
+  type: 'scheduler.list' | 'scheduler.get' | 'scheduler.save' | 'scheduler.delete' | 'scheduler.enabled'
+    | 'scheduler.run-now' | 'scheduler.runs.list' | 'scheduler.run.cancel'
+}>): Promise<SchedulerResponse> {
+  if (!worker) return Promise.reject(new Error('Agent runtime is not available.'));
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      schedulerRequests.delete(command.requestId);
+      reject(new Error('Scheduler request timed out.'));
+    }, 30_000);
+    schedulerRequests.set(command.requestId, { resolve, reject, timer });
+    postWorkerCommand(command);
+  });
+}
+
+function finishSchedulerRequest(message: Extract<WorkerMessage, { type: 'scheduler.result' }>): void {
+  const request = schedulerRequests.get(message.requestId);
+  if (!request) return;
+  schedulerRequests.delete(message.requestId);
+  clearTimeout(request.timer);
+  if (!message.ok) request.reject(new Error(message.error ?? 'Scheduler request failed.'));
+  else request.resolve({
+    ...(message.schedules ? { schedules: message.schedules } : {}),
+    ...(message.schedule ? { schedule: message.schedule } : {}),
+    ...(message.runs ? { runs: message.runs } : {}),
+    ...(message.run ? { run: message.run } : {})
+  });
+}
+
 async function stopSessionRuntime(sessionId: string): Promise<void> {
   if (!worker) return;
   for (const [requestId, pending] of terminalSecretRequests) {
@@ -500,12 +541,13 @@ function startWorker(): void {
       return;
     }
     const message = parsed.data;
-    if (message.type === 'ready') void pushConfig();
+    if (message.type === 'ready') { /* Configuration was sent immediately after process start. */ }
     else if (message.type === 'agent.event') sendToRenderer(IPC.agentEvent, message.event);
     else if (message.type === 'orchestration.event') {
       if (message.event.type === 'workflow.changed') workflowRuns.set(message.event.workflow.id, message.event.workflow);
       sendToRenderer(IPC.orchestrationEvent, message.event);
     }
+    else if (message.type === 'scheduler.event') sendToRenderer(IPC.scheduleEvent, message.event);
     else if (message.type === 'session.stopped') {
       finishWorkerRequest(message.requestId, message.ok ? undefined : new Error(message.error ?? 'Session stop failed.'));
     }
@@ -605,6 +647,7 @@ function startWorker(): void {
     }
     else if (message.type === 'memory.result') finishMemoryRequest(message);
     else if (message.type === 'team.result') finishTeamRequest(message);
+    else if (message.type === 'scheduler.result') finishSchedulerRequest(message);
   });
   worker.on('exit', (code) => {
     for (const requestId of workerRequests.keys()) {
@@ -620,6 +663,11 @@ function startWorker(): void {
       clearTimeout(request.timer);
       request.reject(new Error(`Agent runtime exited (${code}).`));
     }
+    for (const [requestId, request] of schedulerRequests) {
+      schedulerRequests.delete(requestId);
+      clearTimeout(request.timer);
+      request.reject(new Error(`Agent runtime exited (${code}).`));
+    }
     for (const request of browserHealRequests.values()) request.reject(new Error(`Agent runtime exited (${code}).`));
     for (const controller of browserRequestControllers.values()) controller.abort(new Error(`Agent runtime exited (${code}).`));
     browserRequestControllers.clear();
@@ -628,6 +676,11 @@ function startWorker(): void {
     worker = null;
     if (!quitting) setTimeout(startWorker, 1_000);
   });
+  void pushConfig().catch((error) => sendToRenderer(IPC.agentEvent, {
+    type: 'turn.failed',
+    code: 'worker_config_error',
+    message: error instanceof Error ? error.message : String(error)
+  }));
 }
 
 function registerIpc(): void {
@@ -787,6 +840,55 @@ function registerIpc(): void {
     });
     if (!response.team) throw new Error('Team member update returned no team.');
     return response.team;
+  });
+  ipcMain.handle(IPC.listSchedules, async (event) => {
+    assertTrusted(event);
+    const response = await requestScheduler({ type: 'scheduler.list', requestId: crypto.randomUUID() });
+    return response.schedules ?? [];
+  });
+  ipcMain.handle(IPC.getSchedule, async (event, raw) => {
+    assertTrusted(event);
+    const input = ScheduleIdInputSchema.parse(raw);
+    const response = await requestScheduler({ type: 'scheduler.get', requestId: crypto.randomUUID(), ...input });
+    if (!response.schedule) throw new Error('Scheduler returned no schedule.');
+    return response.schedule;
+  });
+  ipcMain.handle(IPC.saveSchedule, async (event, raw) => {
+    assertTrusted(event);
+    const input = SaveScheduleInputSchema.parse(raw);
+    const response = await requestScheduler({ type: 'scheduler.save', requestId: crypto.randomUUID(), input });
+    if (!response.schedule) throw new Error('Scheduler save returned no schedule.');
+    return response.schedule;
+  });
+  ipcMain.handle(IPC.deleteSchedule, async (event, raw) => {
+    assertTrusted(event);
+    const input = ScheduleIdInputSchema.parse(raw);
+    await requestScheduler({ type: 'scheduler.delete', requestId: crypto.randomUUID(), ...input });
+  });
+  ipcMain.handle(IPC.setScheduleEnabled, async (event, raw) => {
+    assertTrusted(event);
+    const input = SetScheduleEnabledInputSchema.parse(raw);
+    const response = await requestScheduler({ type: 'scheduler.enabled', requestId: crypto.randomUUID(), input });
+    if (!response.schedule) throw new Error('Scheduler enable update returned no schedule.');
+    return response.schedule;
+  });
+  ipcMain.handle(IPC.runScheduleNow, async (event, raw) => {
+    assertTrusted(event);
+    const input = ScheduleIdInputSchema.parse(raw);
+    const response = await requestScheduler({ type: 'scheduler.run-now', requestId: crypto.randomUUID(), ...input });
+    if (!response.run) throw new Error('Scheduler returned no run.');
+    return response.run;
+  });
+  ipcMain.handle(IPC.listScheduleRuns, async (event, raw) => {
+    assertTrusted(event);
+    const input = ScheduleIdInputSchema.parse(raw);
+    const response = await requestScheduler({ type: 'scheduler.runs.list', requestId: crypto.randomUUID(), ...input });
+    return response.runs ?? [];
+  });
+  ipcMain.handle(IPC.cancelScheduleRun, async (event, raw) => {
+    assertTrusted(event);
+    const input = ScheduleRunIdInputSchema.parse(raw);
+    await requestScheduler({ type: 'scheduler.run.cancel', requestId: crypto.randomUUID(), ...input });
   });
   ipcMain.handle(IPC.resolveApproval, async (event, raw) => {
     assertTrusted(event); const input = ApprovalInputSchema.parse(raw);

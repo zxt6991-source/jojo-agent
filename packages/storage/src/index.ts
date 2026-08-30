@@ -28,6 +28,7 @@ export type { PermissionPolicyProfileInput } from './sqlite-permission-governanc
 export { SERVER_STATE_SCHEMA_VERSION } from './server-state-schema.js';
 export { SqliteAgentRuntimeStore } from './sqlite-runtime-store.js';
 export { SqliteTeamStore } from './sqlite-team-store.js';
+export { SqliteScheduleStore } from './sqlite-schedule-store.js';
 
 const StoredConfigV1Schema = z.object({
   schemaVersion: z.literal(1),

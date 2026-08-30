@@ -1,7 +1,15 @@
 import type { AppServiceEvent, DurableIdempotencyStore, JojoAppService } from '@desktop-agent/app-service';
+import type {
+  CreateScheduleInput as SchedulerCreateScheduleInput,
+  ScheduleEvent,
+  ScheduleRunListOptions as SchedulerRunListOptions,
+  ScheduleService,
+  UpdateScheduleInput as SchedulerUpdateScheduleInput
+} from '@desktop-agent/scheduler';
 import {
   JOJO_SERVER_PROTOCOL_VERSION,
   type ClientCommand,
+  type CreateScheduleInput,
   type CreateSessionInput,
   type LeaseMode,
   type LeaseSnapshot,
@@ -9,6 +17,10 @@ import {
   type PatchSessionMetadataInput,
   type RequestContext,
   type RunSnapshot,
+  type RunScheduleNowInput,
+  type Schedule,
+  type ScheduleRun,
+  type ScheduleRunListQuery,
   type ServerCapabilities,
   type ServerInfo,
   type ServerSessionSnapshot,
@@ -16,14 +28,15 @@ import {
   type ServerSnapshot,
   type StartRunInput,
   type TranscriptPage,
-  type TranscriptQuery
+  type TranscriptQuery,
+  type UpdateScheduleInput
 } from '@desktop-agent/server-protocol';
 import { IdempotencyStore } from './idempotency.js';
 import { LeaseManager } from './leases.js';
 import { ScopePolicy } from './scope-policy.js';
 import { ProtocolFailure } from './errors.js';
 
-export type ServerCoreEvent = AppServiceEvent;
+export type ServerCoreEvent = AppServiceEvent | ScheduleEvent;
 
 export type JojoServerCoreOptions = {
   serverId?: string;
@@ -34,6 +47,7 @@ export type JojoServerCoreOptions = {
   idGenerator?: () => string;
   now?: () => Date;
   idempotencyStore?: DurableIdempotencyStore;
+  scheduler?: ScheduleService;
 };
 
 export interface JojoServerCore {
@@ -57,6 +71,25 @@ export interface JojoServerCore {
   getRun(ctx: RequestContext, sessionId: string, runId: string): Promise<RunSnapshot>;
   cancelRun(ctx: RequestContext, sessionId: string, runId: string, reason?: string): Promise<void>;
   resolveApproval(ctx: RequestContext, approvalId: string, decision: 'allow' | 'deny', idempotencyKey?: string): Promise<void>;
+  listSchedules(ctx: RequestContext): Promise<Schedule[]>;
+  createSchedule(ctx: RequestContext, input: CreateScheduleInput, idempotencyKey?: string): Promise<Schedule>;
+  getSchedule(ctx: RequestContext, scheduleId: string): Promise<Schedule>;
+  updateSchedule(
+    ctx: RequestContext,
+    scheduleId: string,
+    input: UpdateScheduleInput,
+    idempotencyKey?: string
+  ): Promise<Schedule>;
+  deleteSchedule(ctx: RequestContext, scheduleId: string, idempotencyKey?: string): Promise<void>;
+  runScheduleNow(
+    ctx: RequestContext,
+    scheduleId: string,
+    input?: RunScheduleNowInput,
+    idempotencyKey?: string
+  ): Promise<ScheduleRun>;
+  listScheduleRuns(ctx: RequestContext, scheduleId: string, query?: ScheduleRunListQuery): Promise<ScheduleRun[]>;
+  getScheduleRun(ctx: RequestContext, runId: string): Promise<ScheduleRun>;
+  cancelScheduleRun(ctx: RequestContext, runId: string, idempotencyKey?: string): Promise<void>;
   dispatch(ctx: RequestContext, command: ClientCommand): Promise<unknown>;
   closeConnection(connectionId: string): void;
   subscribe(listener: (event: ServerCoreEvent) => void): () => void;
@@ -70,6 +103,9 @@ class DefaultJojoServerCore implements JojoServerCore {
   private readonly leases: LeaseManager;
   private readonly idempotency: IdempotencyStore;
   private readonly scopePolicy: ScopePolicy;
+  private readonly scheduler: ScheduleService | undefined;
+  private readonly listeners = new Set<(event: ServerCoreEvent) => void>();
+  private readonly unsubscribes: Array<() => void>;
 
   constructor(private readonly service: JojoAppService, options: JojoServerCoreOptions) {
     this.info = {
@@ -88,7 +124,10 @@ class DefaultJojoServerCore implements JojoServerCore {
       subagents: true,
       images: true,
       approvals: true,
-      ...options.capabilities
+      ...options.capabilities,
+      scheduler: options.scheduler
+        ? options.capabilities?.scheduler ?? { enabled: true, targets: ['agent'] }
+        : { enabled: false, targets: [] }
     };
     this.models = [...(options.models ?? [])];
     this.leases = new LeaseManager(options.idGenerator, options.now);
@@ -98,6 +137,11 @@ class DefaultJojoServerCore implements JojoServerCore {
       options.now ? () => options.now!().getTime() : Date.now,
       options.idempotencyStore
     );
+    this.scheduler = options.scheduler;
+    this.unsubscribes = [
+      service.subscribe((event) => this.emit(event)),
+      ...(this.scheduler ? [this.scheduler.subscribe((event) => this.emit(event))] : [])
+    ];
   }
 
   async serverSnapshot(ctx: RequestContext): Promise<ServerSnapshot> {
@@ -185,6 +229,84 @@ class DefaultJojoServerCore implements JojoServerCore {
     ));
   }
 
+  listSchedules(ctx: RequestContext): Promise<Schedule[]> {
+    authorize(ctx, 'schedules:read');
+    return this.requireScheduler().list();
+  }
+
+  createSchedule(ctx: RequestContext, input: CreateScheduleInput, key?: string): Promise<Schedule> {
+    authorize(ctx, 'schedules:write');
+    return this.idempotency.execute(ctx.principal.id, 'schedule.create', key, input, () => (
+      this.requireScheduler().create(compactSchedulerInput<SchedulerCreateScheduleInput>(input), {
+        id: ctx.principal.id,
+        type: ctx.principal.type === 'service' ? 'service' : 'user'
+      })
+    ));
+  }
+
+  getSchedule(ctx: RequestContext, scheduleId: string): Promise<Schedule> {
+    authorize(ctx, 'schedules:read');
+    return this.requireScheduler().get(scheduleId);
+  }
+
+  updateSchedule(
+    ctx: RequestContext,
+    scheduleId: string,
+    input: UpdateScheduleInput,
+    key?: string
+  ): Promise<Schedule> {
+    authorize(ctx, 'schedules:write');
+    return this.idempotency.execute(ctx.principal.id, `schedule.update:${scheduleId}`, key, input, () => (
+      this.requireScheduler().update(scheduleId, compactSchedulerInput<SchedulerUpdateScheduleInput>(input))
+    ));
+  }
+
+  deleteSchedule(ctx: RequestContext, scheduleId: string, key?: string): Promise<void> {
+    authorize(ctx, 'schedules:write');
+    return this.idempotency.execute(ctx.principal.id, `schedule.delete:${scheduleId}`, key, { scheduleId }, () => (
+      this.requireScheduler().delete(scheduleId)
+    ));
+  }
+
+  runScheduleNow(
+    ctx: RequestContext,
+    scheduleId: string,
+    input: RunScheduleNowInput = {},
+    key?: string
+  ): Promise<ScheduleRun> {
+    authorize(ctx, 'schedules:run');
+    return this.idempotency.execute(ctx.principal.id, `schedule.run:${scheduleId}`, key, input, () => (
+      this.requireScheduler().runNow(
+        scheduleId,
+        compactSchedulerInput<{ respectConcurrency?: boolean }>(input)
+      )
+    ));
+  }
+
+  listScheduleRuns(
+    ctx: RequestContext,
+    scheduleId: string,
+    query: ScheduleRunListQuery = { limit: 100 }
+  ): Promise<ScheduleRun[]> {
+    authorize(ctx, 'schedules:read');
+    return this.requireScheduler().listRuns(
+      scheduleId,
+      compactSchedulerInput<SchedulerRunListOptions>(query)
+    );
+  }
+
+  getScheduleRun(ctx: RequestContext, runId: string): Promise<ScheduleRun> {
+    authorize(ctx, 'schedules:read');
+    return this.requireScheduler().getRun(runId);
+  }
+
+  cancelScheduleRun(ctx: RequestContext, runId: string, key?: string): Promise<void> {
+    authorize(ctx, 'schedules:cancel');
+    return this.idempotency.execute(ctx.principal.id, `schedule.cancel:${runId}`, key, { runId }, () => (
+      this.requireScheduler().cancelRun(runId)
+    ));
+  }
+
   async dispatch(ctx: RequestContext, command: ClientCommand): Promise<unknown> {
     switch (command.type) {
       case 'server.snapshot': return this.serverSnapshot(ctx);
@@ -206,15 +328,30 @@ class DefaultJojoServerCore implements JojoServerCore {
   }
 
   subscribe(listener: (event: ServerCoreEvent) => void): () => void {
-    return this.service.subscribe(listener);
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
   }
 
-  close(): Promise<void> {
-    return this.service.close();
+  async close(): Promise<void> {
+    for (const unsubscribe of this.unsubscribes) unsubscribe();
+    this.listeners.clear();
+    await this.scheduler?.close();
+    await this.service.close();
   }
 
   private withLease(ctx: RequestContext, snapshot: ServerSessionSnapshot): ServerSessionSnapshot {
     return { ...snapshot, lease: this.leases.get(snapshot.id, ctx.connectionId) };
+  }
+
+  private requireScheduler(): ScheduleService {
+    if (!this.scheduler) throw new ProtocolFailure({ code: 'scheduler_unavailable', message: 'Scheduler is not enabled.' });
+    return this.scheduler;
+  }
+
+  private emit(event: ServerCoreEvent): void {
+    for (const listener of this.listeners) {
+      try { listener(event); } catch { /* Observers are isolated. */ }
+    }
   }
 }
 
@@ -225,4 +362,8 @@ export function createJojoServerCore(service: JojoAppService, options: JojoServe
 function authorize(ctx: RequestContext, scope: string): void {
   if (ctx.principal.scopes.includes('admin') || ctx.principal.scopes.includes(scope)) return;
   throw new ProtocolFailure({ code: 'forbidden', message: `The principal lacks the ${scope} scope.` });
+}
+
+function compactSchedulerInput<T>(input: unknown): T {
+  return JSON.parse(JSON.stringify(input)) as T;
 }

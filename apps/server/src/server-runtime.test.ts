@@ -176,4 +176,99 @@ describe('headless server consumer', () => {
     await serverB.close();
     runtimeStoreB.close();
   });
+
+  it('runs Agent schedules through scoped control-plane methods without a session lease', async () => {
+    const server = await createHeadlessServer({
+      providers: { resolve: () => new ScriptedProvider([[
+        { type: 'text_delta', text: 'scheduled answer' },
+        { type: 'response_completed', stopReason: 'stop' }
+      ]]) },
+      permissions: allow
+    });
+    await server.core.createSession(context, { id: 'scheduled-session', executionScope: { kind: 'none' } });
+    const writeContext: RequestContext = {
+      requestId: 'schedule-write',
+      principal: { id: 'automation-editor', type: 'token', scopes: ['schedules:write'] }
+    };
+    const readContext: RequestContext = {
+      requestId: 'schedule-read',
+      principal: { id: 'automation-reader', type: 'token', scopes: ['schedules:read'] }
+    };
+    const runContext: RequestContext = {
+      requestId: 'schedule-run',
+      principal: { id: 'automation-runner', type: 'token', scopes: ['schedules:run'] }
+    };
+    const cancelContext: RequestContext = {
+      requestId: 'schedule-cancel',
+      principal: { id: 'automation-canceller', type: 'token', scopes: ['schedules:cancel'] }
+    };
+    const input = {
+      name: 'Headless Agent',
+      enabled: false,
+      spec: { kind: 'once' as const, runAt: new Date(Date.now() + 60_000).toISOString() },
+      target: {
+        kind: 'agent' as const,
+        sessionId: 'scheduled-session',
+        input: { content: [{ type: 'text' as const, text: 'scheduled prompt' }] },
+        providerId: 'test',
+        model: 'scripted'
+      }
+    };
+    expect(() => server.core.createSchedule(readContext, input)).toThrow(/schedules:write/u);
+    const schedule = await server.core.createSchedule(writeContext, input, 'create-schedule');
+    expect(server.core.capabilities.scheduler).toEqual({ enabled: true, targets: ['agent'] });
+    await expect(server.core.listSchedules(readContext)).resolves.toMatchObject([{ id: schedule.id }]);
+
+    const started = await server.core.runScheduleNow(runContext, schedule.id, {}, 'run-schedule');
+    let terminal = await server.core.getScheduleRun(readContext, started.id);
+    for (let attempt = 0; attempt < 40 && terminal.status !== 'completed'; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      terminal = await server.core.getScheduleRun(readContext, started.id);
+    }
+    expect(terminal).toMatchObject({ status: 'completed', resultPreview: 'scheduled answer' });
+    await expect(server.core.cancelScheduleRun(cancelContext, started.id)).resolves.toBeUndefined();
+    await server.close();
+  });
+
+  it('restores persisted schedules from the headless scheduler database', async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), 'jojo-scheduler-restart-'));
+    const runtimeFile = path.join(directory, 'runtime.sqlite');
+    const runtimeStoreA = new SqliteAgentRuntimeStore(runtimeFile);
+    const serverA = await createHeadlessServer({
+      dataDir: directory,
+      store: runtimeStoreA,
+      providers: { resolve: () => new ScriptedProvider([]) },
+      permissions: allow
+    });
+    await serverA.core.createSession(context, { id: 'persisted-schedule-session', executionScope: { kind: 'none' } });
+    const schedule = await serverA.core.createSchedule(context, {
+      name: 'Persisted automation',
+      enabled: false,
+      spec: { kind: 'once', runAt: new Date(Date.now() + 60_000).toISOString() },
+      target: {
+        kind: 'agent',
+        sessionId: 'persisted-schedule-session',
+        input: { content: [{ type: 'text', text: 'persist me' }] },
+        providerId: 'test',
+        model: 'scripted'
+      }
+    });
+    await serverA.close();
+    runtimeStoreA.close();
+
+    const runtimeStoreB = new SqliteAgentRuntimeStore(runtimeFile);
+    const serverB = await createHeadlessServer({
+      dataDir: directory,
+      store: runtimeStoreB,
+      providers: { resolve: () => new ScriptedProvider([]) },
+      permissions: allow
+    });
+    await expect(serverB.core.getSchedule(context, schedule.id)).resolves.toMatchObject({
+      id: schedule.id,
+      name: 'Persisted automation',
+      enabled: false
+    });
+    await serverB.close();
+    runtimeStoreB.close();
+  });
 });

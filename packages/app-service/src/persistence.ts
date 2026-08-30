@@ -43,6 +43,11 @@ export type RunRequestMeta = {
     maxOutputTokens?: number;
     allowPartialOnLimit?: boolean;
   };
+  origin?: {
+    kind: 'user' | 'api' | 'scheduler';
+    scheduleId?: string;
+    scheduleRunId?: string;
+  };
 };
 
 export type PersistedRunStatus =

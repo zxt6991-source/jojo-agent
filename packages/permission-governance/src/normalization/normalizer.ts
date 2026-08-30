@@ -73,13 +73,13 @@ function operationsFor(call: ToolCall, source: ToolSource, mcpRisk?: 'read' | 'e
 
 function contextFor(context: RuntimeResolutionContext): GovernanceContext {
   const actor = context.actor ?? { kind: 'main' as const };
-  const trigger = actor.kind === 'workflow' || context.workflow
+  const trigger = context.trigger?.kind ?? (actor.kind === 'workflow' || context.workflow
     ? 'workflow' as const
     : actor.kind === 'subagent'
       ? 'subagent' as const
       : actor.kind === 'team_member'
         ? 'team_member' as const
-      : 'user' as const;
+      : 'user' as const);
   return {
     sessionId: context.sessionId,
     laneId: context.laneId,

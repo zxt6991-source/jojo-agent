@@ -21,6 +21,12 @@ import type { HookSettingsSnapshot } from './hooks';
 import { MemorySettingsSchema } from './memory';
 import type { MemorySettings, MemoryStatusSnapshot } from './memory';
 import { MemoryCandidateReviewEditSchema } from './memory-candidate';
+import type {
+  SaveScheduleInputContract,
+  ScheduleContract,
+  ScheduleEventContract,
+  ScheduleRunContract
+} from './scheduler';
 
 export const MAX_IMAGE_ATTACHMENTS = 4;
 export const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
@@ -509,6 +515,14 @@ export type DesktopApi = {
   saveTeam(input: z.input<typeof SaveTeamInputSchema>): Promise<TeamSnapshot>;
   deleteTeam(input: z.input<typeof DeleteTeamInputSchema>): Promise<void>;
   setTeamMemberEnabled(input: z.input<typeof SetTeamMemberEnabledInputSchema>): Promise<TeamSnapshot>;
+  listSchedules(): Promise<ScheduleContract[]>;
+  getSchedule(input: { scheduleId: string }): Promise<ScheduleContract>;
+  saveSchedule(input: SaveScheduleInputContract): Promise<ScheduleContract>;
+  deleteSchedule(input: { scheduleId: string }): Promise<void>;
+  setScheduleEnabled(input: { scheduleId: string; enabled: boolean; expectedRevision?: number }): Promise<ScheduleContract>;
+  runScheduleNow(input: { scheduleId: string }): Promise<ScheduleRunContract>;
+  listScheduleRuns(input: { scheduleId: string }): Promise<ScheduleRunContract[]>;
+  cancelScheduleRun(input: { runId: string }): Promise<void>;
   resolveApproval(input: z.input<typeof ApprovalInputSchema>): Promise<void>;
   chooseDirectory(): Promise<string | null>;
   chooseImages(): Promise<ImageContentBlock[]>;
@@ -556,6 +570,7 @@ export type DesktopApi = {
   openHookConfig(input: z.input<typeof OpenHookConfigInputSchema>): Promise<void>;
   onAgentEvent(listener: (event: AgentEvent) => void): () => void;
   onOrchestrationEvent(listener: (event: OrchestrationEvent) => void): () => void;
+  onScheduleEvent(listener: (event: ScheduleEventContract) => void): () => void;
   onSessionsChanged(listener: () => void): () => void;
   onExtensionsChanged(listener: () => void): () => void;
   onBrowserSecretRequest(listener: (request: { requestId: string; name: string; description?: string }) => void): () => void;
@@ -583,6 +598,15 @@ export const IPC = {
   saveTeam: 'orchestration:team-save',
   deleteTeam: 'orchestration:team-delete',
   setTeamMemberEnabled: 'orchestration:team-member-enabled',
+  listSchedules: 'scheduler:list',
+  getSchedule: 'scheduler:get',
+  saveSchedule: 'scheduler:save',
+  deleteSchedule: 'scheduler:delete',
+  setScheduleEnabled: 'scheduler:enabled',
+  runScheduleNow: 'scheduler:run-now',
+  listScheduleRuns: 'scheduler:runs-list',
+  cancelScheduleRun: 'scheduler:run-cancel',
+  scheduleEvent: 'scheduler:event',
   resolveApproval: 'agent:approval',
   chooseDirectory: 'system:choose-directory',
   chooseImages: 'system:choose-images',

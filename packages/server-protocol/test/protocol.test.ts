@@ -3,6 +3,8 @@ import {
   ClientHelloSchema,
   JOJO_SERVER_PROTOCOL_VERSION,
   RunSnapshotSchema,
+  ServerCapabilitiesSchema,
+  ServerWireMessageSchema,
   ServerSessionSnapshotSchema
 } from '../src/index.js';
 
@@ -28,6 +30,22 @@ describe('server protocol', () => {
         lanes: [{ id: 'main', sessionId: 'session' }]
       },
       activeRuns: [], transcript: [], pendingApprovals: [], lease: null
+    }).success).toBe(true);
+  });
+
+  it('advertises concrete scheduler targets and validates scheduler events in protocol v2', () => {
+    expect(JOJO_SERVER_PROTOCOL_VERSION).toBe(2);
+    expect(ServerCapabilitiesSchema.safeParse({
+      runtime: {
+        lanes: true, resumeOperation: true, transcriptQuery: true, runQuery: true,
+        steer: false, followUp: false, durableSuspend: false
+      },
+      workflow: false, browser: false, memory: false, subagents: true, images: true, approvals: true,
+      scheduler: { enabled: true, targets: ['agent'] }
+    }).success).toBe(true);
+    expect(ServerWireMessageSchema.safeParse({
+      type: 'schedule.event',
+      event: { type: 'schedule.deleted', scheduleId: 'sch_1' }
     }).success).toBe(true);
   });
 });

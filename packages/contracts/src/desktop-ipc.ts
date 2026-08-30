@@ -10,6 +10,15 @@ import { SemanticIndexStatusSchema } from './memory-semantic.js';
 import { OrchestrationEventSchema, TeamSnapshotSchema, TeamStatusSnapshotSchema } from './orchestration.js';
 import { SaveTeamInputSchema } from './desktop.js';
 import { ProviderSettingsSchema } from './persistence.js';
+import {
+  SaveScheduleInputSchema,
+  ScheduleEventSchema,
+  ScheduleIdInputSchema,
+  ScheduleRunIdInputSchema,
+  ScheduleRunSchema,
+  ScheduleSchema,
+  SetScheduleEnabledInputSchema
+} from './scheduler.js';
 
 export const MAX_WORKER_COMMAND_BYTES = 16 * 1024 * 1024;
 export const MAX_WORKER_MESSAGE_BYTES = 16 * 1024 * 1024;
@@ -58,6 +67,14 @@ const WorkerCommandBaseSchema = z.discriminatedUnion('type', [
     type: z.literal('team.member.enabled'), requestId: IdSchema, teamId: IdSchema,
     memberId: IdSchema, enabled: z.boolean()
   }).strict(),
+  z.object({ type: z.literal('scheduler.list'), requestId: IdSchema }).strict(),
+  z.object({ type: z.literal('scheduler.get'), requestId: IdSchema }).merge(ScheduleIdInputSchema),
+  z.object({ type: z.literal('scheduler.save'), requestId: IdSchema, input: SaveScheduleInputSchema }).strict(),
+  z.object({ type: z.literal('scheduler.delete'), requestId: IdSchema }).merge(ScheduleIdInputSchema),
+  z.object({ type: z.literal('scheduler.enabled'), requestId: IdSchema, input: SetScheduleEnabledInputSchema }).strict(),
+  z.object({ type: z.literal('scheduler.run-now'), requestId: IdSchema }).merge(ScheduleIdInputSchema),
+  z.object({ type: z.literal('scheduler.runs.list'), requestId: IdSchema }).merge(ScheduleIdInputSchema),
+  z.object({ type: z.literal('scheduler.run.cancel'), requestId: IdSchema }).merge(ScheduleRunIdInputSchema),
   z.object({
     type: z.literal('approval.resolve'), requestId: IdSchema, allow: z.boolean(),
     scope: z.enum(['once', 'session', 'similar', 'conversation']).default('once')
@@ -114,6 +131,15 @@ const WorkerMessageBaseSchema = z.discriminatedUnion('type', [
     teams: z.array(TeamSnapshotSchema).max(1_000).optional(),
     team: TeamSnapshotSchema.optional(), status: TeamStatusSnapshotSchema.optional(), error: ErrorSchema.optional()
   }).strict(),
+  z.object({
+    type: z.literal('scheduler.result'), requestId: IdSchema, ok: z.boolean(),
+    schedules: z.array(ScheduleSchema).max(10_000).optional(),
+    schedule: ScheduleSchema.optional(),
+    runs: z.array(ScheduleRunSchema).max(10_000).optional(),
+    run: ScheduleRunSchema.optional(),
+    error: ErrorSchema.optional()
+  }).strict(),
+  z.object({ type: z.literal('scheduler.event'), event: ScheduleEventSchema }).strict(),
   z.object({ type: z.literal('sessions.changed') }).strict(),
   z.object({ type: z.literal('extensions.status'), status: ExtensionStatusSchema }).strict(),
   z.object({ type: z.literal('mcp.oauth.authorization'), requestId: IdSchema, url: z.string().url().max(4_096) }).strict(),

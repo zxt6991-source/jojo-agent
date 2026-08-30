@@ -1,8 +1,11 @@
 import {
   ClientHelloSchema,
+  CreateScheduleInputSchema,
   ErrorResponseSchema,
   JOJO_SERVER_PROTOCOL_VERSION,
   RunSnapshotSchema,
+  ScheduleRunSchema,
+  ScheduleSchema,
   ServerCapabilitiesSchema,
   ServerInfoSchema,
   ServerSessionSnapshotSchema,
@@ -10,6 +13,7 @@ import {
   ServerWireMessageSchema,
   TranscriptPageSchema,
   type ClientCommand,
+  type CreateScheduleInput,
   type CreateSessionInput,
   type LeaseMode,
   type LeaseSnapshot,
@@ -17,6 +21,10 @@ import {
   type ProtocolError,
   type RunResult,
   type RunSnapshot,
+  type Schedule,
+  type ScheduleEvent,
+  type ScheduleRun,
+  type ScheduleRunListQuery,
   type ServerCapabilities,
   type ServerInfo,
   type ServerSessionSnapshot,
@@ -24,7 +32,8 @@ import {
   type ServerWireMessage,
   type StartRunInput,
   type TranscriptPage,
-  type TranscriptQuery
+  type TranscriptQuery,
+  type UpdateScheduleInput
 } from '@desktop-agent/server-protocol';
 import type { ZodType } from 'zod';
 
@@ -46,6 +55,7 @@ export type RunInput = Omit<StartRunInput, 'input'> & {
 
 export type SessionEventListener = (message: Extract<ServerWireMessage, { type: 'event' }>) => void;
 export type RunEventListener = SessionEventListener;
+export type ScheduleEventListener = (event: ScheduleEvent) => void;
 
 export class JojoClientError extends Error {
   constructor(readonly protocol: ProtocolError) {
@@ -66,6 +76,7 @@ export class JojoClient {
   private readonly clientId: string;
   private readonly sessions = new Map<string, JojoSession>();
   private readonly pending = new Map<string, PendingCommand>();
+  private readonly scheduleListeners = new Set<ScheduleEventListener>();
   private socket: WebSocket | undefined;
   private connectPromise: Promise<void> | undefined;
   private manuallyClosed = false;
@@ -197,6 +208,64 @@ export class JojoClient {
     });
   }
 
+  listSchedules(): Promise<Schedule[]> {
+    return this.http('/api/v1/schedules', ScheduleSchema.array());
+  }
+
+  createSchedule(input: CreateScheduleInput): Promise<Schedule> {
+    return this.http('/api/v1/schedules', ScheduleSchema, {
+      method: 'POST', body: CreateScheduleInputSchema.parse(input), idempotencyKey: crypto.randomUUID()
+    });
+  }
+
+  getSchedule(scheduleId: string): Promise<Schedule> {
+    return this.http(`/api/v1/schedules/${encodeURIComponent(scheduleId)}`, ScheduleSchema);
+  }
+
+  updateSchedule(scheduleId: string, input: UpdateScheduleInput): Promise<Schedule> {
+    return this.http(`/api/v1/schedules/${encodeURIComponent(scheduleId)}`, ScheduleSchema, {
+      method: 'PATCH', body: input, idempotencyKey: crypto.randomUUID()
+    });
+  }
+
+  async deleteSchedule(scheduleId: string): Promise<void> {
+    await this.http(`/api/v1/schedules/${encodeURIComponent(scheduleId)}`, undefined, {
+      method: 'DELETE', idempotencyKey: crypto.randomUUID()
+    });
+  }
+
+  runScheduleNow(scheduleId: string, options: { respectConcurrency?: boolean } = {}): Promise<ScheduleRun> {
+    return this.http(`/api/v1/schedules/${encodeURIComponent(scheduleId)}/run`, ScheduleRunSchema, {
+      method: 'POST', body: options, idempotencyKey: crypto.randomUUID()
+    });
+  }
+
+  listScheduleRuns(scheduleId: string, query: Partial<ScheduleRunListQuery> = {}): Promise<ScheduleRun[]> {
+    const params = new URLSearchParams();
+    if (query.states?.length) params.set('states', query.states.join(','));
+    if (query.limit !== undefined) params.set('limit', String(query.limit));
+    const suffix = params.size ? `?${params.toString()}` : '';
+    return this.http(
+      `/api/v1/schedules/${encodeURIComponent(scheduleId)}/runs${suffix}`,
+      ScheduleRunSchema.array()
+    );
+  }
+
+  getScheduleRun(runId: string): Promise<ScheduleRun> {
+    return this.http(`/api/v1/schedule-runs/${encodeURIComponent(runId)}`, ScheduleRunSchema);
+  }
+
+  async cancelScheduleRun(runId: string): Promise<void> {
+    await this.http(`/api/v1/schedule-runs/${encodeURIComponent(runId)}/cancel`, undefined, {
+      method: 'POST', idempotencyKey: crypto.randomUUID()
+    });
+  }
+
+  subscribeSchedules(listener: ScheduleEventListener): () => void {
+    this.scheduleListeners.add(listener);
+    return () => this.scheduleListeners.delete(listener);
+  }
+
   command(command: ClientCommand): Promise<unknown> {
     if (!this.socket || this.socket.readyState !== this.WebSocketImpl.OPEN || !this._connectionId) {
       throw new Error('client_not_connected');
@@ -247,6 +316,10 @@ export class JojoClient {
       this.pending.delete(message.id);
       if (message.ok) pending.resolve(message.result);
       else pending.reject(new JojoClientError(message.error));
+      return;
+    }
+    if (message.type === 'schedule.event') {
+      for (const listener of this.scheduleListeners) listener(message.event);
       return;
     }
     if (message.type === 'event') this.sessions.get(message.sessionId)?.emit(message);

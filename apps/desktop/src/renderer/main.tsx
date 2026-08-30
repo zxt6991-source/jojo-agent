@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import type {
-  AgentEvent, ApprovalRequest, BrowserDockState, BrowserRecordingRegistrySnapshot, BrowserRecordingStudioDetail, DesktopApi, ExtensionSettings, ExtensionStatus, HookSettingsSnapshot, ImageContentBlock, MemoryCandidateReviewEdit, MemorySettings, MemoryStatusSnapshot, Message, PermissionGovernanceSnapshot, PermissionPolicyDocumentContract, ProviderConfig, ProviderSettings, SessionCompactionRecord, SessionMeta, SkillDetail, SkillStatus, TeamSnapshot, TeamStatusSnapshot, WorkflowRunSnapshot, WorkspaceChanges
+  AgentEvent, ApprovalRequest, BrowserDockState, BrowserRecordingRegistrySnapshot, BrowserRecordingStudioDetail, DesktopApi, ExtensionSettings, ExtensionStatus, HookSettingsSnapshot, ImageContentBlock, MemoryCandidateReviewEdit, MemorySettings, MemoryStatusSnapshot, Message, PermissionGovernanceSnapshot, PermissionPolicyDocumentContract, ProviderConfig, ProviderSettings, ScheduleContract, ScheduleRunContract, SessionCompactionRecord, SessionMeta, SkillDetail, SkillStatus, TeamSnapshot, TeamStatusSnapshot, WorkflowRunSnapshot, WorkspaceChanges
 } from '@desktop-agent/contracts';
 import { DEFAULT_BROWSER_SETTINGS, DEFAULT_MEMORY_SETTINGS, DEFAULT_PROVIDERS, DEFAULT_SESSION_TITLE, projectNameFromDirectory } from '@desktop-agent/contracts';
 import {
@@ -16,6 +16,7 @@ import { browserDomainIssue, parseBrowserDomainList } from './browser-settings';
 import { HooksSettingsPage, hookStatusErrorMessage } from './HooksSettings';
 import { MemorySettingsPage } from './MemorySettings';
 import { PermissionsSettingsPage } from './PermissionsSettings';
+import { SchedulerSettingsPage } from './SchedulerSettings';
 import { TeamSettingsPage } from './TeamSettings';
 import { ChatTranscript, ConversationViewTabs, Markdown, TrajectoryView } from './ConversationViews';
 import { Sidebar } from './Sidebar';
@@ -26,7 +27,7 @@ import './styles.css';
 
 type DiffLine = { type: 'addition' | 'deletion' | 'context' | 'hunk' | 'meta'; oldLine?: number; newLine?: number; text: string };
 const FOLLOW_THRESHOLD = 24;
-type SettingsSection = 'models' | 'permissions' | 'memory' | 'teams' | 'browser' | 'mcp' | 'skills' | 'hooks';
+type SettingsSection = 'models' | 'permissions' | 'memory' | 'automations' | 'teams' | 'browser' | 'mcp' | 'skills' | 'hooks';
 
 const defaultSettings: ProviderSettings = {
   activeProviderId: 'openai',
@@ -629,6 +630,12 @@ function App() {
   const [teamStatus, setTeamStatus] = useState<TeamStatusSnapshot | null>(null);
   const [teamError, setTeamError] = useState('');
   const [teamBusy, setTeamBusy] = useState(false);
+  const [schedules, setSchedules] = useState<ScheduleContract[]>([]);
+  const [selectedScheduleId, setSelectedScheduleId] = useState<string | null>(null);
+  const selectedScheduleIdRef = useRef<string | null>(null);
+  const [scheduleRuns, setScheduleRuns] = useState<ScheduleRunContract[]>([]);
+  const [schedulerError, setSchedulerError] = useState('');
+  const [schedulerBusy, setSchedulerBusy] = useState(false);
   const [memoryDraft, setMemoryDraft] = useState<MemorySettings>(structuredClone(DEFAULT_MEMORY_SETTINGS));
   const [memoryStatus, setMemoryStatus] = useState<MemoryStatusSnapshot | null>(null);
   const [memoryError, setMemoryError] = useState('');
@@ -851,6 +858,122 @@ function App() {
       throw cause;
     } finally {
       setTeamBusy(false);
+    }
+  };
+
+  const loadScheduleRuns = async (scheduleId: string): Promise<void> => {
+    const next = await window.desktopAgent.listScheduleRuns({ scheduleId });
+    if (selectedScheduleIdRef.current === scheduleId) setScheduleRuns(next);
+  };
+
+  const refreshSchedules = async (): Promise<void> => {
+    setSchedulerBusy(true); setSchedulerError('');
+    try {
+      const [next, availableTeams] = await Promise.all([
+        window.desktopAgent.listSchedules(),
+        window.desktopAgent.listTeams()
+      ]);
+      setTeams(availableTeams);
+      setSchedules(next);
+      const currentId = selectedScheduleIdRef.current;
+      const nextId = next.some((schedule) => schedule.id === currentId) ? currentId : (next[0]?.id ?? null);
+      setSelectedScheduleId(nextId);
+      selectedScheduleIdRef.current = nextId;
+      if (nextId) await loadScheduleRuns(nextId);
+      else setScheduleRuns([]);
+    } catch (cause) {
+      setSchedulerError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setSchedulerBusy(false);
+    }
+  };
+
+  const selectSchedule = (scheduleId: string): void => {
+    setSelectedScheduleId(scheduleId);
+    selectedScheduleIdRef.current = scheduleId;
+    setSchedulerError('');
+    void loadScheduleRuns(scheduleId).catch((cause) => setSchedulerError(cause instanceof Error ? cause.message : String(cause)));
+  };
+
+  const saveSchedule = async (input: Parameters<DesktopApi['saveSchedule']>[0]): Promise<ScheduleContract> => {
+    setSchedulerBusy(true); setSchedulerError('');
+    try {
+      const saved = await window.desktopAgent.saveSchedule(input);
+      setSchedules((current) => [...current.filter((schedule) => schedule.id !== saved.id), saved]
+        .sort((left, right) => left.name.localeCompare(right.name)));
+      setSelectedScheduleId(saved.id);
+      selectedScheduleIdRef.current = saved.id;
+      await loadScheduleRuns(saved.id);
+      return saved;
+    } catch (cause) {
+      setSchedulerError(cause instanceof Error ? cause.message : String(cause));
+      throw cause;
+    } finally {
+      setSchedulerBusy(false);
+    }
+  };
+
+  const deleteSchedule = async (scheduleId: string): Promise<void> => {
+    setSchedulerBusy(true); setSchedulerError('');
+    try {
+      await window.desktopAgent.deleteSchedule({ scheduleId });
+      const remaining = schedules.filter((schedule) => schedule.id !== scheduleId);
+      setSchedules(remaining);
+      const nextId = remaining[0]?.id ?? null;
+      setSelectedScheduleId(nextId);
+      selectedScheduleIdRef.current = nextId;
+      if (nextId) await loadScheduleRuns(nextId); else setScheduleRuns([]);
+    } catch (cause) {
+      setSchedulerError(cause instanceof Error ? cause.message : String(cause));
+      throw cause;
+    } finally {
+      setSchedulerBusy(false);
+    }
+  };
+
+  const setScheduleEnabled = async (schedule: ScheduleContract, enabled: boolean): Promise<ScheduleContract> => {
+    setSchedulerBusy(true); setSchedulerError('');
+    try {
+      const saved = await window.desktopAgent.setScheduleEnabled({
+        scheduleId: schedule.id,
+        enabled,
+        expectedRevision: schedule.revision
+      });
+      setSchedules((current) => current.map((item) => item.id === saved.id ? saved : item));
+      return saved;
+    } catch (cause) {
+      setSchedulerError(cause instanceof Error ? cause.message : String(cause));
+      throw cause;
+    } finally {
+      setSchedulerBusy(false);
+    }
+  };
+
+  const runScheduleNow = async (scheduleId: string): Promise<ScheduleRunContract> => {
+    setSchedulerBusy(true); setSchedulerError('');
+    try {
+      const run = await window.desktopAgent.runScheduleNow({ scheduleId });
+      setScheduleRuns((current) => [run, ...current.filter((item) => item.id !== run.id)]);
+      return run;
+    } catch (cause) {
+      setSchedulerError(cause instanceof Error ? cause.message : String(cause));
+      throw cause;
+    } finally {
+      setSchedulerBusy(false);
+    }
+  };
+
+  const cancelScheduleRun = async (runId: string): Promise<void> => {
+    setSchedulerBusy(true); setSchedulerError('');
+    try {
+      await window.desktopAgent.cancelScheduleRun({ runId });
+      const scheduleId = selectedScheduleIdRef.current;
+      if (scheduleId) await loadScheduleRuns(scheduleId);
+    } catch (cause) {
+      setSchedulerError(cause instanceof Error ? cause.message : String(cause));
+      throw cause;
+    } finally {
+      setSchedulerBusy(false);
     }
   };
 
@@ -1083,6 +1206,21 @@ function App() {
         void loadTeamStatus(event.message.teamId);
       }
     });
+    const offScheduler = window.desktopAgent.onScheduleEvent((event) => {
+      if (event.type === 'schedule.changed') {
+        setSchedules((current) => [...current.filter((schedule) => schedule.id !== event.schedule.id), event.schedule]
+          .sort((left, right) => left.name.localeCompare(right.name)));
+      } else if (event.type === 'schedule.deleted') {
+        setSchedules((current) => current.filter((schedule) => schedule.id !== event.scheduleId));
+        if (selectedScheduleIdRef.current === event.scheduleId) {
+          selectedScheduleIdRef.current = null;
+          setSelectedScheduleId(null);
+          setScheduleRuns([]);
+        }
+      } else if (event.run.scheduleId === selectedScheduleIdRef.current) {
+        setScheduleRuns((current) => [event.run, ...current.filter((run) => run.id !== event.run.id)]);
+      }
+    });
     const offEvents = window.desktopAgent.onAgentEvent((event: AgentEvent) => {
       if (event.type === 'turn.started') {
         runningRef.current = true; setRunningSessionId(event.sessionId); setError(''); setLiveSteps(emptyLiveSteps()); setTurnStartedAt(Date.now()); setProjectPickerOpen(false); setProjectQuery('');
@@ -1119,10 +1257,11 @@ function App() {
       else if (event.type === 'turn.failed') { setError(event.message); runningRef.current = false; setRunningSessionId(null); setTurnStartedAt(null); setApproval(null); setTerminalSecret(null); void reloadActive(); }
       else if (event.type === 'turn.completed' || event.type === 'turn.cancelled') { runningRef.current = false; setRunningSessionId(null); setTurnStartedAt(null); setApproval(null); setTerminalSecret(null); void reloadActive(); }
     });
-    return () => { offSessions(); offExtensions(); offSecret(); offTerminalSecret(); offDock(); offOrchestration(); offEvents(); };
+    return () => { offSessions(); offExtensions(); offSecret(); offTerminalSecret(); offDock(); offOrchestration(); offScheduler(); offEvents(); };
   }, []);
 
   useEffect(() => { selectedTeamIdRef.current = selectedTeamId; }, [selectedTeamId]);
+  useEffect(() => { selectedScheduleIdRef.current = selectedScheduleId; }, [selectedScheduleId]);
 
   useEffect(() => {
     const toggleSidebar = (event: KeyboardEvent) => {
@@ -1155,6 +1294,11 @@ function App() {
     if (!settingsOpen || settingsSection !== 'teams') return;
     void refreshTeams();
   }, [settingsOpen, settingsSection, activeId]);
+
+  useEffect(() => {
+    if (!settingsOpen || settingsSection !== 'automations') return;
+    void refreshSchedules();
+  }, [settingsOpen, settingsSection]);
 
   useEffect(() => {
     const refreshVisibleChanges = () => {
@@ -1474,6 +1618,7 @@ function App() {
     setExtensionError(''); setExtensionSearch(''); setExtensionEditorOpen(false);
     void refreshExtensionStatus(active?.workingDirectory);
     if (section === 'permissions') void refreshPermissionGovernance();
+    if (section === 'automations') void refreshSchedules();
     if (section === 'teams') void refreshTeams();
     if (section === 'browser') void refreshBrowserRecordings(active?.workingDirectory);
     setSettingsSection(section);
@@ -1760,6 +1905,7 @@ function App() {
           <button type="button" className={settingsSection === 'models' ? 'active' : ''} onClick={() => { setSettingsSection('models'); setExtensionEditorOpen(false); }}><span aria-hidden="true">◇</span> 模型</button>
           <button type="button" className={settingsSection === 'permissions' ? 'active' : ''} onClick={() => { setSettingsSection('permissions'); setExtensionEditorOpen(false); void refreshPermissionGovernance(); }}><span aria-hidden="true">⌁</span> 权限</button>
           <button type="button" className={settingsSection === 'memory' ? 'active' : ''} onClick={() => { setSettingsSection('memory'); setExtensionEditorOpen(false); }}><span aria-hidden="true">◈</span> Memory</button>
+          <button type="button" className={settingsSection === 'automations' ? 'active' : ''} onClick={() => { setSettingsSection('automations'); setExtensionEditorOpen(false); void refreshSchedules(); }}><span aria-hidden="true">◷</span> Automations</button>
           <button type="button" className={settingsSection === 'teams' ? 'active' : ''} onClick={() => { setSettingsSection('teams'); setExtensionEditorOpen(false); void refreshTeams(); }}><span aria-hidden="true">♙</span> 团队</button>
           <button type="button" className={settingsSection === 'browser' ? 'active' : ''} onClick={() => { setSettingsSection('browser'); setExtensionEditorOpen(false); void refreshBrowserRecordings(active?.workingDirectory); }}><span aria-hidden="true">◎</span> 浏览器</button>
           <button type="button" className={settingsSection === 'skills' ? 'active' : ''} onClick={() => { setSettingsSection('skills'); setExtensionSearch(''); setExtensionEditorOpen(false); }}><span aria-hidden="true">⬡</span> 技能</button>
@@ -1768,7 +1914,7 @@ function App() {
         </nav>
       </aside>
       <main className="settings-main">
-        <header className="settings-topbar"><strong>{settingsSection === 'models' ? '模型' : settingsSection === 'permissions' ? '权限' : settingsSection === 'memory' ? 'Memory' : settingsSection === 'teams' ? '团队' : settingsSection === 'browser' ? '浏览器' : settingsSection === 'skills' ? '技能' : settingsSection === 'hooks' ? 'Hooks' : 'MCP 服务'}</strong></header>
+        <header className="settings-topbar"><strong>{settingsSection === 'models' ? '模型' : settingsSection === 'permissions' ? '权限' : settingsSection === 'memory' ? 'Memory' : settingsSection === 'automations' ? 'Automations' : settingsSection === 'teams' ? '团队' : settingsSection === 'browser' ? '浏览器' : settingsSection === 'skills' ? '技能' : settingsSection === 'hooks' ? 'Hooks' : 'MCP 服务'}</strong></header>
         <div className="settings-page-body">
     {settingsSection === 'models' && <form className="settings-content model-settings-page" aria-labelledby="settings-title" onSubmit={async (event) => {
       event.preventDefault();
@@ -1869,6 +2015,23 @@ function App() {
           setMemoryBusy(false);
         }
       }}
+    />}
+    {settingsSection === 'automations' && <SchedulerSettingsPage
+      sessions={sessions}
+      providers={settings.providers}
+      teams={teams}
+      schedules={schedules}
+      selectedScheduleId={selectedScheduleId}
+      runs={scheduleRuns}
+      busy={schedulerBusy}
+      error={schedulerError}
+      onSelect={selectSchedule}
+      onRefresh={() => { void refreshSchedules(); }}
+      onSave={saveSchedule}
+      onDelete={deleteSchedule}
+      onEnabled={setScheduleEnabled}
+      onRunNow={runScheduleNow}
+      onCancelRun={cancelScheduleRun}
     />}
     {settingsSection === 'teams' && <TeamSettingsPage
       {...(active?.workingDirectory ? { workspace: active.workingDirectory } : {})}

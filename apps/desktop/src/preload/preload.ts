@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { IPC, type DesktopApi } from '@desktop-agent/contracts';
-import { parseAgentPush, parseBrowserDockPush, parseBrowserSecretPush, parseOrchestrationPush, parseTerminalSecretPush } from './push-validation';
+import { parseAgentPush, parseBrowserDockPush, parseBrowserSecretPush, parseOrchestrationPush, parseSchedulePush, parseTerminalSecretPush } from './push-validation';
 
 const api: DesktopApi = {
   listSessions: () => ipcRenderer.invoke(IPC.listSessions),
@@ -22,6 +22,14 @@ const api: DesktopApi = {
   saveTeam: (input) => ipcRenderer.invoke(IPC.saveTeam, input),
   deleteTeam: (input) => ipcRenderer.invoke(IPC.deleteTeam, input),
   setTeamMemberEnabled: (input) => ipcRenderer.invoke(IPC.setTeamMemberEnabled, input),
+  listSchedules: () => ipcRenderer.invoke(IPC.listSchedules),
+  getSchedule: (input) => ipcRenderer.invoke(IPC.getSchedule, input),
+  saveSchedule: (input) => ipcRenderer.invoke(IPC.saveSchedule, input),
+  deleteSchedule: (input) => ipcRenderer.invoke(IPC.deleteSchedule, input),
+  setScheduleEnabled: (input) => ipcRenderer.invoke(IPC.setScheduleEnabled, input),
+  runScheduleNow: (input) => ipcRenderer.invoke(IPC.runScheduleNow, input),
+  listScheduleRuns: (input) => ipcRenderer.invoke(IPC.listScheduleRuns, input),
+  cancelScheduleRun: (input) => ipcRenderer.invoke(IPC.cancelScheduleRun, input),
   resolveApproval: (input) => ipcRenderer.invoke(IPC.resolveApproval, input),
   chooseDirectory: () => ipcRenderer.invoke(IPC.chooseDirectory),
   chooseImages: () => ipcRenderer.invoke(IPC.chooseImages),
@@ -82,6 +90,14 @@ const api: DesktopApi = {
     };
     ipcRenderer.on(IPC.orchestrationEvent, handler);
     return () => ipcRenderer.removeListener(IPC.orchestrationEvent, handler);
+  },
+  onScheduleEvent: (listener) => {
+    const handler = (_event: Electron.IpcRendererEvent, raw: unknown) => {
+      const value = parseSchedulePush(raw);
+      if (value) listener(value);
+    };
+    ipcRenderer.on(IPC.scheduleEvent, handler);
+    return () => ipcRenderer.removeListener(IPC.scheduleEvent, handler);
   },
   onSessionsChanged: (listener) => {
     const handler = () => listener();

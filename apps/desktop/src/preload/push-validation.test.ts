@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseAgentPush, parseBrowserDockPush, parseBrowserSecretPush, parseTerminalSecretPush } from './push-validation';
+import { parseAgentPush, parseBrowserDockPush, parseBrowserSecretPush, parseSchedulePush, parseTerminalSecretPush } from './push-validation';
 
 describe('preload push validation', () => {
   it('drops malformed agent events', () => {
@@ -20,5 +20,11 @@ describe('preload push validation', () => {
     expect(parseBrowserSecretPush({ requestId: 'r', name: 'token', secret: 'leak' })).toBeNull();
     expect(parseTerminalSecretPush({ requestId: 'r', name: 'TOKEN', value: 'leak' })).toBeNull();
     expect(parseTerminalSecretPush({ requestId: 'r', name: 'TOKEN' })).toEqual({ requestId: 'r', name: 'TOKEN' });
+  });
+
+  it('validates scheduler events before exposing them to the renderer', () => {
+    expect(parseSchedulePush({ type: 'schedule.deleted', scheduleId: 'sch_1' }))
+      .toEqual({ type: 'schedule.deleted', scheduleId: 'sch_1' });
+    expect(parseSchedulePush({ type: 'schedule.deleted', scheduleId: 'sch_1', target: 'leak' })).toBeNull();
   });
 });

@@ -19,6 +19,23 @@ const TERMINAL_STATES = new Set<WorkflowRunState>([
 ]);
 const MAX_SERIALIZED_DEFINITION_CHARACTERS = 120_000;
 
+function workflowRequestIdentity(request: Pick<
+  WorkflowExecutionRequest,
+  'sessionId' | 'workingDirectory' | 'providerId' | 'model' | 'args' | 'browserApproved' | 'definition' | 'depth' | 'memory'
+>): string {
+  return JSON.stringify({
+    sessionId: request.sessionId,
+    workingDirectory: request.workingDirectory,
+    providerId: request.providerId,
+    model: request.model,
+    args: request.args,
+    browserApproved: request.browserApproved === true,
+    definition: request.definition,
+    depth: request.depth ?? null,
+    memory: request.memory ?? null
+  });
+}
+
 type LiveWorkflow = {
   request: WorkflowExecutionRequest;
   snapshot: WorkflowRunSnapshot;
@@ -108,13 +125,8 @@ export class WorkflowManager {
     const definition = this.resolveDefinition(input);
     const args = resolveWorkflowArgs(definition.inputs, input.args);
     const materialized = materializeWorkflowDefinition(definition, args);
-    const active = this.list(input.sessionId).filter((workflow) => !TERMINAL_STATES.has(workflow.state));
-    if (active.length >= this.maxPerSession) {
-      throw new OrchestrationError('workflow_limit_reached', `A session may have at most ${this.maxPerSession} active workflows.`);
-    }
-    this.prune();
-    const request: WorkflowExecutionRequest = {
-      id: `wf_${crypto.randomUUID()}`,
+    const requestId = input.id ?? `wf_${crypto.randomUUID()}`;
+    const requestBody: Omit<WorkflowExecutionRequest, 'id' | 'createdAt'> = {
       sessionId: input.sessionId,
       workingDirectory: input.workingDirectory,
       providerId: input.providerId,
@@ -122,7 +134,24 @@ export class WorkflowManager {
       args,
       browserApproved: input.browserApproved === true,
       definition: materialized,
-      ...(input.memory ? { memory: structuredClone(input.memory) } : {}),
+      ...(input.depth !== undefined ? { depth: input.depth } : {}),
+      ...(input.memory ? { memory: structuredClone(input.memory) } : {})
+    };
+    const existing = this.workflows.get(requestId);
+    if (existing) {
+      if (workflowRequestIdentity(existing.request) !== workflowRequestIdentity(requestBody)) {
+        throw new OrchestrationError('workflow_run_conflict', `Workflow run id is already bound to different input: ${requestId}`);
+      }
+      return cloneSnapshot(existing.snapshot);
+    }
+    const active = this.list(input.sessionId).filter((workflow) => !TERMINAL_STATES.has(workflow.state));
+    if (active.length >= this.maxPerSession) {
+      throw new OrchestrationError('workflow_limit_reached', `A session may have at most ${this.maxPerSession} active workflows.`);
+    }
+    this.prune();
+    const request: WorkflowExecutionRequest = {
+      id: requestId,
+      ...requestBody,
       createdAt: new Date().toISOString()
     };
     let resolveDone: () => void = () => undefined;

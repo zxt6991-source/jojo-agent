@@ -32,6 +32,7 @@ export default defineConfig({
       ,'@desktop-agent/browser-automation/recording': path.resolve('packages/browser-automation/src/recording.ts')
       ,'@desktop-agent/browser-automation/testing': path.resolve('packages/browser-automation/src/testing.ts')
       ,'@desktop-agent/browser-automation': path.resolve('packages/browser-automation/src/index.ts')
+      ,'@desktop-agent/scheduler': path.resolve('packages/scheduler/src/index.ts')
     }
   },
   test: { environment: 'node', include: ['packages/**/test/**/*.test.ts', 'apps/**/src/**/*.test.ts'] }

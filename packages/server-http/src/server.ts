@@ -6,12 +6,16 @@ import { asProtocolError, ProtocolFailure, protocolStatus, type JojoServerCore }
 import {
   ClientCommandSchema,
   ClientHelloSchema,
+  CreateScheduleInputSchema,
   CreateSessionInputSchema,
   JOJO_SERVER_PROTOCOL_VERSION,
   PatchSessionMetadataInputSchema,
   ResolveApprovalInputSchema,
+  RunScheduleNowInputSchema,
+  ScheduleRunListQuerySchema,
   StartRunInputSchema,
   TranscriptQuerySchema,
+  UpdateScheduleInputSchema,
   type Principal,
   type RequestContext,
   type ServerWireMessage
@@ -104,6 +108,55 @@ export async function createJojoHttpServer(
     await core.resolveApproval(ctx, param(request, 'approvalId'), input.decision, header(request, 'idempotency-key'));
     return reply.code(204).send();
   }));
+  app.get('/api/v1/schedules', async (request, reply) => withHttp(request, reply, options.token, (ctx) => (
+    core.listSchedules(ctx)
+  )));
+  app.post('/api/v1/schedules', async (request, reply) => withHttp(request, reply, options.token, async (ctx) => {
+    const result = await core.createSchedule(
+      ctx,
+      parse(CreateScheduleInputSchema, request.body),
+      header(request, 'idempotency-key')
+    );
+    return reply.code(201).send(result);
+  }));
+  app.get('/api/v1/schedules/:scheduleId', async (request, reply) => withHttp(request, reply, options.token, (ctx) => (
+    core.getSchedule(ctx, param(request, 'scheduleId'))
+  )));
+  app.patch('/api/v1/schedules/:scheduleId', async (request, reply) => withHttp(request, reply, options.token, (ctx) => (
+    core.updateSchedule(
+      ctx,
+      param(request, 'scheduleId'),
+      parse(UpdateScheduleInputSchema, request.body),
+      header(request, 'idempotency-key')
+    )
+  )));
+  app.delete('/api/v1/schedules/:scheduleId', async (request, reply) => withHttp(request, reply, options.token, async (ctx) => {
+    await core.deleteSchedule(ctx, param(request, 'scheduleId'), header(request, 'idempotency-key'));
+    return reply.code(204).send();
+  }));
+  app.post('/api/v1/schedules/:scheduleId/run', async (request, reply) => withHttp(request, reply, options.token, async (ctx) => {
+    const result = await core.runScheduleNow(
+      ctx,
+      param(request, 'scheduleId'),
+      parse(RunScheduleNowInputSchema, request.body ?? {}),
+      header(request, 'idempotency-key')
+    );
+    return reply.code(202).send(result);
+  }));
+  app.get('/api/v1/schedules/:scheduleId/runs', async (request, reply) => withHttp(request, reply, options.token, (ctx) => (
+    core.listScheduleRuns(
+      ctx,
+      param(request, 'scheduleId'),
+      parse(ScheduleRunListQuerySchema, request.query)
+    )
+  )));
+  app.get('/api/v1/schedule-runs/:runId', async (request, reply) => withHttp(request, reply, options.token, (ctx) => (
+    core.getScheduleRun(ctx, param(request, 'runId'))
+  )));
+  app.post('/api/v1/schedule-runs/:runId/cancel', async (request, reply) => withHttp(request, reply, options.token, async (ctx) => {
+    await core.cancelScheduleRun(ctx, param(request, 'runId'), header(request, 'idempotency-key'));
+    return reply.code(204).send();
+  }));
 
   app.get('/api/v1/events', { websocket: true }, (socket, _request) => {
     const connectionId = `conn_${crypto.randomUUID()}`;
@@ -141,6 +194,13 @@ export async function createJojoHttpServer(
           principal = authenticateToken(options.token, hello.auth?.token);
           clientId = hello.client.id;
           unsubscribe = core.subscribe((event) => {
+            if (event.type === 'schedule.changed' || event.type === 'schedule.deleted'
+              || event.type === 'schedule.run.changed') {
+              if (principal!.scopes.includes('admin') || principal!.scopes.includes('schedules:read')) {
+                send({ type: 'schedule.event', event });
+              }
+              return;
+            }
             if (event.type === 'runtime.event') {
               if (!attached.has(event.envelope.sessionId)) return;
               connectionSeq += 1;

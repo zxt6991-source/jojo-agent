@@ -60,4 +60,22 @@ describe('GovernanceRuntimePermissionGate', () => {
       decision: 'ask', request: { governance: { source: 'mandatory_approval', locked: true }, grant: { options: ['once'] } }
     });
   });
+
+  it('treats an explicit scheduler trigger as non-interactive', async () => {
+    const audit = new MemoryPermissionAuditSink();
+    const gate = new GovernanceRuntimePermissionGate(
+      { check: async () => ({ decision: 'allow' }) },
+      new PermissionGovernanceEngine(),
+      undefined,
+      audit
+    );
+    await gate.check(
+      { id: 'c1', name: 'read_file', input: { path: 'README.md' } },
+      { ...runtimeContext, trigger: { kind: 'scheduler', id: 'sr_1' } }
+    );
+    expect(audit.records[0]?.request.context).toMatchObject({
+      trigger: { kind: 'scheduler' },
+      interactive: false
+    });
+  });
 });

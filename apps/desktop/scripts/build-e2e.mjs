@@ -15,7 +15,8 @@ const aliases = {
   '@desktop-agent/contracts': path.join(repositoryRoot, 'packages/contracts/src/index.ts'),
   '@desktop-agent/hooks': path.join(repositoryRoot, 'packages/hooks/src/index.ts'),
   '@desktop-agent/memory': path.join(repositoryRoot, 'packages/memory/src/index.ts'),
-  '@desktop-agent/runtime-composition': path.join(repositoryRoot, 'packages/runtime-composition/src/index.ts')
+  '@desktop-agent/runtime-composition': path.join(repositoryRoot, 'packages/runtime-composition/src/index.ts'),
+  '@desktop-agent/scheduler': path.join(repositoryRoot, 'packages/scheduler/src/index.ts')
 };
 const external = ['electron', /^node:/u, ...builtinModules];
 const define = {

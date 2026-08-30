@@ -70,6 +70,7 @@ export type RuntimeResolutionContext = {
   /** Empty when executionScope.kind is not workspace. */
   workingDirectory: string;
   actor?: RunRequest['actor'];
+  trigger?: RunRequest['trigger'];
   workflow?: RunRequest['workflow'];
   team?: RunRequest['team'];
 };
@@ -306,6 +307,7 @@ class DefaultAgentRuntime implements AgentRuntime {
         input: '',
         providerId: operation.meta.providerId,
         model: operation.meta.model,
+        trigger: { kind: 'resume', id: request.operationId },
         budget: { maxIterations: operation.meta.maxIterations },
         ...(request.signal ? { signal: request.signal } : {})
       },
@@ -431,6 +433,7 @@ class DefaultAgentRuntime implements AgentRuntime {
       model: request.model,
       workingDirectory,
       ...(request.actor ? { actor: request.actor } : {}),
+      ...(request.trigger ? { trigger: request.trigger } : {}),
       ...(request.workflow ? { workflow: request.workflow } : {}),
       ...(request.team ? { team: request.team } : {})
     };
@@ -572,6 +575,7 @@ class DefaultAgentRuntime implements AgentRuntime {
         laneId,
         runId,
         ...(context.actor ? { actor: context.actor } : {}),
+        ...(context.trigger ? { trigger: context.trigger } : {}),
         ...(context.workflow ? { workflow: context.workflow } : {}),
         ...(context.team ? { team: context.team } : {})
       });

@@ -22,6 +22,24 @@ const commandSamples: unknown[] = [
   },
   { type: 'team.delete', requestId: 'r', teamId: 'team' },
   { type: 'team.member.enabled', requestId: 'r', teamId: 'team', memberId: 'member', enabled: false },
+  { type: 'scheduler.list', requestId: 'r' },
+  { type: 'scheduler.get', requestId: 'r', scheduleId: 'sch' },
+  {
+    type: 'scheduler.save', requestId: 'r',
+    input: {
+      name: 'Daily review',
+      spec: { kind: 'cron', expression: '0 8 * * *', timezone: 'Asia/Shanghai' },
+      target: {
+        kind: 'agent', sessionId: 's', providerId: 'openai', model: 'gpt-5-mini',
+        input: { content: [{ type: 'text', text: 'Review changes' }] }, lane: { mode: 'dedicated' }
+      }
+    }
+  },
+  { type: 'scheduler.delete', requestId: 'r', scheduleId: 'sch' },
+  { type: 'scheduler.enabled', requestId: 'r', input: { scheduleId: 'sch', enabled: false, expectedRevision: 1 } },
+  { type: 'scheduler.run-now', requestId: 'r', scheduleId: 'sch' },
+  { type: 'scheduler.runs.list', requestId: 'r', scheduleId: 'sch' },
+  { type: 'scheduler.run.cancel', requestId: 'r', runId: 'run' },
   { type: 'approval.resolve', requestId: 'r', allow: false },
   { type: 'approval.resolve', requestId: 'r', allow: true, scope: 'session' },
   { type: 'approval.resolve', requestId: 'r', allow: true, scope: 'similar' },
@@ -56,6 +74,8 @@ const messageSamples: unknown[] = [
   { type: 'session.stopped', requestId: 'r', sessionId: 's', ok: true },
   { type: 'workflow.action.result', requestId: 'r', ok: true },
   { type: 'team.result', requestId: 'r', ok: true },
+  { type: 'scheduler.result', requestId: 'r', ok: true },
+  { type: 'scheduler.event', event: { type: 'schedule.deleted', scheduleId: 'sch' } },
   { type: 'orchestration.event', event: { type: 'team.deleted', teamId: 'team' } },
   { type: 'sessions.changed' },
   { type: 'extensions.status', status: { mcpServers: [], skills: [] } },

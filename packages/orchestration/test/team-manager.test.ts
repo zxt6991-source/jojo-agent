@@ -96,6 +96,22 @@ describe('TeamManager', () => {
     expect(maxActive).toBe(2);
   });
 
+  it('uses an injected task id idempotently and rejects conflicting input', async () => {
+    const store = new MemoryTeamStore();
+    const manager = new TeamManager(store, delayedRunner(), new AgentExecutionScheduler(2), () => undefined);
+    await manager.create(definition());
+    const request = {
+      taskId: 'tt_sched_run_1',
+      teamId: 'engineering', memberId: 'architect', task: 'scheduled review',
+      parent: { sessionId: 'session' }, providerId: 'provider', model: 'model'
+    };
+    const first = await manager.delegate(request);
+    const duplicate = await manager.delegate(request);
+    expect(duplicate.id).toBe(first.id);
+    await expect(manager.delegate({ ...request, task: 'different task' }))
+      .rejects.toMatchObject({ code: 'team_task_conflict' });
+  });
+
   it('persists inbox messages without waking the recipient', async () => {
     const store = new MemoryTeamStore();
     let runs = 0;

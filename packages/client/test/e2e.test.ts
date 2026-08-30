@@ -81,4 +81,68 @@ describe('Jojo client SDK', () => {
       await server.close();
     }
   });
+
+  it('manages durable schedules over REST and receives scheduler events over WebSocket', async () => {
+    const server = await createNetworkServer({
+      providers: { resolve: () => new ScriptedProvider([[
+        { type: 'text_delta', text: 'scheduled SDK answer' },
+        { type: 'response_completed', stopReason: 'stop' }
+      ]]) },
+      permissions: allow,
+      http: { host: '127.0.0.1', port: 0, token: 'scheduler-token' }
+    });
+    const address = await server.listen();
+    const client = new JojoClient({
+      baseUrl: address,
+      token: 'scheduler-token',
+      reconnect: false,
+      runPollIntervalMs: 10
+    });
+    try {
+      await client.connect();
+      await expect(client.getCapabilities()).resolves.toMatchObject({
+        scheduler: { enabled: true, targets: ['agent'] }
+      });
+      const session = await client.createSession({ executionScope: { kind: 'none' } });
+      const changed = new Promise<string>((resolve) => {
+        const unsubscribe = client.subscribeSchedules((event) => {
+          if (event.type !== 'schedule.changed') return;
+          unsubscribe();
+          resolve(event.schedule.id);
+        });
+      });
+      const schedule = await client.createSchedule({
+        name: 'SDK schedule',
+        enabled: false,
+        spec: { kind: 'once', runAt: new Date(Date.now() + 60_000).toISOString() },
+        target: {
+          kind: 'agent',
+          sessionId: session.id,
+          input: { content: [{ type: 'text', text: 'run from schedule' }] },
+          providerId: 'test',
+          model: 'scripted'
+        }
+      });
+      await expect(changed).resolves.toBe(schedule.id);
+      await expect(client.updateSchedule(schedule.id, {
+        description: 'updated over REST', expectedRevision: schedule.revision
+      })).resolves.toMatchObject({ description: 'updated over REST', revision: schedule.revision + 1 });
+      await expect(client.listSchedules()).resolves.toMatchObject([{ id: schedule.id }]);
+
+      const started = await client.runScheduleNow(schedule.id);
+      let terminal = await client.getScheduleRun(started.id);
+      for (let attempts = 0; attempts < 50 && terminal.status !== 'completed'; attempts += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        terminal = await client.getScheduleRun(started.id);
+      }
+      expect(terminal).toMatchObject({ status: 'completed', resultPreview: 'scheduled SDK answer' });
+      await expect(client.listScheduleRuns(schedule.id, { states: ['completed'] }))
+        .resolves.toMatchObject([{ id: started.id }]);
+      await client.deleteSchedule(schedule.id);
+      await expect(client.getSchedule(schedule.id)).rejects.toMatchObject({ protocol: { code: 'schedule_not_found' } });
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
 });

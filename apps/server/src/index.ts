@@ -16,7 +16,9 @@ import {
   createJojoRuntime,
   type JojoRuntimeCompositionOptions
 } from '@desktop-agent/runtime-composition';
+import type { ScheduleService } from '@desktop-agent/scheduler';
 import { SqliteServerStateStore } from '@desktop-agent/storage';
+import { createHeadlessSchedulerRuntime } from './scheduler-runtime.js';
 
 export type HeadlessServerOptions = Omit<JojoRuntimeCompositionOptions, 'host' | 'approval'> & {
   instanceId?: string;
@@ -31,6 +33,7 @@ export type HeadlessServer = {
   service: RuntimeAppService;
   appService: JojoAppService;
   core: JojoServerCore;
+  scheduleService: ScheduleService;
   close(): Promise<void>;
 };
 
@@ -62,14 +65,28 @@ export async function createHeadlessServer(options: HeadlessServerOptions): Prom
     ...(options.idGenerator ? { idGenerator: options.idGenerator } : {}),
     ...(options.now ? { now: options.now } : {})
   });
+  let scheduleService: ScheduleService;
+  try {
+    scheduleService = await createHeadlessSchedulerRuntime({
+      runtime,
+      ...(options.dataDir ? { dataDir: options.dataDir } : {}),
+      ...(options.instanceId ? { instanceId: `scheduler:${options.instanceId}` } : {}),
+      ...(options.idGenerator ? { idGenerator: options.idGenerator } : {}),
+      ...(options.now ? { now: options.now } : {})
+    });
+  } catch (error) {
+    await appService.close();
+    throw error;
+  }
   const core = createJojoServerCore(appService, {
     ...(options.server ?? {}),
     idempotencyStore: options.server?.idempotencyStore ?? stateStore.idempotency,
     ...(options.instanceId && !options.server?.serverId ? { serverId: options.instanceId } : {}),
     ...(options.idGenerator ? { idGenerator: options.idGenerator } : {}),
-    ...(options.now ? { now: options.now } : {})
+    ...(options.now ? { now: options.now } : {}),
+    scheduler: scheduleService
   });
-  return { runtime, service, appService, core, close: () => appService.close() };
+  return { runtime, service, appService, core, scheduleService, close: () => core.close() };
 }
 
 export type NetworkServerOptions = HeadlessServerOptions & {
@@ -83,7 +100,13 @@ export type NetworkServer = HeadlessServer & {
 
 export async function createNetworkServer(options: NetworkServerOptions): Promise<NetworkServer> {
   const headless = await createHeadlessServer(options);
-  const http = await createJojoHttpServer(headless.core, options.http);
+  let http: JojoHttpServer;
+  try {
+    http = await createJojoHttpServer(headless.core, options.http);
+  } catch (error) {
+    await headless.close();
+    throw error;
+  }
   return {
     ...headless,
     http,

@@ -29,4 +29,4 @@ export type {
   SessionMetadataStore
 } from './persistence.js';
 export { createJojoAppService } from './jojo-app-service.js';
-export type { AppServiceEvent, JojoAppService, JojoAppServiceOptions } from './jojo-app-service.js';
+export type { AppServiceEvent, JojoAppService, JojoAppServiceOptions, StartRunOptions } from './jojo-app-service.js';

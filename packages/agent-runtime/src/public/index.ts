@@ -28,6 +28,7 @@ export type {
   RuntimeActor,
   RuntimeInput,
   RuntimeInputBlock,
+  RuntimeTriggerContext,
   RuntimeTeamContext,
   RuntimeWorkflowContext,
   TelemetrySink

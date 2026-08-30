@@ -72,6 +72,19 @@ describe('WorkflowManager', () => {
     expect(revisions.every((revision, index) => index === 0 || revision > revisions[index - 1]!)).toBe(true);
   });
 
+  it('uses an injected run id idempotently and rejects conflicting input', () => {
+    const runner: LeafAgentRunner = { run: async () => ({
+      result: 'done', stopReason: 'stop', usage: emptyUsage(), incomplete: false
+    }) };
+    const manager = new WorkflowManager(new WorkflowEngine(runner, new AgentExecutionScheduler(1)), () => undefined);
+    const input = { ...startInput(), id: 'schedrun:workflow-1' };
+    const first = manager.start(input);
+    const duplicate = manager.start(input);
+    expect(duplicate.id).toBe(first.id);
+    expect(() => manager.start({ ...input, model: 'different-model' }))
+      .toThrowError(expect.objectContaining({ code: 'workflow_run_conflict' }));
+  });
+
   it('rejects invalid definitions before registering a run', () => {
     const runner: LeafAgentRunner = { run: vi.fn() };
     const manager = new WorkflowManager(new WorkflowEngine(runner, new AgentExecutionScheduler(1)), () => undefined);

@@ -24,15 +24,17 @@ export function asProtocolError(error: unknown, requestId?: string): ProtocolErr
 export function protocolStatus(code: string): number {
   if (code === 'unauthorized') return 401;
   if (code === 'forbidden' || code === 'workspace_not_allowed' || code === 'scope_not_allowed') return 403;
-  if (['not_found', 'run_not_found', 'approval_not_found'].includes(code)) return 404;
+  if (['not_found', 'run_not_found', 'approval_not_found', 'schedule_not_found', 'schedule_run_not_found'].includes(code)) return 404;
   if (code === 'session_locked') return 423;
   if ([
     'session_busy', 'lane_busy', 'idempotency_conflict', 'idempotency_in_progress', 'revision_conflict',
-    'approval_already_resolved', 'approval_interrupted', 'run_transition_conflict'
+    'approval_already_resolved', 'approval_interrupted', 'run_transition_conflict',
+    'schedule_conflict', 'schedule_revision_conflict', 'schedule_run_conflict',
+    'schedule_run_revision_conflict', 'schedule_run_transition_conflict'
   ].includes(code)) return 409;
   if (code === 'payload_too_large') return 413;
   if (code === 'rate_limited') return 429;
-  if (['runtime_unavailable', 'runtime_interrupted'].includes(code)) return 503;
+  if (['runtime_unavailable', 'runtime_interrupted', 'scheduler_unavailable', 'scheduler_not_leader'].includes(code)) return 503;
   if (code === 'internal_error') return 500;
   return 400;
 }
@@ -50,7 +52,11 @@ function mapCode(code: string): string {
     'approval_expired', 'run_not_found', 'run_cancelled', 'runtime_unavailable', 'runtime_interrupted',
     'rate_limited', 'payload_too_large', 'scope_not_allowed', 'workspace_not_allowed',
     'provider_error', 'internal_error', 'revision_conflict', 'approval_already_resolved',
-    'approval_interrupted', 'run_transition_conflict'
+    'approval_interrupted', 'run_transition_conflict', 'schedule_not_found', 'schedule_run_not_found',
+    'schedule_conflict', 'schedule_revision_conflict', 'schedule_run_conflict',
+    'schedule_run_revision_conflict', 'schedule_run_transition_conflict', 'schedule_invalid_spec',
+    'schedule_target_invalid', 'schedule_target_not_found', 'schedule_run_not_cancellable',
+    'schedule_dispatch_uncertain', 'scheduler_unavailable', 'scheduler_not_leader', 'scheduler_store_failed'
   ]);
   return publicCodes.has(code) ? code : 'internal_error';
 }

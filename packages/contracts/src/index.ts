@@ -13,5 +13,6 @@ export * from './model';
 export * from './orchestration';
 export * from './persistence';
 export * from './runtime';
+export * from './scheduler';
 export * from './tools';
 export * from './workspace';

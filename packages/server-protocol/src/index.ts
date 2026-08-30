@@ -1,16 +1,22 @@
 import { z } from 'zod';
 import {
   ApprovalRequestSchema,
+  CreateScheduleInputSchema,
   ExecutionScopeSchema,
   JsonValueSchema,
   MessageSchema,
   RunResultSchema,
   RuntimeEventEnvelopeSchema,
   RuntimeInputSchema,
-  SessionSnapshotSchema
+  ScheduleEventSchema,
+  ScheduleRunSchema,
+  ScheduleRunStatusSchema,
+  ScheduleSchema,
+  SessionSnapshotSchema,
+  UpdateScheduleInputSchema
 } from '@desktop-agent/contracts';
 
-export const JOJO_SERVER_PROTOCOL_VERSION = 1 as const;
+export const JOJO_SERVER_PROTOCOL_VERSION = 2 as const;
 
 export const ProtocolErrorSchema = z.object({
   code: z.string().min(1),
@@ -61,7 +67,11 @@ export const ServerCapabilitiesSchema = z.object({
   memory: z.boolean(),
   subagents: z.boolean(),
   images: z.boolean(),
-  approvals: z.boolean()
+  approvals: z.boolean(),
+  scheduler: z.object({
+    enabled: z.boolean(),
+    targets: z.array(z.enum(['agent', 'workflow', 'team_member']))
+  }).strict()
 }).strict();
 export type ServerCapabilities = z.infer<typeof ServerCapabilitiesSchema>;
 
@@ -159,6 +169,33 @@ export const RunSnapshotSchema = z.object({
 }).strict();
 export type RunSnapshot = z.infer<typeof RunSnapshotSchema>;
 export type RunResult = z.infer<typeof RunResultSchema>;
+
+export {
+  CreateScheduleInputSchema,
+  ScheduleEventSchema,
+  ScheduleRunSchema,
+  ScheduleSchema,
+  UpdateScheduleInputSchema
+};
+export type CreateScheduleInput = z.infer<typeof CreateScheduleInputSchema>;
+export type UpdateScheduleInput = z.infer<typeof UpdateScheduleInputSchema>;
+export type Schedule = z.infer<typeof ScheduleSchema>;
+export type ScheduleRun = z.infer<typeof ScheduleRunSchema>;
+export type ScheduleEvent = z.infer<typeof ScheduleEventSchema>;
+
+export const ScheduleRunListQuerySchema = z.object({
+  states: z.preprocess(
+    (value) => typeof value === 'string' ? value.split(',').filter(Boolean) : value,
+    z.array(ScheduleRunStatusSchema).max(9).optional()
+  ),
+  limit: z.coerce.number().int().min(1).max(500).default(100)
+}).strict();
+export type ScheduleRunListQuery = z.infer<typeof ScheduleRunListQuerySchema>;
+
+export const RunScheduleNowInputSchema = z.object({
+  respectConcurrency: z.boolean().optional()
+}).strict();
+export type RunScheduleNowInput = z.infer<typeof RunScheduleNowInputSchema>;
 
 export const ApprovalDecisionSchema = z.enum(['allow', 'deny']);
 export type ApprovalDecision = z.infer<typeof ApprovalDecisionSchema>;
@@ -273,6 +310,7 @@ export const ServerWireMessageSchema = z.union([
     event: RuntimeEventEnvelopeSchema
   }).strict(),
   z.object({ type: z.literal('session.snapshot'), snapshot: ServerSessionSnapshotSchema }).strict(),
+  z.object({ type: z.literal('schedule.event'), event: ScheduleEventSchema }).strict(),
   z.object({ type: z.literal('server.shutdown'), reason: z.string().optional() }).strict()
 ]);
 export type ServerWireMessage = z.infer<typeof ServerWireMessageSchema>;

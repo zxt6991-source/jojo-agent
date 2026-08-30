@@ -42,6 +42,7 @@
       ,"@desktop-agent/browser-automation/recording": ["packages/browser-automation/src/recording.ts"]
       ,"@desktop-agent/browser-automation/testing": ["packages/browser-automation/src/testing.ts"]
       ,"@desktop-agent/permission-governance": ["packages/permission-governance/src/index.ts"]
+      ,"@desktop-agent/scheduler": ["packages/scheduler/src/index.ts"]
     }
   }
 }

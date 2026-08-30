@@ -22,6 +22,7 @@
     "@desktop-agent/orchestration": "workspace:*",
     "@desktop-agent/permission-governance": "workspace:*",
     "@desktop-agent/providers": "workspace:*",
+    "@desktop-agent/scheduler": "workspace:*",
     "@desktop-agent/storage": "workspace:*",
     "@desktop-agent/tools-node": "workspace:*",
     "dompurify": "^3.3.0",

@@ -16,6 +16,11 @@ export type RuntimeActor = {
   profile?: string;
 };
 
+export type RuntimeTriggerContext = {
+  kind: 'user' | 'api' | 'scheduler' | 'workflow' | 'subagent' | 'team_member' | 'resume';
+  id?: string;
+};
+
 export type RuntimeWorkflowContext = {
   id: string;
   runId?: string;
@@ -38,6 +43,7 @@ export type RunRequest = {
   instructions?: string[];
   budget?: RunBudget;
   actor?: RuntimeActor;
+  trigger?: RuntimeTriggerContext;
   workflow?: RuntimeWorkflowContext;
   team?: RuntimeTeamContext;
   signal?: AbortSignal;
@@ -56,6 +62,7 @@ export interface TelemetrySink {
     laneId: string;
     runId: string;
     actor?: RuntimeActor;
+    trigger?: RuntimeTriggerContext;
     workflow?: RuntimeWorkflowContext;
     team?: RuntimeTeamContext;
   }): void;
