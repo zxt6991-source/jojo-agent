@@ -54,7 +54,22 @@ export const MessageSchema = z.object({
   metadata: z.object({
     internal: z.boolean().optional(),
     iteration: z.number().int().positive().optional(),
-    finalResponseOnly: z.boolean().optional()
+    finalResponseOnly: z.boolean().optional(),
+    source: z.literal('scheduler').optional(),
+    automation: z.object({
+      scheduleId: z.string().min(1).max(256),
+      scheduleRunId: z.string().min(1).max(256),
+      name: z.string().min(1).max(256),
+      triggeredAt: z.string().datetime()
+    }).strict().optional()
   }).optional()
 });
 export type Message = z.infer<typeof MessageSchema>;
+
+export const ConversationMessageCreatedEventSchema = z.object({
+  sessionId: z.string().min(1).max(256),
+  messageId: z.string().min(1).max(256),
+  scheduleId: z.string().min(1).max(256),
+  scheduleRunId: z.string().min(1).max(256)
+}).strict();
+export type ConversationMessageCreatedEvent = z.infer<typeof ConversationMessageCreatedEventSchema>;

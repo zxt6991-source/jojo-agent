@@ -697,6 +697,7 @@ function App() {
   } | null>(null);
   const [workflows, setWorkflows] = useState<WorkflowRunSnapshot[]>([]);
   const conversationRef = useRef<HTMLDivElement>(null);
+  const [pendingMessageScrollId, setPendingMessageScrollId] = useState<string | null>(null);
   const atBottomRef = useRef(true);
   const [atBottom, setAtBottom] = useState(true);
   const turnBaselineRef = useRef<WorkspaceChanges | null>(null);
@@ -876,7 +877,7 @@ function App() {
       setTeams(availableTeams);
       setSchedules(next);
       const currentId = selectedScheduleIdRef.current;
-      const nextId = next.some((schedule) => schedule.id === currentId) ? currentId : (next[0]?.id ?? null);
+      const nextId = next.some((schedule) => schedule.id === currentId) ? currentId : null;
       setSelectedScheduleId(nextId);
       selectedScheduleIdRef.current = nextId;
       if (nextId) await loadScheduleRuns(nextId);
@@ -919,10 +920,9 @@ function App() {
       await window.desktopAgent.deleteSchedule({ scheduleId });
       const remaining = schedules.filter((schedule) => schedule.id !== scheduleId);
       setSchedules(remaining);
-      const nextId = remaining[0]?.id ?? null;
-      setSelectedScheduleId(nextId);
-      selectedScheduleIdRef.current = nextId;
-      if (nextId) await loadScheduleRuns(nextId); else setScheduleRuns([]);
+      setSelectedScheduleId(null);
+      selectedScheduleIdRef.current = null;
+      setScheduleRuns([]);
     } catch (cause) {
       setSchedulerError(cause instanceof Error ? cause.message : String(cause));
       throw cause;
@@ -1221,6 +1221,13 @@ function App() {
         setScheduleRuns((current) => [event.run, ...current.filter((run) => run.id !== event.run.id)]);
       }
     });
+    const offConversationMessage = window.desktopAgent.onConversationMessageCreated((event) => {
+      void refreshSessions();
+      if (activeIdRef.current !== event.sessionId) return;
+      void window.desktopAgent.loadMessages(event.sessionId).then((next) => {
+        if (activeIdRef.current === event.sessionId) setMessages(next);
+      }).catch(() => undefined);
+    });
     const offEvents = window.desktopAgent.onAgentEvent((event: AgentEvent) => {
       if (event.type === 'turn.started') {
         runningRef.current = true; setRunningSessionId(event.sessionId); setError(''); setLiveSteps(emptyLiveSteps()); setTurnStartedAt(Date.now()); setProjectPickerOpen(false); setProjectQuery('');
@@ -1257,7 +1264,7 @@ function App() {
       else if (event.type === 'turn.failed') { setError(event.message); runningRef.current = false; setRunningSessionId(null); setTurnStartedAt(null); setApproval(null); setTerminalSecret(null); void reloadActive(); }
       else if (event.type === 'turn.completed' || event.type === 'turn.cancelled') { runningRef.current = false; setRunningSessionId(null); setTurnStartedAt(null); setApproval(null); setTerminalSecret(null); void reloadActive(); }
     });
-    return () => { offSessions(); offExtensions(); offSecret(); offTerminalSecret(); offDock(); offOrchestration(); offScheduler(); offEvents(); };
+    return () => { offSessions(); offExtensions(); offSecret(); offTerminalSecret(); offDock(); offOrchestration(); offScheduler(); offConversationMessage(); offEvents(); };
   }, []);
 
   useEffect(() => { selectedTeamIdRef.current = selectedTeamId; }, [selectedTeamId]);
@@ -1544,6 +1551,15 @@ function App() {
   }, [snapshot, workspaceChanges, visibleWorkflows, conversationView, error]);
 
   useLayoutEffect(() => {
+    if (!pendingMessageScrollId || conversationView !== 'chat') return;
+    const root = conversationRef.current;
+    const message = root?.querySelector<HTMLElement>(`[data-node-id="${CSS.escape(pendingMessageScrollId)}"]`);
+    if (!message) return;
+    message.scrollIntoView({ block: 'center' });
+    setPendingMessageScrollId(null);
+  }, [pendingMessageScrollId, snapshot, conversationView]);
+
+  useLayoutEffect(() => {
     if (!activeId || visibleDock) return;
     void window.desktopAgent.setBrowserDockLayout({ sessionId: activeId, overlayOpen, bounds: null });
   }, [activeId, overlayOpen, visibleDock]);
@@ -1618,11 +1634,28 @@ function App() {
     setExtensionError(''); setExtensionSearch(''); setExtensionEditorOpen(false);
     void refreshExtensionStatus(active?.workingDirectory);
     if (section === 'permissions') void refreshPermissionGovernance();
-    if (section === 'automations') void refreshSchedules();
+    if (section === 'automations') {
+      setSelectedScheduleId(null);
+      selectedScheduleIdRef.current = null;
+      setScheduleRuns([]);
+      void refreshSchedules();
+    }
     if (section === 'teams') void refreshTeams();
     if (section === 'browser') void refreshBrowserRecordings(active?.workingDirectory);
     setSettingsSection(section);
     setSettingsOpen(true);
+  };
+
+  const openAutomation = (scheduleId: string) => {
+    openSettings('automations');
+    selectSchedule(scheduleId);
+  };
+
+  const openConversationMessage = async (sessionId: string, messageId: string) => {
+    setSettingsOpen(false);
+    setConversationView('chat');
+    setPendingMessageScrollId(messageId);
+    await selectSession(sessionId);
   };
 
   const openSkillDetail = async (skill: SkillStatus) => {
@@ -1706,6 +1739,7 @@ function App() {
               running={sessionBusy}
               turnStartedAt={turnStartedAt}
               onInspect={inspectRecord}
+              onOpenAutomation={openAutomation}
               renderAfterTurn={(turn) => workflowsByTurn.get(turn.id)?.map((workflow) => <WorkflowCard
                 key={workflow.id}
                 workflow={workflow}
@@ -1905,7 +1939,7 @@ function App() {
           <button type="button" className={settingsSection === 'models' ? 'active' : ''} onClick={() => { setSettingsSection('models'); setExtensionEditorOpen(false); }}><span aria-hidden="true">◇</span> 模型</button>
           <button type="button" className={settingsSection === 'permissions' ? 'active' : ''} onClick={() => { setSettingsSection('permissions'); setExtensionEditorOpen(false); void refreshPermissionGovernance(); }}><span aria-hidden="true">⌁</span> 权限</button>
           <button type="button" className={settingsSection === 'memory' ? 'active' : ''} onClick={() => { setSettingsSection('memory'); setExtensionEditorOpen(false); }}><span aria-hidden="true">◈</span> Memory</button>
-          <button type="button" className={settingsSection === 'automations' ? 'active' : ''} onClick={() => { setSettingsSection('automations'); setExtensionEditorOpen(false); void refreshSchedules(); }}><span aria-hidden="true">◷</span> Automations</button>
+          <button type="button" className={settingsSection === 'automations' ? 'active' : ''} onClick={() => { setSettingsSection('automations'); setExtensionEditorOpen(false); setSelectedScheduleId(null); selectedScheduleIdRef.current = null; setScheduleRuns([]); void refreshSchedules(); }}><span aria-hidden="true">◷</span> Automations</button>
           <button type="button" className={settingsSection === 'teams' ? 'active' : ''} onClick={() => { setSettingsSection('teams'); setExtensionEditorOpen(false); void refreshTeams(); }}><span aria-hidden="true">♙</span> 团队</button>
           <button type="button" className={settingsSection === 'browser' ? 'active' : ''} onClick={() => { setSettingsSection('browser'); setExtensionEditorOpen(false); void refreshBrowserRecordings(active?.workingDirectory); }}><span aria-hidden="true">◎</span> 浏览器</button>
           <button type="button" className={settingsSection === 'skills' ? 'active' : ''} onClick={() => { setSettingsSection('skills'); setExtensionSearch(''); setExtensionEditorOpen(false); }}><span aria-hidden="true">⬡</span> 技能</button>
@@ -1913,7 +1947,7 @@ function App() {
           <button type="button" className={settingsSection === 'hooks' ? 'active' : ''} onClick={() => { setSettingsSection('hooks'); setExtensionEditorOpen(false); }}><span aria-hidden="true">⌥</span> Hooks</button>
         </nav>
       </aside>
-      <main className="settings-main">
+      <main className={`settings-main ${settingsSection === 'automations' ? 'automations-settings-main' : ''}`}>
         <header className="settings-topbar"><strong>{settingsSection === 'models' ? '模型' : settingsSection === 'permissions' ? '权限' : settingsSection === 'memory' ? 'Memory' : settingsSection === 'automations' ? 'Automations' : settingsSection === 'teams' ? '团队' : settingsSection === 'browser' ? '浏览器' : settingsSection === 'skills' ? '技能' : settingsSection === 'hooks' ? 'Hooks' : 'MCP 服务'}</strong></header>
         <div className="settings-page-body">
     {settingsSection === 'models' && <form className="settings-content model-settings-page" aria-labelledby="settings-title" onSubmit={async (event) => {
@@ -2026,12 +2060,14 @@ function App() {
       busy={schedulerBusy}
       error={schedulerError}
       onSelect={selectSchedule}
+      onClose={() => { setSelectedScheduleId(null); selectedScheduleIdRef.current = null; setScheduleRuns([]); }}
       onRefresh={() => { void refreshSchedules(); }}
       onSave={saveSchedule}
       onDelete={deleteSchedule}
       onEnabled={setScheduleEnabled}
       onRunNow={runScheduleNow}
       onCancelRun={cancelScheduleRun}
+      onOpenConversation={(sessionId, messageId) => { void openConversationMessage(sessionId, messageId); }}
     />}
     {settingsSection === 'teams' && <TeamSettingsPage
       {...(active?.workingDirectory ? { workspace: active.workingDirectory } : {})}

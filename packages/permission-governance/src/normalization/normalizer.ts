@@ -16,13 +16,16 @@ const READ_TOOLS = new Set([
   'memory_search', 'mcp_tool_manifest', 'mcp_tool_describe', 'mcp_list_resources',
   'mcp_read_resource', 'mcp_list_prompts', 'mcp_get_prompt', 'workflow_list',
   'sub_agent_status', 'sub_agent_wait', 'workflow_status', 'workflow_wait',
-  'team_list', 'team_status', 'team_wait', 'team_inbox'
+  'team_list', 'team_status', 'team_wait', 'team_inbox',
+  'schedule_list', 'schedule_get', 'schedule_runs'
 ]);
 const WRITE_TOOLS = new Set(['write_file', 'edit_file', 'delete_file', 'save_memory']);
 const CONTROL_TOOLS = new Set([
   'sub_agent_start', 'sub_agent_cancel', 'sub_agent_send', 'sub_agent_close',
   'team_delegate', 'team_send',
-  'workflow_start', 'workflow_cancel', 'workflow_resume'
+  'workflow_start', 'workflow_cancel', 'workflow_resume',
+  'schedule_create', 'schedule_update', 'schedule_set_enabled', 'schedule_delete',
+  'schedule_run_now', 'schedule_cancel_run'
 ]);
 const BROWSER_READ_TOOLS = new Set([
   'browser_pages', 'browser_recordings', 'browser_record_get', 'browser_read', 'browser_wait',
@@ -52,7 +55,8 @@ function sourceFor(call: ToolCall, baseline: PermissionDecision): ToolSource {
   if (call.name.startsWith('mcp__') || call.name.startsWith('mcp_') || (baseline.decision === 'ask' && baseline.request.security?.kind === 'mcp')) return 'mcp';
   if (call.name.startsWith('browser_')) return 'browser';
   if (call.name.includes('memory')) return 'memory';
-  if (call.name.startsWith('sub_agent_') || call.name.startsWith('workflow_') || call.name.startsWith('team_')) return 'orchestration';
+  if (call.name.startsWith('sub_agent_') || call.name.startsWith('workflow_')
+    || call.name.startsWith('team_') || call.name.startsWith('schedule_')) return 'orchestration';
   if (call.name === 'load_skill' || call.name === 'install_skill') return 'skill';
   if (call.name.includes('hook')) return 'hook';
   return 'native';

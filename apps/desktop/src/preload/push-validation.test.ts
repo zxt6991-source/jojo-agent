@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseAgentPush, parseBrowserDockPush, parseBrowserSecretPush, parseSchedulePush, parseTerminalSecretPush } from './push-validation';
+import { parseAgentPush, parseBrowserDockPush, parseBrowserSecretPush, parseConversationMessageCreatedPush, parseSchedulePush, parseTerminalSecretPush } from './push-validation';
 
 describe('preload push validation', () => {
   it('drops malformed agent events', () => {
@@ -26,5 +26,11 @@ describe('preload push validation', () => {
     expect(parseSchedulePush({ type: 'schedule.deleted', scheduleId: 'sch_1' }))
       .toEqual({ type: 'schedule.deleted', scheduleId: 'sch_1' });
     expect(parseSchedulePush({ type: 'schedule.deleted', scheduleId: 'sch_1', target: 'leak' })).toBeNull();
+  });
+
+  it('validates persisted conversation delivery notifications', () => {
+    const event = { sessionId: 's1', messageId: 'm1', scheduleId: 'sch1', scheduleRunId: 'sr1' };
+    expect(parseConversationMessageCreatedPush(event)).toEqual(event);
+    expect(parseConversationMessageCreatedPush({ ...event, sessionId: '' })).toBeNull();
   });
 });

@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { IPC, type DesktopApi } from '@desktop-agent/contracts';
-import { parseAgentPush, parseBrowserDockPush, parseBrowserSecretPush, parseOrchestrationPush, parseSchedulePush, parseTerminalSecretPush } from './push-validation';
+import { parseAgentPush, parseBrowserDockPush, parseBrowserSecretPush, parseConversationMessageCreatedPush, parseOrchestrationPush, parseSchedulePush, parseTerminalSecretPush } from './push-validation';
 
 const api: DesktopApi = {
   listSessions: () => ipcRenderer.invoke(IPC.listSessions),
@@ -98,6 +98,14 @@ const api: DesktopApi = {
     };
     ipcRenderer.on(IPC.scheduleEvent, handler);
     return () => ipcRenderer.removeListener(IPC.scheduleEvent, handler);
+  },
+  onConversationMessageCreated: (listener) => {
+    const handler = (_event: Electron.IpcRendererEvent, raw: unknown) => {
+      const value = parseConversationMessageCreatedPush(raw);
+      if (value) listener(value);
+    };
+    ipcRenderer.on(IPC.conversationMessageCreated, handler);
+    return () => ipcRenderer.removeListener(IPC.conversationMessageCreated, handler);
   },
   onSessionsChanged: (listener) => {
     const handler = () => listener();

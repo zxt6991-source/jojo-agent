@@ -18,6 +18,9 @@ export type ScheduleRunTransition = {
   errorCode?: string;
   error?: string;
   resultPreview?: string;
+  deliveryStatus?: NonNullable<ScheduleRun['deliveryStatus']>;
+  deliveryMessageId?: string;
+  deliveryError?: string;
   claimedBy?: string;
   claimExpiresAt?: string;
 };
@@ -35,6 +38,7 @@ export interface ScheduleStore {
   getRun(id: string): Promise<ScheduleRun | undefined>;
   listRuns(scheduleId: string, options?: ScheduleRunListOptions): Promise<ScheduleRun[]>;
   listRecoverableRuns(): Promise<ScheduleRun[]>;
+  listPendingDeliveryRuns(): Promise<ScheduleRun[]>;
   transitionRun(id: string, transition: ScheduleRunTransition, expectedVersion?: number): Promise<ScheduleRun>;
   acquireEngineLease(ownerId: string, now: number, ttlMs: number): Promise<boolean>;
   releaseEngineLease(ownerId: string): Promise<void>;

@@ -12,7 +12,8 @@ import type {
   ScheduleTarget,
   ScheduleSpec,
   MisfirePolicy,
-  ScheduleConcurrencyPolicy
+  ScheduleConcurrencyPolicy,
+  ScheduleDelivery
 } from '@desktop-agent/scheduler';
 
 type Row = Record<string, unknown>;
@@ -27,6 +28,7 @@ const SCHEMA = `
     schedule_json TEXT NOT NULL,
     target_kind TEXT NOT NULL,
     target_json TEXT NOT NULL,
+    delivery_json TEXT,
     misfire_json TEXT NOT NULL,
     concurrency_policy TEXT NOT NULL,
     next_run_at INTEGER,
@@ -57,6 +59,9 @@ const SCHEMA = `
     error_code TEXT,
     error TEXT,
     result_preview TEXT,
+    delivery_status TEXT,
+    delivery_message_id TEXT,
+    delivery_error TEXT,
     version INTEGER NOT NULL,
     UNIQUE(schedule_id, occurrence_key)
   );
@@ -115,6 +120,7 @@ function scheduleFromRow(row: Row): Schedule {
   const lastRunAt = iso(optionalInteger(row.last_run_at, 'schedule last_run_at'));
   const deletedAt = iso(optionalInteger(row.deleted_at, 'schedule deleted_at'));
   const description = optionalString(row.description, 'schedule description');
+  const delivery = optionalString(row.delivery_json, 'schedule delivery');
   return {
     id: stringValue(row.id, 'schedule id'),
     name: stringValue(row.name, 'schedule name'),
@@ -122,6 +128,7 @@ function scheduleFromRow(row: Row): Schedule {
     enabled: enabled === 1,
     spec: json<ScheduleSpec>(row.schedule_json, 'schedule spec'),
     target: json<ScheduleTarget>(row.target_json, 'schedule target'),
+    ...(delivery ? { delivery: json<ScheduleDelivery>(delivery, 'schedule delivery') } : {}),
     misfire: json<MisfirePolicy>(row.misfire_json, 'schedule misfire'),
     concurrency,
     ...(nextRunAt ? { nextRunAt } : {}),
@@ -143,6 +150,9 @@ function runFromRow(row: Row): ScheduleRun {
   const errorCode = optionalString(row.error_code, 'run error_code');
   const error = optionalString(row.error, 'run error');
   const resultPreview = optionalString(row.result_preview, 'run result_preview');
+  const deliveryStatus = optionalString(row.delivery_status, 'run delivery_status') as ScheduleRun['deliveryStatus'];
+  const deliveryMessageId = optionalString(row.delivery_message_id, 'run delivery_message_id');
+  const deliveryError = optionalString(row.delivery_error, 'run delivery_error');
   return {
     id: stringValue(row.id, 'run id'),
     scheduleId: stringValue(row.schedule_id, 'run schedule_id'),
@@ -160,6 +170,9 @@ function runFromRow(row: Row): ScheduleRun {
     ...(errorCode ? { errorCode } : {}),
     ...(error ? { error } : {}),
     ...(resultPreview ? { resultPreview } : {}),
+    ...(deliveryStatus ? { deliveryStatus } : {}),
+    ...(deliveryMessageId ? { deliveryMessageId } : {}),
+    ...(deliveryError ? { deliveryError } : {}),
     targetSnapshot: json<ScheduleTarget>(row.target_snapshot_json, 'run target snapshot'),
     version: integerValue(row.version, 'run version')
   };
@@ -176,6 +189,10 @@ export class SqliteScheduleStore implements ScheduleStore {
     this.database.exec('PRAGMA journal_mode = WAL;');
     this.database.exec('PRAGMA foreign_keys = ON;');
     this.database.exec(SCHEMA);
+    this.ensureColumn('schedules', 'delivery_json', 'TEXT');
+    this.ensureColumn('schedule_runs', 'delivery_status', 'TEXT');
+    this.ensureColumn('schedule_runs', 'delivery_message_id', 'TEXT');
+    this.ensureColumn('schedule_runs', 'delivery_error', 'TEXT');
   }
 
   async create(schedule: Schedule): Promise<Schedule> {
@@ -183,9 +200,9 @@ export class SqliteScheduleStore implements ScheduleStore {
       this.database.prepare(`
         INSERT INTO schedules (
           id, name, description, enabled, schedule_kind, schedule_json, target_kind, target_json,
-          misfire_json, concurrency_policy, next_run_at, last_run_at, revision, created_by,
-          created_at, updated_at, deleted_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          delivery_json, misfire_json, concurrency_policy, next_run_at, last_run_at, revision,
+          created_by, created_at, updated_at, deleted_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(...this.scheduleValues(schedule));
     } catch (error) {
       if (String(error).includes('UNIQUE constraint failed')) throw new Error(`schedule_conflict: ${schedule.id}`);
@@ -211,12 +228,13 @@ export class SqliteScheduleStore implements ScheduleStore {
     const result = this.database.prepare(`
       UPDATE schedules SET
         name = ?, description = ?, enabled = ?, schedule_kind = ?, schedule_json = ?, target_kind = ?,
-        target_json = ?, misfire_json = ?, concurrency_policy = ?, next_run_at = ?, last_run_at = ?,
+        target_json = ?, delivery_json = ?, misfire_json = ?, concurrency_policy = ?, next_run_at = ?, last_run_at = ?,
         updated_at = ?, revision = revision + 1
       WHERE id = ? AND deleted_at IS NULL AND revision = ?
     `).run(
       schedule.name, schedule.description ?? null, schedule.enabled ? 1 : 0, schedule.spec.kind,
       JSON.stringify(schedule.spec), schedule.target.kind, JSON.stringify(schedule.target),
+      schedule.delivery ? JSON.stringify(schedule.delivery) : null,
       JSON.stringify(schedule.misfire), schedule.concurrency, epoch(schedule.nextRunAt), epoch(schedule.lastRunAt),
       epoch(schedule.updatedAt), schedule.id, expected
     );
@@ -322,6 +340,12 @@ export class SqliteScheduleStore implements ScheduleStore {
     `).all(...recoverable) as Row[]).map(runFromRow);
   }
 
+  async listPendingDeliveryRuns(): Promise<ScheduleRun[]> {
+    return (this.database.prepare(`
+      SELECT * FROM schedule_runs WHERE delivery_status = 'pending' ORDER BY created_at ASC
+    `).all() as Row[]).map(runFromRow);
+  }
+
   async transitionRun(id: string, transition: ScheduleRunTransition, expectedVersion?: number): Promise<ScheduleRun> {
     const current = await this.getRun(id);
     if (!current) throw new Error(`schedule_run_not_found: ${id}`);
@@ -338,6 +362,9 @@ export class SqliteScheduleStore implements ScheduleStore {
         error_code = COALESCE(?, error_code),
         error = COALESCE(?, error),
         result_preview = COALESCE(?, result_preview),
+        delivery_status = COALESCE(?, delivery_status),
+        delivery_message_id = COALESCE(?, delivery_message_id),
+        delivery_error = COALESCE(?, delivery_error),
         claimed_by = COALESCE(?, claimed_by),
         claim_expires_at = COALESCE(?, claim_expires_at),
         version = version + 1
@@ -350,6 +377,9 @@ export class SqliteScheduleStore implements ScheduleStore {
       transition.errorCode ?? null,
       transition.error ?? null,
       transition.resultPreview?.slice(0, 4_096) ?? null,
+      transition.deliveryStatus ?? null,
+      transition.deliveryMessageId ?? null,
+      transition.deliveryError?.slice(0, 100_000) ?? null,
       transition.claimedBy ?? null,
       epoch(transition.claimExpiresAt),
       id,
@@ -381,6 +411,7 @@ export class SqliteScheduleStore implements ScheduleStore {
     return [
       schedule.id, schedule.name, schedule.description ?? null, schedule.enabled ? 1 : 0,
       schedule.spec.kind, JSON.stringify(schedule.spec), schedule.target.kind, JSON.stringify(schedule.target),
+      schedule.delivery ? JSON.stringify(schedule.delivery) : null,
       JSON.stringify(schedule.misfire), schedule.concurrency, epoch(schedule.nextRunAt), epoch(schedule.lastRunAt),
       schedule.revision, schedule.createdBy, epoch(schedule.createdAt), epoch(schedule.updatedAt), epoch(schedule.deletedAt)
     ];
@@ -391,13 +422,21 @@ export class SqliteScheduleStore implements ScheduleStore {
       INSERT INTO schedule_runs (
         id, schedule_id, occurrence_key, scheduled_for, trigger_kind, status, target_kind,
         target_execution_id, target_snapshot_json, claimed_by, claim_expires_at, created_at,
-        started_at, finished_at, error_code, error, result_preview, version
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+        started_at, finished_at, error_code, error, result_preview, delivery_status,
+        delivery_message_id, delivery_error, version
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
     `).run(
       run.id, run.scheduleId, run.occurrenceKey, epoch(run.scheduledFor), run.trigger, run.status, run.targetKind,
       run.targetExecutionId ?? null, JSON.stringify(run.targetSnapshot), run.claimedBy ?? null, epoch(run.claimExpiresAt),
       epoch(run.createdAt), epoch(run.startedAt), epoch(run.finishedAt), run.errorCode ?? null, run.error ?? null,
-      run.resultPreview?.slice(0, 4_096) ?? null
+      run.resultPreview?.slice(0, 4_096) ?? null, run.deliveryStatus ?? null,
+      run.deliveryMessageId ?? null, run.deliveryError?.slice(0, 100_000) ?? null
     );
+  }
+
+  private ensureColumn(table: string, column: string, definition: string): void {
+    const columns = this.database.prepare(`PRAGMA table_info(${table})`).all() as Row[];
+    if (columns.some((entry) => entry.name === column)) return;
+    this.database.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
   }
 }

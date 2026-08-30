@@ -17,7 +17,15 @@ export type LiveStep = {
 };
 
 export type UserNode = { kind: 'user'; id: string; createdAt: string; text: string; images: ImageContentBlock[] };
-export type AssistantNode = { kind: 'assistant'; id: string; text: string; streaming: boolean; iteration?: number; finalResponseOnly?: boolean };
+export type AssistantNode = {
+  kind: 'assistant';
+  id: string;
+  text: string;
+  streaming: boolean;
+  iteration?: number;
+  finalResponseOnly?: boolean;
+  automation?: NonNullable<Message['metadata']>['automation'];
+};
 export type ToolNode = {
   kind: 'tool';
   id: string;
@@ -361,7 +369,10 @@ function foldMessages(messages: Message[], workingDirectory: string | undefined)
       if (text.trim()) nodes.push({
         kind: 'assistant', id: message.id, text, streaming: false,
         ...(message.metadata?.iteration ? { iteration: message.metadata.iteration } : {}),
-        ...(message.metadata?.finalResponseOnly ? { finalResponseOnly: true } : {})
+        ...(message.metadata?.finalResponseOnly ? { finalResponseOnly: true } : {}),
+        ...(message.metadata?.source === 'scheduler' && message.metadata.automation
+          ? { automation: message.metadata.automation }
+          : {})
       });
       const calls = assistantCalls(message);
       if (calls.length === 0) continue;

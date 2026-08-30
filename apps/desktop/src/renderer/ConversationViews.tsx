@@ -85,10 +85,12 @@ function ToolRow({ node, onInspect }: { node: ToolNode; onInspect?: (id: string)
 
 function ChatNodeView({
   node,
-  onInspect
+  onInspect,
+  onOpenAutomation
 }: {
   node: ConversationNode;
   onInspect?: (id: string) => void;
+  onOpenAutomation?: (scheduleId: string) => void;
 }) {
   if (node.kind === 'user') {
     return <article className="message user" data-node-id={node.id}>
@@ -96,7 +98,12 @@ function ChatNodeView({
     </article>;
   }
   if (node.kind === 'assistant') {
-    return <article className={`message assistant ${node.streaming ? 'streaming' : ''}`} data-node-id={node.id}>
+    return <article className={`message assistant ${node.streaming ? 'streaming' : ''} ${node.automation ? 'automation-message' : ''}`} data-node-id={node.id}>
+      {node.automation && <header className="automation-message-header">
+        <span aria-hidden="true">⏰</span>
+        <div><strong>{node.automation.name}</strong><small>自动化 · {new Date(node.automation.triggeredAt).toLocaleString()}</small></div>
+        {onOpenAutomation && <button type="button" onClick={() => onOpenAutomation(node.automation!.scheduleId)}>查看自动化</button>}
+      </header>}
       <div className="bubble"><Markdown text={node.text} /></div>
     </article>;
   }
@@ -140,18 +147,25 @@ export function ChatTranscript({
   running,
   turnStartedAt,
   onInspect,
+  onOpenAutomation,
   renderAfterTurn
 }: {
   snapshot: ConversationSnapshot;
   running: boolean;
   turnStartedAt: number | null;
   onInspect?: (id: string) => void;
+  onOpenAutomation?: (scheduleId: string) => void;
   renderAfterTurn?: (turn: ConversationSnapshot['turns'][number]) => React.ReactNode;
 }) {
   const waiting = running && !hasLiveOutput(snapshot);
   return <div className="chat-transcript">
     {snapshot.turns.map((turn) => <React.Fragment key={turn.id}>
-      {turn.nodes.map((node) => <ChatNodeView key={node.id} node={node} {...(onInspect ? { onInspect } : {})} />)}
+      {turn.nodes.map((node) => <ChatNodeView
+        key={node.id}
+        node={node}
+        {...(onInspect ? { onInspect } : {})}
+        {...(onOpenAutomation ? { onOpenAutomation } : {})}
+      />)}
       {renderAfterTurn?.(turn)}
     </React.Fragment>)}
     {waiting && <TurnStatus startedAt={turnStartedAt} />}

@@ -47,6 +47,11 @@ export type TeamMemberScheduleTarget = {
 
 export type ScheduleTarget = AgentScheduleTarget | WorkflowScheduleTarget | TeamMemberScheduleTarget;
 
+export type ScheduleDelivery = {
+  conversation?: { enabled: boolean; sessionId: string };
+  notification?: { enabled: boolean };
+};
+
 export type MisfirePolicy = { kind: 'skip' } | { kind: 'fire_once'; graceMs: number };
 export type ScheduleConcurrencyPolicy = 'skip' | 'queue' | 'allow';
 
@@ -57,6 +62,7 @@ export type Schedule = {
   enabled: boolean;
   spec: ScheduleSpec;
   target: ScheduleTarget;
+  delivery?: ScheduleDelivery;
   misfire: MisfirePolicy;
   concurrency: ScheduleConcurrencyPolicy;
   nextRunAt?: string;
@@ -98,6 +104,9 @@ export type ScheduleRun = {
   errorCode?: string;
   error?: string;
   resultPreview?: string;
+  deliveryStatus?: 'pending' | 'delivered' | 'failed' | 'skipped';
+  deliveryMessageId?: string;
+  deliveryError?: string;
   targetSnapshot: ScheduleTarget;
   version: number;
 };
@@ -108,6 +117,7 @@ export type CreateScheduleInput = {
   enabled?: boolean;
   spec: ScheduleSpec;
   target: ScheduleTarget;
+  delivery?: ScheduleDelivery;
   misfire?: MisfirePolicy;
   concurrency?: ScheduleConcurrencyPolicy;
 };

@@ -132,6 +132,24 @@ describe('conversation snapshot', () => {
     expect(snapshot.records.filter((record) => record.turn === 2).map((record) => record.kind)).toEqual(['user', 'assistant']);
   });
 
+  it('preserves scheduler metadata for automation message rendering', () => {
+    const scheduled: Message = {
+      ...assistant('scheduler_sr_1', '今日天气晴朗。'),
+      metadata: {
+        source: 'scheduler',
+        automation: {
+          scheduleId: 'sch_weather', scheduleRunId: 'sr_1', name: '每日天气',
+          triggeredAt: '2026-08-30T00:00:00.000Z'
+        }
+      }
+    };
+    const snapshot = buildConversationSnapshot({ messages: [user('u1', '每天看天气'), scheduled] });
+    expect(snapshot.nodes[1]).toMatchObject({
+      kind: 'assistant', text: '今日天气晴朗。',
+      automation: { scheduleId: 'sch_weather', scheduleRunId: 'sr_1', name: '每日天气' }
+    });
+  });
+
   it('marks unfinished persisted tools as stopped after the turn ends', () => {
     const snapshot = buildConversationSnapshot({
       running: false,

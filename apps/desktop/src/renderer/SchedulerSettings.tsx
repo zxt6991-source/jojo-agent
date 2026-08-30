@@ -10,6 +10,7 @@ import type {
 } from '@desktop-agent/contracts';
 
 type TriggerKind = 'once' | 'interval' | 'cron';
+type ScheduleFilter = 'all' | 'enabled' | 'paused' | 'completed';
 
 export type ScheduleDraft = {
   name: string;
@@ -207,6 +208,27 @@ function triggerLabel(schedule: ScheduleContract): string {
   return `${schedule.spec.expression} · ${schedule.spec.timezone}`;
 }
 
+function isCompletedSchedule(schedule: ScheduleContract): boolean {
+  return schedule.spec.kind === 'once' && !schedule.enabled && !schedule.nextRunAt;
+}
+
+export function scheduleTimingLabel(schedule: ScheduleContract): string {
+  if (schedule.spec.kind === 'once') return new Date(schedule.spec.runAt).toLocaleString();
+  if (schedule.spec.kind === 'interval') {
+    const minutes = schedule.spec.intervalMs / 60_000;
+    return minutes % 60 === 0 ? `每 ${minutes / 60} 小时` : `每 ${minutes} 分钟`;
+  }
+  const [minute, hour, day, month, weekday] = schedule.spec.expression.trim().split(/\s+/);
+  if (minute !== undefined && hour !== undefined && day === '*' && month === '*') {
+    const time = `${hour.padStart(2, '0')}:${minute.padStart(2, '0')}`;
+    if (weekday === '1-5') return `工作日 ${time}`;
+    if (weekday === '*') return `每天 ${time}`;
+    const weekdayName = ({ '0': '星期日', '1': '星期一', '2': '星期二', '3': '星期三', '4': '星期四', '5': '星期五', '6': '星期六', '7': '星期日' })[weekday ?? ''];
+    if (weekdayName) return `${weekdayName} ${time}`;
+  }
+  return triggerLabel(schedule);
+}
+
 function runStateLabel(status: ScheduleRunContract['status']): string {
   return ({
     pending: '排队', dispatching: '派发中', running: '运行中', waiting_approval: '等待批准',
@@ -225,26 +247,48 @@ export function scheduleRunDetails(
   return undefined;
 }
 
+export function scheduleRunDeliveryLabel(
+  run: Pick<ScheduleRunContract, 'deliveryStatus' | 'deliveryError'>
+): string {
+  if (run.deliveryStatus === 'delivered') return '✓ 已发送至对话';
+  if (run.deliveryStatus === 'failed') return `✕ 投递失败${run.deliveryError ? ` · ${run.deliveryError}` : ''}`;
+  if (run.deliveryStatus === 'pending') return '投递中';
+  if (run.deliveryStatus === 'skipped') return '未投递';
+  return '旧任务 · 无投递记录';
+}
+
 function ScheduleRunHistoryItem({
   run,
+  schedule,
   busy,
-  onCancel
+  onCancel,
+  onOpenConversation
 }: {
   run: ScheduleRunContract;
+  schedule: ScheduleContract;
   busy: boolean;
   onCancel(runId: string): Promise<void>;
+  onOpenConversation(sessionId: string, messageId: string): void;
 }) {
   const details = scheduleRunDetails(run);
+  const conversationSessionId = schedule.delivery?.conversation?.enabled
+    ? schedule.delivery.conversation.sessionId
+    : undefined;
+  const deliveryLabel = scheduleRunDeliveryLabel(run);
   return <article>
     <span className={`automation-run-state ${run.status}`}>{runStateLabel(run.status)}</span>
     <div>
       <strong>{new Date(run.scheduledFor).toLocaleString()}</strong>
-      <small>{run.trigger === 'manual' ? '手动运行' : run.trigger === 'misfire' ? '离线补跑' : '定时触发'}{run.error ? ` · ${run.error}` : ''}</small>
+      <small>{run.trigger === 'manual' ? '手动运行' : run.trigger === 'misfire' ? '离线补跑' : '定时触发'} · {deliveryLabel}</small>
     </div>
     <time>{run.finishedAt ? new Date(run.finishedAt).toLocaleString() : run.startedAt ? new Date(run.startedAt).toLocaleString() : ''}</time>
     {ACTIVE_STATES.has(run.status) && <button type="button" disabled={busy} onClick={() => void onCancel(run.id)}>
       取消
     </button>}
+    {conversationSessionId && run.deliveryMessageId && <button
+      type="button"
+      onClick={() => onOpenConversation(conversationSessionId, run.deliveryMessageId!)}
+    >查看对话</button>}
     {details?.kind === 'empty' && <p className="automation-run-empty">{details.content}</p>}
     {details && details.kind !== 'empty' && <details className={`automation-run-detail ${details.kind}`}>
       <summary>{details.label}</summary>
@@ -255,7 +299,7 @@ function ScheduleRunHistoryItem({
 
 export function SchedulerSettingsPage({
   sessions, providers, teams, schedules, selectedScheduleId, runs, busy, error,
-  onSelect, onRefresh, onSave, onDelete, onEnabled, onRunNow, onCancelRun
+  onSelect, onClose, onRefresh, onSave, onDelete, onEnabled, onRunNow, onCancelRun, onOpenConversation
 }: {
   sessions: SessionMeta[];
   providers: ProviderConfig[];
@@ -266,12 +310,14 @@ export function SchedulerSettingsPage({
   busy: boolean;
   error: string;
   onSelect(scheduleId: string): void;
+  onClose(): void;
   onRefresh(): void;
   onSave(input: SaveScheduleInput): Promise<ScheduleContract>;
   onDelete(scheduleId: string): Promise<void>;
   onEnabled(schedule: ScheduleContract, enabled: boolean): Promise<ScheduleContract>;
   onRunNow(scheduleId: string): Promise<ScheduleRunContract>;
   onCancelRun(runId: string): Promise<void>;
+  onOpenConversation(sessionId: string, messageId: string): void;
 }) {
   const selected = useMemo(
     () => schedules.find((schedule) => schedule.id === selectedScheduleId) ?? null,
@@ -280,6 +326,8 @@ export function SchedulerSettingsPage({
   const [creating, setCreating] = useState(false);
   const [draft, setDraft] = useState(() => createScheduleDraft(sessions, providers, teams));
   const [localError, setLocalError] = useState('');
+  const [filter, setFilter] = useState<ScheduleFilter>('all');
+  const [search, setSearch] = useState('');
 
   useEffect(() => {
     setDraft(createScheduleDraft(sessions, providers, teams, creating ? undefined : selected ?? undefined));
@@ -290,67 +338,178 @@ export function SchedulerSettingsPage({
   const activeTeam = teams.find((team) => team.id === draft.teamId) ?? teams[0];
   const displayError = localError || error;
   const update = (patch: Partial<ScheduleDraft>) => setDraft((current) => ({ ...current, ...patch }));
+  const filteredSchedules = useMemo(() => {
+    const query = search.trim().toLocaleLowerCase();
+    return schedules.filter((schedule) => {
+      const completed = isCompletedSchedule(schedule);
+      if (filter === 'enabled' && !schedule.enabled) return false;
+      if (filter === 'paused' && (schedule.enabled || completed)) return false;
+      if (filter === 'completed' && !completed) return false;
+      return !query || `${schedule.name} ${schedule.description ?? ''} ${triggerLabel(schedule)}`.toLocaleLowerCase().includes(query);
+    });
+  }, [filter, schedules, search]);
 
-  return <div className="settings-content model-settings-page automations-settings-page">
-    <div className="settings-heading automations-heading">
-      <div><h1>Automations</h1><p>持久化运行定时 Agent；应用重启后会按补跑策略恢复。</p></div>
-      <div><button type="button" disabled={busy} onClick={onRefresh}>刷新</button><button className="primary" type="button" disabled={sessions.length === 0} onClick={() => { setCreating(true); setDraft(createScheduleDraft(sessions, providers, teams)); }}>新建自动化</button></div>
-    </div>
-    {sessions.length === 0 && <div className="automation-empty"><strong>请先创建会话</strong><span>自动化需要一个会话来确定工作区与持久上下文。</span></div>}
-    {sessions.length > 0 && <div className="automations-layout">
-      <aside className="automation-list" aria-label="自动化列表">
-        {schedules.map((schedule) => <button key={schedule.id} type="button" className={!creating && selected?.id === schedule.id ? 'active' : ''} onClick={() => { setCreating(false); onSelect(schedule.id); }}>
-          <span className={`automation-state-dot ${schedule.enabled ? 'enabled' : 'disabled'}`} />
-          <span><strong>{schedule.name}</strong><small>{triggerLabel(schedule)}</small></span>
-        </button>)}
-        {schedules.length === 0 && <div className="automation-list-empty">尚未创建自动化</div>}
-      </aside>
-      <div className="automation-editor">
-        <section className="settings-section-card">
-          <div className="settings-section-title with-meta"><div><h2>{creating || !selected ? '新建自动化' : selected.name}</h2><p>Agent、Team Member 与 Workflow 都复用各自现有的持久化、恢复和权限边界。</p></div>{selected && !creating && <label className="automation-enable"><input type="checkbox" checked={selected.enabled} disabled={busy} onChange={(event) => { void onEnabled(selected, event.target.checked).catch((cause) => setLocalError(cause instanceof Error ? cause.message : String(cause))); }} />启用</label>}</div>
-          <div className="settings-fields automation-fields">
-            <div className="settings-grid"><label>名称<input value={draft.name} onChange={(event) => update({ name: event.target.value })} /></label><label>运行目标<select value={draft.targetKind} onChange={(event) => update({ targetKind: event.target.value as ScheduleDraft['targetKind'] })}><option value="agent">Agent</option><option value="team_member">Team Member</option><option value="workflow">Workflow</option></select></label></div>
-            <label>父会话 / 工作区<select value={draft.sessionId} onChange={(event) => { const session = sessions.find((item) => item.id === event.target.value); update({ sessionId: event.target.value, workingDirectory: session?.workingDirectory ?? '' }); }}>{sessions.map((session) => <option key={session.id} value={session.id}>{session.title}</option>)}</select></label>
-            {draft.targetKind === 'team_member' && <div className="settings-grid"><label>团队<select value={draft.teamId} onChange={(event) => { const team = teams.find((item) => item.id === event.target.value); update({ teamId: event.target.value, memberId: team?.members[0]?.id ?? '' }); }}>{teams.map((team) => <option key={team.id} value={team.id}>{team.name}</option>)}</select></label><label>成员<select value={draft.memberId} onChange={(event) => update({ memberId: event.target.value })}>{activeTeam?.members.map((member) => <option key={member.id} value={member.id}>{member.name}</option>)}</select></label></div>}
-            {draft.targetKind === 'workflow' && <>
-              <div className="settings-grid"><label>Workflow 来源<select value={draft.workflowKind} onChange={(event) => update({ workflowKind: event.target.value as ScheduleDraft['workflowKind'] })}><option value="saved">Saved Workflow</option><option value="inline">Inline Definition</option></select></label>{draft.workflowKind === 'saved' && <label>Saved Workflow 名称<input value={draft.workflowName} onChange={(event) => update({ workflowName: event.target.value })} placeholder="code-review" /></label>}</div>
-              {draft.workflowKind === 'inline' && <label>Workflow Definition（JSON）<textarea rows={8} value={draft.workflowDefinition} onChange={(event) => update({ workflowDefinition: event.target.value })} /></label>}
-              <label>Workflow Args（JSON 对象）<textarea rows={3} value={draft.workflowArgs} onChange={(event) => update({ workflowArgs: event.target.value })} /></label>
-            </>}
-            <label>描述（可选）<input value={draft.description} onChange={(event) => update({ description: event.target.value })} /></label>
-            <label>提示词<textarea rows={5} value={draft.prompt} onChange={(event) => update({ prompt: event.target.value })} placeholder="例如：检查当前项目的变更，并生成每日代码审查摘要。" /></label>
-            <div className="settings-grid"><label>Provider<select value={draft.providerId} onChange={(event) => { const provider = providers.find((item) => item.id === event.target.value); update({ providerId: event.target.value, model: provider?.model ?? '' }); }}>{providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}</select></label><label>模型<select value={draft.model} onChange={(event) => update({ model: event.target.value })}>{activeProvider?.models.map((model) => <option key={model} value={model}>{model}</option>)}</select></label></div>
-          </div>
-        </section>
+  const beginCreate = () => {
+    setCreating(true);
+    setDraft(createScheduleDraft(sessions, providers, teams));
+    setLocalError('');
+  };
+  const closeEditor = () => {
+    setCreating(false);
+    setLocalError('');
+    onClose();
+  };
+  const saveDraft = () => {
+    setLocalError('');
+    try {
+      void onSave(scheduleInputFromDraft(draft, providers, teams, sessions, selected && !creating ? selected : undefined))
+        .then((saved) => { setCreating(false); onSelect(saved.id); })
+        .catch((cause) => setLocalError(cause instanceof Error ? cause.message : String(cause)));
+    } catch (cause) {
+      setLocalError(cause instanceof Error ? cause.message : String(cause));
+    }
+  };
+  const deleteSelected = () => {
+    if (!selected || !window.confirm(`删除自动化“${selected.name}”？运行历史会保留在数据库中。`)) return;
+    void onDelete(selected.id).catch((cause) => setLocalError(cause instanceof Error ? cause.message : String(cause)));
+  };
+  const changeEnabled = (enabled: boolean) => {
+    update({ enabled });
+    if (!selected || creating) return;
+    void onEnabled(selected, enabled).catch((cause) => {
+      update({ enabled: selected.enabled });
+      setLocalError(cause instanceof Error ? cause.message : String(cause));
+    });
+  };
+  const editing = creating || selected !== null;
+  const editorStatus = creating ? '创建任务' : selected?.enabled ? '已开启' : selected && isCompletedSchedule(selected) ? '已完成' : '已暂停';
+  const filterControls = <div className="automation-filter-tabs" role="tablist" aria-label="任务状态筛选">
+    {([['all', '全部'], ['enabled', '已开启'], ['paused', '已暂停'], ['completed', '已完成']] as const).map(([value, label]) => <button
+      key={value}
+      type="button"
+      role="tab"
+      aria-selected={filter === value}
+      className={filter === value ? 'active' : ''}
+      onClick={() => setFilter(value)}
+    >{label}</button>)}
+  </div>;
+  const searchControl = <label className="automation-search">
+    <svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5" /><path d="m16 16 4 4" /></svg>
+    <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索已安排任务" />
+  </label>;
+  const taskList = <div className="automation-list">
+    {filteredSchedules.map((schedule) => <button key={schedule.id} type="button" className={!creating && selected?.id === schedule.id ? 'active' : ''} onClick={() => { setCreating(false); onSelect(schedule.id); }}>
+      <span className={`automation-play-icon ${schedule.enabled ? 'enabled' : ''}`} aria-hidden="true"><span /></span>
+      <span><strong>{schedule.name}</strong><small>{scheduleTimingLabel(schedule)}</small></span>
+      <span className="automation-list-more" aria-hidden="true">•••</span>
+    </button>)}
+    {filteredSchedules.length === 0 && <div className="automation-list-empty">{schedules.length === 0 ? '尚未创建任务' : '没有符合条件的任务'}</div>}
+  </div>;
 
-        <section className="settings-section-card">
-          <div className="settings-section-title"><h2>触发时间</h2><p>支持单次、固定间隔和带时区的 Cron。</p></div>
-          <div className="automation-trigger-tabs">{(['once', 'interval', 'cron'] as const).map((kind) => <button type="button" key={kind} className={draft.triggerKind === kind ? 'active' : ''} onClick={() => update({ triggerKind: kind })}>{kind === 'once' ? '单次' : kind === 'interval' ? '固定间隔' : 'Cron'}</button>)}</div>
-          <div className="settings-fields automation-fields">
-            {draft.triggerKind === 'once' && <label>运行时间<input type="datetime-local" value={draft.runAt} onChange={(event) => update({ runAt: event.target.value })} /></label>}
-            {draft.triggerKind === 'interval' && <div className="settings-grid"><label>间隔（分钟）<input type="number" min="1" step="1" value={draft.intervalMinutes} onChange={(event) => update({ intervalMinutes: event.target.value })} /></label><label>起算时间<input type="datetime-local" value={draft.anchorAt} onChange={(event) => update({ anchorAt: event.target.value })} /></label></div>}
-            {draft.triggerKind === 'cron' && <div className="settings-grid"><label>Cron 表达式<input value={draft.cronExpression} onChange={(event) => update({ cronExpression: event.target.value })} /></label><label>IANA 时区<input value={draft.timezone} onChange={(event) => update({ timezone: event.target.value })} /></label></div>}
-            <div className="settings-grid"><label>重叠运行<select value={draft.concurrency} onChange={(event) => update({ concurrency: event.target.value as ScheduleDraft['concurrency'] })}><option value="skip">跳过新一轮（推荐）</option><option value="queue">最多排队一轮</option></select></label><label>离线错过<select value={draft.misfire} onChange={(event) => update({ misfire: event.target.value as ScheduleDraft['misfire'] })}><option value="fire_once">宽限期内补跑一次</option><option value="skip">直接跳过</option></select></label></div>
-            {draft.misfire === 'fire_once' && <label>补跑宽限（小时）<input type="number" min="0" step="1" value={draft.graceHours} onChange={(event) => update({ graceHours: event.target.value })} /></label>}
-          </div>
-        </section>
-
-        {displayError && <div className="settings-error automation-error" role="alert">{displayError}</div>}
-        <div className="automation-editor-actions"><div>{selected && !creating && <><button type="button" disabled={busy} onClick={() => { setLocalError(''); void onRunNow(selected.id).catch((cause) => setLocalError(cause instanceof Error ? cause.message : String(cause))); }}>立即运行</button><button className="danger" type="button" disabled={busy} onClick={() => { if (window.confirm(`删除自动化“${selected.name}”？运行历史会保留在数据库中。`)) void onDelete(selected.id).catch((cause) => setLocalError(cause instanceof Error ? cause.message : String(cause))); }}>删除</button></>}</div><button className="primary" type="button" disabled={busy} onClick={() => { setLocalError(''); try { void onSave(scheduleInputFromDraft(draft, providers, teams, sessions, selected && !creating ? selected : undefined)).then((saved) => { setCreating(false); onSelect(saved.id); }).catch((cause) => setLocalError(cause instanceof Error ? cause.message : String(cause))); } catch (cause) { setLocalError(cause instanceof Error ? cause.message : String(cause)); } }}>{busy ? '保存中…' : '保存自动化'}</button></div>
-
-        {selected && !creating && <section className="settings-section-card automation-history">
-          <div className="settings-section-title with-meta"><div><h2>运行历史</h2><p>最近 100 次执行；等待批准的任务可在主界面完成授权。</p></div><span>{runs.length}</span></div>
-          <div className="automation-run-list">{runs.map((run) => <ScheduleRunHistoryItem
-            key={run.id}
-            run={run}
-            busy={busy}
-            onCancel={async (runId) => {
-              try { await onCancelRun(runId); }
-              catch (cause) { setLocalError(cause instanceof Error ? cause.message : String(cause)); }
-            }}
-          />)}{runs.length === 0 && <div className="automation-list-empty">还没有运行记录</div>}</div>
-        </section>}
+  return <div className="settings-content automations-settings-page">
+    {sessions.length === 0 && <div className="automation-empty automation-page-empty"><strong>请先创建会话</strong><span>自动化需要一个会话来确定工作区与持久上下文。</span></div>}
+    {sessions.length > 0 && !editing && <section className="automation-overview">
+      <button className="automation-overview-create" type="button" disabled={busy} onClick={beginCreate}>创建</button>
+      <div className="automation-overview-content">
+        <header><h1>已安排的任务</h1><p>让 Jojo Agent 安排任务、设置提醒或定期执行工作。</p></header>
+        {searchControl}
+        {filterControls}
+        {taskList}
       </div>
+    </section>}
+    {sessions.length > 0 && editing && <div className="automations-layout">
+      <aside className="automation-browser" aria-label="自动化列表">
+        <div className="automation-browser-toolbar">
+          {filterControls}
+          <button className="automation-create-button" type="button" disabled={busy} onClick={beginCreate}>创建 <span aria-hidden="true">⌄</span></button>
+        </div>
+        {searchControl}
+        {taskList}
+      </aside>
+
+      <main className="automation-editor">
+        <>
+          <header className="automation-editor-header">
+            <div><span>{editorStatus}</span><input className="automation-title-input" aria-label="任务名称" value={draft.name} onChange={(event) => update({ name: event.target.value })} /></div>
+            <div className="automation-header-actions">
+              <button type="button" title="刷新" aria-label="刷新" disabled={busy} onClick={onRefresh}>↻</button>
+              {selected && !creating && <button type="button" title="立即运行" aria-label="立即运行" disabled={busy} onClick={() => { setLocalError(''); void onRunNow(selected.id).catch((cause) => setLocalError(cause instanceof Error ? cause.message : String(cause))); }}>▷</button>}
+              {selected && !creating && <button type="button" title="删除任务" aria-label="删除任务" disabled={busy} onClick={deleteSelected}>•••</button>}
+              <button type="button" title="关闭详情" aria-label="关闭详情" onClick={closeEditor}>×</button>
+            </div>
+          </header>
+
+          <div className="automation-editor-scroll">
+            <label className="automation-prompt-card">
+              <span className="sr-only">任务提示词</span>
+              <textarea rows={4} value={draft.prompt} onChange={(event) => update({ prompt: event.target.value })} placeholder="描述这个任务要完成的工作…" />
+            </label>
+
+            <section className="automation-form-section">
+              <h2>详情</h2>
+              <div className="automation-row-card">
+                <label><span>运行于</span><select value={draft.sessionId} onChange={(event) => { const session = sessions.find((item) => item.id === event.target.value); update({ sessionId: event.target.value, workingDirectory: session?.workingDirectory ?? '' }); }}>{sessions.map((session) => <option key={session.id} value={session.id}>{session.title}</option>)}</select></label>
+                <label><span>运行目标</span><select value={draft.targetKind} onChange={(event) => update({ targetKind: event.target.value as ScheduleDraft['targetKind'] })}><option value="agent">Agent</option><option value="team_member">Team Member</option><option value="workflow">Workflow</option></select></label>
+                <label><span>Provider</span><select value={draft.providerId} onChange={(event) => { const provider = providers.find((item) => item.id === event.target.value); update({ providerId: event.target.value, model: provider?.model ?? '' }); }}>{providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}</select></label>
+                <label><span>模型</span><select value={draft.model} onChange={(event) => update({ model: event.target.value })}>{activeProvider?.models.map((model) => <option key={model} value={model}>{model}</option>)}</select></label>
+                {draft.targetKind === 'team_member' && <>
+                  <label><span>团队</span><select value={draft.teamId} onChange={(event) => { const team = teams.find((item) => item.id === event.target.value); update({ teamId: event.target.value, memberId: team?.members[0]?.id ?? '' }); }}>{teams.map((team) => <option key={team.id} value={team.id}>{team.name}</option>)}</select></label>
+                  <label><span>成员</span><select value={draft.memberId} onChange={(event) => update({ memberId: event.target.value })}>{activeTeam?.members.map((member) => <option key={member.id} value={member.id}>{member.name}</option>)}</select></label>
+                </>}
+                {draft.targetKind === 'workflow' && <>
+                  <label><span>Workflow 来源</span><select value={draft.workflowKind} onChange={(event) => update({ workflowKind: event.target.value as ScheduleDraft['workflowKind'] })}><option value="saved">Saved Workflow</option><option value="inline">Inline Definition</option></select></label>
+                  {draft.workflowKind === 'saved' && <label><span>Workflow 名称</span><input value={draft.workflowName} onChange={(event) => update({ workflowName: event.target.value })} placeholder="code-review" /></label>}
+                </>}
+              </div>
+              {draft.targetKind === 'workflow' && <div className="automation-json-fields">
+                {draft.workflowKind === 'inline' && <label>Workflow Definition（JSON）<textarea rows={7} value={draft.workflowDefinition} onChange={(event) => update({ workflowDefinition: event.target.value })} /></label>}
+                <label>Workflow Args（JSON 对象）<textarea rows={3} value={draft.workflowArgs} onChange={(event) => update({ workflowArgs: event.target.value })} /></label>
+              </div>}
+            </section>
+
+            <section className="automation-form-section">
+              <h2>频率</h2>
+              <div className="automation-row-card">
+                <label><span>重复</span><select value={draft.triggerKind} onChange={(event) => update({ triggerKind: event.target.value as TriggerKind })}><option value="once">单次</option><option value="interval">固定间隔</option><option value="cron">Cron</option></select></label>
+                {draft.triggerKind === 'once' && <label><span>运行时间</span><input type="datetime-local" value={draft.runAt} onChange={(event) => update({ runAt: event.target.value })} /></label>}
+                {draft.triggerKind === 'interval' && <><label><span>间隔（分钟）</span><input type="number" min="1" step="1" value={draft.intervalMinutes} onChange={(event) => update({ intervalMinutes: event.target.value })} /></label><label><span>起算时间</span><input type="datetime-local" value={draft.anchorAt} onChange={(event) => update({ anchorAt: event.target.value })} /></label></>}
+                {draft.triggerKind === 'cron' && <><label><span>Cron 表达式</span><input value={draft.cronExpression} onChange={(event) => update({ cronExpression: event.target.value })} /></label><label><span>时区</span><input value={draft.timezone} onChange={(event) => update({ timezone: event.target.value })} /></label></>}
+                <label><span>重叠运行</span><select value={draft.concurrency} onChange={(event) => update({ concurrency: event.target.value as ScheduleDraft['concurrency'] })}><option value="skip">跳过新一轮</option><option value="queue">最多排队一轮</option></select></label>
+                <label><span>离线错过</span><select value={draft.misfire} onChange={(event) => update({ misfire: event.target.value as ScheduleDraft['misfire'] })}><option value="fire_once">宽限期内补跑</option><option value="skip">直接跳过</option></select></label>
+                {draft.misfire === 'fire_once' && <label><span>补跑宽限</span><span className="automation-number-control"><input type="number" min="0" step="1" value={draft.graceHours} onChange={(event) => update({ graceHours: event.target.value })} /> 小时</span></label>}
+                <label><span>结果投递</span><output>{selected?.delivery?.conversation?.enabled ? '创建任务的对话' : creating ? '静默（可从对话创建以自动投递）' : '静默'}</output></label>
+                <label className="automation-status-row"><span>状态</span><span><input type="checkbox" checked={draft.enabled} disabled={busy} onChange={(event) => changeEnabled(event.target.checked)} /> {draft.enabled ? '已开启' : '已暂停'}</span></label>
+              </div>
+            </section>
+
+            <section className="automation-form-section">
+              <h2>说明</h2>
+              <input className="automation-description-input" value={draft.description} onChange={(event) => update({ description: event.target.value })} placeholder="添加可选说明" />
+            </section>
+
+            {displayError && <div className="settings-error automation-error" role="alert">{displayError}</div>}
+            <div className="automation-editor-actions">
+              <div>{selected && !creating && <button className="danger" type="button" disabled={busy} onClick={deleteSelected}>删除任务</button>}</div>
+              <button className="primary" type="button" disabled={busy} onClick={saveDraft}>{busy ? '保存中…' : creating ? '创建任务' : '保存更改'}</button>
+            </div>
+
+            {selected && !creating && <section className="automation-history">
+              <div className="automation-history-title"><div><h2>运行历史</h2><p>最近 100 次执行，结果与对话投递状态分开记录。</p></div><span>{runs.length}</span></div>
+              <div className="automation-run-list">{runs.map((run) => <ScheduleRunHistoryItem
+                key={run.id}
+                run={run}
+                schedule={selected}
+                busy={busy}
+                onOpenConversation={onOpenConversation}
+                onCancel={async (runId) => {
+                  try { await onCancelRun(runId); }
+                  catch (cause) { setLocalError(cause instanceof Error ? cause.message : String(cause)); }
+                }}
+              />)}{runs.length === 0 && <div className="automation-list-empty">还没有运行记录</div>}</div>
+            </section>}
+          </div>
+        </>
+      </main>
     </div>}
   </div>;
 }

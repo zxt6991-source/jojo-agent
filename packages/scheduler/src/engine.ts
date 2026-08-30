@@ -4,6 +4,8 @@ import type {
   TargetExecutionSnapshot
 } from './dispatch/dispatcher.js';
 import { ScheduleEventBus } from './events.js';
+import { scheduleDeliveryContent } from './delivery/service.js';
+import type { ScheduleDeliveryResult, ScheduleDeliveryService } from './delivery/types.js';
 import type { ScheduleStore } from './store.js';
 import {
   ACTIVE_SCHEDULE_RUN_STATUSES,
@@ -28,6 +30,7 @@ export type DurableScheduleEngineOptions = {
   idGenerator?: () => string;
   setTimer?: (callback: () => void, delayMs: number) => Timer;
   clearTimer?: (timer: Timer) => void;
+  deliveryService?: ScheduleDeliveryService;
 };
 
 function targetExecutionId(run: ScheduleRun): string {
@@ -48,6 +51,7 @@ export class DurableScheduleEngine {
   private readonly idGenerator: () => string;
   private readonly setTimer: NonNullable<DurableScheduleEngineOptions['setTimer']>;
   private readonly clearTimer: NonNullable<DurableScheduleEngineOptions['clearTimer']>;
+  private readonly deliveryService: ScheduleDeliveryService | undefined;
   private readonly unsubscribeDispatcher: () => void;
   private readonly pendingTargetSnapshots = new Map<string, TargetExecutionSnapshot>();
   private targetEvents: Promise<void> = Promise.resolve();
@@ -67,6 +71,7 @@ export class DurableScheduleEngine {
     this.idGenerator = options.idGenerator ?? (() => crypto.randomUUID());
     this.setTimer = options.setTimer ?? ((callback, delay) => setTimeout(callback, delay));
     this.clearTimer = options.clearTimer ?? ((timer) => clearTimeout(timer));
+    this.deliveryService = options.deliveryService;
     this.unsubscribeDispatcher = dispatcher.subscribe((event) => {
       this.targetEvents = this.targetEvents.then(() => this.onTargetEvent(event.snapshot));
       void this.targetEvents.catch(() => undefined);
@@ -77,7 +82,10 @@ export class DurableScheduleEngine {
     if (!this.closed) return;
     this.closed = false;
     this.leader = await this.renewLease();
-    if (this.leader) await this.recoverScheduleRuns();
+    if (this.leader) {
+      await this.recoverScheduleRuns();
+      await this.recoverPendingDeliveries();
+    }
     await this.wake();
   }
 
@@ -218,6 +226,10 @@ export class DurableScheduleEngine {
     const updatedSchedule = await this.store.get(schedule.id);
     if (updatedSchedule) this.events.emit({ type: 'schedule.changed', schedule: updatedSchedule });
     if (claimed.run.status === 'dispatching') await this.dispatchClaimed(schedule, claimed.run);
+    else if (isTerminal(claimed.run.status)) {
+      try { await this.deliverRun(claimed.run); }
+      catch { /* Delivery state is independent and can be recovered if it reached pending. */ }
+    }
   }
 
   private async dispatchRun(schedule: Schedule, run: ScheduleRun): Promise<ScheduleRun> {
@@ -279,6 +291,40 @@ export class DurableScheduleEngine {
   private async transition(run: ScheduleRun, transition: Parameters<ScheduleStore['transitionRun']>[1]): Promise<ScheduleRun> {
     const updated = await this.store.transitionRun(run.id, transition, run.version);
     this.events.emit({ type: 'schedule.run.changed', run: updated });
+    if (isTerminal(updated.status) && updated.deliveryStatus === undefined) {
+      try { return await this.deliverRun(updated); }
+      catch { return await this.store.getRun(updated.id) ?? updated; }
+    }
+    return updated;
+  }
+
+  private async deliverRun(run: ScheduleRun): Promise<ScheduleRun> {
+    if (!this.deliveryService) return run;
+    const schedule = await this.store.get(run.scheduleId);
+    const content = schedule ? scheduleDeliveryContent(schedule, run) : undefined;
+    if (!schedule?.delivery?.conversation?.enabled || content === undefined) {
+      return this.recordDelivery(run, { status: 'skipped' });
+    }
+
+    const pending = run.deliveryStatus === 'pending'
+      ? run
+      : await this.recordDelivery(run, { status: 'pending' });
+    let delivered: ScheduleDeliveryResult;
+    try { delivered = await this.deliveryService.deliver({ schedule, run: pending, content }); }
+    catch (error) {
+      delivered = { status: 'failed', error: error instanceof Error ? error.message : String(error) };
+    }
+    return this.recordDelivery(pending, delivered);
+  }
+
+  private async recordDelivery(run: ScheduleRun, result: ScheduleDeliveryResult | { status: 'pending' }): Promise<ScheduleRun> {
+    const updated = await this.store.transitionRun(run.id, {
+      status: run.status,
+      deliveryStatus: result.status,
+      ...('messageId' in result && result.messageId ? { deliveryMessageId: result.messageId } : {}),
+      ...('error' in result && result.error ? { deliveryError: result.error } : {})
+    }, run.version);
+    this.events.emit({ type: 'schedule.run.changed', run: updated });
     return updated;
   }
 
@@ -324,6 +370,12 @@ export class DurableScheduleEngine {
     }
     for (const scheduleId of new Set(recoverableRuns.filter((run) => run.status === 'pending').map((run) => run.scheduleId))) {
       await this.drainPending(scheduleId);
+    }
+  }
+
+  private async recoverPendingDeliveries(): Promise<void> {
+    for (const run of await this.store.listPendingDeliveryRuns()) {
+      if (isTerminal(run.status)) await this.deliverRun(run);
     }
   }
 

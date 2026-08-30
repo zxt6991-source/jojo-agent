@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { AgentEvent } from './agent';
-import type { Message } from './messages';
+import type { ConversationMessageCreatedEvent, Message } from './messages';
 import { TeamMemberDefinitionSchema } from './orchestration';
 import type { OrchestrationEvent, TeamSnapshot, TeamStatusSnapshot, WorkflowRunSnapshot } from './orchestration';
 import type { ProviderSettings, SessionMeta } from './persistence';
@@ -571,6 +571,7 @@ export type DesktopApi = {
   onAgentEvent(listener: (event: AgentEvent) => void): () => void;
   onOrchestrationEvent(listener: (event: OrchestrationEvent) => void): () => void;
   onScheduleEvent(listener: (event: ScheduleEventContract) => void): () => void;
+  onConversationMessageCreated(listener: (event: ConversationMessageCreatedEvent) => void): () => void;
   onSessionsChanged(listener: () => void): () => void;
   onExtensionsChanged(listener: () => void): () => void;
   onBrowserSecretRequest(listener: (request: { requestId: string; name: string; description?: string }) => void): () => void;
@@ -607,6 +608,7 @@ export const IPC = {
   listScheduleRuns: 'scheduler:runs-list',
   cancelScheduleRun: 'scheduler:run-cancel',
   scheduleEvent: 'scheduler:event',
+  conversationMessageCreated: 'conversation:message-created',
   resolveApproval: 'agent:approval',
   chooseDirectory: 'system:choose-directory',
   chooseImages: 'system:choose-images',

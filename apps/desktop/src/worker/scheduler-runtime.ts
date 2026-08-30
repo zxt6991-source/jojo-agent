@@ -10,6 +10,7 @@ import {
   type AgentScheduleTarget,
   type ScheduleDispatchRequest,
   type ScheduleEvent,
+  type ScheduleDeliveryService,
   type ScheduleService,
   type ScheduleTarget,
   type ScheduleTargetValidator
@@ -36,6 +37,7 @@ export type DesktopSchedulerRuntimeOptions = {
   ): Promise<{ dispose(): void } | void>;
   validateTarget(target: ScheduleTarget): Promise<void>;
   emit(event: ScheduleEvent): void;
+  deliveryService?: ScheduleDeliveryService;
   instanceId?: string;
 };
 
@@ -60,7 +62,8 @@ export async function createDesktopSchedulerRuntime(
     store,
     calculator,
     registry,
-    options.instanceId ?? `desktop:${process.pid}`
+    options.instanceId ?? `desktop:${process.pid}`,
+    options.deliveryService ? { deliveryService: options.deliveryService } : {}
   );
   const service = new DefaultScheduleService(store, calculator, engine, {
     validator: new DesktopScheduleTargetValidator(options.validateTarget)

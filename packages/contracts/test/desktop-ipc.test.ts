@@ -76,6 +76,7 @@ const messageSamples: unknown[] = [
   { type: 'team.result', requestId: 'r', ok: true },
   { type: 'scheduler.result', requestId: 'r', ok: true },
   { type: 'scheduler.event', event: { type: 'schedule.deleted', scheduleId: 'sch' } },
+  { type: 'conversation.message.created', event: { sessionId: 's', messageId: 'm', scheduleId: 'sch', scheduleRunId: 'sr' } },
   { type: 'orchestration.event', event: { type: 'team.deleted', teamId: 'team' } },
   { type: 'sessions.changed' },
   { type: 'extensions.status', status: { mcpServers: [], skills: [] } },

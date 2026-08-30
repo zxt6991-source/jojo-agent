@@ -2,6 +2,7 @@ import {
   AgentEventSchema,
   BrowserDockStateSchema,
   BrowserSecretRequestSchema,
+  ConversationMessageCreatedEventSchema,
   MAX_ORCHESTRATION_EVENT_BYTES,
   OrchestrationEventSchema,
   serializedIpcBytes,
@@ -9,6 +10,7 @@ import {
   TerminalSecretRequestSchema,
   type AgentEvent,
   type BrowserDockState,
+  type ConversationMessageCreatedEvent,
   type OrchestrationEvent,
   type ScheduleEventContract
 } from '@desktop-agent/contracts';
@@ -20,6 +22,11 @@ export function parseAgentPush(raw: unknown): AgentEvent | null {
 
 export function parseSchedulePush(raw: unknown): ScheduleEventContract | null {
   const parsed = ScheduleEventSchema.safeParse(raw);
+  return parsed.success ? parsed.data : null;
+}
+
+export function parseConversationMessageCreatedPush(raw: unknown): ConversationMessageCreatedEvent | null {
+  const parsed = ConversationMessageCreatedEventSchema.safeParse(raw);
   return parsed.success ? parsed.data : null;
 }
 

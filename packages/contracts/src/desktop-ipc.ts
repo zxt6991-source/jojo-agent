@@ -3,7 +3,7 @@ import { AgentEventSchema, BoundedJsonValueSchema, serializedIpcBytes } from './
 import { BrowserActionSchema, StartTurnInputSchema } from './desktop.js';
 import { BrowserHealProposalSchema, BrowserHealRequestSchema } from './browser-recording.js';
 import { ExtensionStatusSchema } from './integrations.js';
-import { ToolResultSchema } from './messages.js';
+import { ConversationMessageCreatedEventSchema, ToolResultSchema } from './messages.js';
 import { MemoryKindSchema, MemoryStatusSchema } from './memory.js';
 import { MemoryCandidateReviewEditSchema, MemoryCandidateSchema } from './memory-candidate.js';
 import { SemanticIndexStatusSchema } from './memory-semantic.js';
@@ -140,6 +140,7 @@ const WorkerMessageBaseSchema = z.discriminatedUnion('type', [
     error: ErrorSchema.optional()
   }).strict(),
   z.object({ type: z.literal('scheduler.event'), event: ScheduleEventSchema }).strict(),
+  z.object({ type: z.literal('conversation.message.created'), event: ConversationMessageCreatedEventSchema }).strict(),
   z.object({ type: z.literal('sessions.changed') }).strict(),
   z.object({ type: z.literal('extensions.status'), status: ExtensionStatusSchema }).strict(),
   z.object({ type: z.literal('mcp.oauth.authorization'), requestId: IdSchema, url: z.string().url().max(4_096) }).strict(),

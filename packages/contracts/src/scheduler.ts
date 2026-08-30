@@ -75,6 +75,15 @@ export const ScheduleTargetSchema = z.discriminatedUnion('kind', [
 ]);
 export type ScheduleTargetContract = z.infer<typeof ScheduleTargetSchema>;
 
+export const ScheduleDeliverySchema = z.object({
+  conversation: z.object({
+    enabled: z.boolean(),
+    sessionId: SchedulerIdSchema
+  }).strict().optional(),
+  notification: z.object({ enabled: z.boolean() }).strict().optional()
+}).strict();
+export type ScheduleDeliveryContract = z.infer<typeof ScheduleDeliverySchema>;
+
 export const MisfirePolicySchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('skip') }).strict(),
   z.object({ kind: z.literal('fire_once'), graceMs: z.number().int().nonnegative().max(365 * 86_400_000) }).strict()
@@ -91,6 +100,7 @@ export const ScheduleSchema = z.object({
   enabled: z.boolean(),
   spec: ScheduleSpecSchema,
   target: ScheduleTargetSchema,
+  delivery: ScheduleDeliverySchema.optional(),
   misfire: MisfirePolicySchema,
   concurrency: ScheduleConcurrencyPolicySchema,
   nextRunAt: TimestampSchema.optional(),
@@ -125,6 +135,9 @@ export const ScheduleRunSchema = z.object({
   errorCode: z.string().max(256).optional(),
   error: z.string().max(100_000).optional(),
   resultPreview: z.string().max(4_096).optional(),
+  deliveryStatus: z.enum(['pending', 'delivered', 'failed', 'skipped']).optional(),
+  deliveryMessageId: SchedulerIdSchema.optional(),
+  deliveryError: z.string().max(100_000).optional(),
   targetSnapshot: ScheduleTargetSchema,
   version: z.number().int().positive()
 }).strict();
@@ -136,6 +149,7 @@ export const CreateScheduleInputSchema = z.object({
   enabled: z.boolean().optional(),
   spec: ScheduleSpecSchema,
   target: ScheduleTargetSchema,
+  delivery: ScheduleDeliverySchema.optional(),
   misfire: MisfirePolicySchema.optional(),
   concurrency: ScheduleConcurrencyPolicySchema.optional()
 }).strict();

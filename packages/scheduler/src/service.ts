@@ -82,6 +82,7 @@ export class DefaultScheduleService implements ScheduleService {
       enabled,
       spec: input.spec,
       target: input.target,
+      ...(input.delivery ? { delivery: input.delivery } : {}),
       misfire: input.misfire ?? DEFAULT_MISFIRE,
       concurrency: input.concurrency ?? 'skip',
       ...(nextRunAt ? { nextRunAt: nextRunAt.toISOString() } : {}),
@@ -103,6 +104,7 @@ export class DefaultScheduleService implements ScheduleService {
       enabled: input.enabled ?? current.enabled,
       spec: input.spec ?? current.spec,
       target: input.target ?? current.target,
+      ...(input.delivery !== undefined ? { delivery: input.delivery } : current.delivery ? { delivery: current.delivery } : {}),
       misfire: input.misfire ?? current.misfire,
       concurrency: input.concurrency ?? current.concurrency
     };
@@ -125,6 +127,7 @@ export class DefaultScheduleService implements ScheduleService {
       enabled: mergedInput.enabled ?? true,
       spec: mergedInput.spec,
       target: mergedInput.target,
+      ...(mergedInput.delivery ? { delivery: mergedInput.delivery } : {}),
       misfire: mergedInput.misfire ?? DEFAULT_MISFIRE,
       concurrency: mergedInput.concurrency ?? 'skip',
       ...(nextRunAt ? { nextRunAt: nextRunAt.toISOString() } : {}),

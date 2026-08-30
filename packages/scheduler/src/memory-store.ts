@@ -115,6 +115,10 @@ export class MemoryScheduleStore implements ScheduleStore {
     return [...this.runs.values()].filter((run) => ACTIVE_SCHEDULE_RUN_STATUSES.includes(run.status)).map(clone);
   }
 
+  async listPendingDeliveryRuns(): Promise<ScheduleRun[]> {
+    return [...this.runs.values()].filter((run) => run.deliveryStatus === 'pending').map(clone);
+  }
+
   async transitionRun(id: string, transition: ScheduleRunTransition, expectedVersion?: number): Promise<ScheduleRun> {
     const current = this.runs.get(id);
     if (!current) throw new Error(`schedule_run_not_found: ${id}`);

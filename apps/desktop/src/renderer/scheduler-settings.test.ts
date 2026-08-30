@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import type { ProviderConfig, SessionMeta } from '@desktop-agent/contracts';
-import { createScheduleDraft, scheduleInputFromDraft, scheduleRunDetails } from './SchedulerSettings';
+import {
+  createScheduleDraft,
+  scheduleInputFromDraft,
+  scheduleRunDeliveryLabel,
+  scheduleRunDetails,
+  scheduleTimingLabel
+} from './SchedulerSettings';
 
 const sessions: SessionMeta[] = [{
   id: 'session-1',
@@ -82,5 +88,31 @@ describe('scheduler settings draft', () => {
     expect(scheduleRunDetails({ status: 'failed', error: 'provider failed' })).toEqual({
       kind: 'error', label: '查看错误详情', content: 'provider failed'
     });
+  });
+
+  it('presents delivery state separately from execution output', () => {
+    expect(scheduleRunDeliveryLabel({ deliveryStatus: 'delivered' })).toBe('✓ 已发送至对话');
+    expect(scheduleRunDeliveryLabel({ deliveryStatus: 'failed', deliveryError: 'disk full' }))
+      .toBe('✕ 投递失败 · disk full');
+    expect(scheduleRunDeliveryLabel({ deliveryStatus: 'skipped' })).toBe('未投递');
+    expect(scheduleRunDeliveryLabel({})).toBe('旧任务 · 无投递记录');
+  });
+
+  it('formats common cron schedules like the scheduled-task list', () => {
+    const base = {
+      id: 'schedule-1', name: 'Daily', enabled: true,
+      target: {
+        kind: 'agent' as const, sessionId: 'session-1', providerId: 'openai', model: 'gpt-5',
+        input: { content: [{ type: 'text' as const, text: 'Run' }] }
+      },
+      misfire: { kind: 'skip' as const }, concurrency: 'skip' as const, revision: 1,
+      createdBy: 'user', createdAt: '2026-08-30T00:00:00.000Z', updatedAt: '2026-08-30T00:00:00.000Z'
+    };
+    expect(scheduleTimingLabel({
+      ...base, spec: { kind: 'cron', expression: '0 8 * * 1-5', timezone: 'Asia/Shanghai' }
+    })).toBe('工作日 08:00');
+    expect(scheduleTimingLabel({
+      ...base, spec: { kind: 'cron', expression: '0 16 * * 5', timezone: 'Asia/Shanghai' }
+    })).toBe('星期五 16:00');
   });
 });

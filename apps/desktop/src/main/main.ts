@@ -548,6 +548,10 @@ function startWorker(): void {
       sendToRenderer(IPC.orchestrationEvent, message.event);
     }
     else if (message.type === 'scheduler.event') sendToRenderer(IPC.scheduleEvent, message.event);
+    else if (message.type === 'conversation.message.created') {
+      sendToRenderer(IPC.conversationMessageCreated, message.event);
+      sendToRenderer(IPC.sessionsChanged);
+    }
     else if (message.type === 'session.stopped') {
       finishWorkerRequest(message.requestId, message.ok ? undefined : new Error(message.error ?? 'Session stop failed.'));
     }

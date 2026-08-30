@@ -48,6 +48,19 @@ describe('contracts', () => {
     });
   });
 
+  it('persists scheduler delivery metadata on assistant messages', () => {
+    expect(MessageSchema.parse({
+      ...message,
+      metadata: {
+        source: 'scheduler',
+        automation: {
+          scheduleId: 'sch_1', scheduleRunId: 'sr_1', name: 'Daily',
+          triggeredAt: '2026-08-30T00:00:00.000Z'
+        }
+      }
+    })).toMatchObject({ metadata: { source: 'scheduler', automation: { scheduleId: 'sch_1' } } });
+  });
+
   it('applies provider defaults without adding them to save-settings input', () => {
     expect(ProviderSettingsSchema.parse({})).toEqual({
       activeProviderId: 'openai',
