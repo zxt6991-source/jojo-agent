@@ -1,0 +1,11 @@
+{
+  "name": "@desktop-agent/channel-adapters",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@desktop-agent/channel-core": "workspace:*"
+  }
+}

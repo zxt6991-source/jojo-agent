@@ -9,6 +9,9 @@
   "dependencies": {
     "@desktop-agent/agent-runtime": "workspace:*",
     "@desktop-agent/app-service": "workspace:*",
+    "@desktop-agent/channel-adapters": "workspace:*",
+    "@desktop-agent/channel-core": "workspace:*",
+    "@desktop-agent/channel-runtime": "workspace:*",
     "@desktop-agent/runtime-composition": "workspace:*",
     "@desktop-agent/scheduler": "workspace:*",
     "@desktop-agent/server-core": "workspace:*",

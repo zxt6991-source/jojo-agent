@@ -6,6 +6,7 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
+    "@desktop-agent/channel-core": "workspace:*",
     "@desktop-agent/server-core": "workspace:*",
     "@desktop-agent/server-protocol": "workspace:*",
     "@fastify/websocket": "^11.3.0",

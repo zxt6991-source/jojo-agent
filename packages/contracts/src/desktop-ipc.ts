@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { AgentEventSchema, BoundedJsonValueSchema, serializedIpcBytes } from './agent.js';
-import { BrowserActionSchema, StartTurnInputSchema } from './desktop.js';
+import { BrowserActionSchema, DesktopChannelMutationSchema, StartTurnInputSchema } from './desktop.js';
 import { BrowserHealProposalSchema, BrowserHealRequestSchema } from './browser-recording.js';
 import { ExtensionStatusSchema } from './integrations.js';
 import { ConversationMessageCreatedEventSchema, ToolResultSchema } from './messages.js';
@@ -75,6 +75,8 @@ const WorkerCommandBaseSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('scheduler.run-now'), requestId: IdSchema }).merge(ScheduleIdInputSchema),
   z.object({ type: z.literal('scheduler.runs.list'), requestId: IdSchema }).merge(ScheduleIdInputSchema),
   z.object({ type: z.literal('scheduler.run.cancel'), requestId: IdSchema }).merge(ScheduleRunIdInputSchema),
+  z.object({ type: z.literal('channel.snapshot'), requestId: IdSchema }).strict(),
+  z.object({ type: z.literal('channel.mutate'), requestId: IdSchema, input: DesktopChannelMutationSchema }).strict(),
   z.object({
     type: z.literal('approval.resolve'), requestId: IdSchema, allow: z.boolean(),
     scope: z.enum(['once', 'session', 'similar', 'conversation']).default('once')
@@ -140,6 +142,10 @@ const WorkerMessageBaseSchema = z.discriminatedUnion('type', [
     error: ErrorSchema.optional()
   }).strict(),
   z.object({ type: z.literal('scheduler.event'), event: ScheduleEventSchema }).strict(),
+  z.object({
+    type: z.literal('channel.result'), requestId: IdSchema, ok: z.boolean(),
+    snapshot: BoundedJsonValueSchema.optional(), receipt: BoundedJsonValueSchema.optional(), error: ErrorSchema.optional()
+  }).strict(),
   z.object({ type: z.literal('conversation.message.created'), event: ConversationMessageCreatedEventSchema }).strict(),
   z.object({ type: z.literal('sessions.changed') }).strict(),
   z.object({ type: z.literal('extensions.status'), status: ExtensionStatusSchema }).strict(),

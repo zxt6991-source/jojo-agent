@@ -24,11 +24,15 @@ export class ConversationScheduleDeliveryService implements ScheduleDeliveryServ
           }
         }
       });
-      return { status: 'delivered' as const, channel: 'conversation' as const, messageId };
+      return {
+        status: 'delivered' as const,
+        destination: { kind: 'conversation' as const, id: conversation.sessionId },
+        messageId
+      };
     } catch (error) {
       return {
         status: 'failed' as const,
-        channel: 'conversation' as const,
+        destination: { kind: 'conversation' as const, id: conversation.sessionId },
         error: error instanceof Error ? error.message : String(error)
       };
     }

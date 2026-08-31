@@ -32,6 +32,10 @@ export default defineConfig({
       ,'@desktop-agent/browser-automation/recording': path.resolve('packages/browser-automation/src/recording.ts')
       ,'@desktop-agent/browser-automation/testing': path.resolve('packages/browser-automation/src/testing.ts')
       ,'@desktop-agent/browser-automation': path.resolve('packages/browser-automation/src/index.ts')
+      ,'@desktop-agent/channel-core/testing': path.resolve('packages/channel-core/src/testing.ts')
+      ,'@desktop-agent/channel-core': path.resolve('packages/channel-core/src/index.ts')
+      ,'@desktop-agent/channel-adapters': path.resolve('packages/channel-adapters/src/index.ts')
+      ,'@desktop-agent/channel-runtime': path.resolve('packages/channel-runtime/src/index.ts')
       ,'@desktop-agent/scheduler': path.resolve('packages/scheduler/src/index.ts')
     }
   },

@@ -33,15 +33,16 @@ describe('server protocol', () => {
     }).success).toBe(true);
   });
 
-  it('advertises concrete scheduler targets and validates scheduler events in protocol v2', () => {
-    expect(JOJO_SERVER_PROTOCOL_VERSION).toBe(2);
+  it('advertises scheduler and channel capabilities in protocol v3', () => {
+    expect(JOJO_SERVER_PROTOCOL_VERSION).toBe(3);
     expect(ServerCapabilitiesSchema.safeParse({
       runtime: {
         lanes: true, resumeOperation: true, transcriptQuery: true, runQuery: true,
         steer: false, followUp: false, durableSuspend: false
       },
       workflow: false, browser: false, memory: false, subagents: true, images: true, approvals: true,
-      scheduler: { enabled: true, targets: ['agent'] }
+      scheduler: { enabled: true, targets: ['agent'] },
+      channels: { enabled: true, kinds: ['telegram', 'feishu'], inbound: true, outbound: true, approvals: true }
     }).success).toBe(true);
     expect(ServerWireMessageSchema.safeParse({
       type: 'schedule.event',

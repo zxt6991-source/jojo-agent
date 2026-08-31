@@ -27,6 +27,10 @@ describe('Electron Node Vite config', () => {
     const alias = electronNodeConfig.resolve?.alias;
     expect(alias).toMatchObject({
       '@desktop-agent/browser-automation': expect.stringContaining('/packages/browser-automation/src/index.ts'),
+      '@desktop-agent/channel-adapters': expect.stringContaining('/packages/channel-adapters/src/index.ts'),
+      '@desktop-agent/channel-core': expect.stringContaining('/packages/channel-core/src/index.ts'),
+      '@desktop-agent/channel-core/testing': expect.stringContaining('/packages/channel-core/src/testing.ts'),
+      '@desktop-agent/channel-runtime': expect.stringContaining('/packages/channel-runtime/src/index.ts'),
       '@desktop-agent/contracts': expect.stringContaining('/packages/contracts/src/index.ts'),
       '@desktop-agent/hooks': expect.stringContaining('/packages/hooks/src/index.ts'),
       '@desktop-agent/memory': expect.stringContaining('/packages/memory/src/index.ts')

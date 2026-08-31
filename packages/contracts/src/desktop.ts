@@ -18,6 +18,14 @@ import {
   BrowserRecordingIdSchema
 } from './browser-recording';
 import type { HookSettingsSnapshot } from './hooks';
+import type {
+  ChannelBinding,
+  ChannelDeliveryReceipt,
+  ChannelInstance,
+  ChannelInstanceHealth,
+  ChannelPairing
+} from '@desktop-agent/channel-core';
+export type { ChannelDeliveryReceipt } from '@desktop-agent/channel-core';
 import { MemorySettingsSchema } from './memory';
 import type { MemorySettings, MemoryStatusSnapshot } from './memory';
 import { MemoryCandidateReviewEditSchema } from './memory-candidate';
@@ -278,11 +286,11 @@ export const PermissionDecisionAuditItemSchema = z.object({
   sessionId: z.string().min(1).max(256),
   laneId: z.string().max(256).optional(),
   runId: z.string().max(256).optional(),
-  actorKind: z.enum(['main', 'subagent', 'workflow', 'team_member']),
+  actorKind: z.enum(['main', 'subagent', 'workflow', 'team_member', 'channel_user']),
   actorId: z.string().max(256).optional(),
-  triggerKind: z.enum(['user', 'api', 'scheduler', 'workflow', 'subagent', 'team_member', 'resume']),
+  triggerKind: z.enum(['user', 'api', 'scheduler', 'workflow', 'subagent', 'team_member', 'resume', 'channel_message']),
   toolName: z.string().min(1).max(256),
-  toolSource: z.enum(['native', 'mcp', 'browser', 'memory', 'orchestration', 'skill', 'hook']),
+  toolSource: z.enum(['native', 'mcp', 'browser', 'memory', 'orchestration', 'skill', 'hook', 'channel']),
   effect: z.enum(['allow', 'ask', 'deny']),
   locked: z.boolean(),
   source: z.enum(['security_boundary', 'hard_floor', 'mandatory_approval', 'user_policy', 'session_grant', 'mode', 'baseline']),
@@ -495,6 +503,98 @@ export type SessionCompactionRecord = {
   tokensBefore: number;
 };
 
+export type ChannelDeliverySummary = {
+  id: string; instanceId: string; bindingId?: string; conversationId: string; threadId?: string;
+  mode?: 'reply' | 'proactive' | 'system'; status: 'pending' | 'sending' | 'delivered' | 'failed' | 'unknown';
+  attemptCount: number; createdAt: string; deliveredAt?: string; nativeMessageId?: string; lastError?: string;
+};
+
+export type ChannelSettingsSnapshot = {
+  instances: ChannelInstance[];
+  bindings: ChannelBinding[];
+  pairings: Array<Omit<ChannelPairing, 'codeHash'>>;
+  deliveries: ChannelDeliverySummary[];
+  health: Array<{ instanceId: string; health: ChannelInstanceHealth }>;
+};
+
+const ChannelEntityIdSchema = z.string().trim().min(1).max(256);
+const ChannelInstanceDraftSchema = z.object({
+  id: ChannelEntityIdSchema,
+  kind: z.enum(['telegram', 'feishu']),
+  name: z.string().trim().min(1).max(120),
+  enabled: z.boolean(),
+  config: z.record(z.string().min(1).max(128), JsonValueSchema),
+  secretRefs: z.record(
+    z.string().min(1).max(128),
+    z.string().regex(
+      /^secret:\/\/env\/[A-Z_][A-Z0-9_]*$/u,
+      'Channel secrets must use secret://env/VARIABLE_NAME references.'
+    )
+  )
+}).strict();
+
+const ChannelBindingDraftSchema = z.object({
+  id: ChannelEntityIdSchema,
+  instanceId: ChannelEntityIdSchema,
+  conversation: z.object({
+    id: ChannelEntityIdSchema,
+    threadId: ChannelEntityIdSchema.optional(),
+    type: z.enum(['direct', 'group'])
+  }).strict(),
+  routing: z.object({
+    sessionMode: z.enum(['persistent', 'per_thread', 'stateless']),
+    sessionId: ChannelEntityIdSchema.optional(),
+    workspaceRoot: z.string().trim().min(1).max(4_096).optional(),
+    providerId: ChannelEntityIdSchema.optional(),
+    model: z.string().trim().min(1).max(256).optional(),
+    instructions: z.array(z.string().max(10_000)).max(20).optional(),
+    profile: ChannelEntityIdSchema.optional()
+  }).strict(),
+  policy: z.object({
+    enabled: z.boolean(),
+    requireMention: z.boolean(),
+    queueMode: z.enum(['queue', 'reject', 'interrupt']),
+    allowedSenders: z.array(ChannelEntityIdSchema).max(1_000).optional(),
+    allowAttachments: z.boolean()
+  }).strict()
+}).strict();
+
+export const DesktopChannelMutationSchema = z.discriminatedUnion('action', [
+  z.object({
+    action: z.literal('instance.save'),
+    instance: ChannelInstanceDraftSchema,
+    expectedRevision: z.number().int().positive().optional()
+  }).strict(),
+  z.object({
+    action: z.literal('instance.delete'),
+    instanceId: ChannelEntityIdSchema,
+    expectedRevision: z.number().int().positive().optional()
+  }).strict(),
+  z.object({
+    action: z.literal('binding.save'),
+    binding: ChannelBindingDraftSchema,
+    expectedRevision: z.number().int().positive().optional()
+  }).strict(),
+  z.object({
+    action: z.literal('binding.delete'),
+    bindingId: ChannelEntityIdSchema,
+    expectedRevision: z.number().int().positive().optional()
+  }).strict(),
+  z.object({ action: z.literal('pairing.approve'), pairingId: ChannelEntityIdSchema, binding: ChannelBindingDraftSchema }).strict(),
+  z.object({ action: z.literal('pairing.reject'), pairingId: ChannelEntityIdSchema }).strict(),
+  z.object({
+    action: z.literal('channel.test'),
+    instanceId: ChannelEntityIdSchema,
+    bindingId: ChannelEntityIdSchema.optional(),
+    conversationId: ChannelEntityIdSchema.optional(),
+    threadId: ChannelEntityIdSchema.optional(),
+    text: z.string().trim().min(1).max(20_000)
+  }).strict().refine((input) => Boolean(input.bindingId || input.conversationId), {
+    message: 'Channel test requires a bindingId or conversationId.'
+  })
+]);
+export type DesktopChannelMutation = z.infer<typeof DesktopChannelMutationSchema>;
+
 export type DesktopApi = {
   listSessions(): Promise<SessionMeta[]>;
   createSession(input: z.input<typeof CreateSessionInputSchema>): Promise<SessionMeta | null>;
@@ -523,6 +623,8 @@ export type DesktopApi = {
   runScheduleNow(input: { scheduleId: string }): Promise<ScheduleRunContract>;
   listScheduleRuns(input: { scheduleId: string }): Promise<ScheduleRunContract[]>;
   cancelScheduleRun(input: { runId: string }): Promise<void>;
+  getChannelSettings(): Promise<ChannelSettingsSnapshot>;
+  mutateChannel(input: DesktopChannelMutation): Promise<ChannelDeliveryReceipt | ChannelSettingsSnapshot>;
   resolveApproval(input: z.input<typeof ApprovalInputSchema>): Promise<void>;
   chooseDirectory(): Promise<string | null>;
   chooseImages(): Promise<ImageContentBlock[]>;
@@ -607,6 +709,8 @@ export const IPC = {
   runScheduleNow: 'scheduler:run-now',
   listScheduleRuns: 'scheduler:runs-list',
   cancelScheduleRun: 'scheduler:run-cancel',
+  getChannelSettings: 'channels:get',
+  mutateChannel: 'channels:mutate',
   scheduleEvent: 'scheduler:event',
   conversationMessageCreated: 'conversation:message-created',
   resolveApproval: 'agent:approval',

@@ -43,6 +43,10 @@
       ,"@desktop-agent/browser-automation/testing": ["packages/browser-automation/src/testing.ts"]
       ,"@desktop-agent/permission-governance": ["packages/permission-governance/src/index.ts"]
       ,"@desktop-agent/scheduler": ["packages/scheduler/src/index.ts"]
+      ,"@desktop-agent/channel-core": ["packages/channel-core/src/index.ts"]
+      ,"@desktop-agent/channel-core/testing": ["packages/channel-core/src/testing.ts"]
+      ,"@desktop-agent/channel-runtime": ["packages/channel-runtime/src/index.ts"]
+      ,"@desktop-agent/channel-adapters": ["packages/channel-adapters/src/index.ts"]
     }
   }
 }

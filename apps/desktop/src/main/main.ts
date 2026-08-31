@@ -5,11 +5,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  AcceptMemoryCandidateInputSchema, ApprovalInputSchema, BindSessionProjectInputSchema, BrowserDockActionSchema, BrowserDockLayoutSchema, BrowserRecordingRegistryActionInputSchema, BrowserRecordingRegistryInputSchema, BrowserRecordingStudioInputSchema, CreateSessionInputSchema, CreateSkillInputSchema, DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS, DEFAULT_MODEL_MAX_OUTPUT_TOKENS, DeleteMemoryEntryInputSchema, DeleteTeamInputSchema, DuplicateBrowserRecordingInputSchema, GetExtensionStatusInputSchema, GetHookStatusInputSchema, GetMemoryStatusInputSchema, GetPermissionGovernanceInputSchema, HookProjectActionInputSchema, ImportSkillInputSchema, IPC, ListModelsInputSchema, ListTeamsInputSchema, MAX_IMAGE_ATTACHMENTS, MAX_IMAGE_BYTES, McpServerIdInputSchema, OpenHookConfigInputSchema, PermissionGovernanceSnapshotSchema, RebuildMemoryIndexInputSchema, RebuildSemanticMemoryIndexInputSchema, RejectMemoryCandidateInputSchema, RenameSessionInputSchema, ResolveTerminalSecretInputSchema, SaveBrowserRecordingInputSchema, SaveExtensionSettingsInputSchema, SaveMemorySettingsInputSchema, SavePermissionPolicyInputSchema, SaveSettingsInputSchema, SaveTeamInputSchema, SetTeamMemberEnabledInputSchema,
+  AcceptMemoryCandidateInputSchema, ApprovalInputSchema, BindSessionProjectInputSchema, BrowserDockActionSchema, BrowserDockLayoutSchema, BrowserRecordingRegistryActionInputSchema, BrowserRecordingRegistryInputSchema, BrowserRecordingStudioInputSchema, CreateSessionInputSchema, CreateSkillInputSchema, DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS, DEFAULT_MODEL_MAX_OUTPUT_TOKENS, DeleteMemoryEntryInputSchema, DeleteTeamInputSchema, DesktopChannelMutationSchema, DuplicateBrowserRecordingInputSchema, GetExtensionStatusInputSchema, GetHookStatusInputSchema, GetMemoryStatusInputSchema, GetPermissionGovernanceInputSchema, HookProjectActionInputSchema, ImportSkillInputSchema, IPC, ListModelsInputSchema, ListTeamsInputSchema, MAX_IMAGE_ATTACHMENTS, MAX_IMAGE_BYTES, McpServerIdInputSchema, OpenHookConfigInputSchema, PermissionGovernanceSnapshotSchema, RebuildMemoryIndexInputSchema, RebuildSemanticMemoryIndexInputSchema, RejectMemoryCandidateInputSchema, RenameSessionInputSchema, ResolveTerminalSecretInputSchema, SaveBrowserRecordingInputSchema, SaveExtensionSettingsInputSchema, SaveMemorySettingsInputSchema, SavePermissionPolicyInputSchema, SaveSettingsInputSchema, SaveTeamInputSchema, SetTeamMemberEnabledInputSchema,
   SaveScheduleInputSchema, ScheduleIdInputSchema, ScheduleRunIdInputSchema, SetScheduleEnabledInputSchema,
   SessionIdInputSchema, SkillPathInputSchema, StartTurnInputSchema, UpdateSkillInputSchema, WorkflowRunActionInputSchema,
   WorkerCommandSchema, WorkerMessageSchema, serializedIpcBytes,
-  type BrowserHealProposal, type BrowserHealRequest, type ExtensionStatus, type MemoryStatusSnapshot, type PermissionGovernanceSnapshot, type ProviderSettings, type ScheduleContract, type ScheduleRunContract, type SessionCompactionRecord, type TeamSnapshot, type TeamStatusSnapshot, type WorkerCommand, type WorkerMessage, type WorkflowRunSnapshot
+  type BrowserHealProposal, type BrowserHealRequest, type ChannelDeliveryReceipt, type ChannelSettingsSnapshot, type ExtensionStatus, type MemoryStatusSnapshot, type PermissionGovernanceSnapshot, type ProviderSettings, type ScheduleContract, type ScheduleRunContract, type SessionCompactionRecord, type TeamSnapshot, type TeamStatusSnapshot, type WorkerCommand, type WorkerMessage, type WorkflowRunSnapshot
 } from '@desktop-agent/contracts';
 import { z } from 'zod';
 import { createProvider } from '@desktop-agent/providers';
@@ -78,6 +78,12 @@ type SchedulerResponse = {
 };
 const schedulerRequests = new Map<string, {
   resolve: (value: SchedulerResponse) => void;
+  reject: (error: Error) => void;
+  timer: ReturnType<typeof setTimeout>;
+}>();
+type ChannelResponse = { snapshot?: ChannelSettingsSnapshot; receipt?: ChannelDeliveryReceipt };
+const channelRequests = new Map<string, {
+  resolve: (value: ChannelResponse) => void;
   reject: (error: Error) => void;
   timer: ReturnType<typeof setTimeout>;
 }>();
@@ -372,6 +378,30 @@ function finishSchedulerRequest(message: Extract<WorkerMessage, { type: 'schedul
   });
 }
 
+function requestChannel(command: Extract<WorkerCommand, { type: 'channel.snapshot' | 'channel.mutate' }>): Promise<ChannelResponse> {
+  if (!worker) return Promise.reject(new Error('Agent runtime is not available.'));
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      channelRequests.delete(command.requestId);
+      reject(new Error('Channel request timed out.'));
+    }, 30_000);
+    channelRequests.set(command.requestId, { resolve, reject, timer });
+    postWorkerCommand(command);
+  });
+}
+
+function finishChannelRequest(message: Extract<WorkerMessage, { type: 'channel.result' }>): void {
+  const request = channelRequests.get(message.requestId);
+  if (!request) return;
+  channelRequests.delete(message.requestId);
+  clearTimeout(request.timer);
+  if (!message.ok) request.reject(new Error(message.error ?? 'Channel request failed.'));
+  else request.resolve({
+    ...(message.snapshot ? { snapshot: message.snapshot as unknown as ChannelSettingsSnapshot } : {}),
+    ...(message.receipt ? { receipt: message.receipt as unknown as ChannelDeliveryReceipt } : {})
+  });
+}
+
 async function stopSessionRuntime(sessionId: string): Promise<void> {
   if (!worker) return;
   for (const [requestId, pending] of terminalSecretRequests) {
@@ -652,6 +682,7 @@ function startWorker(): void {
     else if (message.type === 'memory.result') finishMemoryRequest(message);
     else if (message.type === 'team.result') finishTeamRequest(message);
     else if (message.type === 'scheduler.result') finishSchedulerRequest(message);
+    else if (message.type === 'channel.result') finishChannelRequest(message);
   });
   worker.on('exit', (code) => {
     for (const requestId of workerRequests.keys()) {
@@ -669,6 +700,11 @@ function startWorker(): void {
     }
     for (const [requestId, request] of schedulerRequests) {
       schedulerRequests.delete(requestId);
+      clearTimeout(request.timer);
+      request.reject(new Error(`Agent runtime exited (${code}).`));
+    }
+    for (const [requestId, request] of channelRequests) {
+      channelRequests.delete(requestId);
       clearTimeout(request.timer);
       request.reject(new Error(`Agent runtime exited (${code}).`));
     }
@@ -893,6 +929,23 @@ function registerIpc(): void {
     assertTrusted(event);
     const input = ScheduleRunIdInputSchema.parse(raw);
     await requestScheduler({ type: 'scheduler.run.cancel', requestId: crypto.randomUUID(), ...input });
+  });
+  ipcMain.handle(IPC.getChannelSettings, async (event) => {
+    assertTrusted(event);
+    const response = await requestChannel({ type: 'channel.snapshot', requestId: crypto.randomUUID() });
+    if (!response.snapshot) throw new Error('Channel runtime returned no snapshot.');
+    return response.snapshot;
+  });
+  ipcMain.handle(IPC.mutateChannel, async (event, raw) => {
+    assertTrusted(event);
+    const input = DesktopChannelMutationSchema.parse(raw);
+    const response = await requestChannel({ type: 'channel.mutate', requestId: crypto.randomUUID(), input });
+    if (input.action === 'channel.test') {
+      if (!response.receipt) throw new Error('Channel test returned no receipt.');
+      return response.receipt;
+    }
+    if (!response.snapshot) throw new Error('Channel mutation returned no snapshot.');
+    return response.snapshot;
   });
   ipcMain.handle(IPC.resolveApproval, async (event, raw) => {
     assertTrusted(event); const input = ApprovalInputSchema.parse(raw);

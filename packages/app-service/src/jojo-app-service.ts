@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { AgentRuntime, RunHandle, RunRequest, RuntimeTriggerContext } from '@desktop-agent/agent-runtime';
+import type { AgentRuntime, RunHandle, RunRequest, RuntimeActor, RuntimeTriggerContext } from '@desktop-agent/agent-runtime';
 import type { RuntimeEventEnvelope } from '@desktop-agent/contracts/runtime';
 import type {
   ApprovalDecision,
@@ -34,10 +34,19 @@ export type JojoAppServiceOptions = {
 
 export type StartRunOptions = {
   runId?: string;
+  actor?: RuntimeActor;
   trigger?: RuntimeTriggerContext;
   metadata?: {
     scheduleId?: string;
     scheduleRunId?: string;
+    channel?: {
+      bindingId: string;
+      instanceId: string;
+      conversationId: string;
+      threadId?: string;
+      senderId: string;
+      inboundMessageId: string;
+    };
   };
 };
 
@@ -190,13 +199,18 @@ class DefaultJojoAppService implements JojoAppService {
   async startRun(_ctx: RequestContext, sessionId: string, input: StartRunInput, options: StartRunOptions = {}): Promise<RunSnapshot> {
     const runId = options.runId ?? this.idGenerator();
     const trigger = options.trigger ?? { kind: 'api' as const };
-    const originKind = trigger.kind === 'scheduler' ? 'scheduler' as const : trigger.kind === 'user' ? 'user' as const : 'api' as const;
+    const originKind = trigger.kind === 'scheduler'
+      ? 'scheduler' as const
+      : trigger.kind === 'user'
+        ? 'user' as const
+        : trigger.kind === 'channel_message' ? 'channel' as const : 'api' as const;
     const requestMeta = {
       ...(input.budget ? { budget: compactBudget(input.budget) } : {}),
       origin: {
         kind: originKind,
         ...(options.metadata?.scheduleId ? { scheduleId: options.metadata.scheduleId } : {}),
-        ...(options.metadata?.scheduleRunId ? { scheduleRunId: options.metadata.scheduleRunId } : {})
+        ...(options.metadata?.scheduleRunId ? { scheduleRunId: options.metadata.scheduleRunId } : {}),
+        ...(options.metadata?.channel ? { channel: options.metadata.channel } : {})
       }
     };
     const accepted = await this.stateStore.runs.createAccepted({
@@ -227,7 +241,7 @@ class DefaultJojoAppService implements JojoAppService {
         input: input.input,
         providerId: input.providerId,
         model: input.model,
-        actor: { kind: 'main' },
+        actor: options.actor ?? { kind: 'main' },
         trigger,
         ...(input.instructions ? { instructions: input.instructions } : {}),
         ...(budget ? { budget } : {})

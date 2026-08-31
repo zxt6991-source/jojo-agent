@@ -17,7 +17,7 @@ const READ_TOOLS = new Set([
   'mcp_read_resource', 'mcp_list_prompts', 'mcp_get_prompt', 'workflow_list',
   'sub_agent_status', 'sub_agent_wait', 'workflow_status', 'workflow_wait',
   'team_list', 'team_status', 'team_wait', 'team_inbox',
-  'schedule_list', 'schedule_get', 'schedule_runs'
+  'schedule_list', 'schedule_get', 'schedule_runs', 'channel_list_targets'
 ]);
 const WRITE_TOOLS = new Set(['write_file', 'edit_file', 'delete_file', 'save_memory']);
 const CONTROL_TOOLS = new Set([
@@ -52,6 +52,7 @@ function objectInput(call: ToolCall): Record<string, unknown> {
 }
 
 function sourceFor(call: ToolCall, baseline: PermissionDecision): ToolSource {
+  if (call.name.startsWith('channel_')) return 'channel';
   if (call.name.startsWith('mcp__') || call.name.startsWith('mcp_') || (baseline.decision === 'ask' && baseline.request.security?.kind === 'mcp')) return 'mcp';
   if (call.name.startsWith('browser_')) return 'browser';
   if (call.name.includes('memory')) return 'memory';
@@ -63,6 +64,7 @@ function sourceFor(call: ToolCall, baseline: PermissionDecision): ToolSource {
 }
 
 function operationsFor(call: ToolCall, source: ToolSource, mcpRisk?: 'read' | 'external_side_effect'): OperationKind[] {
+  if (call.name === 'channel_send') return ['network', 'external_effect'];
   if (call.name === 'terminal') return ['execute'];
   if (call.name === 'install_skill') return ['install', 'write'];
   if (call.name === 'trust_project_hooks') return ['trust', 'control'];
@@ -98,7 +100,7 @@ function contextFor(context: RuntimeResolutionContext): GovernanceContext {
 }
 
 function resourceScopeFor(call: ToolCall, source: ToolSource, baseline: PermissionDecision): GovernanceFacts['resourceScope'] {
-  if (source === 'browser' || source === 'mcp' || call.name === 'web_search' || call.name === 'web_fetch') return 'external';
+  if (source === 'browser' || source === 'mcp' || source === 'channel' || call.name === 'web_search' || call.name === 'web_fetch') return 'external';
   if (baseline.decision === 'ask' && call.name === 'read_file' && !baseline.request.preview) return 'outside_workspace';
   if (['read_file', 'list_files', 'glob', 'grep', 'write_file', 'edit_file', 'delete_file', 'terminal'].includes(call.name)) return 'workspace';
   return 'none';

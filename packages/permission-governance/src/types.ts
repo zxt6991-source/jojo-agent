@@ -9,7 +9,7 @@ import type {
 
 export type PermissionMode = 'ask' | 'auto' | 'yolo';
 export type GovernanceRisk = 'low' | 'medium' | 'high' | 'critical';
-export type ToolSource = 'native' | 'mcp' | 'browser' | 'memory' | 'orchestration' | 'skill' | 'hook';
+export type ToolSource = 'native' | 'mcp' | 'browser' | 'memory' | 'orchestration' | 'skill' | 'hook' | 'channel';
 export type OperationKind = 'read' | 'write' | 'execute' | 'network' | 'external_effect' | 'install' | 'trust' | 'control';
 export type GovernanceEffect = 'allow' | 'ask' | 'deny';
 
@@ -17,8 +17,8 @@ export interface GovernanceContext {
   sessionId: string;
   laneId: string;
   runId: string;
-  actor: { kind: 'main' | 'subagent' | 'workflow' | 'team_member'; id?: string; profile?: string };
-  trigger: { kind: 'user' | 'api' | 'workflow' | 'subagent' | 'team_member' | 'scheduler' | 'resume' };
+  actor: { kind: 'main' | 'subagent' | 'workflow' | 'team_member' | 'channel_user'; id?: string; profile?: string };
+  trigger: { kind: 'user' | 'api' | 'workflow' | 'subagent' | 'team_member' | 'scheduler' | 'resume' | 'channel_message' };
   team?: { id: string; memberId: string; taskId?: string };
   workingDirectory: string;
   executionScope: ExecutionScope;

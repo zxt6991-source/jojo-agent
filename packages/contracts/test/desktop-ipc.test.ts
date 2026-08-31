@@ -40,6 +40,17 @@ const commandSamples: unknown[] = [
   { type: 'scheduler.run-now', requestId: 'r', scheduleId: 'sch' },
   { type: 'scheduler.runs.list', requestId: 'r', scheduleId: 'sch' },
   { type: 'scheduler.run.cancel', requestId: 'r', runId: 'run' },
+  { type: 'channel.snapshot', requestId: 'r' },
+  {
+    type: 'channel.mutate', requestId: 'r',
+    input: {
+      action: 'instance.save',
+      instance: {
+        id: 'telegram-personal', kind: 'telegram', name: 'Telegram Personal', enabled: true,
+        config: { pollingTimeoutSeconds: 30 }, secretRefs: { botToken: 'secret://env/JOJO_TELEGRAM_BOT_TOKEN' }
+      }
+    }
+  },
   { type: 'approval.resolve', requestId: 'r', allow: false },
   { type: 'approval.resolve', requestId: 'r', allow: true, scope: 'session' },
   { type: 'approval.resolve', requestId: 'r', allow: true, scope: 'similar' },
@@ -75,6 +86,7 @@ const messageSamples: unknown[] = [
   { type: 'workflow.action.result', requestId: 'r', ok: true },
   { type: 'team.result', requestId: 'r', ok: true },
   { type: 'scheduler.result', requestId: 'r', ok: true },
+  { type: 'channel.result', requestId: 'r', ok: true, snapshot: { instances: [], bindings: [], pairings: [], deliveries: [], health: [] } },
   { type: 'scheduler.event', event: { type: 'schedule.deleted', scheduleId: 'sch' } },
   { type: 'conversation.message.created', event: { sessionId: 's', messageId: 'm', scheduleId: 'sch', scheduleRunId: 'sr' } },
   { type: 'orchestration.event', event: { type: 'team.deleted', teamId: 'team' } },
@@ -124,6 +136,19 @@ describe('desktop worker IPC contracts', () => {
     expect(AgentEventSchema.safeParse({ type: 'text.delta', text: 'x'.repeat(100_001) }).success).toBe(false);
     expect(AgentEventSchema.safeParse({
       type: 'approval.required', request: { requestId: '', sessionId: 's', call: { id: 'c', name: 'write_file', input: {} }, reason: 'write' }
+    }).success).toBe(false);
+  });
+
+  it('rejects plaintext Channel secrets at the IPC boundary', () => {
+    expect(WorkerCommandSchema.safeParse({
+      type: 'channel.mutate', requestId: 'r',
+      input: {
+        action: 'instance.save',
+        instance: {
+          id: 'telegram-personal', kind: 'telegram', name: 'Telegram Personal', enabled: true,
+          config: {}, secretRefs: { botToken: '123456:plaintext-token' }
+        }
+      }
     }).success).toBe(false);
   });
 });

@@ -15,6 +15,7 @@ import {
   type ScheduleRun,
   type ScheduleRunListOptions,
   type ScheduleService,
+  type ScheduleDeliveryService,
   type ScheduleTarget,
   type ScheduleTargetValidator,
   type UpdateScheduleInput
@@ -27,6 +28,7 @@ export type HeadlessSchedulerRuntimeOptions = {
   instanceId?: string;
   now?: () => Date;
   idGenerator?: () => string;
+  deliveryService?: ScheduleDeliveryService;
 };
 
 class HeadlessAgentTargetValidator implements ScheduleTargetValidator {
@@ -100,7 +102,8 @@ export async function createHeadlessSchedulerRuntime(
     options.instanceId ?? `server:${process.pid}`,
     {
       ...(options.now ? { now: options.now } : {}),
-      ...(options.idGenerator ? { idGenerator: options.idGenerator } : {})
+      ...(options.idGenerator ? { idGenerator: options.idGenerator } : {}),
+      ...(options.deliveryService ? { deliveryService: options.deliveryService } : {})
     }
   );
   const service = new DefaultScheduleService(store, calculator, engine, {

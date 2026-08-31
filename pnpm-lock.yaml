@@ -46,6 +46,15 @@ importers:
       '@desktop-agent/browser-automation':
         specifier: workspace:*
         version: link:../../packages/browser-automation
+      '@desktop-agent/channel-adapters':
+        specifier: workspace:*
+        version: link:../../packages/channel-adapters
+      '@desktop-agent/channel-core':
+        specifier: workspace:*
+        version: link:../../packages/channel-core
+      '@desktop-agent/channel-runtime':
+        specifier: workspace:*
+        version: link:../../packages/channel-runtime
       '@desktop-agent/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
@@ -149,6 +158,15 @@ importers:
       '@desktop-agent/app-service':
         specifier: workspace:*
         version: link:../../packages/app-service
+      '@desktop-agent/channel-adapters':
+        specifier: workspace:*
+        version: link:../../packages/channel-adapters
+      '@desktop-agent/channel-core':
+        specifier: workspace:*
+        version: link:../../packages/channel-core
+      '@desktop-agent/channel-runtime':
+        specifier: workspace:*
+        version: link:../../packages/channel-runtime
       '@desktop-agent/runtime-composition':
         specifier: workspace:*
         version: link:../../packages/runtime-composition
@@ -207,6 +225,41 @@ importers:
       yaml:
         specifier: ^2.9.0
         version: 2.9.0
+
+  packages/channel-adapters:
+    dependencies:
+      '@desktop-agent/channel-core':
+        specifier: workspace:*
+        version: link:../channel-core
+
+  packages/channel-core: {}
+
+  packages/channel-runtime:
+    dependencies:
+      '@desktop-agent/agent-runtime':
+        specifier: workspace:*
+        version: link:../agent-runtime
+      '@desktop-agent/app-service':
+        specifier: workspace:*
+        version: link:../app-service
+      '@desktop-agent/channel-core':
+        specifier: workspace:*
+        version: link:../channel-core
+      '@desktop-agent/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@desktop-agent/runtime-composition':
+        specifier: workspace:*
+        version: link:../runtime-composition
+      '@desktop-agent/scheduler':
+        specifier: workspace:*
+        version: link:../scheduler
+      '@desktop-agent/server-protocol':
+        specifier: workspace:*
+        version: link:../server-protocol
+      zod:
+        specifier: ^4.1.13
+        version: 4.4.3
 
   packages/client:
     dependencies:
@@ -345,6 +398,9 @@ importers:
       '@desktop-agent/app-service':
         specifier: workspace:*
         version: link:../app-service
+      '@desktop-agent/channel-core':
+        specifier: workspace:*
+        version: link:../channel-core
       '@desktop-agent/scheduler':
         specifier: workspace:*
         version: link:../scheduler
@@ -354,6 +410,9 @@ importers:
 
   packages/server-http:
     dependencies:
+      '@desktop-agent/channel-core':
+        specifier: workspace:*
+        version: link:../channel-core
       '@desktop-agent/server-core':
         specifier: workspace:*
         version: link:../server-core

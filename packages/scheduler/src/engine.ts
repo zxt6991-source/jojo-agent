@@ -302,7 +302,13 @@ export class DurableScheduleEngine {
     if (!this.deliveryService) return run;
     const schedule = await this.store.get(run.scheduleId);
     const content = schedule ? scheduleDeliveryContent(schedule, run) : undefined;
-    if (!schedule?.delivery?.conversation?.enabled || content === undefined) {
+    if (!schedule || content === undefined) {
+      return this.recordDelivery(run, { status: 'skipped' });
+    }
+    const hasDelivery = schedule.delivery?.conversation?.enabled
+      || schedule.delivery?.notification?.enabled
+      || schedule.delivery?.channels?.some((target) => target.enabled);
+    if (!hasDelivery) {
       return this.recordDelivery(run, { status: 'skipped' });
     }
 

@@ -44,9 +44,17 @@ export type RunRequestMeta = {
     allowPartialOnLimit?: boolean;
   };
   origin?: {
-    kind: 'user' | 'api' | 'scheduler';
+    kind: 'user' | 'api' | 'scheduler' | 'channel';
     scheduleId?: string;
     scheduleRunId?: string;
+    channel?: {
+      bindingId: string;
+      instanceId: string;
+      conversationId: string;
+      threadId?: string;
+      senderId: string;
+      inboundMessageId: string;
+    };
   };
 };
 

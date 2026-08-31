@@ -3,10 +3,18 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { ScriptedProvider } from '@desktop-agent/agent-runtime/testing';
+import type {
+  ChannelAdapterContext,
+  ChannelInstance,
+  ChannelWebhookRequest,
+  ChannelWebhookResponse
+} from '@desktop-agent/channel-core';
+import { FakeChannelAdapter } from '@desktop-agent/channel-core/testing';
+import { MemoryChannelStore } from '@desktop-agent/channel-runtime';
 import type { PermissionGate } from '@desktop-agent/contracts';
 import type { RequestContext } from '@desktop-agent/server-protocol';
 import { SqliteAgentRuntimeStore } from '@desktop-agent/storage';
-import { createHeadlessServer } from './index.js';
+import { createHeadlessServer, createNetworkServer } from './index.js';
 
 const allow: PermissionGate = { check: async () => ({ decision: 'allow' }) };
 const context: RequestContext = {
@@ -20,6 +28,120 @@ const controlContext: RequestContext = {
 };
 
 describe('headless server consumer', () => {
+  it('composes channel lifecycle and exposes its webhook through the network server', async () => {
+    const store = new MemoryChannelStore();
+    const timestamp = new Date().toISOString();
+    const channelInstance: ChannelInstance = {
+      id: 'webhook-instance', kind: 'webhook-test', name: 'Webhook Test', enabled: true,
+      config: {}, secretRefs: {}, revision: 1, fingerprint: 'fp', createdAt: timestamp, updatedAt: timestamp
+    };
+    await store.saveInstance(channelInstance);
+    let starts = 0;
+    let stops = 0;
+    let webhook: ChannelWebhookRequest | undefined;
+    class WebhookAdapter extends FakeChannelAdapter {
+      override async start(channelContext: ChannelAdapterContext): Promise<void> {
+        starts += 1;
+        await super.start(channelContext);
+      }
+      override async stop(): Promise<void> {
+        stops += 1;
+        await super.stop();
+      }
+      async handleWebhook(request: ChannelWebhookRequest): Promise<ChannelWebhookResponse> {
+        webhook = request;
+        return { status: 200, body: { accepted: true } };
+      }
+    }
+    const adapter = new WebhookAdapter('webhook-test', channelInstance.id);
+    const server = await createNetworkServer({
+      providers: { resolve: () => new ScriptedProvider([]) }, permissions: allow,
+      channels: {
+        store, builtInAdapters: false, defaultProviderId: 'test', defaultModel: 'scripted',
+        secrets: { resolve: async () => 'secret' },
+        factories: [{ kind: 'webhook-test', create: async () => adapter }]
+      },
+      http: { token: 'admin-token' }
+    });
+    expect(starts).toBe(1);
+    expect(server.channelManager).toBeDefined();
+    const response = await server.http.app.inject({
+      method: 'POST', url: '/api/v1/channels/webhook/webhook-instance',
+      headers: { 'content-type': 'application/json' }, payload: '{"event":"test"}'
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ accepted: true });
+    expect(Buffer.from(webhook!.rawBody!).toString('utf8')).toBe('{"event":"test"}');
+
+    const authorization = { authorization: 'Bearer admin-token' };
+    const capabilities = await server.http.app.inject({ method: 'GET', url: '/api/v1/capabilities', headers: authorization });
+    expect(capabilities.json()).toMatchObject({
+      channels: { enabled: true, kinds: ['webhook-test'], inbound: true, outbound: true, approvals: true }
+    });
+    const listed = await server.http.app.inject({ method: 'GET', url: '/api/v1/channels', headers: authorization });
+    expect(listed.json()).toMatchObject([{ id: 'webhook-instance', kind: 'webhook-test', revision: 1 }]);
+    await expect(server.core.listChannelInstances({
+      requestId: 'channel-read', principal: { id: 'reader', type: 'token', scopes: ['channels:read'] }
+    })).resolves.toHaveLength(1);
+    expect(() => server.core.createChannelInstance({
+      requestId: 'channel-write', principal: { id: 'reader', type: 'token', scopes: ['channels:read'] }
+    }, { id: 'forbidden', kind: 'webhook-test', name: 'Forbidden', enabled: false, config: {}, secretRefs: {} }))
+      .toThrow('channels:write');
+
+    const createdInstance = await server.http.app.inject({
+      method: 'POST', url: '/api/v1/channels', headers: { ...authorization, 'idempotency-key': 'instance-create' },
+      payload: { id: 'disabled-instance', kind: 'webhook-test', name: 'Disabled', enabled: false, config: {}, secretRefs: {} }
+    });
+    expect(createdInstance.statusCode).toBe(201);
+    expect(createdInstance.json()).toMatchObject({ id: 'disabled-instance', enabled: false, revision: 1 });
+    const updatedInstance = await server.http.app.inject({
+      method: 'PATCH', url: '/api/v1/channels/disabled-instance', headers: authorization,
+      payload: { name: 'Disabled Updated', expectedRevision: 1 }
+    });
+    expect(updatedInstance.json()).toMatchObject({ name: 'Disabled Updated', revision: 2 });
+    expect((await server.http.app.inject({
+      method: 'DELETE', url: '/api/v1/channels/disabled-instance?expectedRevision=2', headers: authorization
+    })).statusCode).toBe(204);
+
+    const createdBinding = await server.http.app.inject({
+      method: 'POST', url: '/api/v1/channel-bindings', headers: { ...authorization, 'idempotency-key': 'binding-create' },
+      payload: {
+        id: 'binding-test', instanceId: 'webhook-instance', conversation: { id: 'chat-test', type: 'direct' },
+        routing: { sessionMode: 'persistent' },
+        policy: { enabled: true, requireMention: false, queueMode: 'queue', allowAttachments: false }
+      }
+    });
+    expect(createdBinding.statusCode).toBe(201);
+    expect(createdBinding.json()).toMatchObject({ id: 'binding-test', revision: 1 });
+    const tested = await server.http.app.inject({
+      method: 'POST', url: '/api/v1/channels/webhook-instance/test',
+      headers: { ...authorization, 'idempotency-key': 'channel-test' }, payload: { bindingId: 'binding-test', text: 'test delivery' }
+    });
+    expect(tested.statusCode).toBe(202);
+    expect(tested.json()).toMatchObject({ status: 'delivered' });
+    expect(adapter.sent.at(-1)?.content).toEqual([{ type: 'text', text: 'test delivery' }]);
+    const deliveries = await server.http.app.inject({ method: 'GET', url: '/api/v1/channel-deliveries', headers: authorization });
+    expect(deliveries.json()).toMatchObject([{
+      instanceId: 'webhook-instance', bindingId: 'binding-test', status: 'delivered', mode: 'system'
+    }]);
+    expect(deliveries.json()[0]).not.toHaveProperty('request');
+    const health = await server.http.app.inject({ method: 'GET', url: '/api/v1/channel-health', headers: authorization });
+    expect(health.json()).toMatchObject([{ instanceId: 'webhook-instance', status: 'connected' }]);
+
+    const conflict = await server.http.app.inject({
+      method: 'DELETE', url: '/api/v1/channels/webhook-instance?expectedRevision=1', headers: authorization
+    });
+    expect(conflict.statusCode).toBe(409);
+    expect((await server.http.app.inject({
+      method: 'DELETE', url: '/api/v1/channel-bindings/binding-test?expectedRevision=1', headers: authorization
+    })).statusCode).toBe(204);
+    expect((await server.http.app.inject({
+      method: 'DELETE', url: '/api/v1/channels/webhook-instance?expectedRevision=1', headers: authorization
+    })).statusCode).toBe(204);
+    await server.close();
+    expect(stops).toBe(1);
+  });
+
   it('uses only Runtime Public API and Runtime Composition', async () => {
     const server = await createHeadlessServer({
       instanceId: 'server-test',

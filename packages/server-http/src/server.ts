@@ -1,11 +1,17 @@
 import { timingSafeEqual } from 'node:crypto';
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import websocket from '@fastify/websocket';
-import type { ZodType } from 'zod';
+import { z, type ZodType } from 'zod';
+import type { ChannelWebhookRequest, ChannelWebhookResponse } from '@desktop-agent/channel-core';
 import { asProtocolError, ProtocolFailure, protocolStatus, type JojoServerCore } from '@desktop-agent/server-core';
 import {
   ClientCommandSchema,
   ClientHelloSchema,
+  ApproveChannelPairingInputSchema,
+  ChannelDeliveryListQuerySchema,
+  ChannelPairingListQuerySchema,
+  CreateChannelBindingInputSchema,
+  CreateChannelInstanceInputSchema,
   CreateScheduleInputSchema,
   CreateSessionInputSchema,
   JOJO_SERVER_PROTOCOL_VERSION,
@@ -14,8 +20,11 @@ import {
   RunScheduleNowInputSchema,
   ScheduleRunListQuerySchema,
   StartRunInputSchema,
+  TestChannelInputSchema,
   TranscriptQuerySchema,
   UpdateScheduleInputSchema,
+  UpdateChannelBindingInputSchema,
+  UpdateChannelInstanceInputSchema,
   type Principal,
   type RequestContext,
   type ServerWireMessage
@@ -29,6 +38,10 @@ export type JojoHttpServerOptions = {
   bodyLimit?: number;
   maxWebSocketPayloadBytes?: number;
   maxPendingBytes?: number;
+  channelWebhook?: {
+    handleWebhook(instanceId: string, request: ChannelWebhookRequest): Promise<ChannelWebhookResponse>;
+    stop?(): Promise<void>;
+  };
 };
 
 export type JojoHttpServer = {
@@ -50,6 +63,14 @@ export async function createJojoHttpServer(
     requestIdHeader: 'x-request-id',
     logger: false
   });
+  const rawJsonBodies = new WeakMap<object, Uint8Array>();
+  app.removeContentTypeParser('application/json');
+  app.addContentTypeParser('application/json', { parseAs: 'buffer' }, (request, body, done) => {
+    const bytes = typeof body === 'string' ? Buffer.from(body) : body;
+    rawJsonBodies.set(request, new Uint8Array(bytes));
+    try { done(null, JSON.parse(bytes.toString('utf8')) as unknown); }
+    catch (error) { done(error as Error); }
+  });
   await app.register(websocket, { options: { maxPayload: options.maxWebSocketPayloadBytes ?? 1024 * 1024 } });
 
   app.get('/healthz', async () => ({ status: 'ok' }));
@@ -58,9 +79,104 @@ export async function createJojoHttpServer(
     return reply.code(503).send({ status: 'not_ready' });
   });
 
+  if (options.channelWebhook) {
+    app.post('/api/v1/channels/webhook/:instanceId', async (request, reply) => {
+      const response = await options.channelWebhook!.handleWebhook(param(request, 'instanceId'), {
+        method: request.method,
+        headers: normalizedHeaders(request.headers),
+        ...(rawJsonBodies.get(request) ? { rawBody: rawJsonBodies.get(request)! } : {}),
+        body: request.body
+      });
+      for (const [name, value] of Object.entries(response.headers ?? {})) reply.header(name, value);
+      return reply.code(response.status).send(response.body);
+    });
+  }
+
   app.get('/api/v1/server', async (request, reply) => withHttp(request, reply, options.token, async () => core.info));
   app.get('/api/v1/capabilities', async (request, reply) => withHttp(request, reply, options.token, async () => core.capabilities));
   app.get('/api/v1/models', async (request, reply) => withHttp(request, reply, options.token, async () => core.models));
+  app.get('/api/v1/channels', async (request, reply) => withHttp(request, reply, options.token, (ctx) => (
+    core.listChannelInstances(ctx)
+  )));
+  app.get('/api/v1/channels/:instanceId', async (request, reply) => withHttp(request, reply, options.token, (ctx) => (
+    core.getChannelInstance(ctx, param(request, 'instanceId'))
+  )));
+  app.post('/api/v1/channels', async (request, reply) => withHttp(request, reply, options.token, async (ctx) => {
+    const result = await core.createChannelInstance(
+      ctx, parse(CreateChannelInstanceInputSchema, request.body), header(request, 'idempotency-key')
+    );
+    return reply.code(201).send(result);
+  }));
+  app.patch('/api/v1/channels/:instanceId', async (request, reply) => withHttp(request, reply, options.token, (ctx) => (
+    core.updateChannelInstance(
+      ctx,
+      param(request, 'instanceId'),
+      parse(UpdateChannelInstanceInputSchema, request.body),
+      header(request, 'idempotency-key')
+    )
+  )));
+  app.delete('/api/v1/channels/:instanceId', async (request, reply) => withHttp(request, reply, options.token, async (ctx) => {
+    const query = parse(ExpectedRevisionQuerySchema, request.query);
+    await core.deleteChannelInstance(
+      ctx, param(request, 'instanceId'), query.expectedRevision, header(request, 'idempotency-key')
+    );
+    return reply.code(204).send();
+  }));
+  app.post('/api/v1/channels/:instanceId/test', async (request, reply) => withHttp(request, reply, options.token, async (ctx) => {
+    const result = await core.testChannel(
+      ctx, param(request, 'instanceId'), parse(TestChannelInputSchema, request.body), header(request, 'idempotency-key')
+    );
+    return reply.code(202).send(result);
+  }));
+  app.get('/api/v1/channel-bindings', async (request, reply) => withHttp(request, reply, options.token, (ctx) => (
+    core.listChannelBindings(ctx)
+  )));
+  app.post('/api/v1/channel-bindings', async (request, reply) => withHttp(request, reply, options.token, async (ctx) => {
+    const result = await core.createChannelBinding(
+      ctx, parse(CreateChannelBindingInputSchema, request.body), header(request, 'idempotency-key')
+    );
+    return reply.code(201).send(result);
+  }));
+  app.patch('/api/v1/channel-bindings/:bindingId', async (request, reply) => withHttp(request, reply, options.token, (ctx) => (
+    core.updateChannelBinding(
+      ctx,
+      param(request, 'bindingId'),
+      parse(UpdateChannelBindingInputSchema, request.body),
+      header(request, 'idempotency-key')
+    )
+  )));
+  app.delete('/api/v1/channel-bindings/:bindingId', async (request, reply) => withHttp(request, reply, options.token, async (ctx) => {
+    const query = parse(ExpectedRevisionQuerySchema, request.query);
+    await core.deleteChannelBinding(
+      ctx, param(request, 'bindingId'), query.expectedRevision, header(request, 'idempotency-key')
+    );
+    return reply.code(204).send();
+  }));
+  app.get('/api/v1/channel-pairings', async (request, reply) => withHttp(request, reply, options.token, (ctx) => {
+    const query = parse(ChannelPairingListQuerySchema, request.query);
+    return core.listChannelPairings(ctx, query.status);
+  }));
+  app.post('/api/v1/channel-pairings/:pairingId/approve', async (request, reply) => withHttp(request, reply, options.token, (ctx) => (
+    core.approveChannelPairing(
+      ctx,
+      param(request, 'pairingId'),
+      parse(ApproveChannelPairingInputSchema, request.body),
+      header(request, 'idempotency-key')
+    )
+  )));
+  app.post('/api/v1/channel-pairings/:pairingId/reject', async (request, reply) => withHttp(request, reply, options.token, async (ctx) => {
+    await core.rejectChannelPairing(ctx, param(request, 'pairingId'), header(request, 'idempotency-key'));
+    return reply.code(204).send();
+  }));
+  app.get('/api/v1/channel-deliveries', async (request, reply) => withHttp(request, reply, options.token, (ctx) => (
+    core.listChannelDeliveries(ctx, parse(ChannelDeliveryListQuerySchema, request.query))
+  )));
+  app.get('/api/v1/channel-deliveries/:deliveryId', async (request, reply) => withHttp(request, reply, options.token, (ctx) => (
+    core.getChannelDelivery(ctx, param(request, 'deliveryId'))
+  )));
+  app.get('/api/v1/channel-health', async (request, reply) => withHttp(request, reply, options.token, (ctx) => (
+    core.listChannelHealth(ctx)
+  )));
   app.get('/api/v1/sessions', async (request, reply) => withHttp(request, reply, options.token, (ctx) => core.listSessions(ctx)));
   app.post('/api/v1/sessions', async (request, reply) => withHttp(request, reply, options.token, async (ctx) => {
     const input = parse(CreateSessionInputSchema, request.body);
@@ -264,6 +380,7 @@ export async function createJojoHttpServer(
     listen: () => app.listen({ host, port }),
     async close() {
       await app.close();
+      await options.channelWebhook?.stop?.();
       await core.close();
     }
   };
@@ -320,6 +437,10 @@ function parse<T>(schema: ZodType<T>, value: unknown): T {
   });
 }
 
+const ExpectedRevisionQuerySchema = z.object({
+  expectedRevision: z.coerce.number().int().positive().optional()
+}).strict();
+
 function param(request: FastifyRequest, name: string): string {
   const value = (request.params as Record<string, unknown>)[name];
   if (typeof value !== 'string' || !value) throw new ProtocolFailure({ code: 'invalid_request', message: `Missing ${name}.` });
@@ -329,6 +450,12 @@ function param(request: FastifyRequest, name: string): string {
 function header(request: FastifyRequest, name: string): string | undefined {
   const value = request.headers[name];
   return Array.isArray(value) ? value[0] : value;
+}
+
+function normalizedHeaders(headers: FastifyRequest['headers']): Record<string, string | undefined> {
+  return Object.fromEntries(Object.entries(headers).map(([name, value]) => [
+    name.toLowerCase(), Array.isArray(value) ? value[0] : value
+  ]));
 }
 
 function validateBinding(host: string, allowRemote: boolean, token: string | undefined): void {

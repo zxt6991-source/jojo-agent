@@ -12,5 +12,8 @@
     "./extension-api": "./src/extension-api.ts",
     "./extensions": "./src/extensions.ts"
   },
-  "dependencies": { "zod": "^4.1.13" }
+  "dependencies": {
+    "@desktop-agent/channel-core": "workspace:*",
+    "zod": "^4.1.13"
+  }
 }

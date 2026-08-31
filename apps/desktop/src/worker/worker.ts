@@ -1,14 +1,26 @@
 import path from 'node:path';
 import os from 'node:os';
+import { createHash } from 'node:crypto';
+import { mkdir } from 'node:fs/promises';
 import { createJojoRuntime, RuntimeEnvironmentRegistry } from '@desktop-agent/runtime-composition';
 import { BrowserRecordingRegistry, FileBrowserRecordingTrustStore } from '@desktop-agent/browser-automation';
+import { ChannelAdapterRegistry, type ChannelBinding, type ChannelInstance } from '@desktop-agent/channel-core';
+import { createFeishuAdapterFactory, createTelegramAdapterFactory } from '@desktop-agent/channel-adapters';
+import {
+  ChannelRuntimeCapability,
+  ChannelScheduleDeliveryService,
+  CompositeScheduleDeliveryService,
+  DefaultChannelManager,
+  SqliteChannelStore,
+  type ChannelAgentBridge
+} from '@desktop-agent/channel-runtime';
 import {
   CandidateExtractionResultSchema,
   DEFAULT_BROWSER_SETTINGS,
   WorkflowDefinitionSchema,
   isPlaceholderSessionTitle, sessionTitleFromPrompt,
   WorkerCommandSchema, WorkerMessageSchema, serializedIpcBytes,
-  type AgentEvent, type ApprovalRequest, type HookRuntime, type ImageContentBlock, type Message, type ModelProvider, type ModelRequest, type ModelSelection, type OrchestrationEvent, type ProviderSettings, type SkillStatus, type ToolCall, type WorkflowDefinition, type WorkerMessage
+  type AgentEvent, type ApprovalRequest, type ChannelSettingsSnapshot, type DesktopChannelMutation, type HookRuntime, type ImageContentBlock, type Message, type ModelProvider, type ModelRequest, type ModelSelection, type OrchestrationEvent, type ProviderSettings, type SkillStatus, type ToolCall, type WorkflowDefinition, type WorkerMessage
 } from '@desktop-agent/contracts';
 import {
   createInstallSkillTool,
@@ -87,6 +99,7 @@ import { BrowserPermissionGate, BrowserToolBridge } from './browser-tools';
 import { UtilityModelBrowserHealingAdapter } from './browser-healing';
 import { createDesktopOrchestratedAgentRunner, createDesktopWorkflowToolRuntime } from './orchestration-runtime';
 import { createDesktopSchedulerRuntime } from './scheduler-runtime';
+import { DesktopChannelApprovalBridge, type DesktopActiveChannelRun } from './channel-approval';
 import { TurnTaskRegistry } from './turn-task-registry';
 import { InteractiveTerminalSecretBroker } from './terminal-secret-broker';
 import { projectRuntimeMessagesToLegacy, seedRuntimeLaneFromLegacy } from '../runtime/legacy-projection';
@@ -165,6 +178,87 @@ const turnTasks = new TurnTaskRegistry();
 const approvals = new Map<string, { resolve: (allowed: boolean) => void; sessionId: string; request: ApprovalRequest }>();
 const sessionHookRuntimes = new Map<string, HookRuntime>();
 const runtimeEnvironments = new RuntimeEnvironmentRegistry();
+const channelStore = new SqliteChannelStore(path.join(dataDirectory, 'runtime', 'channels.sqlite'));
+const channelRegistry = new ChannelAdapterRegistry();
+channelRegistry.register(createTelegramAdapterFactory());
+channelRegistry.register(createFeishuAdapterFactory());
+const channelRunsBySession = new Map<string, DesktopActiveChannelRun>();
+const desktopChannelAgent: ChannelAgentBridge = {
+  async ensureSession(binding) {
+    if (binding.routing.sessionId && await store.get(binding.routing.sessionId)) return binding.routing.sessionId;
+    const workingDirectory = binding.routing.workspaceRoot ?? path.join(dataDirectory, 'workspaces', 'general');
+    await mkdir(workingDirectory, { recursive: true });
+    const created = await store.create(`Channel · ${binding.id}`, workingDirectory, undefined, Boolean(binding.routing.workspaceRoot));
+    post({ type: 'sessions.changed' });
+    return created.id;
+  },
+  async run(input) {
+    const active = { runId: input.runId, bindingId: input.binding.id, senderId: input.event.sender.id };
+    channelRunsBySession.set(input.sessionId, active);
+    input.onStarted?.(input.runId);
+    try {
+      const before = (await store.messages(input.sessionId)).map((message) => message.id);
+      const settings = runtime?.settings;
+      const providerId = input.binding.routing.providerId ?? settings?.activeProviderId ?? '';
+      await startTurn(
+        input.sessionId,
+        input.text,
+        [],
+        providerId,
+        input.binding.routing.model ?? settings?.providers.find((provider) => provider.id === providerId)?.model ?? '',
+        {
+          runId: input.runId,
+          actor: { kind: 'channel_user', id: input.principal.id },
+          trigger: { kind: 'channel_message', id: input.event.id },
+          channel: {
+            bindingId: input.binding.id,
+            instanceId: input.binding.instanceId,
+            conversationId: input.event.conversation.id,
+            ...(input.event.conversation.threadId ? { threadId: input.event.conversation.threadId } : {}),
+            senderId: input.event.sender.id,
+            inboundMessageId: input.event.message?.id ?? input.event.id
+          }
+        }
+      );
+      const messages = await store.messages(input.sessionId);
+      const fresh = messages.filter((message) => !before.includes(message.id) && message.role === 'assistant');
+      const finalText = fresh.flatMap((message) => message.content.flatMap((block) => block.type === 'text' ? [block.text] : [])).join('\n\n');
+      return {
+        sessionId: input.sessionId,
+        runId: input.runId,
+        status: finalText ? 'completed' : 'failed',
+        ...(finalText ? { finalText } : {})
+      };
+    } finally {
+      if (channelRunsBySession.get(input.sessionId)?.runId === input.runId) channelRunsBySession.delete(input.sessionId);
+    }
+  }
+};
+const channelManager = new DefaultChannelManager({
+  store: channelStore,
+  registry: channelRegistry,
+  secrets: {
+    resolve: async (reference) => {
+      const match = /^secret:\/\/env\/([A-Z_][A-Z0-9_]*)$/u.exec(reference);
+      const value = match ? process.env[match[1]!] : undefined;
+      if (!value) throw new Error(`channel_secret_unavailable: ${reference}`);
+      return value;
+    }
+  },
+  agent: desktopChannelAgent
+});
+const desktopChannelApproval = new DesktopChannelApprovalBridge({
+  channels: channelManager,
+  store: channelStore,
+  activeRun: (sessionId) => channelRunsBySession.get(sessionId),
+  resolve: (approvalId, allowed) => {
+    const pending = approvals.get(approvalId);
+    if (!pending) return false;
+    pending.resolve(allowed);
+    return true;
+  }
+});
+channelManager.setInteractionHandler(desktopChannelApproval);
 const jojoRuntime = createJojoRuntime({
   host: { kind: 'desktop' },
   store: agentRuntimeStore,
@@ -183,7 +277,8 @@ const jojoRuntime = createJojoRuntime({
   memory: memoryRuntime,
   hooks: runtimeEnvironments.hooks,
   runContext: runtimeEnvironments.runContext,
-  telemetry: runtimeEnvironments.telemetry
+  telemetry: runtimeEnvironments.telemetry,
+  capabilities: [new ChannelRuntimeCapability(channelManager)]
 });
 let skillStatuses: SkillStatus[] = [];
 let extensionReady: Promise<void> = Promise.resolve();
@@ -662,6 +757,9 @@ function waitForApproval(request: ApprovalRequest, signal: AbortSignal): Promise
     const onAbort = () => finish(false);
     signal.addEventListener('abort', onAbort, { once: true });
     approvals.set(request.requestId, { resolve: finish, sessionId: request.sessionId, request });
+    void desktopChannelApproval.publish(request).catch((error) => {
+      console.warn('Failed to publish Channel approval', error instanceof Error ? error.message : String(error));
+    });
   });
 }
 
@@ -672,7 +770,28 @@ function postOAuthError(requestId: string, error: unknown): void {
   });
 }
 
-async function startTurn(sessionId: string, text: string, images: ImageContentBlock[], providerId: string, model: string): Promise<void> {
+type DesktopTurnOrigin = {
+  runId: string;
+  actor: { kind: 'channel_user'; id: string };
+  trigger: { kind: 'channel_message'; id: string };
+  channel: {
+    bindingId: string;
+    instanceId: string;
+    conversationId: string;
+    threadId?: string;
+    senderId: string;
+    inboundMessageId: string;
+  };
+};
+
+async function startTurn(
+  sessionId: string,
+  text: string,
+  images: ImageContentBlock[],
+  providerId: string,
+  model: string,
+  origin?: DesktopTurnOrigin
+): Promise<void> {
   let release: (() => void) | null = null;
   let controller: AbortController | null = null;
   let runtimeBinding: { dispose(): void } | undefined;
@@ -930,11 +1049,15 @@ async function startTurn(sessionId: string, text: string, images: ImageContentBl
       telemetry: { diagnostic: emitAgentEvent }
     });
     const publicRuntime = await jojoRuntime;
+    const sessionMetadata = {
+      ...(projectIdentity ? { projectIdentity } : {}),
+      ...(origin ? { channel: origin.channel } : {})
+    };
     const runtimeSession = await publicRuntime.openSession({
       id: sessionId,
       executionScope: { kind: 'workspace', workingDirectory: session.workingDirectory },
-      ...(projectIdentity ? {
-        metadata: { projectIdentity: projectIdentity as unknown as import('@desktop-agent/contracts/runtime').JsonValue }
+      ...(Object.keys(sessionMetadata).length ? {
+        metadata: sessionMetadata as unknown as Record<string, import('@desktop-agent/contracts/runtime').JsonValue>
       } : {})
     });
     await seedRuntimeLaneFromLegacy(agentRuntimeStore, sessionId, history);
@@ -964,7 +1087,7 @@ async function startTurn(sessionId: string, text: string, images: ImageContentBl
       providerId,
       model,
       instructions,
-      actor: { kind: 'main' },
+      ...(origin ? { runId: origin.runId, actor: origin.actor, trigger: origin.trigger } : { actor: { kind: 'main' as const } }),
       signal: controller.signal,
       budget: {
         contextWindowTokens: providerConfig.contextWindowTokens,
@@ -1197,8 +1320,122 @@ async function prepareScheduledAgent(
 const workflowReady = workflowManager.restore().catch((error) => {
   post({ type: 'worker.error', message: `Workflow restore failed: ${error instanceof Error ? error.message : String(error)}` });
 });
-const schedulerReady = Promise.all([workflowReady, teamReady, jojoRuntime, runtimeConfigReady]).then(
-  ([, , activeRuntime]) => createDesktopSchedulerRuntime({
+const channelReady = Promise.all([jojoRuntime, runtimeConfigReady]).then(async () => {
+  await channelManager.start();
+  return channelManager;
+});
+
+async function channelSnapshot(): Promise<ChannelSettingsSnapshot> {
+  const manager = await channelReady;
+  const [instances, bindings, pairings, deliveries, health] = await Promise.all([
+    manager.listInstances(),
+    manager.listBindings(),
+    manager.listPairings(),
+    manager.listDeliveries({ limit: 100 }),
+    manager.listHealth()
+  ]);
+  return {
+    instances,
+    bindings,
+    pairings: pairings.map(({ codeHash: _codeHash, ...pairing }) => pairing),
+    deliveries: deliveries.map((delivery) => ({
+      id: delivery.id,
+      instanceId: delivery.instanceId,
+      ...(delivery.bindingId ? { bindingId: delivery.bindingId } : {}),
+      conversationId: delivery.conversationId,
+      ...(delivery.threadId ? { threadId: delivery.threadId } : {}),
+      ...(delivery.request.mode ? { mode: delivery.request.mode } : {}),
+      status: delivery.status,
+      attemptCount: delivery.attemptCount,
+      createdAt: delivery.createdAt,
+      ...(delivery.deliveredAt ? { deliveredAt: delivery.deliveredAt } : {}),
+      ...(delivery.nativeMessageId ? { nativeMessageId: delivery.nativeMessageId } : {}),
+      ...(delivery.lastError ? { lastError: delivery.lastError } : {})
+    })),
+    health
+  };
+}
+
+async function normalizeChannelInstance(
+  draft: Extract<DesktopChannelMutation, { action: 'instance.save' }>['instance']
+): Promise<ChannelInstance> {
+  const current = (await channelManager.listInstances()).find((instance) => instance.id === draft.id);
+  const now = new Date().toISOString();
+  const fingerprint = createHash('sha256')
+    .update(JSON.stringify({ kind: draft.kind, config: draft.config, secretRefs: draft.secretRefs }))
+    .digest('hex');
+  return {
+    ...draft,
+    revision: (current?.revision ?? 0) + 1,
+    fingerprint,
+    createdAt: current?.createdAt ?? now,
+    updatedAt: now
+  };
+}
+
+async function normalizeChannelBinding(
+  draft: Extract<DesktopChannelMutation, { action: 'binding.save' }>['binding']
+): Promise<ChannelBinding> {
+  const current = (await channelManager.listBindings()).find((binding) => binding.id === draft.id);
+  const now = new Date().toISOString();
+  return {
+    id: draft.id,
+    instanceId: draft.instanceId,
+    conversation: {
+      id: draft.conversation.id,
+      type: draft.conversation.type,
+      ...(draft.conversation.threadId ? { threadId: draft.conversation.threadId } : {})
+    },
+    routing: {
+      sessionMode: draft.routing.sessionMode,
+      ...(draft.routing.sessionId ? { sessionId: draft.routing.sessionId } : {}),
+      ...(draft.routing.workspaceRoot ? { workspaceRoot: draft.routing.workspaceRoot } : {}),
+      ...(draft.routing.providerId ? { providerId: draft.routing.providerId } : {}),
+      ...(draft.routing.model ? { model: draft.routing.model } : {}),
+      ...(draft.routing.instructions ? { instructions: draft.routing.instructions } : {}),
+      ...(draft.routing.profile ? { profile: draft.routing.profile } : {})
+    },
+    policy: {
+      enabled: draft.policy.enabled,
+      requireMention: draft.policy.requireMention,
+      queueMode: draft.policy.queueMode,
+      ...(draft.policy.allowedSenders ? { allowedSenders: draft.policy.allowedSenders } : {}),
+      allowAttachments: draft.policy.allowAttachments
+    },
+    revision: (current?.revision ?? 0) + 1,
+    createdAt: current?.createdAt ?? now,
+    updatedAt: now
+  };
+}
+
+async function mutateChannel(input: DesktopChannelMutation) {
+  const manager = await channelReady;
+  if (input.action === 'instance.save') {
+    await manager.saveInstance(await normalizeChannelInstance(input.instance), input.expectedRevision);
+  } else if (input.action === 'instance.delete') {
+    await manager.deleteInstance(input.instanceId, input.expectedRevision);
+  } else if (input.action === 'binding.save') {
+    await manager.saveBinding(await normalizeChannelBinding(input.binding), input.expectedRevision);
+  } else if (input.action === 'binding.delete') {
+    await manager.deleteBinding(input.bindingId, input.expectedRevision);
+  } else if (input.action === 'pairing.approve') {
+    await manager.approvePairing(input.pairingId, await normalizeChannelBinding(input.binding));
+  } else if (input.action === 'pairing.reject') {
+    await manager.rejectPairing(input.pairingId);
+  } else {
+    return manager.deliver({
+      ...(input.bindingId
+        ? { bindingId: input.bindingId }
+        : { target: { instanceId: input.instanceId, conversationId: input.conversationId!, ...(input.threadId ? { threadId: input.threadId } : {}) } }),
+      content: [{ type: 'text', text: input.text }],
+      mode: 'system',
+      idempotencyKey: `desktop-channel-test:${crypto.randomUUID()}`
+    });
+  }
+  return channelSnapshot();
+}
+const schedulerReady = Promise.all([workflowReady, teamReady, jojoRuntime, runtimeConfigReady, channelReady]).then(
+  ([, , activeRuntime, , activeChannels]) => createDesktopSchedulerRuntime({
     dataDirectory,
     runtime: activeRuntime,
     teamManager,
@@ -1206,26 +1443,29 @@ const schedulerReady = Promise.all([workflowReady, teamReady, jojoRuntime, runti
     subscribeOrchestration,
     prepareAgent: prepareScheduledAgent,
     validateTarget: validateScheduleTarget,
-    deliveryService: new ConversationScheduleDeliveryService({
-      appendMessage: async (sessionId, message) => {
-        if (!await store.get(sessionId)) {
-          throw new Error(`schedule_delivery_target_not_found: Session ${sessionId} does not exist.`);
-        }
-        const existing = (await store.messages(sessionId)).some((candidate) => candidate.id === message.id);
-        if (!existing) await store.appendMessage(sessionId, message);
-        const automation = message.metadata?.automation;
-        if (!automation) throw new Error('schedule_delivery_invalid_message: Missing automation metadata.');
-        post({
-          type: 'conversation.message.created',
-          event: {
-            sessionId,
-            messageId: message.id,
-            scheduleId: automation.scheduleId,
-            scheduleRunId: automation.scheduleRunId
+    deliveryService: new CompositeScheduleDeliveryService([
+      new ConversationScheduleDeliveryService({
+        appendMessage: async (sessionId, message) => {
+          if (!await store.get(sessionId)) {
+            throw new Error(`schedule_delivery_target_not_found: Session ${sessionId} does not exist.`);
           }
-        });
-      }
-    }),
+          const existing = (await store.messages(sessionId)).some((candidate) => candidate.id === message.id);
+          if (!existing) await store.appendMessage(sessionId, message);
+          const automation = message.metadata?.automation;
+          if (!automation) throw new Error('schedule_delivery_invalid_message: Missing automation metadata.');
+          post({
+            type: 'conversation.message.created',
+            event: {
+              sessionId,
+              messageId: message.id,
+              scheduleId: automation.scheduleId,
+              scheduleRunId: automation.scheduleRunId
+            }
+          });
+        }
+      }),
+      new ChannelScheduleDeliveryService(activeChannels)
+    ]),
     emit: (scheduleEvent) => post({ type: 'scheduler.event', event: scheduleEvent })
   })
 );
@@ -1299,6 +1539,7 @@ parentPort.on('message', (event) => {
       );
     }
     pending?.resolve(command.allow);
+    if (pending) void desktopChannelApproval.invalidate(command.requestId).catch(() => undefined);
   } else if (command.type === 'mcp.oauth.start') {
     void extensionReady.then(
       () => mcpManager.startOAuth(command.serverId, command.requestId, command.redirectUrl, command.state)
@@ -1483,6 +1724,22 @@ parentPort.on('message', (event) => {
         type: 'scheduler.result', requestId: command.requestId, ok: false,
         error: error instanceof Error ? error.message : String(error)
       }));
+  } else if (command.type === 'channel.snapshot') {
+    void channelSnapshot()
+      .then((snapshot) => post({ type: 'channel.result', requestId: command.requestId, ok: true, snapshot }))
+      .catch((error) => post({
+        type: 'channel.result', requestId: command.requestId, ok: false,
+        error: error instanceof Error ? error.message : String(error)
+      }));
+  } else if (command.type === 'channel.mutate') {
+    void mutateChannel(command.input)
+      .then((result) => 'deliveryId' in result
+        ? post({ type: 'channel.result', requestId: command.requestId, ok: true, receipt: result })
+        : post({ type: 'channel.result', requestId: command.requestId, ok: true, snapshot: result }))
+      .catch((error) => post({
+        type: 'channel.result', requestId: command.requestId, ok: false,
+        error: error instanceof Error ? error.message : String(error)
+      }));
   } else if (command.type === 'memory.status') {
     void memoryReady
       .then(() => memoryStatus(command.workingDirectory))
@@ -1541,6 +1798,7 @@ parentPort.on('message', (event) => {
 process.once('SIGTERM', () => {
   void Promise.allSettled([
     schedulerReady.then((activeScheduler) => activeScheduler.close()),
+    channelReady.then((activeChannels) => activeChannels.stop()),
     mcpManager.close(),
     semanticMemoryService.idle(),
     jojoRuntime.then((activeRuntime) => activeRuntime.close())

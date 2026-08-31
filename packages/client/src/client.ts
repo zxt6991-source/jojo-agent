@@ -1,5 +1,11 @@
 import {
   ClientHelloSchema,
+  ChannelBindingSchema,
+  ChannelDeliveryReceiptSchema,
+  ChannelDeliverySchema,
+  ChannelHealthSchema,
+  ChannelInstanceSchema,
+  ChannelPairingSchema,
   CreateScheduleInputSchema,
   ErrorResponseSchema,
   JOJO_SERVER_PROTOCOL_VERSION,
@@ -13,6 +19,16 @@ import {
   ServerWireMessageSchema,
   TranscriptPageSchema,
   type ClientCommand,
+  type ApproveChannelPairingInput,
+  type ChannelBindingDto,
+  type ChannelDeliveryDto,
+  type ChannelDeliveryListQuery,
+  type ChannelDeliveryReceiptDto,
+  type ChannelHealthDto,
+  type ChannelInstanceDto,
+  type ChannelPairingDto,
+  type CreateChannelBindingInput,
+  type CreateChannelInstanceInput,
   type CreateScheduleInput,
   type CreateSessionInput,
   type LeaseMode,
@@ -33,6 +49,9 @@ import {
   type StartRunInput,
   type TranscriptPage,
   type TranscriptQuery,
+  type TestChannelInput,
+  type UpdateChannelBindingInput,
+  type UpdateChannelInstanceInput,
   type UpdateScheduleInput
 } from '@desktop-agent/server-protocol';
 import type { ZodType } from 'zod';
@@ -259,6 +278,95 @@ export class JojoClient {
     await this.http(`/api/v1/schedule-runs/${encodeURIComponent(runId)}/cancel`, undefined, {
       method: 'POST', idempotencyKey: crypto.randomUUID()
     });
+  }
+
+  listChannelInstances(): Promise<ChannelInstanceDto[]> {
+    return this.http('/api/v1/channels', ChannelInstanceSchema.array());
+  }
+
+  getChannelInstance(instanceId: string): Promise<ChannelInstanceDto> {
+    return this.http(`/api/v1/channels/${encodeURIComponent(instanceId)}`, ChannelInstanceSchema);
+  }
+
+  createChannelInstance(input: CreateChannelInstanceInput): Promise<ChannelInstanceDto> {
+    return this.http('/api/v1/channels', ChannelInstanceSchema, {
+      method: 'POST', body: input, idempotencyKey: crypto.randomUUID()
+    });
+  }
+
+  updateChannelInstance(instanceId: string, input: UpdateChannelInstanceInput): Promise<ChannelInstanceDto> {
+    return this.http(`/api/v1/channels/${encodeURIComponent(instanceId)}`, ChannelInstanceSchema, {
+      method: 'PATCH', body: input, idempotencyKey: crypto.randomUUID()
+    });
+  }
+
+  async deleteChannelInstance(instanceId: string, expectedRevision?: number): Promise<void> {
+    const query = expectedRevision === undefined ? '' : `?expectedRevision=${expectedRevision}`;
+    await this.http(`/api/v1/channels/${encodeURIComponent(instanceId)}${query}`, undefined, {
+      method: 'DELETE', idempotencyKey: crypto.randomUUID()
+    });
+  }
+
+  testChannel(instanceId: string, input: TestChannelInput): Promise<ChannelDeliveryReceiptDto> {
+    return this.http(`/api/v1/channels/${encodeURIComponent(instanceId)}/test`, ChannelDeliveryReceiptSchema, {
+      method: 'POST', body: input, idempotencyKey: crypto.randomUUID()
+    });
+  }
+
+  listChannelBindings(): Promise<ChannelBindingDto[]> {
+    return this.http('/api/v1/channel-bindings', ChannelBindingSchema.array());
+  }
+
+  createChannelBinding(input: CreateChannelBindingInput): Promise<ChannelBindingDto> {
+    return this.http('/api/v1/channel-bindings', ChannelBindingSchema, {
+      method: 'POST', body: input, idempotencyKey: crypto.randomUUID()
+    });
+  }
+
+  updateChannelBinding(bindingId: string, input: UpdateChannelBindingInput): Promise<ChannelBindingDto> {
+    return this.http(`/api/v1/channel-bindings/${encodeURIComponent(bindingId)}`, ChannelBindingSchema, {
+      method: 'PATCH', body: input, idempotencyKey: crypto.randomUUID()
+    });
+  }
+
+  async deleteChannelBinding(bindingId: string, expectedRevision?: number): Promise<void> {
+    const query = expectedRevision === undefined ? '' : `?expectedRevision=${expectedRevision}`;
+    await this.http(`/api/v1/channel-bindings/${encodeURIComponent(bindingId)}${query}`, undefined, {
+      method: 'DELETE', idempotencyKey: crypto.randomUUID()
+    });
+  }
+
+  listChannelPairings(status?: ChannelPairingDto['status']): Promise<ChannelPairingDto[]> {
+    const query = status ? `?status=${encodeURIComponent(status)}` : '';
+    return this.http(`/api/v1/channel-pairings${query}`, ChannelPairingSchema.array());
+  }
+
+  approveChannelPairing(pairingId: string, input: ApproveChannelPairingInput): Promise<ChannelBindingDto> {
+    return this.http(`/api/v1/channel-pairings/${encodeURIComponent(pairingId)}/approve`, ChannelBindingSchema, {
+      method: 'POST', body: input, idempotencyKey: crypto.randomUUID()
+    });
+  }
+
+  async rejectChannelPairing(pairingId: string): Promise<void> {
+    await this.http(`/api/v1/channel-pairings/${encodeURIComponent(pairingId)}/reject`, undefined, {
+      method: 'POST', idempotencyKey: crypto.randomUUID()
+    });
+  }
+
+  listChannelDeliveries(query: Partial<ChannelDeliveryListQuery> = {}): Promise<ChannelDeliveryDto[]> {
+    const params = new URLSearchParams();
+    if (query.instanceId) params.set('instanceId', query.instanceId);
+    if (query.status) params.set('status', query.status);
+    if (query.limit !== undefined) params.set('limit', String(query.limit));
+    return this.http(`/api/v1/channel-deliveries${params.size ? `?${params}` : ''}`, ChannelDeliverySchema.array());
+  }
+
+  getChannelDelivery(deliveryId: string): Promise<ChannelDeliveryDto> {
+    return this.http(`/api/v1/channel-deliveries/${encodeURIComponent(deliveryId)}`, ChannelDeliverySchema);
+  }
+
+  listChannelHealth(): Promise<ChannelHealthDto[]> {
+    return this.http('/api/v1/channel-health', ChannelHealthSchema.array());
   }
 
   subscribeSchedules(listener: ScheduleEventListener): () => void {

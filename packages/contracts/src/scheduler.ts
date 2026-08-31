@@ -80,7 +80,12 @@ export const ScheduleDeliverySchema = z.object({
     enabled: z.boolean(),
     sessionId: SchedulerIdSchema
   }).strict().optional(),
-  notification: z.object({ enabled: z.boolean() }).strict().optional()
+  notification: z.object({ enabled: z.boolean() }).strict().optional(),
+  channels: z.array(z.object({
+    enabled: z.boolean(),
+    bindingId: SchedulerIdSchema,
+    mode: z.enum(['full', 'preview']).optional()
+  }).strict()).max(20).optional()
 }).strict();
 export type ScheduleDeliveryContract = z.infer<typeof ScheduleDeliverySchema>;
 

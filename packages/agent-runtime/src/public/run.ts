@@ -11,13 +11,13 @@ export type RunBudget = {
 };
 
 export type RuntimeActor = {
-  kind: 'main' | 'subagent' | 'workflow' | 'team_member';
+  kind: 'main' | 'subagent' | 'workflow' | 'team_member' | 'channel_user';
   id?: string;
   profile?: string;
 };
 
 export type RuntimeTriggerContext = {
-  kind: 'user' | 'api' | 'scheduler' | 'workflow' | 'subagent' | 'team_member' | 'resume';
+  kind: 'user' | 'api' | 'scheduler' | 'workflow' | 'subagent' | 'team_member' | 'resume' | 'channel_message';
   id?: string;
 };
 

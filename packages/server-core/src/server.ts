@@ -1,4 +1,14 @@
+import { createHash } from 'node:crypto';
 import type { AppServiceEvent, DurableIdempotencyStore, JojoAppService } from '@desktop-agent/app-service';
+import type {
+  ChannelBinding,
+  ChannelDeliveryInput,
+  ChannelDeliveryReceipt,
+  ChannelInstance,
+  ChannelInstanceHealth,
+  ChannelOutboxItem,
+  ChannelPairing
+} from '@desktop-agent/channel-core';
 import type {
   CreateScheduleInput as SchedulerCreateScheduleInput,
   ScheduleEvent,
@@ -9,6 +19,15 @@ import type {
 import {
   JOJO_SERVER_PROTOCOL_VERSION,
   type ClientCommand,
+  type ApproveChannelPairingInput,
+  type ChannelBindingDto,
+  type ChannelDeliveryDto,
+  type ChannelDeliveryListQuery,
+  type ChannelHealthDto,
+  type ChannelInstanceDto,
+  type ChannelPairingDto,
+  type CreateChannelBindingInput,
+  type CreateChannelInstanceInput,
   type CreateScheduleInput,
   type CreateSessionInput,
   type LeaseMode,
@@ -29,6 +48,9 @@ import {
   type StartRunInput,
   type TranscriptPage,
   type TranscriptQuery,
+  type TestChannelInput,
+  type UpdateChannelBindingInput,
+  type UpdateChannelInstanceInput,
   type UpdateScheduleInput
 } from '@desktop-agent/server-protocol';
 import { IdempotencyStore } from './idempotency.js';
@@ -37,6 +59,24 @@ import { ScopePolicy } from './scope-policy.js';
 import { ProtocolFailure } from './errors.js';
 
 export type ServerCoreEvent = AppServiceEvent | ScheduleEvent;
+
+export interface ChannelAdminService {
+  listInstances(): Promise<ChannelInstance[]>;
+  getInstance(instanceId: string): Promise<ChannelInstance>;
+  saveInstance(instance: ChannelInstance, expectedRevision?: number): Promise<ChannelInstance>;
+  deleteInstance(instanceId: string, expectedRevision?: number): Promise<void>;
+  listBindings(): Promise<ChannelBinding[]>;
+  getBinding(bindingId: string): Promise<ChannelBinding>;
+  saveBinding(binding: ChannelBinding, expectedRevision?: number): Promise<ChannelBinding>;
+  deleteBinding(bindingId: string, expectedRevision?: number): Promise<void>;
+  listPairings(status?: ChannelPairing['status']): Promise<ChannelPairing[]>;
+  approvePairing(pairingId: string, binding: ChannelBinding): Promise<ChannelBinding>;
+  rejectPairing(pairingId: string): Promise<void>;
+  listDeliveries(options?: { instanceId?: string; status?: ChannelOutboxItem['status']; limit?: number }): Promise<ChannelOutboxItem[]>;
+  getDelivery(deliveryId: string): Promise<ChannelOutboxItem>;
+  listHealth(): Promise<Array<{ instanceId: string; health: ChannelInstanceHealth }>>;
+  deliver(input: ChannelDeliveryInput): Promise<ChannelDeliveryReceipt>;
+}
 
 export type JojoServerCoreOptions = {
   serverId?: string;
@@ -48,6 +88,8 @@ export type JojoServerCoreOptions = {
   now?: () => Date;
   idempotencyStore?: DurableIdempotencyStore;
   scheduler?: ScheduleService;
+  channels?: ChannelAdminService;
+  channelKinds?: string[];
 };
 
 export interface JojoServerCore {
@@ -90,6 +132,22 @@ export interface JojoServerCore {
   listScheduleRuns(ctx: RequestContext, scheduleId: string, query?: ScheduleRunListQuery): Promise<ScheduleRun[]>;
   getScheduleRun(ctx: RequestContext, runId: string): Promise<ScheduleRun>;
   cancelScheduleRun(ctx: RequestContext, runId: string, idempotencyKey?: string): Promise<void>;
+  listChannelInstances(ctx: RequestContext): Promise<ChannelInstanceDto[]>;
+  getChannelInstance(ctx: RequestContext, instanceId: string): Promise<ChannelInstanceDto>;
+  createChannelInstance(ctx: RequestContext, input: CreateChannelInstanceInput, idempotencyKey?: string): Promise<ChannelInstanceDto>;
+  updateChannelInstance(ctx: RequestContext, instanceId: string, input: UpdateChannelInstanceInput, idempotencyKey?: string): Promise<ChannelInstanceDto>;
+  deleteChannelInstance(ctx: RequestContext, instanceId: string, expectedRevision?: number, idempotencyKey?: string): Promise<void>;
+  testChannel(ctx: RequestContext, instanceId: string, input: TestChannelInput, idempotencyKey?: string): Promise<ChannelDeliveryReceipt>;
+  listChannelBindings(ctx: RequestContext): Promise<ChannelBindingDto[]>;
+  createChannelBinding(ctx: RequestContext, input: CreateChannelBindingInput, idempotencyKey?: string): Promise<ChannelBindingDto>;
+  updateChannelBinding(ctx: RequestContext, bindingId: string, input: UpdateChannelBindingInput, idempotencyKey?: string): Promise<ChannelBindingDto>;
+  deleteChannelBinding(ctx: RequestContext, bindingId: string, expectedRevision?: number, idempotencyKey?: string): Promise<void>;
+  listChannelPairings(ctx: RequestContext, status?: ChannelPairing['status']): Promise<ChannelPairingDto[]>;
+  approveChannelPairing(ctx: RequestContext, pairingId: string, input: ApproveChannelPairingInput, idempotencyKey?: string): Promise<ChannelBindingDto>;
+  rejectChannelPairing(ctx: RequestContext, pairingId: string, idempotencyKey?: string): Promise<void>;
+  listChannelDeliveries(ctx: RequestContext, query?: ChannelDeliveryListQuery): Promise<ChannelDeliveryDto[]>;
+  getChannelDelivery(ctx: RequestContext, deliveryId: string): Promise<ChannelDeliveryDto>;
+  listChannelHealth(ctx: RequestContext): Promise<ChannelHealthDto[]>;
   dispatch(ctx: RequestContext, command: ClientCommand): Promise<unknown>;
   closeConnection(connectionId: string): void;
   subscribe(listener: (event: ServerCoreEvent) => void): () => void;
@@ -104,6 +162,9 @@ class DefaultJojoServerCore implements JojoServerCore {
   private readonly idempotency: IdempotencyStore;
   private readonly scopePolicy: ScopePolicy;
   private readonly scheduler: ScheduleService | undefined;
+  private readonly channels: ChannelAdminService | undefined;
+  private readonly idGenerator: () => string;
+  private readonly now: () => Date;
   private readonly listeners = new Set<(event: ServerCoreEvent) => void>();
   private readonly unsubscribes: Array<() => void>;
 
@@ -127,7 +188,12 @@ class DefaultJojoServerCore implements JojoServerCore {
       ...options.capabilities,
       scheduler: options.scheduler
         ? options.capabilities?.scheduler ?? { enabled: true, targets: ['agent'] }
-        : { enabled: false, targets: [] }
+        : { enabled: false, targets: [] },
+      channels: options.channels
+        ? options.capabilities?.channels ?? {
+          enabled: true, kinds: [...(options.channelKinds ?? [])], inbound: true, outbound: true, approvals: true
+        }
+        : { enabled: false, kinds: [], inbound: false, outbound: false, approvals: false }
     };
     this.models = [...(options.models ?? [])];
     this.leases = new LeaseManager(options.idGenerator, options.now);
@@ -138,6 +204,9 @@ class DefaultJojoServerCore implements JojoServerCore {
       options.idempotencyStore
     );
     this.scheduler = options.scheduler;
+    this.channels = options.channels;
+    this.idGenerator = options.idGenerator ?? (() => crypto.randomUUID());
+    this.now = options.now ?? (() => new Date());
     this.unsubscribes = [
       service.subscribe((event) => this.emit(event)),
       ...(this.scheduler ? [this.scheduler.subscribe((event) => this.emit(event))] : [])
@@ -307,6 +376,175 @@ class DefaultJojoServerCore implements JojoServerCore {
     ));
   }
 
+  async listChannelInstances(ctx: RequestContext): Promise<ChannelInstanceDto[]> {
+    authorize(ctx, 'channels:read');
+    return (await this.requireChannels().listInstances()).map(channelInstanceDto);
+  }
+
+  async getChannelInstance(ctx: RequestContext, instanceId: string): Promise<ChannelInstanceDto> {
+    authorize(ctx, 'channels:read');
+    return channelInstanceDto(await this.requireChannels().getInstance(instanceId));
+  }
+
+  createChannelInstance(ctx: RequestContext, input: CreateChannelInstanceInput, key?: string): Promise<ChannelInstanceDto> {
+    authorize(ctx, 'channels:write');
+    return this.idempotency.execute(ctx.principal.id, 'channel.instance.create', key, input, async () => {
+      if (!this.capabilities.channels.kinds.includes(input.kind)) {
+        throw new ProtocolFailure({ code: 'invalid_request', message: `Unsupported channel kind: ${input.kind}` });
+      }
+      const timestamp = this.now().toISOString();
+      const instance: ChannelInstance = {
+        id: input.id ?? `channel_${this.idGenerator()}`,
+        kind: input.kind,
+        name: input.name,
+        enabled: input.enabled,
+        config: compactChannel(input.config),
+        secretRefs: { ...input.secretRefs },
+        revision: 1,
+        fingerprint: channelFingerprint(input.kind, input.config, input.secretRefs),
+        createdAt: timestamp,
+        updatedAt: timestamp
+      };
+      return channelInstanceDto(await this.requireChannels().saveInstance(instance));
+    });
+  }
+
+  updateChannelInstance(
+    ctx: RequestContext,
+    instanceId: string,
+    input: UpdateChannelInstanceInput,
+    key?: string
+  ): Promise<ChannelInstanceDto> {
+    authorize(ctx, 'channels:write');
+    return this.idempotency.execute(ctx.principal.id, `channel.instance.update:${instanceId}`, key, input, async () => {
+      const current = await this.requireChannels().getInstance(instanceId);
+      const expected = input.expectedRevision ?? current.revision;
+      const config = input.config === undefined ? current.config : compactChannel<Record<string, unknown>>(input.config);
+      const secretRefs = input.secretRefs === undefined ? current.secretRefs : { ...input.secretRefs };
+      return channelInstanceDto(await this.requireChannels().saveInstance({
+        ...current,
+        ...(input.name !== undefined ? { name: input.name } : {}),
+        ...(input.enabled !== undefined ? { enabled: input.enabled } : {}),
+        config,
+        secretRefs,
+        fingerprint: channelFingerprint(current.kind, config, secretRefs),
+        revision: current.revision + 1,
+        updatedAt: this.now().toISOString()
+      }, expected));
+    });
+  }
+
+  deleteChannelInstance(ctx: RequestContext, instanceId: string, expectedRevision?: number, key?: string): Promise<void> {
+    authorize(ctx, 'channels:write');
+    return this.idempotency.execute(ctx.principal.id, `channel.instance.delete:${instanceId}`, key, {
+      instanceId, expectedRevision
+    }, () => this.requireChannels().deleteInstance(instanceId, expectedRevision));
+  }
+
+  testChannel(ctx: RequestContext, instanceId: string, input: TestChannelInput, key?: string): Promise<ChannelDeliveryReceipt> {
+    authorize(ctx, 'channels:send');
+    return this.idempotency.execute(ctx.principal.id, `channel.instance.test:${instanceId}`, key, input, async () => {
+      await this.requireChannels().getInstance(instanceId);
+      if (input.bindingId) {
+        const binding = await this.requireChannels().getBinding(input.bindingId);
+        if (binding.instanceId !== instanceId) throw new ProtocolFailure({ code: 'invalid_request', message: 'Binding belongs to another channel instance.' });
+      }
+      return this.requireChannels().deliver({
+        ...(input.bindingId ? { bindingId: input.bindingId } : {
+          target: {
+            instanceId,
+            conversationId: input.conversationId!,
+            ...(input.threadId ? { threadId: input.threadId } : {})
+          }
+        }),
+        content: [{ type: 'text', text: input.text }], mode: 'system', idempotencyKey: key ?? `test:${this.idGenerator()}`
+      });
+    });
+  }
+
+  async listChannelBindings(ctx: RequestContext): Promise<ChannelBindingDto[]> {
+    authorize(ctx, 'channels:read');
+    return (await this.requireChannels().listBindings()).map(channelBindingDto);
+  }
+
+  createChannelBinding(ctx: RequestContext, input: CreateChannelBindingInput, key?: string): Promise<ChannelBindingDto> {
+    authorize(ctx, 'channels:bind');
+    return this.idempotency.execute(ctx.principal.id, 'channel.binding.create', key, input, async () => (
+      channelBindingDto(await this.requireChannels().saveBinding(await this.newBinding(input)))
+    ));
+  }
+
+  updateChannelBinding(
+    ctx: RequestContext,
+    bindingId: string,
+    input: UpdateChannelBindingInput,
+    key?: string
+  ): Promise<ChannelBindingDto> {
+    authorize(ctx, 'channels:bind');
+    return this.idempotency.execute(ctx.principal.id, `channel.binding.update:${bindingId}`, key, input, async () => {
+      const current = await this.requireChannels().getBinding(bindingId);
+      const expected = input.expectedRevision ?? current.revision;
+      const routing = input.routing ? await this.authorizeChannelRouting(input.routing) : current.routing;
+      return channelBindingDto(await this.requireChannels().saveBinding({
+        ...current,
+        routing,
+        ...(input.policy ? { policy: compactChannel<ChannelBinding['policy']>(input.policy) } : {}),
+        revision: current.revision + 1,
+        updatedAt: this.now().toISOString()
+      }, expected));
+    });
+  }
+
+  deleteChannelBinding(ctx: RequestContext, bindingId: string, expectedRevision?: number, key?: string): Promise<void> {
+    authorize(ctx, 'channels:bind');
+    return this.idempotency.execute(ctx.principal.id, `channel.binding.delete:${bindingId}`, key, {
+      bindingId, expectedRevision
+    }, () => this.requireChannels().deleteBinding(bindingId, expectedRevision));
+  }
+
+  async listChannelPairings(ctx: RequestContext, status?: ChannelPairing['status']): Promise<ChannelPairingDto[]> {
+    authorize(ctx, 'channels:approve');
+    return (await this.requireChannels().listPairings(status)).map(channelPairingDto);
+  }
+
+  approveChannelPairing(
+    ctx: RequestContext,
+    pairingId: string,
+    input: ApproveChannelPairingInput,
+    key?: string
+  ): Promise<ChannelBindingDto> {
+    authorize(ctx, 'channels:approve');
+    return this.idempotency.execute(ctx.principal.id, `channel.pairing.approve:${pairingId}`, key, input, async () => (
+      channelBindingDto(await this.requireChannels().approvePairing(pairingId, await this.newBinding(input.binding)))
+    ));
+  }
+
+  rejectChannelPairing(ctx: RequestContext, pairingId: string, key?: string): Promise<void> {
+    authorize(ctx, 'channels:approve');
+    return this.idempotency.execute(ctx.principal.id, `channel.pairing.reject:${pairingId}`, key, { pairingId }, () => (
+      this.requireChannels().rejectPairing(pairingId)
+    ));
+  }
+
+  async listChannelDeliveries(ctx: RequestContext, query: ChannelDeliveryListQuery = { limit: 100 }): Promise<ChannelDeliveryDto[]> {
+    authorize(ctx, 'channels:read');
+    return (await this.requireChannels().listDeliveries({
+      limit: query.limit,
+      ...(query.instanceId ? { instanceId: query.instanceId } : {}),
+      ...(query.status ? { status: query.status } : {})
+    })).map(channelDeliveryDto);
+  }
+
+  async getChannelDelivery(ctx: RequestContext, deliveryId: string): Promise<ChannelDeliveryDto> {
+    authorize(ctx, 'channels:read');
+    return channelDeliveryDto(await this.requireChannels().getDelivery(deliveryId));
+  }
+
+  async listChannelHealth(ctx: RequestContext): Promise<ChannelHealthDto[]> {
+    authorize(ctx, 'channels:read');
+    return (await this.requireChannels().listHealth()).map(({ instanceId, health }) => ({ instanceId, ...health }));
+  }
+
   async dispatch(ctx: RequestContext, command: ClientCommand): Promise<unknown> {
     switch (command.type) {
       case 'server.snapshot': return this.serverSnapshot(ctx);
@@ -348,6 +586,31 @@ class DefaultJojoServerCore implements JojoServerCore {
     return this.scheduler;
   }
 
+  private requireChannels(): ChannelAdminService {
+    if (!this.channels) throw new ProtocolFailure({ code: 'channels_unavailable', message: 'Channels are not enabled.' });
+    return this.channels;
+  }
+
+  private async newBinding(input: CreateChannelBindingInput): Promise<ChannelBinding> {
+    const timestamp = this.now().toISOString();
+    return {
+      id: input.id ?? `binding_${this.idGenerator()}`,
+      instanceId: input.instanceId,
+      conversation: compactChannel(input.conversation),
+      routing: await this.authorizeChannelRouting(input.routing),
+      policy: compactChannel(input.policy),
+      revision: 1,
+      createdAt: timestamp,
+      updatedAt: timestamp
+    };
+  }
+
+  private async authorizeChannelRouting(routing: CreateChannelBindingInput['routing']): Promise<ChannelBinding['routing']> {
+    const compact = compactChannel<ChannelBinding['routing']>(routing);
+    if (!compact.workspaceRoot) return compact;
+    return { ...compact, workspaceRoot: await this.scopePolicy.authorizeWorkspaceRoot(compact.workspaceRoot) };
+  }
+
   private emit(event: ServerCoreEvent): void {
     for (const listener of this.listeners) {
       try { listener(event); } catch { /* Observers are isolated. */ }
@@ -366,4 +629,57 @@ function authorize(ctx: RequestContext, scope: string): void {
 
 function compactSchedulerInput<T>(input: unknown): T {
   return JSON.parse(JSON.stringify(input)) as T;
+}
+
+function compactChannel<T>(input: unknown): T {
+  return JSON.parse(JSON.stringify(input)) as T;
+}
+
+function channelInstanceDto(instance: ChannelInstance): ChannelInstanceDto {
+  return compactChannel(instance);
+}
+
+function channelBindingDto(binding: ChannelBinding): ChannelBindingDto {
+  return compactChannel(binding);
+}
+
+function channelPairingDto(pairing: ChannelPairing): ChannelPairingDto {
+  return {
+    id: pairing.id,
+    instanceId: pairing.instanceId,
+    conversationId: pairing.conversationId,
+    senderId: pairing.senderId,
+    status: pairing.status,
+    expiresAt: pairing.expiresAt,
+    createdAt: pairing.createdAt,
+    ...(pairing.resolvedAt ? { resolvedAt: pairing.resolvedAt } : {})
+  };
+}
+
+function channelDeliveryDto(delivery: ChannelOutboxItem): ChannelDeliveryDto {
+  return {
+    id: delivery.id,
+    instanceId: delivery.instanceId,
+    ...(delivery.bindingId ? { bindingId: delivery.bindingId } : {}),
+    conversationId: delivery.conversationId,
+    ...(delivery.threadId ? { threadId: delivery.threadId } : {}),
+    ...(delivery.request.mode ? { mode: delivery.request.mode } : {}),
+    status: delivery.status,
+    attemptCount: delivery.attemptCount,
+    createdAt: delivery.createdAt,
+    ...(delivery.deliveredAt ? { deliveredAt: delivery.deliveredAt } : {}),
+    ...(delivery.nativeMessageId ? { nativeMessageId: delivery.nativeMessageId } : {}),
+    ...(delivery.lastError ? { lastError: delivery.lastError } : {})
+  };
+}
+
+function channelFingerprint(kind: string, config: unknown, secretRefs: Record<string, string>): string {
+  return createHash('sha256').update(stableChannelJson({ kind, config, secretRefs })).digest('hex');
+}
+
+function stableChannelJson(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableChannelJson).join(',')}]`;
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${stableChannelJson(record[key])}`).join(',')}}`;
 }

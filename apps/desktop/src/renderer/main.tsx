@@ -18,6 +18,7 @@ import { MemorySettingsPage } from './MemorySettings';
 import { PermissionsSettingsPage } from './PermissionsSettings';
 import { SchedulerSettingsPage } from './SchedulerSettings';
 import { TeamSettingsPage } from './TeamSettings';
+import { ChannelsSettingsPage } from './ChannelsSettings';
 import { ChatTranscript, ConversationViewTabs, Markdown, TrajectoryView } from './ConversationViews';
 import { Sidebar } from './Sidebar';
 import { WorkflowCard } from './WorkflowCard';
@@ -27,7 +28,7 @@ import './styles.css';
 
 type DiffLine = { type: 'addition' | 'deletion' | 'context' | 'hunk' | 'meta'; oldLine?: number; newLine?: number; text: string };
 const FOLLOW_THRESHOLD = 24;
-type SettingsSection = 'models' | 'permissions' | 'memory' | 'automations' | 'teams' | 'browser' | 'mcp' | 'skills' | 'hooks';
+type SettingsSection = 'models' | 'permissions' | 'memory' | 'automations' | 'channels' | 'teams' | 'browser' | 'mcp' | 'skills' | 'hooks';
 
 const defaultSettings: ProviderSettings = {
   activeProviderId: 'openai',
@@ -1940,6 +1941,7 @@ function App() {
           <button type="button" className={settingsSection === 'permissions' ? 'active' : ''} onClick={() => { setSettingsSection('permissions'); setExtensionEditorOpen(false); void refreshPermissionGovernance(); }}><span aria-hidden="true">⌁</span> 权限</button>
           <button type="button" className={settingsSection === 'memory' ? 'active' : ''} onClick={() => { setSettingsSection('memory'); setExtensionEditorOpen(false); }}><span aria-hidden="true">◈</span> Memory</button>
           <button type="button" className={settingsSection === 'automations' ? 'active' : ''} onClick={() => { setSettingsSection('automations'); setExtensionEditorOpen(false); setSelectedScheduleId(null); selectedScheduleIdRef.current = null; setScheduleRuns([]); void refreshSchedules(); }}><span aria-hidden="true">◷</span> Automations</button>
+          <button type="button" className={settingsSection === 'channels' ? 'active' : ''} onClick={() => { setSettingsSection('channels'); setExtensionEditorOpen(false); }}><span aria-hidden="true">◉</span> Channels</button>
           <button type="button" className={settingsSection === 'teams' ? 'active' : ''} onClick={() => { setSettingsSection('teams'); setExtensionEditorOpen(false); void refreshTeams(); }}><span aria-hidden="true">♙</span> 团队</button>
           <button type="button" className={settingsSection === 'browser' ? 'active' : ''} onClick={() => { setSettingsSection('browser'); setExtensionEditorOpen(false); void refreshBrowserRecordings(active?.workingDirectory); }}><span aria-hidden="true">◎</span> 浏览器</button>
           <button type="button" className={settingsSection === 'skills' ? 'active' : ''} onClick={() => { setSettingsSection('skills'); setExtensionSearch(''); setExtensionEditorOpen(false); }}><span aria-hidden="true">⬡</span> 技能</button>
@@ -1948,7 +1950,7 @@ function App() {
         </nav>
       </aside>
       <main className={`settings-main ${settingsSection === 'automations' ? 'automations-settings-main' : ''}`}>
-        <header className="settings-topbar"><strong>{settingsSection === 'models' ? '模型' : settingsSection === 'permissions' ? '权限' : settingsSection === 'memory' ? 'Memory' : settingsSection === 'automations' ? 'Automations' : settingsSection === 'teams' ? '团队' : settingsSection === 'browser' ? '浏览器' : settingsSection === 'skills' ? '技能' : settingsSection === 'hooks' ? 'Hooks' : 'MCP 服务'}</strong></header>
+        <header className="settings-topbar"><strong>{settingsSection === 'models' ? '模型' : settingsSection === 'permissions' ? '权限' : settingsSection === 'memory' ? 'Memory' : settingsSection === 'automations' ? 'Automations' : settingsSection === 'channels' ? 'Channels' : settingsSection === 'teams' ? '团队' : settingsSection === 'browser' ? '浏览器' : settingsSection === 'skills' ? '技能' : settingsSection === 'hooks' ? 'Hooks' : 'MCP 服务'}</strong></header>
         <div className="settings-page-body">
     {settingsSection === 'models' && <form className="settings-content model-settings-page" aria-labelledby="settings-title" onSubmit={async (event) => {
       event.preventDefault();
@@ -2069,6 +2071,7 @@ function App() {
       onCancelRun={cancelScheduleRun}
       onOpenConversation={(sessionId, messageId) => { void openConversationMessage(sessionId, messageId); }}
     />}
+    {settingsSection === 'channels' && <ChannelsSettingsPage api={window.desktopAgent} />}
     {settingsSection === 'teams' && <TeamSettingsPage
       {...(active?.workingDirectory ? { workspace: active.workingDirectory } : {})}
       teams={teams}

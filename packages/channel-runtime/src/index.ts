@@ -1,0 +1,18 @@
+export { DefaultChannelManager } from './manager.js';
+export type { ChannelManagerOptions } from './manager.js';
+export type { ChannelService } from './service.js';
+export { MemoryChannelStore } from './store/memory-store.js';
+export { SqliteChannelStore } from './store/sqlite-store.js';
+export type { ChannelStore, ChannelInboundStatus } from './store/store.js';
+export { ChannelConversationQueue } from './inbound/queue.js';
+export { chunkChannelText } from './outbound/chunker.js';
+export { formatChannelContent } from './outbound/formatter.js';
+export { ChannelOutboxService } from './outbound/outbox.js';
+export { JojoAppChannelBridge } from './runtime/app-service-bridge.js';
+export type { ChannelAgentBridge, ChannelAgentResult, JojoAppChannelBridgeOptions } from './runtime/app-service-bridge.js';
+export { createChannelTools } from './runtime/tools.js';
+export { ChannelRuntimeCapability } from './runtime/capability.js';
+export { ChannelScheduleDeliveryService, CompositeScheduleDeliveryService } from './scheduler/delivery.js';
+export { ChannelApprovalBridge } from './approval/bridge.js';
+export type { ActiveChannelRunResolver, ChannelApprovalBridgeOptions } from './approval/bridge.js';
+export type { ActiveChannelRunTarget } from './manager.js';

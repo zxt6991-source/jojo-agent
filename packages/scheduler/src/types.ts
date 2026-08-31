@@ -47,9 +47,16 @@ export type TeamMemberScheduleTarget = {
 
 export type ScheduleTarget = AgentScheduleTarget | WorkflowScheduleTarget | TeamMemberScheduleTarget;
 
+export type ScheduleChannelDelivery = {
+  enabled: boolean;
+  bindingId: string;
+  mode?: 'full' | 'preview';
+};
+
 export type ScheduleDelivery = {
   conversation?: { enabled: boolean; sessionId: string };
   notification?: { enabled: boolean };
+  channels?: ScheduleChannelDelivery[];
 };
 
 export type MisfirePolicy = { kind: 'skip' } | { kind: 'fire_once'; graceMs: number };

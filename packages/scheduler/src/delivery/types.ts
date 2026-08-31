@@ -3,7 +3,10 @@ import type { Schedule, ScheduleRun } from '../types.js';
 
 export type ScheduleDeliveryResult = {
   status: 'delivered' | 'failed' | 'skipped';
-  channel?: 'conversation' | 'notification';
+  destination?: {
+    kind: 'conversation' | 'notification' | 'channel';
+    id?: string;
+  };
   messageId?: string;
   error?: string;
 };
