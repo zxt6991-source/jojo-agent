@@ -48,6 +48,19 @@ async function setup(binding?: ChannelBinding) {
 }
 
 describe('DefaultChannelManager', () => {
+  it('tracks adapter reconnect health and clears recovered errors', async () => {
+    const { adapter, manager } = await setup();
+    adapter.reportHealth({ status: 'degraded', reconnectIncrement: 1 });
+    expect((await manager.listHealth())[0]?.health).toMatchObject({ status: 'degraded', reconnectCount: 1 });
+
+    adapter.reportHealth({ status: 'failed', error: 'temporary gateway failure' });
+    expect((await manager.listHealth())[0]?.health.lastError).toBe('temporary gateway failure');
+
+    adapter.reportHealth({ status: 'connected' });
+    expect((await manager.listHealth())[0]?.health).toEqual({ status: 'connected', reconnectCount: 1 });
+    await manager.stop();
+  });
+
   it('binds a chat to one persistent session and deduplicates repeated platform delivery', async () => {
     const binding: ChannelBinding = {
       id: 'binding', instanceId: 'inst', conversation: { id: 'chat', type: 'direct' },

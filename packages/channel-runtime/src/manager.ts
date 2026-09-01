@@ -1,6 +1,7 @@
 import { createHash, randomInt } from 'node:crypto';
 import type {
   ChannelAdapter,
+  ChannelAdapterHealthUpdate,
   ChannelAdapterRegistry,
   ChannelBinding,
   ChannelDeliveryInput,
@@ -230,7 +231,8 @@ export class DefaultChannelManager {
       this.controllers.set(instance.id, controller);
       await adapter.start({
         signal: controller.signal,
-        emit: (event) => this.receive(event)
+        emit: (event) => this.receive(event),
+        reportHealth: (update) => this.updateAdapterHealth(instance.id, update)
       });
       this.setHealth(instance.id, { status: 'connected' });
     } catch (error) {
@@ -389,12 +391,23 @@ export class DefaultChannelManager {
 
   private setHealth(instanceId: string, patch: Partial<ChannelInstanceHealth>): void {
     const previous = this.health.get(instanceId) ?? { status: 'stopped' as const, reconnectCount: 0 };
-    const health = { ...previous, ...patch };
+    const health: ChannelInstanceHealth = { ...previous, ...patch };
+    if (patch.status === 'connected' && patch.lastError === undefined) delete health.lastError;
     this.health.set(instanceId, health);
     if (patch.status) this.emit({
       type: 'channel.instance.status', instanceId, status: patch.status,
       ...(patch.lastError ? { error: patch.lastError } : {})
     });
+  }
+
+  private updateAdapterHealth(instanceId: string, update: ChannelAdapterHealthUpdate): void {
+    const previous = this.health.get(instanceId) ?? { status: 'starting' as const, reconnectCount: 0 };
+    const patch: Partial<ChannelInstanceHealth> = {
+      status: update.status,
+      reconnectCount: previous.reconnectCount + (update.reconnectIncrement ?? 0)
+    };
+    if (update.error) patch.lastError = update.error;
+    this.setHealth(instanceId, patch);
   }
 
   private async recordOutbound(deliveryId: string): Promise<void> {

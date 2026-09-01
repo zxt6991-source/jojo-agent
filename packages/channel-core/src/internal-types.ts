@@ -12,12 +12,19 @@ import type {
   ChannelWebhookResponse
 } from './types.js';
 
+export type ChannelAdapterHealthUpdate = {
+  status: 'connected' | 'degraded' | 'failed';
+  error?: string;
+  reconnectIncrement?: number;
+};
+
 export interface ChannelSecretResolver {
   resolve(reference: string): Promise<string>;
 }
 
 export type ChannelAdapterContext = {
   emit(event: ChannelInboundEvent): void | Promise<void>;
+  reportHealth?(update: ChannelAdapterHealthUpdate): void;
   signal: AbortSignal;
 };
 

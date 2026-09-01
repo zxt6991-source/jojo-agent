@@ -13,10 +13,24 @@ describe('Channels settings helpers', () => {
 
     expect(telegram.secretRefs).toEqual({ botToken: 'secret://env/JOJO_TELEGRAM_BOT_TOKEN' });
     expect(feishu.secretRefs).toEqual({
-      appSecret: 'secret://env/JOJO_FEISHU_APP_SECRET',
-      verificationToken: 'secret://env/JOJO_FEISHU_VERIFICATION_TOKEN'
+      appSecret: 'secret://env/JOJO_FEISHU_APP_SECRET'
     });
+    expect(feishu.config).toEqual({ appId: '', transport: 'websocket' });
     expect(JSON.stringify([telegram, feishu])).not.toContain('plaintext');
+  });
+
+  it('preserves legacy Feishu webhook mode when transport is absent', () => {
+    const draft = channelInstanceDraft({
+      id: 'feishu-legacy', kind: 'feishu', name: 'Legacy', enabled: true,
+      config: { appId: 'cli_0123456789abcdef' },
+      secretRefs: {
+        appSecret: 'secret://env/JOJO_FEISHU_APP_SECRET',
+        verificationToken: 'secret://env/JOJO_FEISHU_VERIFICATION_TOKEN'
+      },
+      revision: 1, fingerprint: 'fp', createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z'
+    });
+
+    expect(draft.config.transport).toBe('webhook');
   });
 
   it('strips persistence-owned instance metadata when editing', () => {

@@ -25,11 +25,8 @@ export function createChannelInstanceDraft(kind: InstanceDraft['kind'] = 'telegr
         kind,
         name: 'Feishu',
         enabled: false,
-        config: { appId: '' },
-        secretRefs: {
-          appSecret: 'secret://env/JOJO_FEISHU_APP_SECRET',
-          verificationToken: 'secret://env/JOJO_FEISHU_VERIFICATION_TOKEN'
-        }
+        config: { appId: '', transport: 'websocket' },
+        secretRefs: { appSecret: 'secret://env/JOJO_FEISHU_APP_SECRET' }
       };
 }
 
@@ -39,12 +36,16 @@ export function channelInstanceDraft(
   if (instance.kind !== 'telegram' && instance.kind !== 'feishu') {
     throw new Error(`Unsupported desktop channel kind: ${instance.kind}`);
   }
+  const config = { ...instance.config } as InstanceDraft['config'];
+  if (instance.kind === 'feishu' && config.transport === undefined) {
+    config.transport = instance.secretRefs.verificationToken ? 'webhook' : 'websocket';
+  }
   return {
     id: instance.id,
     kind: instance.kind === 'telegram' ? 'telegram' : 'feishu',
     name: instance.name,
     enabled: instance.enabled,
-    config: instance.config as InstanceDraft['config'],
+    config,
     secretRefs: instance.secretRefs
   };
 }
@@ -77,7 +78,7 @@ export function channelBindingDraft(
 }
 
 function healthLabel(status: string): string {
-  return ({ connected: '已连接', starting: '启动中', degraded: '降级', stopped: '已停止', failed: '失败' } as Record<string, string>)[status] ?? status;
+  return ({ connected: '已连接', starting: '启动中', degraded: '正在重连', stopped: '已停止', failed: '连接失败' } as Record<string, string>)[status] ?? status;
 }
 
 function timestamp(value?: string): string {
@@ -152,6 +153,10 @@ export function ChannelsSettingsPage({ api }: { api: DesktopApi }) {
     });
     if (saved) setBindingEditor(null);
   };
+
+  const editorFeishuTransport = instanceEditor?.kind === 'feishu'
+    ? instanceEditor.config.transport === 'webhook' ? 'webhook' : 'websocket'
+    : undefined;
 
   return <div className="settings-content channels-settings-page">
     <div className="settings-heading channel-heading">
@@ -293,12 +298,21 @@ export function ChannelsSettingsPage({ api }: { api: DesktopApi }) {
           </> : <>
             <label>App ID<input required value={String(instanceEditor.config.appId ?? '')} onChange={(event) => setInstanceEditor({ ...instanceEditor, config: { ...instanceEditor.config, appId: event.target.value } })} /></label>
             <label>App Secret 引用<input type="password" autoComplete="off" spellCheck={false} required pattern="secret://env/[A-Z_][A-Z0-9_]*" value={instanceEditor.secretRefs.appSecret ?? ''} onChange={(event) => setInstanceEditor({ ...instanceEditor, secretRefs: { ...instanceEditor.secretRefs, appSecret: event.target.value } })} /></label>
-            <label>Verification Token 引用<input type="password" autoComplete="off" spellCheck={false} required pattern="secret://env/[A-Z_][A-Z0-9_]*" value={instanceEditor.secretRefs.verificationToken ?? ''} onChange={(event) => setInstanceEditor({ ...instanceEditor, secretRefs: { ...instanceEditor.secretRefs, verificationToken: event.target.value } })} /></label>
-            <label>Encrypt Key 引用（可选）<input type="password" autoComplete="off" spellCheck={false} pattern="secret://env/[A-Z_][A-Z0-9_]*" value={instanceEditor.secretRefs.encryptKey ?? ''} onChange={(event) => {
-              const rest = { ...instanceEditor.secretRefs };
-              delete rest.encryptKey;
-              setInstanceEditor({ ...instanceEditor, secretRefs: event.target.value ? { ...rest, encryptKey: event.target.value } : rest });
-            }} /></label>
+            <label>接收方式<select value={editorFeishuTransport} onChange={(event) => {
+              const transport = event.target.value as 'websocket' | 'webhook';
+              const secretRefs = transport === 'webhook' && !instanceEditor.secretRefs.verificationToken
+                ? { ...instanceEditor.secretRefs, verificationToken: 'secret://env/JOJO_FEISHU_VERIFICATION_TOKEN' }
+                : instanceEditor.secretRefs;
+              setInstanceEditor({ ...instanceEditor, config: { ...instanceEditor.config, transport }, secretRefs });
+            }}><option value="websocket">长连接（推荐，无需公网地址）</option><option value="webhook">Webhook（高级，适合服务端部署）</option></select></label>
+            {editorFeishuTransport === 'webhook' && <>
+              <label>Verification Token 引用<input type="password" autoComplete="off" spellCheck={false} required pattern="secret://env/[A-Z_][A-Z0-9_]*" value={instanceEditor.secretRefs.verificationToken ?? ''} onChange={(event) => setInstanceEditor({ ...instanceEditor, secretRefs: { ...instanceEditor.secretRefs, verificationToken: event.target.value } })} /></label>
+              <label>Encrypt Key 引用（可选）<input type="password" autoComplete="off" spellCheck={false} pattern="secret://env/[A-Z_][A-Z0-9_]*" value={instanceEditor.secretRefs.encryptKey ?? ''} onChange={(event) => {
+                const rest = { ...instanceEditor.secretRefs };
+                delete rest.encryptKey;
+                setInstanceEditor({ ...instanceEditor, secretRefs: event.target.value ? { ...rest, encryptKey: event.target.value } : rest });
+              }} /></label>
+            </>}
           </>}
           <label className="channel-checkbox"><input type="checkbox" checked={instanceEditor.enabled} onChange={(event) => setInstanceEditor({ ...instanceEditor, enabled: event.target.checked })} /> 保存后立即启用</label>
         </div>

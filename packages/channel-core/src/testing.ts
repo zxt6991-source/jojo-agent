@@ -1,6 +1,7 @@
 import type {
   ChannelAdapter,
   ChannelAdapterContext,
+  ChannelAdapterHealthUpdate,
   ChannelCapabilities,
   ChannelInboundEvent,
   ChannelSendReceipt,
@@ -34,5 +35,10 @@ export class FakeChannelAdapter implements ChannelAdapter {
   async receive(event: ChannelInboundEvent): Promise<void> {
     if (!this.context) throw new Error('fake_channel_not_started');
     await this.context.emit(structuredClone(event));
+  }
+
+  reportHealth(update: ChannelAdapterHealthUpdate): void {
+    if (!this.context) throw new Error('fake_channel_not_started');
+    this.context.reportHealth?.(structuredClone(update));
   }
 }

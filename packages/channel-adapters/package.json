@@ -6,6 +6,7 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@desktop-agent/channel-core": "workspace:*"
+    "@desktop-agent/channel-core": "workspace:*",
+    "@larksuiteoapi/node-sdk": "1.73.0"
   }
 }

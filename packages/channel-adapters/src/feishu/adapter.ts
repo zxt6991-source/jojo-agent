@@ -20,40 +20,62 @@ import {
 } from '@desktop-agent/channel-core';
 import { parseFeishuConfig, type FeishuAdapterConfig } from './config.js';
 import { decryptFeishuPayload, safeEqual, verifyFeishuSignature } from './crypto.js';
+import {
+  DefaultFeishuWebSocketTransport,
+  type FeishuWebSocketTransport,
+  type FeishuWsClientFactory
+} from './transport/websocket.js';
 import type { FeishuCardActionEvent, FeishuEnvelope, FeishuMessageEvent, FeishuTokenResponse } from './types.js';
 
-export const FEISHU_CAPABILITIES: ChannelCapabilities = {
+const FEISHU_BASE_CAPABILITIES = {
   inbound: { text: true, markdown: false, image: true, file: true, voice: false, video: false, interaction: true, thread: true },
   outbound: { text: true, markdown: true, image: true, file: true, buttons: true, edit: true, typing: false, thread: false },
-  limits: { maxTextChars: 150 * 1024, maxFileBytes: 30 * 1024 * 1024, maxButtons: 20 },
+  limits: { maxTextChars: 150 * 1024, maxFileBytes: 30 * 1024 * 1024, maxButtons: 20 }
+} satisfies Omit<ChannelCapabilities, 'transport'>;
+
+export const FEISHU_WS_CAPABILITIES: ChannelCapabilities = {
+  ...FEISHU_BASE_CAPABILITIES,
+  transport: 'gateway'
+};
+
+export const FEISHU_WEBHOOK_CAPABILITIES: ChannelCapabilities = {
+  ...FEISHU_BASE_CAPABILITIES,
   transport: 'webhook'
 };
+
+/** @deprecated Use the adapter instance capabilities, which reflect its configured transport. */
+export const FEISHU_CAPABILITIES = FEISHU_WEBHOOK_CAPABILITIES;
 
 export type FeishuAdapterOptions = {
   instance: ChannelInstance;
   appSecret: string;
-  verificationToken: string;
+  verificationToken?: string;
   encryptKey?: string;
   apiBaseUrl?: string;
   fetch?: typeof fetch;
   now?: () => Date;
+  createWsClient?: FeishuWsClientFactory;
 };
 
 export class FeishuChannelAdapter implements ChannelAdapter {
   readonly kind = 'feishu' as const;
   readonly instanceId: string;
-  readonly capabilities = FEISHU_CAPABILITIES;
+  readonly capabilities: ChannelCapabilities;
   private readonly config: FeishuAdapterConfig;
   private readonly fetch: typeof fetch;
   private readonly apiBaseUrl: string;
   private readonly now: () => Date;
   private context: ChannelAdapterContext | undefined;
+  private transport: FeishuWebSocketTransport | undefined;
+  private abortSignal: AbortSignal | undefined;
+  private abortListener: (() => void) | undefined;
   private accessToken: { value: string; expiresAt: number } | undefined;
   private tokenRequest: Promise<string> | undefined;
 
   constructor(private readonly options: FeishuAdapterOptions) {
     this.instanceId = options.instance.id;
     this.config = parseFeishuConfig(options.instance);
+    this.capabilities = this.config.transport === 'websocket' ? FEISHU_WS_CAPABILITIES : FEISHU_WEBHOOK_CAPABILITIES;
     this.fetch = options.fetch ?? globalThis.fetch;
     this.apiBaseUrl = (options.apiBaseUrl ?? 'https://open.feishu.cn').replace(/\/$/u, '');
     this.now = options.now ?? (() => new Date());
@@ -62,26 +84,62 @@ export class FeishuChannelAdapter implements ChannelAdapter {
   async validateConfig(): Promise<ChannelValidationResult> {
     const errors: string[] = [];
     if (!this.options.appSecret.trim()) errors.push('appSecret secret is empty');
-    if (!this.options.verificationToken.trim()) errors.push('verificationToken secret is empty');
     if (!this.options.instance.secretRefs.appSecret) errors.push('secretRefs.appSecret is required');
-    if (!this.options.instance.secretRefs.verificationToken) errors.push('secretRefs.verificationToken is required');
-    if (this.options.instance.secretRefs.encryptKey && !this.options.encryptKey?.trim()) errors.push('encryptKey secret is empty');
+    if (this.config.transport === 'websocket') {
+      if (!/^cli_[0-9a-fA-F]{16}$/u.test(this.config.appId)) errors.push('appId must match cli_ followed by 16 hexadecimal characters');
+    } else {
+      if (!this.options.verificationToken?.trim()) errors.push('verificationToken secret is empty');
+      if (!this.options.instance.secretRefs.verificationToken) errors.push('secretRefs.verificationToken is required');
+      if (this.options.instance.secretRefs.encryptKey && !this.options.encryptKey?.trim()) errors.push('encryptKey secret is empty');
+    }
     return errors.length ? { valid: false, errors } : { valid: true };
   }
 
   async start(context: ChannelAdapterContext): Promise<void> {
     const validation = await this.validateConfig();
     if (!validation.valid) throw new Error(`feishu_invalid_config: ${validation.errors.join('; ')}`);
+    if (context.signal.aborted) throw new Error('feishu_start_aborted');
     this.context = context;
+    if (this.config.transport === 'webhook') return;
+
+    this.abortSignal = context.signal;
+    this.abortListener = () => { void this.stop(); };
+    context.signal.addEventListener('abort', this.abortListener, { once: true });
+    this.transport = new DefaultFeishuWebSocketTransport({
+      appId: this.config.appId,
+      appSecret: this.options.appSecret,
+      handshakeTimeoutMs: this.config.ws.handshakeTimeoutMs,
+      pingTimeoutSeconds: this.config.ws.pingTimeoutSeconds,
+      ...(this.options.createWsClient ? { createWsClient: this.options.createWsClient } : {}),
+      onEvent: (eventType, payload) => this.handleWsEvent(eventType, payload),
+      onReady: () => context.reportHealth?.({ status: 'connected' }),
+      onReconnecting: () => context.reportHealth?.({ status: 'degraded', reconnectIncrement: 1 }),
+      onReconnected: () => context.reportHealth?.({ status: 'connected' }),
+      onError: (error) => context.reportHealth?.({ status: 'failed', error: feishuWsError(error) })
+    });
+    try {
+      await this.transport.start();
+    } catch (error) {
+      await this.stop();
+      throw new Error(feishuWsError(error), { cause: error });
+    }
   }
 
   async stop(): Promise<void> {
+    if (this.abortSignal && this.abortListener) {
+      this.abortSignal.removeEventListener('abort', this.abortListener);
+    }
+    this.abortSignal = undefined;
+    this.abortListener = undefined;
     this.context = undefined;
+    await this.transport?.stop();
+    this.transport = undefined;
     this.accessToken = undefined;
     this.tokenRequest = undefined;
   }
 
   async handleWebhook(request: ChannelWebhookRequest): Promise<ChannelWebhookResponse> {
+    if (this.config.transport !== 'webhook') return { status: 405, body: { error: 'feishu_webhook_transport_disabled' } };
     if (request.method.toUpperCase() !== 'POST') return { status: 405, body: { error: 'method_not_allowed' } };
     let payload: Record<string, unknown>;
     try {
@@ -99,7 +157,7 @@ export class FeishuChannelAdapter implements ChannelAdapter {
     if (eventType !== 'im.message.receive_v1' && eventType !== 'card.action.trigger') {
       return { status: 200, body: {} };
     }
-    void this.normalize(payload, eventType).then((event) => {
+    void this.normalize(payload, eventType, 'webhook_signature').then((event) => {
       if (!event || !this.context) return;
       return this.context.emit(event);
     }).catch(() => undefined);
@@ -168,18 +226,30 @@ export class FeishuChannelAdapter implements ChannelAdapter {
       payload = parseObject(decryptFeishuPayload(payload.encrypt, this.options.encryptKey));
     }
     const token = typeof payload.token === 'string' ? payload.token : object(payload.header).token;
-    if (typeof token !== 'string' || !safeEqual(token, this.options.verificationToken)) {
+    if (typeof token !== 'string' || !this.options.verificationToken || !safeEqual(token, this.options.verificationToken)) {
       throw new Error('feishu_invalid_verification_token');
     }
     return payload;
   }
 
-  private async normalize(payload: Record<string, unknown>, eventType: string): Promise<ChannelInboundEvent | undefined> {
-    if (eventType === 'card.action.trigger') return this.normalizeAction(payload as FeishuCardActionEvent);
-    return this.normalizeMessage(payload as FeishuMessageEvent);
+  private async handleWsEvent(eventType: 'im.message.receive_v1' | 'card.action.trigger', payload: unknown): Promise<void> {
+    const event = await this.normalize(wsEnvelope(payload, eventType), eventType, 'trusted_gateway');
+    if (event && this.context) await this.context.emit(event);
   }
 
-  private async normalizeMessage(payload: FeishuMessageEvent): Promise<ChannelInboundEvent | undefined> {
+  private async normalize(
+    payload: Record<string, unknown>,
+    eventType: string,
+    verificationMethod: ChannelInboundEvent['security']['verificationMethod']
+  ): Promise<ChannelInboundEvent | undefined> {
+    if (eventType === 'card.action.trigger') return this.normalizeAction(payload as FeishuCardActionEvent, verificationMethod);
+    return this.normalizeMessage(payload as FeishuMessageEvent, verificationMethod);
+  }
+
+  private async normalizeMessage(
+    payload: FeishuMessageEvent,
+    verificationMethod: ChannelInboundEvent['security']['verificationMethod']
+  ): Promise<ChannelInboundEvent | undefined> {
     const message = payload.event?.message;
     const messageId = message?.message_id;
     const chatId = message?.chat_id;
@@ -211,11 +281,14 @@ export class FeishuChannelAdapter implements ChannelAdapter {
         ...(message.parent_id ? { replyTo: message.parent_id } : {}), ...(mentions?.length ? { mentions } : {})
       },
       receivedAt: eventTime(payload.header?.create_time, this.now()), dedupeKey: `message:${messageId}`,
-      security: { verified: true, verificationMethod: 'webhook_signature' }
+      security: { verified: true, verificationMethod }
     };
   }
 
-  private normalizeAction(payload: FeishuCardActionEvent): ChannelInboundEvent | undefined {
+  private normalizeAction(
+    payload: FeishuCardActionEvent,
+    verificationMethod: ChannelInboundEvent['security']['verificationMethod']
+  ): ChannelInboundEvent | undefined {
     const event = payload.event;
     const actionToken = extractActionToken(event?.action?.value);
     const chatId = event?.context?.open_chat_id;
@@ -226,7 +299,7 @@ export class FeishuChannelAdapter implements ChannelAdapter {
       channel: { kind: 'feishu', instanceId: this.instanceId }, conversation: { id: chatId, type: 'group' },
       sender: { id: identity(event.operator) ?? 'unknown' }, interaction: { actionToken },
       receivedAt: eventTime(payload.header?.create_time, this.now()), dedupeKey: `event:${eventId}`,
-      security: { verified: true, verificationMethod: 'webhook_signature' }
+      security: { verified: true, verificationMethod }
     };
   }
 
@@ -347,6 +420,34 @@ function parseObject(value: unknown): Record<string, unknown> {
 
 function object(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function wsEnvelope(payload: unknown, eventType: 'im.message.receive_v1' | 'card.action.trigger'): Record<string, unknown> {
+  const data = object(payload);
+  if (data.header && data.event) return data;
+  const header = {
+    event_id: data.event_id,
+    event_type: eventType,
+    create_time: data.create_time,
+    token: data.token
+  };
+  const event = eventType === 'card.action.trigger'
+    ? { operator: data.operator, action: data.action, context: data.context }
+    : { sender: data.sender, message: data.message };
+  return { schema: '2.0', header, event };
+}
+
+function feishuWsError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  const normalized = message.toLowerCase();
+  if (message === 'feishu_ws_invalid_app_id') return message;
+  if (message === 'feishu_ws_closed' || message === 'feishu_start_aborted') return message;
+  if (normalized.includes('handshake timeout')) return 'feishu_ws_handshake_timeout';
+  if (normalized.includes('reconnect exhausted')) return 'feishu_ws_reconnect_exhausted';
+  if (normalized.includes('pullconnectconfig') || normalized.includes('app secret') || normalized.includes('auth')) {
+    return 'feishu_ws_auth_failed';
+  }
+  return 'feishu_ws_connect_failed';
 }
 
 function parseContent(value: string | undefined): Record<string, unknown> {
