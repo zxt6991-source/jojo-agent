@@ -518,6 +518,21 @@ export type ChannelSettingsSnapshot = {
 };
 
 const ChannelEntityIdSchema = z.string().trim().min(1).max(256);
+const ChannelSecretValueSchema = z.string().min(1).max(100_000);
+export const SaveChannelSecretsInputSchema = z.object({
+  instanceId: ChannelEntityIdSchema,
+  secrets: z.object({
+    botToken: ChannelSecretValueSchema.optional(),
+    appSecret: ChannelSecretValueSchema.optional(),
+    verificationToken: ChannelSecretValueSchema.optional(),
+    encryptKey: ChannelSecretValueSchema.optional()
+  }).strict().refine((secrets) => Object.keys(secrets).length > 0, {
+    message: 'At least one Channel secret is required.'
+  })
+}).strict();
+export type SaveChannelSecretsInput = z.infer<typeof SaveChannelSecretsInputSchema>;
+export type ChannelSecretReferences = Partial<Record<keyof SaveChannelSecretsInput['secrets'], string>>;
+
 const ChannelInstanceDraftSchema = z.object({
   id: ChannelEntityIdSchema,
   kind: z.enum(['telegram', 'feishu']),
@@ -624,6 +639,7 @@ export type DesktopApi = {
   listScheduleRuns(input: { scheduleId: string }): Promise<ScheduleRunContract[]>;
   cancelScheduleRun(input: { runId: string }): Promise<void>;
   getChannelSettings(): Promise<ChannelSettingsSnapshot>;
+  saveChannelSecrets(input: SaveChannelSecretsInput): Promise<ChannelSecretReferences>;
   mutateChannel(input: DesktopChannelMutation): Promise<ChannelDeliveryReceipt | ChannelSettingsSnapshot>;
   resolveApproval(input: z.input<typeof ApprovalInputSchema>): Promise<void>;
   chooseDirectory(): Promise<string | null>;
@@ -710,6 +726,7 @@ export const IPC = {
   listScheduleRuns: 'scheduler:runs-list',
   cancelScheduleRun: 'scheduler:run-cancel',
   getChannelSettings: 'channels:get',
+  saveChannelSecrets: 'channels:secrets-save',
   mutateChannel: 'channels:mutate',
   scheduleEvent: 'scheduler:event',
   conversationMessageCreated: 'conversation:message-created',

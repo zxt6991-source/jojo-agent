@@ -22,7 +22,7 @@ const aliases = {
   '@desktop-agent/runtime-composition': path.join(repositoryRoot, 'packages/runtime-composition/src/index.ts'),
   '@desktop-agent/scheduler': path.join(repositoryRoot, 'packages/scheduler/src/index.ts')
 };
-const external = ['electron', /^node:/u, ...builtinModules];
+const external = ['electron', 'bufferutil', 'utf-8-validate', /^node:/u, ...builtinModules];
 const define = {
   MAIN_WINDOW_VITE_DEV_SERVER_URL: 'undefined',
   MAIN_WINDOW_VITE_NAME: JSON.stringify('main_window')

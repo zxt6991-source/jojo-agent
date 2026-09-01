@@ -2,7 +2,8 @@ import React, { useEffect, useMemo, useState } from 'react';
 import type {
   ChannelSettingsSnapshot,
   DesktopApi,
-  DesktopChannelMutation
+  DesktopChannelMutation,
+  SaveChannelSecretsInput
 } from '@desktop-agent/contracts';
 
 type InstanceDraft = Extract<DesktopChannelMutation, { action: 'instance.save' }>['instance'];
@@ -26,8 +27,17 @@ export function createChannelInstanceDraft(kind: InstanceDraft['kind'] = 'telegr
         name: 'Feishu',
         enabled: false,
         config: { appId: '', transport: 'websocket' },
-        secretRefs: { appSecret: 'secret://env/JOJO_FEISHU_APP_SECRET' }
+        secretRefs: {}
       };
+}
+
+export function switchChannelInstanceKind(
+  draft: InstanceDraft,
+  kind: InstanceDraft['kind']
+): InstanceDraft {
+  const next = createChannelInstanceDraft(kind);
+  const name = draft.name === 'Telegram' || draft.name === 'Feishu' ? next.name : draft.name;
+  return { ...next, name, enabled: draft.enabled };
 }
 
 export function channelInstanceDraft(
@@ -98,6 +108,7 @@ export function ChannelsSettingsPage({ api }: { api: DesktopApi }) {
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [instanceEditor, setInstanceEditor] = useState<InstanceDraft | null>(null);
+  const [instanceSecrets, setInstanceSecrets] = useState<SaveChannelSecretsInput['secrets']>({});
   const [bindingEditor, setBindingEditor] = useState<BindingDraft | null>(null);
   const [testText, setTestText] = useState('Jojo Channel 连接测试');
 
@@ -130,16 +141,40 @@ export function ChannelsSettingsPage({ api }: { api: DesktopApi }) {
     (snapshot?.health ?? []).map((item) => [item.instanceId, item.health])
   ), [snapshot]);
 
+  const openInstanceEditor = (draft: InstanceDraft) => {
+    setInstanceSecrets({});
+    setInstanceEditor(draft);
+  };
+
+  const closeInstanceEditor = () => {
+    setInstanceSecrets({});
+    setInstanceEditor(null);
+  };
+
   const saveInstance = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!instanceEditor) return;
+    let instance = instanceEditor;
+    if (Object.keys(instanceSecrets).length > 0) {
+      setBusy(true);
+      setError('');
+      setNotice('');
+      try {
+        const references = await api.saveChannelSecrets({ instanceId: instance.id, secrets: instanceSecrets });
+        instance = { ...instance, secretRefs: { ...instance.secretRefs, ...references } };
+      } catch (cause) {
+        setError(errorMessage(cause));
+        setBusy(false);
+        return;
+      }
+    }
     const current = snapshot?.instances.find((item) => item.id === instanceEditor.id);
     const saved = await mutate({
       action: 'instance.save',
-      instance: instanceEditor,
+      instance,
       ...(current ? { expectedRevision: current.revision } : {})
     });
-    if (saved) setInstanceEditor(null);
+    if (saved) closeInstanceEditor();
   };
 
   const saveBinding = async (event: React.FormEvent) => {
@@ -157,6 +192,8 @@ export function ChannelsSettingsPage({ api }: { api: DesktopApi }) {
   const editorFeishuTransport = instanceEditor?.kind === 'feishu'
     ? instanceEditor.config.transport === 'webhook' ? 'webhook' : 'websocket'
     : undefined;
+  const editingExistingInstance = Boolean(instanceEditor
+    && snapshot?.instances.some((item) => item.id === instanceEditor.id));
 
   return <div className="settings-content channels-settings-page">
     <div className="settings-heading channel-heading">
@@ -176,7 +213,7 @@ export function ChannelsSettingsPage({ api }: { api: DesktopApi }) {
     {notice && <div className="channel-notice channel-message" role="status">{notice}</div>}
 
     {tab === 'instances' && <section className="channel-panel">
-      <header><div><h2>Channel 实例</h2><p>一个实例对应一个平台机器人身份。</p></div><button className="primary" type="button" onClick={() => setInstanceEditor(createChannelInstanceDraft())}>添加实例</button></header>
+      <header><div><h2>Channel 实例</h2><p>一个实例对应一个平台机器人身份。</p></div><button className="primary" type="button" onClick={() => openInstanceEditor(createChannelInstanceDraft())}>添加实例</button></header>
       {!snapshot?.instances.length && <div className="channel-empty">尚未配置 Channel 实例。</div>}
       <div className="channel-card-list">
         {snapshot?.instances.map((instance) => {
@@ -192,7 +229,7 @@ export function ChannelsSettingsPage({ api }: { api: DesktopApi }) {
               <button type="button" disabled={busy} onClick={() => void mutate({
                 action: 'instance.save', instance: { ...channelInstanceDraft(instance), enabled: !instance.enabled }, expectedRevision: instance.revision
               })}>{instance.enabled ? '停用' : '启用'}</button>
-              <button type="button" onClick={() => setInstanceEditor(channelInstanceDraft(instance))}>编辑</button>
+              <button type="button" onClick={() => openInstanceEditor(channelInstanceDraft(instance))}>编辑</button>
               <button className="danger" type="button" disabled={busy} onClick={() => {
                 if (!window.confirm(`删除 Channel 实例 ${instance.name}？`)) return;
                 void mutate({ action: 'instance.delete', instanceId: instance.id, expectedRevision: instance.revision });
@@ -275,48 +312,53 @@ export function ChannelsSettingsPage({ api }: { api: DesktopApi }) {
     {tab === 'security' && <section className="channel-panel channel-security">
       <header><div><h2>安全边界</h2><p>Channel 默认采用拒绝陌生用户、最小授权和密钥隔离。</p></div></header>
       <div className="channel-security-grid">
-        <article><strong>只保存密钥引用</strong><p>实例仅接受 <code>secret://env/VARIABLE_NAME</code>，明文 Token 不会写入 SQLite、普通配置、日志或模型上下文。</p></article>
+        <article><strong>系统加密存储</strong><p>飞书界面中粘贴的密钥由操作系统安全存储加密；Channel SQLite 只保存 <code>secret://env/VARIABLE_NAME</code> 引用，不保存明文。</p></article>
         <article><strong>陌生私聊必须配对</strong><p>未绑定的私聊只生成短期 Pairing 请求；Owner 批准后才创建允许发送者的 Binding。</p></article>
         <article><strong>群聊显式绑定</strong><p>群聊不会自动配对。建议开启“需要提及”，并限制允许发送者与附件。</p></article>
         <article><strong>持久化去重与 Outbox</strong><p>入站消息按平台消息 ID 去重，出站消息通过 durable outbox 重试并记录状态。</p></article>
       </div>
     </section>}
 
-    {instanceEditor && <div className="channel-editor-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setInstanceEditor(null); }}>
+    {instanceEditor && <div className="channel-editor-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) closeInstanceEditor(); }}>
       <form className="channel-editor" onSubmit={(event) => void saveInstance(event)}>
-        <header><div><h2>{snapshot?.instances.some((item) => item.id === instanceEditor.id) ? '编辑实例' : '添加实例'}</h2><p>密钥字段必须填写环境变量引用。</p></div><button type="button" onClick={() => setInstanceEditor(null)}>×</button></header>
+        <header><div><h2>{editingExistingInstance ? '编辑实例' : '添加实例'}</h2><p>{instanceEditor.kind === 'feishu' ? '密钥会由操作系统安全存储加密，编辑时留空可保留原值。' : 'Telegram Bot Token 当前使用环境变量引用。'}</p></div><button type="button" onClick={closeInstanceEditor}>×</button></header>
         <div className="channel-editor-fields">
-          <label>平台<select value={instanceEditor.kind} onChange={(event) => {
-            const next = createChannelInstanceDraft(event.target.value as InstanceDraft['kind']);
-            setInstanceEditor({ ...next, id: instanceEditor.id, name: instanceEditor.name, enabled: instanceEditor.enabled });
+          <label>平台<select value={instanceEditor.kind} disabled={editingExistingInstance} onChange={(event) => {
+            setInstanceSecrets({});
+            setInstanceEditor(switchChannelInstanceKind(instanceEditor, event.target.value as InstanceDraft['kind']));
           }}><option value="telegram">Telegram</option><option value="feishu">飞书</option></select></label>
-          <label>实例 ID<input required value={instanceEditor.id} disabled={Boolean(snapshot?.instances.some((item) => item.id === instanceEditor.id))} onChange={(event) => setInstanceEditor({ ...instanceEditor, id: event.target.value })} /></label>
+          <label>实例 ID<input required value={instanceEditor.id} disabled={editingExistingInstance} onChange={(event) => setInstanceEditor({ ...instanceEditor, id: event.target.value })} /></label>
           <label>显示名称<input required value={instanceEditor.name} onChange={(event) => setInstanceEditor({ ...instanceEditor, name: event.target.value })} /></label>
           {instanceEditor.kind === 'telegram' ? <>
             <label>Bot Token 引用<input type="password" autoComplete="off" spellCheck={false} required pattern="secret://env/[A-Z_][A-Z0-9_]*" value={instanceEditor.secretRefs.botToken ?? ''} onChange={(event) => setInstanceEditor({ ...instanceEditor, secretRefs: { botToken: event.target.value } })} /></label>
             <label>Polling 超时（秒）<input type="number" min="1" max="50" value={String(instanceEditor.config.pollingTimeoutSeconds ?? 30)} onChange={(event) => setInstanceEditor({ ...instanceEditor, config: { ...instanceEditor.config, pollingTimeoutSeconds: Number(event.target.value) } })} /></label>
           </> : <>
             <label>App ID<input required value={String(instanceEditor.config.appId ?? '')} onChange={(event) => setInstanceEditor({ ...instanceEditor, config: { ...instanceEditor.config, appId: event.target.value } })} /></label>
-            <label>App Secret 引用<input type="password" autoComplete="off" spellCheck={false} required pattern="secret://env/[A-Z_][A-Z0-9_]*" value={instanceEditor.secretRefs.appSecret ?? ''} onChange={(event) => setInstanceEditor({ ...instanceEditor, secretRefs: { ...instanceEditor.secretRefs, appSecret: event.target.value } })} /></label>
+            <label>App Secret<input type="password" autoComplete="new-password" spellCheck={false} required={!instanceEditor.secretRefs.appSecret} placeholder={instanceEditor.secretRefs.appSecret ? '留空则保留现有密钥' : '粘贴飞书后台的 App Secret'} value={instanceSecrets.appSecret ?? ''} onChange={(event) => {
+              const next = { ...instanceSecrets };
+              delete next.appSecret;
+              setInstanceSecrets(event.target.value ? { ...next, appSecret: event.target.value } : next);
+            }} /></label>
             <label>接收方式<select value={editorFeishuTransport} onChange={(event) => {
               const transport = event.target.value as 'websocket' | 'webhook';
-              const secretRefs = transport === 'webhook' && !instanceEditor.secretRefs.verificationToken
-                ? { ...instanceEditor.secretRefs, verificationToken: 'secret://env/JOJO_FEISHU_VERIFICATION_TOKEN' }
-                : instanceEditor.secretRefs;
-              setInstanceEditor({ ...instanceEditor, config: { ...instanceEditor.config, transport }, secretRefs });
+              setInstanceEditor({ ...instanceEditor, config: { ...instanceEditor.config, transport } });
             }}><option value="websocket">长连接（推荐，无需公网地址）</option><option value="webhook">Webhook（高级，适合服务端部署）</option></select></label>
             {editorFeishuTransport === 'webhook' && <>
-              <label>Verification Token 引用<input type="password" autoComplete="off" spellCheck={false} required pattern="secret://env/[A-Z_][A-Z0-9_]*" value={instanceEditor.secretRefs.verificationToken ?? ''} onChange={(event) => setInstanceEditor({ ...instanceEditor, secretRefs: { ...instanceEditor.secretRefs, verificationToken: event.target.value } })} /></label>
-              <label>Encrypt Key 引用（可选）<input type="password" autoComplete="off" spellCheck={false} pattern="secret://env/[A-Z_][A-Z0-9_]*" value={instanceEditor.secretRefs.encryptKey ?? ''} onChange={(event) => {
-                const rest = { ...instanceEditor.secretRefs };
-                delete rest.encryptKey;
-                setInstanceEditor({ ...instanceEditor, secretRefs: event.target.value ? { ...rest, encryptKey: event.target.value } : rest });
+              <label>Verification Token<input type="password" autoComplete="new-password" spellCheck={false} required={!instanceEditor.secretRefs.verificationToken} placeholder={instanceEditor.secretRefs.verificationToken ? '留空则保留现有密钥' : '粘贴飞书后台的 Verification Token'} value={instanceSecrets.verificationToken ?? ''} onChange={(event) => {
+                const next = { ...instanceSecrets };
+                delete next.verificationToken;
+                setInstanceSecrets(event.target.value ? { ...next, verificationToken: event.target.value } : next);
+              }} /></label>
+              <label>Encrypt Key（可选）<input type="password" autoComplete="new-password" spellCheck={false} placeholder={instanceEditor.secretRefs.encryptKey ? '留空则保留现有密钥' : '如已启用消息加密，请粘贴 Encrypt Key'} value={instanceSecrets.encryptKey ?? ''} onChange={(event) => {
+                const next = { ...instanceSecrets };
+                delete next.encryptKey;
+                setInstanceSecrets(event.target.value ? { ...next, encryptKey: event.target.value } : next);
               }} /></label>
             </>}
           </>}
           <label className="channel-checkbox"><input type="checkbox" checked={instanceEditor.enabled} onChange={(event) => setInstanceEditor({ ...instanceEditor, enabled: event.target.checked })} /> 保存后立即启用</label>
         </div>
-        <footer><button type="button" onClick={() => setInstanceEditor(null)}>取消</button><button className="primary" type="submit" disabled={busy}>保存实例</button></footer>
+        <footer><button type="button" onClick={closeInstanceEditor}>取消</button><button className="primary" type="submit" disabled={busy}>保存实例</button></footer>
       </form>
     </div>}
 

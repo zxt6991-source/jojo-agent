@@ -3,10 +3,12 @@ import { describe, expect, it } from 'vitest';
 import { electronNodeConfig, isElectronNodeExternal } from '../../vite.node.config';
 
 describe('Electron Node Vite config', () => {
-  it('keeps Electron and every node: builtin out of browser resolution', () => {
+  it('keeps Electron, node builtins and ws optional native accelerators external', () => {
     expect(isElectronNodeExternal('electron')).toBe(true);
     expect(isElectronNodeExternal('node:fs')).toBe(true);
     expect(isElectronNodeExternal('node:sqlite')).toBe(true);
+    expect(isElectronNodeExternal('bufferutil')).toBe(true);
+    expect(isElectronNodeExternal('utf-8-validate')).toBe(true);
     expect(isElectronNodeExternal('@desktop-agent/storage')).toBe(false);
   });
 

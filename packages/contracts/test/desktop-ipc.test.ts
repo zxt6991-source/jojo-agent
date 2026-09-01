@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   AgentEventSchema,
   ProviderSettingsSchema,
+  SaveChannelSecretsInputSchema,
   WorkerCommandSchema,
   WorkerMessageSchema
 } from '../src/index.js';
@@ -55,7 +56,7 @@ const commandSamples: unknown[] = [
   { type: 'approval.resolve', requestId: 'r', allow: true, scope: 'session' },
   { type: 'approval.resolve', requestId: 'r', allow: true, scope: 'similar' },
   { type: 'approval.resolve', requestId: 'r', allow: true, scope: 'conversation' },
-  { type: 'config.update', settings, apiKeys: {}, mcpOAuthCredentials: {}, terminalSecrets: {} },
+  { type: 'config.update', settings, apiKeys: {}, mcpOAuthCredentials: {}, terminalSecrets: {}, channelSecrets: {} },
   { type: 'terminal.secret.resolve', requestId: 'r', value: 'secret' },
   { type: 'mcp.oauth.start', requestId: 'r', serverId: 'm', redirectUrl: 'http://127.0.0.1/callback', state: 'state' },
   { type: 'mcp.oauth.callback', requestId: 'r', serverId: 'm', callbackParams: 'code=ok' },
@@ -149,6 +150,19 @@ describe('desktop worker IPC contracts', () => {
           config: {}, secretRefs: { botToken: '123456:plaintext-token' }
         }
       }
+    }).success).toBe(false);
+  });
+
+  it('accepts Channel secrets only through the dedicated secure-storage input', () => {
+    expect(SaveChannelSecretsInputSchema.safeParse({
+      instanceId: 'feishu-personal',
+      secrets: { appSecret: 'plaintext-is-allowed-only-here' }
+    }).success).toBe(true);
+    expect(SaveChannelSecretsInputSchema.safeParse({
+      instanceId: 'feishu-personal', secrets: {}
+    }).success).toBe(false);
+    expect(SaveChannelSecretsInputSchema.safeParse({
+      instanceId: 'feishu-personal', secrets: { unexpected: 'secret' }
     }).success).toBe(false);
   });
 });

@@ -12,6 +12,7 @@ export { JojoAppChannelBridge } from './runtime/app-service-bridge.js';
 export type { ChannelAgentBridge, ChannelAgentResult, JojoAppChannelBridgeOptions } from './runtime/app-service-bridge.js';
 export { createChannelTools } from './runtime/tools.js';
 export { ChannelRuntimeCapability } from './runtime/capability.js';
+export { ChannelPermissionGate } from './runtime/permission-gate.js';
 export { ChannelScheduleDeliveryService, CompositeScheduleDeliveryService } from './scheduler/delivery.js';
 export { ChannelApprovalBridge } from './approval/bridge.js';
 export type { ActiveChannelRunResolver, ChannelApprovalBridgeOptions } from './approval/bridge.js';

@@ -85,7 +85,11 @@ const WorkerCommandBaseSchema = z.discriminatedUnion('type', [
     type: z.literal('config.update'), settings: ProviderSettingsSchema,
     apiKeys: z.record(z.string().min(1).max(256), z.string().max(100_000)),
     mcpOAuthCredentials: z.record(z.string().min(1).max(256), BoundedJsonValueSchema),
-    terminalSecrets: z.record(z.string().min(1).max(256), z.string().max(100_000))
+    terminalSecrets: z.record(z.string().min(1).max(256), z.string().max(100_000)),
+    channelSecrets: z.record(
+      z.string().regex(/^[A-Z_][A-Z0-9_]*$/u),
+      z.string().min(1).max(100_000)
+    )
   }).strict(),
   z.object({ type: z.literal('terminal.secret.resolve'), requestId: IdSchema, value: z.string().max(100_000).optional() }).strict(),
   z.object({ type: z.literal('mcp.oauth.start'), requestId: IdSchema, serverId: IdSchema, redirectUrl: z.string().url().max(4_096), state: IdSchema }).strict(),

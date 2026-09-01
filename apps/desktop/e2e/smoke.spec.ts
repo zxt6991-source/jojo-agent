@@ -37,6 +37,54 @@ test('boots Main, Preload, Renderer and Worker and completes an offline prompt',
   }
 });
 
+test('registers Jojo Channel tools in an ordinary desktop conversation', async () => {
+  const dataDirectory = await mkdtemp(path.join(os.tmpdir(), 'jojo-electron-e2e-'));
+  const launched = await launchElectron(dataDirectory);
+  try {
+    await createSession(launched.page);
+    await send(launched.page, 'E2E: channel tools');
+    await expect(launched.page.getByText('channel tools handled')).toBeVisible();
+
+    const sessions = await launched.page.evaluate(() => window.desktopAgent.listSessions());
+    const journal = await readFile(path.join(dataDirectory, 'sessions', `${sessions[0]!.id}.jsonl`), 'utf8');
+    expect(journal).toContain('channel_list_targets');
+    expect(journal).not.toContain('Unknown tool: channel_list_targets');
+  } finally {
+    await launched.app.close();
+  }
+});
+
+test('stores pasted Feishu secrets encrypted and keeps plaintext out of Channel SQLite', async () => {
+  const dataDirectory = await mkdtemp(path.join(os.tmpdir(), 'jojo-electron-e2e-'));
+  const launched = await launchElectron(dataDirectory);
+  const appSecret = 'e2e-feishu-app-secret-do-not-persist';
+  try {
+    await expect(launched.page.getByRole('heading', { name: 'Desktop Agent' })).toBeVisible();
+    const result = await launched.page.evaluate(async (secret) => {
+      const references = await window.desktopAgent.saveChannelSecrets({
+        instanceId: 'feishu-e2e', secrets: { appSecret: secret }
+      });
+      if (!references.appSecret) throw new Error('Secure storage returned no App Secret reference.');
+      const snapshot = await window.desktopAgent.mutateChannel({
+        action: 'instance.save',
+        instance: {
+          id: 'feishu-e2e', kind: 'feishu', name: 'Feishu E2E', enabled: false,
+          config: { appId: 'cli_e2e', transport: 'websocket' },
+          secretRefs: { appSecret: references.appSecret }
+        }
+      });
+      return { references, snapshot };
+    }, appSecret);
+
+    expect(result.references.appSecret).toMatch(/^secret:\/\/env\/JOJO_CHANNEL_[A-F0-9]{20}_APP_SECRET$/);
+    expect(JSON.stringify(result.snapshot)).not.toContain(appSecret);
+    expect((await readFile(path.join(dataDirectory, 'secrets', 'channel-secrets.bin'))).includes(Buffer.from(appSecret))).toBe(false);
+    expect((await readFile(path.join(dataDirectory, 'runtime', 'channels.sqlite'))).includes(Buffer.from(appSecret))).toBe(false);
+  } finally {
+    await launched.app.close();
+  }
+});
+
 test('approval allow writes and approval deny has no side effect', async () => {
   const dataDirectory = await mkdtemp(path.join(os.tmpdir(), 'jojo-electron-e2e-'));
   const launched = await launchElectron(dataDirectory);

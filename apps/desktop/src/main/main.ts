@@ -1,4 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, nativeImage, safeStorage, shell, utilityProcess, type IpcMainInvokeEvent, type UtilityProcess } from 'electron';
+import { createHash } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
 import { access, cp, mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
@@ -6,7 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   AcceptMemoryCandidateInputSchema, ApprovalInputSchema, BindSessionProjectInputSchema, BrowserDockActionSchema, BrowserDockLayoutSchema, BrowserRecordingRegistryActionInputSchema, BrowserRecordingRegistryInputSchema, BrowserRecordingStudioInputSchema, CreateSessionInputSchema, CreateSkillInputSchema, DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS, DEFAULT_MODEL_MAX_OUTPUT_TOKENS, DeleteMemoryEntryInputSchema, DeleteTeamInputSchema, DesktopChannelMutationSchema, DuplicateBrowserRecordingInputSchema, GetExtensionStatusInputSchema, GetHookStatusInputSchema, GetMemoryStatusInputSchema, GetPermissionGovernanceInputSchema, HookProjectActionInputSchema, ImportSkillInputSchema, IPC, ListModelsInputSchema, ListTeamsInputSchema, MAX_IMAGE_ATTACHMENTS, MAX_IMAGE_BYTES, McpServerIdInputSchema, OpenHookConfigInputSchema, PermissionGovernanceSnapshotSchema, RebuildMemoryIndexInputSchema, RebuildSemanticMemoryIndexInputSchema, RejectMemoryCandidateInputSchema, RenameSessionInputSchema, ResolveTerminalSecretInputSchema, SaveBrowserRecordingInputSchema, SaveExtensionSettingsInputSchema, SaveMemorySettingsInputSchema, SavePermissionPolicyInputSchema, SaveSettingsInputSchema, SaveTeamInputSchema, SetTeamMemberEnabledInputSchema,
-  SaveScheduleInputSchema, ScheduleIdInputSchema, ScheduleRunIdInputSchema, SetScheduleEnabledInputSchema,
+  SaveChannelSecretsInputSchema, SaveScheduleInputSchema, ScheduleIdInputSchema, ScheduleRunIdInputSchema, SetScheduleEnabledInputSchema,
   SessionIdInputSchema, SkillPathInputSchema, StartTurnInputSchema, UpdateSkillInputSchema, WorkflowRunActionInputSchema,
   WorkerCommandSchema, WorkerMessageSchema, serializedIpcBytes,
   type BrowserHealProposal, type BrowserHealRequest, type ChannelDeliveryReceipt, type ChannelSettingsSnapshot, type ExtensionStatus, type MemoryStatusSnapshot, type PermissionGovernanceSnapshot, type ProviderSettings, type ScheduleContract, type ScheduleRunContract, type SessionCompactionRecord, type TeamSnapshot, type TeamStatusSnapshot, type WorkerCommand, type WorkerMessage, type WorkflowRunSnapshot
@@ -44,6 +45,7 @@ let secretPath: string;
 let legacySecretPath: string;
 let mcpOAuthSecretPath: string;
 let terminalSecretPath: string;
+let channelSecretPath: string;
 let runtimeDatabasePath: string;
 let extensionStatus: ExtensionStatus = { mcpServers: [], skills: [] };
 let visibleSkillPaths = new Map<string, ExtensionStatus['skills'][number]>();
@@ -254,6 +256,46 @@ async function saveTerminalSecret(name: string, value: string): Promise<void> {
   await writeFile(terminalSecretPath, safeStorage.encryptString(JSON.stringify(secrets)), { mode: 0o600 });
 }
 
+async function readChannelSecrets(): Promise<Record<string, string>> {
+  try {
+    if (!safeStorage.isEncryptionAvailable()) return {};
+    const encrypted = await readFile(channelSecretPath);
+    const parsed: unknown = JSON.parse(safeStorage.decryptString(encrypted));
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    return Object.fromEntries(Object.entries(parsed).filter(([name, value]) => (
+      /^[A-Z_][A-Z0-9_]*$/u.test(name) && typeof value === 'string' && value.length > 0
+    ))) as Record<string, string>;
+  } catch { return {}; }
+}
+
+const channelSecretKeyNames = {
+  botToken: 'BOT_TOKEN',
+  appSecret: 'APP_SECRET',
+  verificationToken: 'VERIFICATION_TOKEN',
+  encryptKey: 'ENCRYPT_KEY'
+} as const;
+
+function channelSecretEnvironmentName(instanceId: string, key: keyof typeof channelSecretKeyNames): string {
+  const instanceHash = createHash('sha256').update(instanceId).digest('hex').slice(0, 20).toUpperCase();
+  return `JOJO_CHANNEL_${instanceHash}_${channelSecretKeyNames[key]}`;
+}
+
+async function persistChannelSecrets(input: ReturnType<typeof SaveChannelSecretsInputSchema.parse>): Promise<Record<string, string>> {
+  if (!safeStorage.isEncryptionAvailable()) throw new Error('Operating system secure storage is unavailable.');
+  const stored = await readChannelSecrets();
+  const references: Record<string, string> = {};
+  for (const [rawKey, value] of Object.entries(input.secrets)) {
+    if (value === undefined) continue;
+    const key = rawKey as keyof typeof channelSecretKeyNames;
+    const environmentName = channelSecretEnvironmentName(input.instanceId, key);
+    stored[environmentName] = value;
+    references[key] = `secret://env/${environmentName}`;
+  }
+  await mkdir(path.dirname(channelSecretPath), { recursive: true });
+  await writeFile(channelSecretPath, safeStorage.encryptString(JSON.stringify(stored)), { mode: 0o600 });
+  return references;
+}
+
 async function importTerminalSecretFromShell(name: string): Promise<string> {
   const candidates = ['.zshrc', '.zprofile', '.bashrc', '.bash_profile', '.profile'];
   for (const candidate of candidates) {
@@ -280,7 +322,8 @@ async function pushConfig(): Promise<void> {
   const settings = await configStore.get(apiKeys);
   const mcpOAuthCredentials = await readMcpOAuthCredentials();
   const terminalSecrets = await readTerminalSecrets();
-  postWorkerCommand({ type: 'config.update', settings, apiKeys, mcpOAuthCredentials, terminalSecrets });
+  const channelSecrets = await readChannelSecrets();
+  postWorkerCommand({ type: 'config.update', settings, apiKeys, mcpOAuthCredentials, terminalSecrets, channelSecrets });
 }
 
 function waitForWorker(requestId: string, timeoutMs = 120_000): Promise<void> {
@@ -936,6 +979,13 @@ function registerIpc(): void {
     if (!response.snapshot) throw new Error('Channel runtime returned no snapshot.');
     return response.snapshot;
   });
+  ipcMain.handle(IPC.saveChannelSecrets, async (event, raw) => {
+    assertTrusted(event);
+    const input = SaveChannelSecretsInputSchema.parse(raw);
+    const references = await persistChannelSecrets(input);
+    await pushConfig();
+    return references;
+  });
   ipcMain.handle(IPC.mutateChannel, async (event, raw) => {
     assertTrusted(event);
     const input = DesktopChannelMutationSchema.parse(raw);
@@ -1448,6 +1498,7 @@ else {
     legacySecretPath = path.join(dataDirectory, 'secrets', 'provider-key.bin');
     mcpOAuthSecretPath = path.join(dataDirectory, 'secrets', 'mcp-oauth.bin');
     terminalSecretPath = path.join(dataDirectory, 'secrets', 'terminal-env.bin');
+    channelSecretPath = path.join(dataDirectory, 'secrets', 'channel-secrets.bin');
     runtimeDatabasePath = path.join(dataDirectory, 'runtime', 'agent-runtime.sqlite');
     registerIpc(); startWorker(); createWindow();
   });

@@ -27,21 +27,33 @@ export function createChannelTools(service: ChannelService): Tool[] {
       replay: 'safe', repeatPolicy: 'idempotent-observation', risk: 'read', effects: ['channel.read'],
       definition: {
         name: 'channel_list_targets',
-        description: 'List trusted external channel bindings that can be used as proactive message targets.',
+        description: 'List enabled Jojo Channel targets, including bound Feishu/Lark and Telegram conversations. Use this before channel_send when the user asks to send through a configured Jojo Channel.',
         inputSchema: { type: 'object', properties: {}, additionalProperties: false }
       },
-      execute: async () => result(true, {
-        targets: (await service.listBindings()).filter((binding) => binding.policy.enabled).map((binding) => ({
-          bindingId: binding.id, instanceId: binding.instanceId, conversationType: binding.conversation.type,
-          sessionId: binding.routing.sessionId ?? null
-        }))
-      })
+      execute: async () => {
+        const instances = new Map((await service.listInstances()).map((instance) => [instance.id, instance]));
+        return result(true, {
+          targets: (await service.listBindings()).filter((binding) => binding.policy.enabled).map((binding) => {
+            const instance = instances.get(binding.instanceId);
+            return {
+              bindingId: binding.id,
+              instanceId: binding.instanceId,
+              channelKind: instance?.kind ?? null,
+              instanceName: instance?.name ?? null,
+              conversationId: binding.conversation.id,
+              conversationType: binding.conversation.type,
+              threadId: binding.conversation.threadId ?? null,
+              sessionId: binding.routing.sessionId ?? null
+            };
+          })
+        });
+      }
     },
     {
       replay: 'never', repeatPolicy: 'bounded', risk: 'external_side_effect', effects: ['channel.send'],
       definition: {
         name: 'channel_send',
-        description: 'Proactively send a message to a trusted external channel binding. This is an external side effect.',
+        description: 'Send a proactive message through a configured Jojo Channel binding, including Feishu/Lark or Telegram. Prefer this over lark-im/lark-cli when the user asks to send to an already bound Jojo Channel. This is an external side effect.',
         inputSchema: {
           type: 'object',
           properties: {

@@ -3,18 +3,17 @@ import {
   channelBindingDraft,
   channelInstanceDraft,
   createChannelBindingDraft,
-  createChannelInstanceDraft
+  createChannelInstanceDraft,
+  switchChannelInstanceKind
 } from './ChannelsSettings';
 
 describe('Channels settings helpers', () => {
-  it('creates secure adapter defaults using environment references', () => {
+  it('creates secure adapter defaults without embedding Feishu secrets', () => {
     const telegram = createChannelInstanceDraft('telegram');
     const feishu = createChannelInstanceDraft('feishu');
 
     expect(telegram.secretRefs).toEqual({ botToken: 'secret://env/JOJO_TELEGRAM_BOT_TOKEN' });
-    expect(feishu.secretRefs).toEqual({
-      appSecret: 'secret://env/JOJO_FEISHU_APP_SECRET'
-    });
+    expect(feishu.secretRefs).toEqual({});
     expect(feishu.config).toEqual({ appId: '', transport: 'websocket' });
     expect(JSON.stringify([telegram, feishu])).not.toContain('plaintext');
   });
@@ -31,6 +30,20 @@ describe('Channels settings helpers', () => {
     });
 
     expect(draft.config.transport).toBe('webhook');
+  });
+
+  it('regenerates a matching instance id when a new draft changes platform', () => {
+    const telegram = createChannelInstanceDraft('telegram');
+    const feishu = switchChannelInstanceKind(telegram, 'feishu');
+
+    expect(telegram.id).toMatch(/^telegram-/);
+    expect(feishu.id).toMatch(/^feishu-/);
+    expect(feishu.name).toBe('Feishu');
+    expect(feishu.kind).toBe('feishu');
+    expect(feishu.secretRefs).toEqual({});
+
+    const custom = switchChannelInstanceKind({ ...telegram, name: '工作机器人' }, 'feishu');
+    expect(custom.name).toBe('工作机器人');
   });
 
   it('strips persistence-owned instance metadata when editing', () => {

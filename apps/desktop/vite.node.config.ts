@@ -1,7 +1,12 @@
 import type { UserConfig } from 'vite';
 import { fileURLToPath } from 'node:url';
 
-export const electronNodeExternals: Array<string | RegExp> = ['electron', /^node:/u];
+export const electronNodeExternals: Array<string | RegExp> = [
+  'electron',
+  'bufferutil',
+  'utf-8-validate',
+  /^node:/u
+];
 
 export function isElectronNodeExternal(id: string): boolean {
   return electronNodeExternals.some((external) => typeof external === 'string'

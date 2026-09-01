@@ -31,6 +31,7 @@ const api: DesktopApi = {
   listScheduleRuns: (input) => ipcRenderer.invoke(IPC.listScheduleRuns, input),
   cancelScheduleRun: (input) => ipcRenderer.invoke(IPC.cancelScheduleRun, input),
   getChannelSettings: () => ipcRenderer.invoke(IPC.getChannelSettings),
+  saveChannelSecrets: (input) => ipcRenderer.invoke(IPC.saveChannelSecrets, input),
   mutateChannel: (input) => ipcRenderer.invoke(IPC.mutateChannel, input),
   resolveApproval: (input) => ipcRenderer.invoke(IPC.resolveApproval, input),
   chooseDirectory: () => ipcRenderer.invoke(IPC.chooseDirectory),
