@@ -34,6 +34,7 @@ const e2eMode = process.env.JOJO_E2E === '1';
 const e2eDataDirectory = e2eMode ? process.env.JOJO_E2E_DATA_DIR : undefined;
 if (e2eDataDirectory) app.setPath('userData', e2eDataDirectory);
 if (e2eMode) app.disableHardwareAcceleration();
+if (e2eMode && process.platform === 'linux') app.commandLine.appendSwitch('password-store', 'basic');
 let mainWindow: BrowserWindow | null = null;
 let worker: UtilityProcess | null = null;
 let quitting = false;
@@ -1486,6 +1487,7 @@ else {
     app.on('second-instance', () => { if (mainWindow) { if (mainWindow.isMinimized()) mainWindow.restore(); mainWindow.focus(); } });
   }
   void app.whenReady().then(() => {
+    if (e2eMode && process.platform === 'linux') safeStorage.setUsePlainTextEncryption(true);
     const dataDirectory = app.getPath('userData');
     sessionStore = new JsonlSessionStore(path.join(dataDirectory, 'sessions'));
     configStore = new JsonConfigStore(path.join(dataDirectory, 'config.json'));

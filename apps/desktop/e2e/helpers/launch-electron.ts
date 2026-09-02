@@ -40,6 +40,7 @@ export async function launchElectron(dataDirectory: string): Promise<{ app: Elec
     args: [
       '-r',
       playwrightElectronLoaderPath(),
+      ...(process.platform === 'linux' ? ['--password-store=basic'] : []),
       ...(process.env.CI ? ['--disable-gpu'] : []),
       desktopRoot
     ],
