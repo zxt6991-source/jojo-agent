@@ -54,6 +54,10 @@ export async function startChromeRuntime(options: ChromeLaunchOptions): Promise<
     '--no-first-run',
     '--no-default-browser-check',
     ...(options.headless === false ? [] : ['--headless=new', '--disable-gpu']),
+    ...(process.env.CI && process.platform === 'linux' ? [
+      '--no-sandbox',
+      '--disable-dev-shm-usage'
+    ] : []),
     ...(options.extraArgs ?? []),
     'about:blank'
   ], { stdio: 'ignore' });

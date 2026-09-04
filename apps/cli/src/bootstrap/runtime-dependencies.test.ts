@@ -10,6 +10,7 @@ describe('provider preflight diagnostics', () => {
       environment: {},
       cliOverrides: {
         provider: {
+          defaultProviderId: 'openai',
           providers: {
             openai: {
               type: 'openai-compatible',

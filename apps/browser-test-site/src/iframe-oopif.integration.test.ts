@@ -38,6 +38,11 @@ suite('iframe and OOPIF Chrome integration', () => {
     profile = await mkdtemp(path.join(os.tmpdir(), 'jojo-oopif-chrome-'));
     chrome = spawn(chromeExecutable!, [
       '--headless=new',
+      '--disable-gpu',
+      ...(process.env.CI && process.platform === 'linux' ? [
+        '--no-sandbox',
+        '--disable-dev-shm-usage'
+      ] : []),
       `--remote-debugging-port=${debugPort}`,
       '--remote-allow-origins=*',
       `--user-data-dir=${profile}`,
