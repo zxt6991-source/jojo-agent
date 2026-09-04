@@ -211,6 +211,26 @@ describe('Chat Completions request conversion', () => {
   });
 });
 
+describe('OpenAI-compatible provider request dialects', () => {
+  it('uses max_tokens for the DeepSeek OpenAI-compatible endpoint', async () => {
+    let requestBody: Record<string, unknown> | undefined;
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+      requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return new Response('data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n', {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' }
+      });
+    }));
+    const provider = new OpenAICompatibleProvider({
+      baseUrl: 'https://api.deepseek.com',
+      apiKey: 'test-key'
+    });
+    await collect(provider.stream(request({ model: 'deepseek-v4-flash', maxOutputTokens: 8_192 })));
+    expect(requestBody).toMatchObject({ model: 'deepseek-v4-flash', max_tokens: 8_192 });
+    expect(requestBody).not.toHaveProperty('max_completion_tokens');
+  });
+});
+
 describe('Chat Completions stream parsing', () => {
   it('handles chunk boundaries, usage, and a final event without a trailing newline', async () => {
     const body = streamFrom(

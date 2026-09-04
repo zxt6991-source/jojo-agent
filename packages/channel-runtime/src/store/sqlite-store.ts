@@ -125,6 +125,9 @@ export class SqliteChannelStore implements ChannelStore {
     const version = this.database.prepare('PRAGMA user_version').get() as { user_version: number };
     if (version.user_version > CHANNEL_SCHEMA_VERSION) throw new Error(`channel_sqlite_version_unsupported: ${version.user_version}`);
     this.database.exec(CHANNEL_SCHEMA_SQL);
+    // Version 1 databases created the pairing table without an instance FK.
+    // Remove already orphaned rows; deleteInstance also handles those databases explicitly.
+    this.database.prepare('DELETE FROM channel_pairings WHERE instance_id NOT IN (SELECT id FROM channel_instances)').run();
     this.database.exec(`PRAGMA user_version = ${CHANNEL_SCHEMA_VERSION};`);
   }
 
@@ -155,7 +158,17 @@ export class SqliteChannelStore implements ChannelStore {
     }
     return (await this.getInstance(instance.id))!;
   }
-  async deleteInstance(id: string): Promise<void> { this.database.prepare('DELETE FROM channel_instances WHERE id = ?').run(id); }
+  async deleteInstance(id: string): Promise<void> {
+    this.database.exec('BEGIN IMMEDIATE;');
+    try {
+      this.database.prepare('DELETE FROM channel_pairings WHERE instance_id = ?').run(id);
+      this.database.prepare('DELETE FROM channel_instances WHERE id = ?').run(id);
+      this.database.exec('COMMIT;');
+    } catch (error) {
+      this.database.exec('ROLLBACK;');
+      throw error;
+    }
+  }
 
   async listBindings(instanceId?: string): Promise<ChannelBinding[]> {
     const rows = instanceId

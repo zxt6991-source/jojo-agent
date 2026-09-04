@@ -30,7 +30,8 @@ CREATE TABLE IF NOT EXISTS channel_outbox (
 CREATE INDEX IF NOT EXISTS idx_channel_outbox_pending ON channel_outbox(status, next_attempt_at);
 CREATE TABLE IF NOT EXISTS channel_pairings (
   id TEXT PRIMARY KEY, instance_id TEXT NOT NULL, conversation_id TEXT NOT NULL, sender_id TEXT NOT NULL,
-  code_hash TEXT NOT NULL, status TEXT NOT NULL, expires_at TEXT NOT NULL, created_at TEXT NOT NULL, resolved_at TEXT
+  code_hash TEXT NOT NULL, status TEXT NOT NULL, expires_at TEXT NOT NULL, created_at TEXT NOT NULL, resolved_at TEXT,
+  FOREIGN KEY(instance_id) REFERENCES channel_instances(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_channel_pairing_lookup
   ON channel_pairings(instance_id, conversation_id, sender_id, status);

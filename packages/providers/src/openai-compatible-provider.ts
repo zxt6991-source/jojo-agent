@@ -33,6 +33,12 @@ function rejectsImageMessageContent(status: number, detail: string): boolean {
   return status === 400 && /unknown variant [`'"]?image_url[`'"]?, expected [`'"]?text/i.test(detail);
 }
 
+function deepSeekRequestBody(body: Record<string, unknown>): Record<string, unknown> {
+  if (typeof body.max_completion_tokens !== 'number') return body;
+  const { max_completion_tokens: maxTokens, ...rest } = body;
+  return { ...rest, max_tokens: maxTokens };
+}
+
 function cancellationError(): DOMException {
   return new DOMException('Cancelled', 'AbortError');
 }
@@ -112,8 +118,8 @@ export class OpenAICompatibleProvider implements ModelProvider {
       const richBody = createChatCompletionBody(request);
       const providerUrl = new URL(this.baseUrl);
       const isDeepSeek = providerUrl.hostname === 'api.deepseek.com' || providerUrl.hostname.endsWith('.api.deepseek.com');
-      let requestBody = isDeepSeek && hasChatImageInputs(richBody)
-        ? toTextOnlyChatCompletionBody(richBody)
+      let requestBody = isDeepSeek
+        ? deepSeekRequestBody(hasChatImageInputs(richBody) ? toTextOnlyChatCompletionBody(richBody) : richBody)
         : richBody;
       const post = (body: Record<string, unknown>) => fetch(`${this.baseUrl}/chat/completions`, {
         method: 'POST',

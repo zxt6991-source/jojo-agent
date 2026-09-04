@@ -167,6 +167,18 @@ describe('headless server consumer', () => {
     await server.close();
   });
 
+  it('can disable the headless scheduler at composition time', async () => {
+    const server = await createHeadlessServer({
+      providers: { resolve: () => new ScriptedProvider([]) },
+      permissions: allow,
+      scheduler: false
+    });
+    expect(server.scheduleService).toBeUndefined();
+    expect(server.core.capabilities.scheduler).toEqual({ enabled: false, targets: [] });
+    expect(() => server.core.listSchedules(context)).toThrow('Scheduler is not enabled');
+    await server.close();
+  });
+
   it('keeps metadata and terminal run results after a full server restart', async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), 'jojo-headless-restart-'));
     const runtimeFile = path.join(directory, 'runtime.sqlite');

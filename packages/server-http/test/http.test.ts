@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { FastifyBaseLogger } from 'fastify';
 import { ScriptedProvider } from '@desktop-agent/agent-runtime/testing';
 import type { PermissionGate } from '@desktop-agent/contracts';
 import { createJojoRuntime } from '@desktop-agent/runtime-composition';
@@ -72,4 +73,44 @@ describe('HTTP server adapter', () => {
     expect(received[0]?.authorization).toBeUndefined();
     await server.close();
   });
+
+  it('emits one structured completion record with the request id and no request body', async () => {
+    const runtime = await createJojoRuntime({
+      host: { kind: 'server' }, providers: { resolve: () => new ScriptedProvider([]) }, permissions: allow
+    });
+    const core = createJojoServerCore(createJojoAppService(runtime), { serverId: 'logging-test' });
+    const records: unknown[] = [];
+    const logger = createRecordingLogger(records);
+    const server = await createJojoHttpServer(core, { logger });
+    const response = await server.app.inject({
+      method: 'GET', url: '/healthz', headers: { 'x-request-id': 'request-log-test' }
+    });
+    expect(response.statusCode).toBe(200);
+    expect(records).toContainEqual(expect.objectContaining({
+      event: 'http.request.completed',
+      requestId: 'request-log-test',
+      method: 'GET',
+      route: '/healthz',
+      statusCode: 200
+    }));
+    expect(JSON.stringify(records)).not.toContain('headers');
+    expect(JSON.stringify(records)).not.toContain('body');
+    await server.close();
+  });
 });
+
+function createRecordingLogger(records: unknown[]): FastifyBaseLogger {
+  const record = (value: unknown) => records.push(value);
+  const logger = {
+    level: 'info',
+    info: record,
+    error: record,
+    debug: record,
+    fatal: record,
+    warn: record,
+    trace: record,
+    silent: record,
+    child: () => logger
+  };
+  return logger as FastifyBaseLogger;
+}

@@ -105,7 +105,10 @@ export class DefaultChannelManager {
     if (!binding) throw new Error(`channel_binding_not_found: ${bindingId}`);
     return binding;
   }
-  async listPairings(status?: ChannelPairing['status']): Promise<ChannelPairing[]> { return this.options.store.listPairings(status); }
+  async listPairings(status?: ChannelPairing['status']): Promise<ChannelPairing[]> {
+    const instanceIds = new Set((await this.options.store.listInstances()).map((instance) => instance.id));
+    return (await this.options.store.listPairings(status)).filter((pairing) => instanceIds.has(pairing.instanceId));
+  }
 
   async saveInstance(instance: ChannelInstance, expectedRevision?: number): Promise<ChannelInstance> {
     const saved = await this.options.store.saveInstance(instance, expectedRevision);

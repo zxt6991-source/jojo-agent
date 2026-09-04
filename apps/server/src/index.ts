@@ -52,6 +52,8 @@ export type HeadlessServerOptions = Omit<JojoRuntimeCompositionOptions, 'host' |
   stateStore?: ServerStateStore;
   server?: JojoServerCoreOptions;
   channels?: HeadlessChannelOptions;
+  /** Disable the built-in headless scheduler when explicitly false. */
+  scheduler?: boolean;
 };
 
 export type HeadlessServer = {
@@ -60,7 +62,7 @@ export type HeadlessServer = {
   service: RuntimeAppService;
   appService: JojoAppService;
   core: JojoServerCore;
-  scheduleService: ScheduleService;
+  scheduleService?: ScheduleService;
   channelManager?: DefaultChannelManager;
   close(): Promise<void>;
 };
@@ -119,7 +121,7 @@ export async function createHeadlessServer(options: HeadlessServerOptions): Prom
     ...(options.now ? { now: options.now } : {})
   });
   let channelApproval: ChannelApprovalBridge | undefined;
-  let scheduleService: ScheduleService;
+  let scheduleService: ScheduleService | undefined;
   try {
     if (channelManager && channelStore && options.channels) {
       channelAgent = new JojoAppChannelBridge(appService, {
@@ -135,14 +137,16 @@ export async function createHeadlessServer(options: HeadlessServerOptions): Prom
       channelApproval.start();
       await channelManager.start();
     }
-    scheduleService = await createHeadlessSchedulerRuntime({
-      runtime,
-      ...(options.dataDir ? { dataDir: options.dataDir } : {}),
-      ...(options.instanceId ? { instanceId: `scheduler:${options.instanceId}` } : {}),
-      ...(options.idGenerator ? { idGenerator: options.idGenerator } : {}),
-      ...(options.now ? { now: options.now } : {}),
-      ...(channelManager ? { deliveryService: new ChannelScheduleDeliveryService(channelManager) } : {})
-    });
+    if (options.scheduler !== false) {
+      scheduleService = await createHeadlessSchedulerRuntime({
+        runtime,
+        ...(options.dataDir ? { dataDir: options.dataDir } : {}),
+        ...(options.instanceId ? { instanceId: `scheduler:${options.instanceId}` } : {}),
+        ...(options.idGenerator ? { idGenerator: options.idGenerator } : {}),
+        ...(options.now ? { now: options.now } : {}),
+        ...(channelManager ? { deliveryService: new ChannelScheduleDeliveryService(channelManager) } : {})
+      });
+    }
   } catch (error) {
     await channelApproval?.stop();
     await channelManager?.stop();
@@ -155,12 +159,13 @@ export async function createHeadlessServer(options: HeadlessServerOptions): Prom
     ...(options.instanceId && !options.server?.serverId ? { serverId: options.instanceId } : {}),
     ...(options.idGenerator ? { idGenerator: options.idGenerator } : {}),
     ...(options.now ? { now: options.now } : {}),
-    scheduler: scheduleService,
+    ...(scheduleService ? { scheduler: scheduleService } : {}),
     ...(channelManager ? { channels: channelManager, channelKinds: registry?.list() ?? [] } : {})
   });
   let closed = false;
   return {
-    runtime, service, appService, core, scheduleService,
+    runtime, service, appService, core,
+    ...(scheduleService ? { scheduleService } : {}),
     ...(channelManager ? { channelManager } : {}),
     async close() {
       if (closed) return;

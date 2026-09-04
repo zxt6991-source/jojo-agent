@@ -1,8 +1,9 @@
 import { mkdtemp } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
-import type { ChannelBinding, ChannelInboundEvent, ChannelInstance, ChannelOutboxItem } from '@desktop-agent/channel-core';
+import type { ChannelBinding, ChannelInboundEvent, ChannelInstance, ChannelOutboxItem, ChannelPairing } from '@desktop-agent/channel-core';
 import { SqliteChannelStore } from '../src/index.js';
 
 const now = '2026-08-30T00:00:00.000Z';
@@ -21,6 +22,10 @@ const event: ChannelInboundEvent = {
   conversation: { id: 'chat', type: 'direct' }, sender: { id: 'user' },
   message: { id: 'message', text: 'hello' }, receivedAt: now, dedupeKey: 'message',
   security: { verified: true, verificationMethod: 'local' }
+};
+const pairing: ChannelPairing = {
+  id: 'pairing', instanceId: 'inst', conversationId: 'chat', senderId: 'user', codeHash: 'hash',
+  status: 'pending', expiresAt: '2026-08-30T00:15:00.000Z', createdAt: now
 };
 
 async function filename(): Promise<string> {
@@ -50,6 +55,33 @@ describe('SqliteChannelStore', () => {
     expect(await second.findBinding('inst', 'chat')).toMatchObject({ id: 'binding' });
     expect(await second.claimInbound({ ...event, id: 'evt-duplicate' })).toBe(false);
     await second.close();
+  });
+
+  it('removes pairings when their Channel instance is deleted', async () => {
+    const store = new SqliteChannelStore(await filename());
+    await store.saveInstance(instance);
+    await store.savePairing(pairing);
+    await store.deleteInstance(instance.id);
+
+    expect(await store.listPairings()).toEqual([]);
+    await store.close();
+  });
+
+  it('cleans orphaned pairings left by an older database on startup', async () => {
+    const file = await filename();
+    const first = new SqliteChannelStore(file);
+    await first.saveInstance(instance);
+    await first.savePairing(pairing);
+    await first.close();
+
+    const legacyWriter = new DatabaseSync(file);
+    legacyWriter.exec('PRAGMA foreign_keys = OFF;');
+    legacyWriter.prepare('DELETE FROM channel_instances WHERE id = ?').run(instance.id);
+    legacyWriter.close();
+
+    const reopened = new SqliteChannelStore(file);
+    expect(await reopened.listPairings()).toEqual([]);
+    await reopened.close();
   });
 
   it('marks an interrupted sending attempt unknown instead of blindly retrying', async () => {

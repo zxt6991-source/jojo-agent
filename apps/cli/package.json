@@ -1,0 +1,27 @@
+{
+  "name": "@desktop-agent/cli",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": {
+    "jojo": "./dist/bin.js"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "jojo": "pnpm -s build && node dist/bin.js"
+  },
+  "dependencies": {
+    "@desktop-agent/agent-runtime": "workspace:*",
+    "@desktop-agent/channel-core": "workspace:*",
+    "@desktop-agent/contracts": "workspace:*",
+    "@desktop-agent/providers": "workspace:*",
+    "@desktop-agent/server": "workspace:*",
+    "@desktop-agent/storage": "workspace:*",
+    "commander": "^11.1.0",
+    "pino": "^10.3.1",
+    "yaml": "^2.9.0",
+    "zod": "^4.1.13"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.1"
+  }
+}

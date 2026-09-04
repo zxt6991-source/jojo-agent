@@ -27,7 +27,12 @@ export class MemoryChannelStore implements ChannelStore {
     this.instances.set(instance.id, clone(instance));
     return clone(instance);
   }
-  async deleteInstance(id: string): Promise<void> { this.instances.delete(id); }
+  async deleteInstance(id: string): Promise<void> {
+    this.instances.delete(id);
+    for (const [pairingId, pairing] of this.pairings) {
+      if (pairing.instanceId === id) this.pairings.delete(pairingId);
+    }
+  }
 
   async listBindings(instanceId?: string): Promise<ChannelBinding[]> {
     return [...this.bindings.values()].filter((item) => !instanceId || item.instanceId === instanceId).map(clone);

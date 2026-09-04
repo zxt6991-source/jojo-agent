@@ -91,6 +91,16 @@ describe('DefaultChannelManager', () => {
     await manager.stop();
   });
 
+  it('does not expose a pairing after its Channel instance is deleted', async () => {
+    const { adapter, manager } = await setup();
+    await adapter.receive(inbound());
+    expect(await manager.listPairings('pending')).toHaveLength(1);
+
+    await manager.deleteInstance(instance.id, instance.revision);
+    expect(await manager.listPairings()).toEqual([]);
+    await manager.stop();
+  });
+
   it('requires a mention for bound group conversations', async () => {
     const binding: ChannelBinding = {
       id: 'group', instanceId: 'inst', conversation: { id: 'chat', type: 'group' },

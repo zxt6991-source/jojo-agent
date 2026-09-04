@@ -1,5 +1,11 @@
 import { timingSafeEqual } from 'node:crypto';
-import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
+import Fastify, {
+  type FastifyBaseLogger,
+  type FastifyInstance,
+  type FastifyReply,
+  type FastifyRequest,
+  LogController
+} from 'fastify';
 import websocket from '@fastify/websocket';
 import { z, type ZodType } from 'zod';
 import type { ChannelWebhookRequest, ChannelWebhookResponse } from '@desktop-agent/channel-core';
@@ -38,6 +44,7 @@ export type JojoHttpServerOptions = {
   bodyLimit?: number;
   maxWebSocketPayloadBytes?: number;
   maxPendingBytes?: number;
+  logger?: FastifyBaseLogger;
   channelWebhook?: {
     handleWebhook(instanceId: string, request: ChannelWebhookRequest): Promise<ChannelWebhookResponse>;
     stop?(): Promise<void>;
@@ -61,8 +68,31 @@ export async function createJojoHttpServer(
   const app = Fastify({
     bodyLimit: options.bodyLimit ?? 1024 * 1024,
     requestIdHeader: 'x-request-id',
-    logger: false
+    ...(options.logger ? { loggerInstance: options.logger } : { logger: false }),
+    logController: new LogController({ disableRequestLogging: true })
   });
+  if (options.logger) {
+    app.addHook('onResponse', async (request, reply) => {
+      request.log.info({
+        event: 'http.request.completed',
+        requestId: request.id,
+        method: request.method,
+        route: request.routeOptions.url,
+        statusCode: reply.statusCode,
+        durationMs: Math.round(reply.elapsedTime * 100) / 100
+      });
+    });
+    app.addHook('onError', async (request, reply, error) => {
+      request.log.error({
+        event: 'http.request.failed',
+        requestId: request.id,
+        method: request.method,
+        route: request.routeOptions.url,
+        statusCode: reply.statusCode,
+        error
+      });
+    });
+  }
   const rawJsonBodies = new WeakMap<object, Uint8Array>();
   app.removeContentTypeParser('application/json');
   app.addContentTypeParser('application/json', { parseAs: 'buffer' }, (request, body, done) => {
