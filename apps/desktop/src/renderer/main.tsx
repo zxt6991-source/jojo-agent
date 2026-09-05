@@ -1,3 +1,4 @@
+import { attachmentPreviewText } from '@desktop-agent/contracts';
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import type {
@@ -1526,7 +1527,7 @@ function App() {
       const combinedImages = [...attachments, ...(selected.images ?? [])];
       if (combinedImages.length > 4) throw new Error('每条消息最多添加 4 张图片，请移除部分附件后重试。');
       if (combined.length > MAX_FILE_ATTACHMENTS) throw new Error('每条消息最多添加 50 个文件，请移除部分附件后重试。');
-      if (combined.reduce((sum, file) => sum + file.text.length, 0) > MAX_TOTAL_ATTACHMENT_TEXT) throw new Error('附件文本总量超过 200,000 字符，请移除部分附件后重试。');
+      if (combined.reduce((sum, file) => sum + attachmentPreviewText(file).length, 0) > MAX_TOTAL_ATTACHMENT_TEXT) throw new Error('附件文本总量超过 200,000 字符，请移除部分附件后重试。');
       setFiles(combined);
       setAttachments(combinedImages);
       setAttachmentWarnings(selected.warnings);
@@ -1903,9 +1904,9 @@ function App() {
             }}>
           {draggingFiles && <div className="attachment-drop-hint">{sessionBusy || importingFiles ? '请等待当前操作完成' : '松开以添加文件或文件夹'}</div>}
           {attachments.length > 0 && <div className="composer-attachments" aria-label="待发送图片">{attachments.map((image, index) => <figure key={`${image.name ?? 'image'}-${index}`}><img src={`data:${image.mimeType};base64,${image.data}`} alt={image.name ?? '待发送图片'} /><button type="button" disabled={importingFiles} aria-label={`移除 ${image.name ?? '图片'}`} onClick={() => setAttachments((items) => items.filter((_, itemIndex) => itemIndex !== index))}>×</button><figcaption>{image.name ?? '图片'}</figcaption></figure>)}</div>}
-          {files.length > 0 && <div className="composer-files" aria-label="待发送文件">{files.map((file, index) => <div className="file-chip" key={`${file.attachment.relativePath}-${index}`} title={file.attachment.relativePath}>
-            <span aria-hidden="true">▤</span><span className="file-chip-label"><strong>{file.attachment.relativePath}</strong><small>{Math.max(1, Math.ceil(file.attachment.size / 1024))} KB{file.attachment.truncated ? ' · 部分内容' : ''}</small></span>
-            <button type="button" disabled={importingFiles} aria-label={`移除 ${file.attachment.relativePath}`} onClick={() => setFiles((items) => items.filter((_, itemIndex) => itemIndex !== index))}>×</button>
+          {files.length > 0 && <div className="composer-files" aria-label="待发送文件">{files.map((file, index) => <div className="file-chip" key={`${(file.attachment.relativePath ?? file.attachment.name)}-${index}`} title={(file.attachment.relativePath ?? file.attachment.name)}>
+            <span aria-hidden="true">▤</span><span className="file-chip-label"><strong>{(file.attachment.relativePath ?? file.attachment.name)}</strong><small>{Math.max(1, Math.ceil((file.type === 'file' ? file.attachment.bytes : file.attachment.size) / 1024))} KB{file.type === 'file' ? (file.attachment.preview ? (file.attachment.preview.truncated ? ' · 预览已截断' : ' · 已生成预览') : ' · 原始文件') : (file.attachment.truncated ? ' · 部分内容' : '')}</small></span>
+            <button type="button" disabled={importingFiles} aria-label={`移除 ${(file.attachment.relativePath ?? file.attachment.name)}`} onClick={() => setFiles((items) => items.filter((_, itemIndex) => itemIndex !== index))}>×</button>
           </div>)}</div>}
           {importingFiles && <div className="attachment-status" role="status">正在读取文件…</div>}
           {attachmentWarnings.length > 0 && <div className="attachment-warnings" role="status">{attachmentWarnings.map((warning, index) => <div key={index}>{warning}</div>)}<button type="button" onClick={() => setAttachmentWarnings([])}>关闭提示</button></div>}
@@ -1917,7 +1918,7 @@ function App() {
               <div className="attachment-picker">
                 <button className="attach" type="button" aria-label="添加附件" aria-expanded={attachmentMenuOpen} aria-haspopup="menu" title="添加文件、文件夹或图片" disabled={sessionBusy || importingFiles} onClick={() => setAttachmentMenuOpen((open) => !open)}>＋</button>
                 {attachmentMenuOpen && <><button className="attachment-menu-dismiss" aria-label="关闭附件菜单" onClick={() => setAttachmentMenuOpen(false)} /><div className="attachment-menu" role="menu" onKeyDown={(event) => { if (event.key === 'Escape') setAttachmentMenuOpen(false); }}>
-                  <button type="button" role="menuitem" onClick={() => void chooseAttachments('files')}>添加文件<span>PDF、Markdown、HTML、Excel 等</span></button>
+                  <button type="button" role="menuitem" onClick={() => void chooseAttachments('files')}>添加文件<span>任意文件 · 单文件最大 512 MB</span></button>
                   <button type="button" role="menuitem" onClick={() => void chooseAttachments('folder')}>添加文件夹<span>递归读取文件，保留目录结构</span></button>
                   <button type="button" role="menuitem" disabled={attachments.length >= 4} onClick={() => void chooseAttachments('images')}>添加图片<span>最多 4 张，每张 10 MB</span></button>
                 </div></>}

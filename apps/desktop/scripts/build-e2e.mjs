@@ -8,6 +8,7 @@ const desktopRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 const repositoryRoot = path.resolve(desktopRoot, '../..');
 const buildDirectory = path.join(desktopRoot, '.vite', 'build');
 const aliases = {
+  '@desktop-agent/attachments': path.join(repositoryRoot, 'packages/attachments/src/index.ts'),
   '@desktop-agent/agent-runtime/spi': path.join(repositoryRoot, 'packages/agent-runtime/src/spi/index.ts'),
   '@desktop-agent/agent-runtime': path.join(repositoryRoot, 'packages/agent-runtime/src/index.ts'),
   '@desktop-agent/browser-automation': path.join(repositoryRoot, 'packages/browser-automation/src/index.ts'),

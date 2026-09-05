@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { ApprovalRequestSchema } from './agent.js';
 import { ExecutionScopeSchema, JsonValueSchema } from './execution-scope.js';
-import { ImageContentBlockSchema, MessageSchema, TextContentBlockSchema } from './messages.js';
+import { FileContentBlockSchema, ImageContentBlockSchema, MessageSchema, TextContentBlockSchema } from './messages.js';
 export { ExecutionScopeSchema, JsonValueSchema } from './execution-scope.js';
 export type { ExecutionScope, JsonValue } from './execution-scope.js';
 
@@ -9,7 +9,8 @@ export const RUNTIME_CONTRACT_VERSION = 1 as const;
 
 export const RuntimeInputBlockSchema = z.discriminatedUnion('type', [
   TextContentBlockSchema.strict(),
-  ImageContentBlockSchema
+  ImageContentBlockSchema,
+  FileContentBlockSchema
 ]);
 export type RuntimeInputBlock = z.infer<typeof RuntimeInputBlockSchema>;
 

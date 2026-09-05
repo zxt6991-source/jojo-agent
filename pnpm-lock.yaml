@@ -80,6 +80,9 @@ importers:
       '@desktop-agent/agent-runtime':
         specifier: workspace:*
         version: link:../../packages/agent-runtime
+      '@desktop-agent/attachments':
+        specifier: workspace:*
+        version: link:../../packages/attachments
       '@desktop-agent/browser-automation':
         specifier: workspace:*
         version: link:../../packages/browser-automation
@@ -275,6 +278,12 @@ importers:
         specifier: workspace:*
         version: link:../server-protocol
 
+  packages/attachments:
+    dependencies:
+      '@desktop-agent/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+
   packages/browser-automation:
     dependencies:
       '@desktop-agent/contracts':
@@ -422,6 +431,9 @@ importers:
 
   packages/providers:
     dependencies:
+      '@desktop-agent/attachments':
+        specifier: workspace:*
+        version: link:../attachments
       '@desktop-agent/contracts':
         specifier: workspace:*
         version: link:../contracts
@@ -3856,7 +3868,7 @@ packages:
         optional: true
 
   xlsx@https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz:
-    resolution: {tarball: https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz}
+    resolution: {integrity: sha512-oLDq3jw7AcLqKWH2AhCpVTZl8mf6X2YReP+Neh0SJUzV/BdZYjth94tG5toiMB1PPrYtxOCfaoUCkvtuH+3AJA==, tarball: https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz}
     version: 0.20.3
     engines: {node: '>=0.8'}
     hasBin: true

@@ -19,6 +19,7 @@ export const electronNodeConfig: UserConfig = {
   resolve: {
     conditions: ['node', 'module', 'development|production'],
     alias: {
+      '@desktop-agent/attachments': fileURLToPath(new URL('../../packages/attachments/src/index.ts', import.meta.url)),
       '@desktop-agent/agent-runtime/spi': fileURLToPath(new URL('../../packages/agent-runtime/src/spi/index.ts', import.meta.url)),
       '@desktop-agent/agent-runtime': fileURLToPath(new URL('../../packages/agent-runtime/src/index.ts', import.meta.url)),
       '@desktop-agent/browser-automation': fileURLToPath(new URL('../../packages/browser-automation/src/index.ts', import.meta.url)),

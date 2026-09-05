@@ -12,6 +12,7 @@
     "exactOptionalPropertyTypes": true,
     "baseUrl": ".",
     "paths": {
+      "@desktop-agent/attachments": ["packages/attachments/src/index.ts"],
       "@desktop-agent/contracts": ["packages/contracts/src/index.ts"],
       "@desktop-agent/contracts/model": ["packages/contracts/src/model.ts"],
       "@desktop-agent/contracts/tools": ["packages/contracts/src/tools.ts"],

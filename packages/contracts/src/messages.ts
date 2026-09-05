@@ -39,7 +39,10 @@ export const ImageContentBlockSchema = z.object({
 export type ImageContentBlock = z.infer<typeof ImageContentBlockSchema>;
 
 export const MAX_FILE_ATTACHMENTS = 50;
-export const MAX_FILE_BYTES = 20 * 1024 * 1024;
+export const MAX_FILE_BYTES = 512 * 1024 * 1024;
+export const MAX_ATTACHMENT_PREVIEW_BYTES = 20 * 1024 * 1024;
+export const MAX_ATTACHMENT_PREVIEW_TEXT = 50_000;
+export const MAX_TOTAL_ATTACHMENT_PREVIEW_TEXT = 200_000;
 export const MAX_ATTACHMENT_TEXT = 50_000;
 export const MAX_TOTAL_ATTACHMENT_TEXT = 200_000;
 export const FileAttachmentMetadataSchema = z.object({
@@ -53,16 +56,44 @@ export const TextContentBlockSchema = z.object({
   text: z.string(),
   attachment: FileAttachmentMetadataSchema.optional()
 });
-export const FileAttachmentSchema = TextContentBlockSchema.extend({
+export const LegacyFileAttachmentSchema = TextContentBlockSchema.extend({
   text: z.string().min(1).max(MAX_ATTACHMENT_TEXT + 8_192),
   attachment: FileAttachmentMetadataSchema
 }).strict();
+export type AttachmentId = string;
+export const AttachmentPreviewSchema = z.object({
+  type: z.literal('text'),
+  extractor: z.string().min(1),
+  text: z.string().max(MAX_ATTACHMENT_PREVIEW_TEXT),
+  truncated: z.boolean()
+}).strict();
+export type AttachmentPreview = z.infer<typeof AttachmentPreviewSchema>;
+export const FileAttachmentRefSchema = z.object({
+  type: z.literal('file'),
+  attachmentId: z.string().min(1).max(256),
+  name: z.string().min(1).max(255),
+  bytes: z.number().int().nonnegative().max(MAX_FILE_BYTES),
+  mimeType: z.string().max(255).optional(),
+  extension: z.string().max(255).optional(),
+  relativePath: z.string().max(4096).optional(),
+  preview: AttachmentPreviewSchema.optional()
+}).strict();
+export type FileAttachmentRef = z.infer<typeof FileAttachmentRefSchema>;
+export const FileContentBlockSchema = z.object({
+  type: z.literal('file'), attachment: FileAttachmentRefSchema
+}).strict();
+export type FileContentBlock = z.infer<typeof FileContentBlockSchema>;
+export const FileAttachmentSchema = z.union([FileContentBlockSchema, LegacyFileAttachmentSchema]);
+export function attachmentPreviewText(file: z.infer<typeof FileAttachmentSchema>): string {
+  return file.type === 'file' ? file.attachment.preview?.text ?? '' : file.text;
+}
 export type FileAttachment = z.infer<typeof FileAttachmentSchema>;
 export type AttachmentSelection = { files: FileAttachment[]; warnings: string[]; images?: ImageContentBlock[] };
 
 export const ContentBlockSchema = z.discriminatedUnion('type', [
   TextContentBlockSchema,
   ImageContentBlockSchema,
+  FileContentBlockSchema,
   z.object({ type: z.literal('tool_call'), call: ToolCallSchema }),
   z.object({ type: z.literal('tool_result'), result: ToolResultSchema })
 ]);

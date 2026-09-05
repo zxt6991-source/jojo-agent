@@ -9,7 +9,7 @@ import { JsonValueSchema } from './execution-scope';
 import type { WorkspaceChanges } from './workspace';
 import { ExtensionSettingsSchema } from './integrations';
 import type { ExtensionSettings, ExtensionStatus, SkillDetail, SkillOperationResult } from './integrations';
-import { FileAttachmentSchema, ImageContentBlockSchema, MAX_FILE_ATTACHMENTS, MAX_TOTAL_ATTACHMENT_TEXT } from './messages';
+import { attachmentPreviewText, FileAttachmentSchema, ImageContentBlockSchema, MAX_FILE_ATTACHMENTS, MAX_TOTAL_ATTACHMENT_TEXT } from './messages';
 import type { AttachmentSelection, ImageContentBlock } from './messages';
 import {
   BROWSER_RECORDING_PARAM_NAME_PATTERN,
@@ -63,7 +63,7 @@ export const StartTurnInputSchema = z.object({
   files: z.array(FileAttachmentSchema).max(MAX_FILE_ATTACHMENTS).default([])
 }).strict().refine((input) => input.text.trim().length > 0 || input.images.length > 0 || input.files.length > 0, {
   message: 'A turn must contain text or at least one attachment.'
-}).refine((input) => input.files.reduce((sum, file) => sum + file.text.length, 0) <= MAX_TOTAL_ATTACHMENT_TEXT, {
+}).refine((input) => input.files.reduce((sum, file) => sum + attachmentPreviewText(file).length, 0) <= MAX_TOTAL_ATTACHMENT_TEXT, {
   message: '附件文本总量超过 200,000 字符，请减少附件后重试。'
 });
 

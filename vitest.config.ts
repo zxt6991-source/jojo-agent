@@ -4,6 +4,7 @@ import path from 'node:path';
 export default defineConfig({
   resolve: {
     alias: {
+      '@desktop-agent/attachments': path.resolve('packages/attachments/src/index.ts'),
       '@desktop-agent/contracts/model': path.resolve('packages/contracts/src/model.ts'),
       '@desktop-agent/contracts/tools': path.resolve('packages/contracts/src/tools.ts'),
       '@desktop-agent/contracts/hooks': path.resolve('packages/contracts/src/hooks.ts'),

@@ -45,7 +45,7 @@ export async function launchElectron(dataDirectory: string): Promise<{ app: Elec
       desktopRoot
     ],
     cwd: desktopRoot,
-    env: { ...env, JOJO_E2E: '1', JOJO_E2E_DATA_DIR: dataDirectory }
+    env: { ...env, JOJO_E2E: '1', JOJO_E2E_DATA_DIR: dataDirectory, JOJO_ATTACHMENT_ROOT: path.join(dataDirectory, 'attachments', 'v1') }
   });
   electronApp.process().stdout?.on('data', (chunk) => process.stdout.write(`[electron] ${String(chunk)}`));
   electronApp.process().stderr?.on('data', (chunk) => process.stderr.write(`[electron] ${String(chunk)}`));

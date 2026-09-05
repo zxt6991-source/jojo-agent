@@ -16,7 +16,7 @@ export type LiveStep = {
   tools: LiveTool[];
 };
 
-export type UserNode = { kind: 'user'; id: string; createdAt: string; text: string; images: ImageContentBlock[]; files: Extract<Message['content'][number], { type: 'text' }>[] };
+export type UserNode = { kind: 'user'; id: string; createdAt: string; text: string; images: ImageContentBlock[]; files: Extract<Message['content'][number], { type: 'text' | 'file' }>[] };
 export type AssistantNode = {
   kind: 'assistant';
   id: string;
@@ -363,8 +363,8 @@ function foldMessages(messages: Message[], workingDirectory: string | undefined)
           kind: 'user', id: message.id, createdAt: message.createdAt,
           text: message.content.flatMap((block) => block.type === 'text' && !block.attachment ? [block.text] : []).join(''),
           images: messageImages(message),
-          files: message.content.filter((block): block is Extract<typeof block, { type: 'text' }> => (
-            block.type === 'text' && Boolean(block.attachment)
+          files: message.content.filter((block): block is Extract<typeof block, { type: 'text' | 'file' }> => (
+            block.type === 'file' || (block.type === 'text' && Boolean(block.attachment))
           ))
         });
       }

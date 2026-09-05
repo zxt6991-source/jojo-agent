@@ -473,6 +473,7 @@ class DefaultAgentRuntime implements AgentRuntime {
       providerId: request.providerId,
       history,
       userText: input.text,
+      ...(input.content ? { userContent: input.content } : {}),
       ...(input.images.length ? { userImages: input.images } : {}),
       ...(input.files.length ? { userFiles: input.files } : {}),
       provider,
@@ -708,14 +709,16 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
 }
 
 function normalizeInput(input: RuntimeInput | string): {
+  content?: RuntimeInput['content'];
   text: string;
   images: Extract<RuntimeInput['content'][number], { type: 'image' }>[];
-  files: Extract<RuntimeInput['content'][number], { type: 'text' }>[];
+  files: Extract<RuntimeInput['content'][number], { type: 'text' | 'file' }>[];
 } {
   if (typeof input === 'string') return { text: input, images: [], files: [] };
   return {
+    content: input.content,
     text: input.content.flatMap((block) => block.type === 'text' && !block.attachment ? [block.text] : []).join(''),
-    files: input.content.filter((block): block is Extract<typeof block, { type: 'text' }> => block.type === 'text' && Boolean(block.attachment)),
+    files: input.content.filter((block): block is Extract<typeof block, { type: 'text' | 'file' }> => block.type === 'file' || (block.type === 'text' && Boolean(block.attachment))),
     images: input.content.filter((block): block is Extract<typeof block, { type: 'image' }> => block.type === 'image')
   };
 }

@@ -5,12 +5,12 @@ import type { AgentStopReason } from './loop/types.js';
 const createId = (): string => crypto.randomUUID();
 const now = () => new Date().toISOString();
 
-export function createUserMessage(text: string, images: ImageContentBlock[] = [], files: Extract<Message['content'][number], { type: 'text' }>[] = []): Message {
+export function createUserMessage(text: string, images: ImageContentBlock[] = [], files: Extract<Message['content'][number], { type: 'text' | 'file' }>[] = [], content?: AgentRunOptions['userContent']): Message {
   return {
     id: createId(),
     role: 'user',
     createdAt: now(),
-    content: [
+    content: content ?? [
       ...(text.trim() ? [{ type: 'text' as const, text }] : []),
       ...images,
       ...files

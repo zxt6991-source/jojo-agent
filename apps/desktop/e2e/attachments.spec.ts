@@ -11,6 +11,8 @@ test('imports files and folders, removes attachments, sends file-only input and 
   const folder = path.join(dataDirectory, 'reference');
   await mkdir(folder);
   await writeFile(path.join(folder, 'note.md'), '# 附件测试\n本月收入 1234 元。');
+  await writeFile(path.join(folder, 'archive.zip'), Buffer.from([0x50, 0x4b, 3, 4]));
+  await writeFile(path.join(folder, 'firmware.bin'), Buffer.from([0, 1, 2, 255]));
   await writeFile(path.join(folder, 'page.html'), '<h1>HTML 附件</h1><p>成本 456 元</p>');
   await writeFile(path.join(folder, 'manual.pdf'), pdfFixture('PDF revenue 7890'));
   const workbook = XLSX.utils.book_new();
@@ -35,12 +37,12 @@ test('imports files and folders, removes attachments, sends file-only input and 
     await launched.page.getByRole('button', { name: '添加附件' }).click();
     await launched.page.getByRole('menuitem', { name: /添加文件夹/ }).click();
     await expect(launched.page.getByLabel('待发送文件')).toContainText('reference/report.xlsx');
-    await expect(launched.page.getByLabel('待发送文件').locator('.file-chip')).toHaveCount(4);
+    await expect(launched.page.getByLabel('待发送文件').locator('.file-chip')).toHaveCount(6);
     await launched.page.getByRole('button', { name: '发送消息' }).click();
     await expect(launched.page.getByText('hello from offline e2e')).toBeVisible();
-    await expect(launched.page.locator('.message-files details')).toHaveCount(4);
+    await expect(launched.page.locator('.message-files details')).toHaveCount(6);
     await launched.page.reload();
-    await expect(launched.page.locator('.message-files details')).toHaveCount(4);
+    await expect(launched.page.locator('.message-files details')).toHaveCount(6);
     await launched.page.locator('.message-files summary').filter({ hasText: 'report.xlsx' }).click();
     await expect(launched.page.locator('.message-files pre').filter({ hasText: '收入,1234' })).toBeVisible();
     const sessions = await launched.page.evaluate(() => window.desktopAgent.listSessions());
@@ -49,6 +51,8 @@ test('imports files and folders, removes attachments, sends file-only input and 
     expect(journal).toContain('本月收入 1234 元');
     expect(journal).toContain('收入,1234');
     expect(journal).toContain('PDF revenue 7890');
+    expect(journal).toContain('"type":"file"');
+    await expect(launched.page.locator('.message-files summary').filter({ hasText: 'firmware.bin' })).toContainText('原始文件');
   } finally { await launched.app.close(); }
 });
 

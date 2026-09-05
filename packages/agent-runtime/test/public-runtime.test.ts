@@ -9,7 +9,7 @@ import { emptyProgressState } from '../src/operation/state.js';
 const allow: PermissionGate = { check: async () => ({ decision: 'allow' }) };
 
 describe('public runtime facade', () => {
-  it('passes file-only input to the provider and preserves attachment metadata for follow-up turns', async () => {
+  it.each(['legacy', 'resource'] as const)('passes %s file input to the provider and preserves metadata for follow-up turns', async (format) => {
     const requests: ModelRequest[] = [];
     const provider: ModelProvider = {
       async *stream(request) {
@@ -24,8 +24,11 @@ describe('public runtime facade', () => {
     } });
     const session = await runtime.openSession({ id: 'files', executionScope: { kind: 'none' } });
     const lane = await session.getLane();
-    const file = { type: 'text' as const, text: 'Revenue: 1234', attachment: {
+    const legacy = { type: 'text' as const, text: 'Revenue: 1234', attachment: {
       name: 'report.xlsx', relativePath: 'finance/report.xlsx', size: 42, truncated: false
+    } };
+    const file = format === 'legacy' ? legacy : { type: 'file' as const, attachment: {
+      type: 'file' as const, attachmentId: 'att_test', name: 'archive.zip', bytes: 42
     } };
     const first = await (await lane.run({ input: { content: [file] }, providerId: 'p', model: 'm' })).result;
     expect(first.status).toBe('completed');
