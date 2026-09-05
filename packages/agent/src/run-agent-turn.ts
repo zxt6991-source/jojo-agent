@@ -180,7 +180,7 @@ export async function runAgentTurn(options: AgentRunOptions): Promise<AgentRunRe
   options.emit({ type: 'turn.started', sessionId: options.sessionId, turnId: crypto.randomUUID() });
 
   try {
-    await appendMessage(options, state.messages, createUserMessage(options.userText, options.userImages));
+    await appendMessage(options, state.messages, createUserMessage(options.userText, options.userImages, options.userFiles));
     let outputContinuations = 0;
     let recoveryToolStepsRemaining: number | null = null;
     let finalResponseOnly = false;

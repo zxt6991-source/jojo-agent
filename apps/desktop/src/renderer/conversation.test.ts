@@ -44,6 +44,16 @@ function tool(id: string, callId: string, ok: boolean, content: string, code?: s
 }
 
 describe('conversation snapshot', () => {
+  it('shows persisted file attachments separately from the question', () => {
+    const file = { type: 'text' as const, text: 'Full document content', attachment: {
+      name: 'report.md', relativePath: 'notes/report.md', size: 21, truncated: false
+    } };
+    const message = user('file-message', 'Summarize this');
+    message.content.push(file);
+    const snapshot = buildConversationSnapshot({ messages: [message] });
+    expect(snapshot.nodes[0]).toMatchObject({ kind: 'user', text: 'Summarize this', files: [file] });
+  });
+
   it('keeps tools in stream position after reload', () => {
     const snapshot = buildConversationSnapshot({
       messages: [

@@ -1,5 +1,5 @@
-import { contextBridge, ipcRenderer } from 'electron';
-import { IPC, type DesktopApi } from '@desktop-agent/contracts';
+import { contextBridge, ipcRenderer, webUtils } from 'electron';
+import { MAX_FILE_BYTES, IPC, type DesktopApi } from '@desktop-agent/contracts';
 import { parseAgentPush, parseBrowserDockPush, parseBrowserSecretPush, parseConversationMessageCreatedPush, parseOrchestrationPush, parseSchedulePush, parseTerminalSecretPush } from './push-validation';
 
 const api: DesktopApi = {
@@ -36,6 +36,23 @@ const api: DesktopApi = {
   resolveApproval: (input) => ipcRenderer.invoke(IPC.resolveApproval, input),
   chooseDirectory: () => ipcRenderer.invoke(IPC.chooseDirectory),
   chooseImages: () => ipcRenderer.invoke(IPC.chooseImages),
+  chooseFiles: (mode) => ipcRenderer.invoke(IPC.chooseFiles, mode),
+  hasClipboardFiles: () => ipcRenderer.sendSync(IPC.hasClipboardFiles),
+  pasteFiles: () => ipcRenderer.invoke(IPC.pasteFiles),
+  importAttachments: async (files) => {
+    if (files.length > 100) throw new Error('一次最多拖入或粘贴 100 项，请分批添加。');
+    const paths: string[] = [];
+    const blobs: Array<{ name: string; data: Uint8Array }> = [];
+    let total = 0;
+    for (const file of files) {
+      const filePath = webUtils.getPathForFile(file);
+      if (filePath) { paths.push(filePath); continue; }
+      total += file.size;
+      if (file.size > MAX_FILE_BYTES || total > 50 * 1024 * 1024) throw new Error('粘贴文件超过大小限制，请分批添加。');
+      blobs.push({ name: file.name, data: new Uint8Array(await file.arrayBuffer()) });
+    }
+    return ipcRenderer.invoke(IPC.importAttachments, { paths, blobs });
+  },
   getSettings: () => ipcRenderer.invoke(IPC.getSettings),
   getPermissionGovernance: (input) => ipcRenderer.invoke(IPC.getPermissionGovernance, input),
   savePermissionPolicy: (input) => ipcRenderer.invoke(IPC.savePermissionPolicy, input),

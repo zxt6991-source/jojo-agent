@@ -1,14 +1,14 @@
 import { z } from 'zod';
 import { ApprovalRequestSchema } from './agent.js';
 import { ExecutionScopeSchema, JsonValueSchema } from './execution-scope.js';
-import { ImageContentBlockSchema, MessageSchema } from './messages.js';
+import { ImageContentBlockSchema, MessageSchema, TextContentBlockSchema } from './messages.js';
 export { ExecutionScopeSchema, JsonValueSchema } from './execution-scope.js';
 export type { ExecutionScope, JsonValue } from './execution-scope.js';
 
 export const RUNTIME_CONTRACT_VERSION = 1 as const;
 
 export const RuntimeInputBlockSchema = z.discriminatedUnion('type', [
-  z.object({ type: z.literal('text'), text: z.string() }).strict(),
+  TextContentBlockSchema.strict(),
   ImageContentBlockSchema
 ]);
 export type RuntimeInputBlock = z.infer<typeof RuntimeInputBlockSchema>;

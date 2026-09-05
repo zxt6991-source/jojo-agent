@@ -82,9 +82,6 @@ export function toChatMessages(messages: Message[]): ChatMessage[] {
       continue;
     }
 
-    completePendingToolCalls();
-    flushToolImages();
-
     const toolCalls = message.content
       .filter((block): block is Extract<ContentBlock, { type: 'tool_call' }> => block.type === 'tool_call')
       .map((block) => ({
@@ -96,9 +93,17 @@ export function toChatMessages(messages: Message[]): ChatMessage[] {
         }
       }));
 
+    const content = messageContent(message);
+    // Empty historical turns have no valid Chat Completions representation.
+    // Skip them before closing pending calls so recorded results still pair up.
+    if (message.role === 'assistant' && content === null && toolCalls.length === 0) continue;
+
+    completePendingToolCalls();
+    flushToolImages();
+
     chatMessages.push({
       role: message.role,
-      content: messageContent(message),
+      content,
       ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {})
     });
     pendingToolCallIds = new Set(toolCalls.map((call) => call.id));

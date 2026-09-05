@@ -21,7 +21,7 @@ import {
   WorkflowDefinitionSchema,
   isPlaceholderSessionTitle, sessionTitleFromPrompt,
   WorkerCommandSchema, WorkerMessageSchema, serializedIpcBytes,
-  type AgentEvent, type ApprovalRequest, type ChannelSettingsSnapshot, type DesktopChannelMutation, type HookRuntime, type ImageContentBlock, type Message, type ModelProvider, type ModelRequest, type ModelSelection, type OrchestrationEvent, type ProviderSettings, type SkillStatus, type ToolCall, type WorkflowDefinition, type WorkerMessage
+  type AgentEvent, type ApprovalRequest, type ChannelSettingsSnapshot, type DesktopChannelMutation, type HookRuntime, type ImageContentBlock, type FileAttachment, type Message, type ModelProvider, type ModelRequest, type ModelSelection, type OrchestrationEvent, type ProviderSettings, type SkillStatus, type ToolCall, type WorkflowDefinition, type WorkerMessage
 } from '@desktop-agent/contracts';
 import {
   createInstallSkillTool,
@@ -802,7 +802,8 @@ async function startTurn(
   images: ImageContentBlock[],
   providerId: string,
   model: string,
-  origin?: DesktopTurnOrigin
+  origin?: DesktopTurnOrigin,
+  files: FileAttachment[] = []
 ): Promise<void> {
   let release: (() => void) | null = null;
   let controller: AbortController | null = null;
@@ -1098,7 +1099,7 @@ async function startTurn(
     }
     const lane = await runtimeSession.getLane('main');
     const completed = await (await lane.run({
-      input: { content: [{ type: 'text', text }, ...images] },
+      input: { content: [{ type: 'text', text }, ...images, ...files] },
       providerId,
       model,
       instructions,
@@ -1125,10 +1126,10 @@ async function startTurn(
   }
 }
 
-function launchTurn(sessionId: string, text: string, images: ImageContentBlock[], providerId: string, model: string): void {
+function launchTurn(sessionId: string, text: string, images: ImageContentBlock[], providerId: string, model: string, files: FileAttachment[]): void {
   // A duplicate renderer event must not emit turn.failed for the active turn.
   // The first task remains authoritative until it settles.
-  turnTasks.launch(sessionId, () => startTurn(sessionId, text, images, providerId, model));
+  turnTasks.launch(sessionId, () => startTurn(sessionId, text, images, providerId, model, undefined, files));
 }
 
 async function stopSession(sessionId: string): Promise<void> {
@@ -1514,7 +1515,7 @@ parentPort.on('message', (event) => {
       post({ type: 'worker.error', message: error instanceof Error ? error.message : String(error) });
     });
   }
-  else if (command.type === 'turn.start') launchTurn(command.payload.sessionId, command.payload.text, command.payload.images, command.payload.providerId, command.payload.model);
+  else if (command.type === 'turn.start') launchTurn(command.payload.sessionId, command.payload.text, command.payload.images, command.payload.providerId, command.payload.model, command.payload.files);
   else if (command.type === 'turn.cancel') {
     controllers.get(command.sessionId)?.abort();
     terminalSecretBroker.cancelSession(command.sessionId);

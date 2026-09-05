@@ -1,9 +1,9 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import type {
-  AgentEvent, ApprovalRequest, BrowserDockState, BrowserRecordingRegistrySnapshot, BrowserRecordingStudioDetail, DesktopApi, ExtensionSettings, ExtensionStatus, HookSettingsSnapshot, ImageContentBlock, MemoryCandidateReviewEdit, MemorySettings, MemoryStatusSnapshot, Message, PermissionGovernanceSnapshot, PermissionPolicyDocumentContract, ProviderConfig, ProviderSettings, ScheduleContract, ScheduleRunContract, SessionCompactionRecord, SessionMeta, SkillDetail, SkillStatus, TeamSnapshot, TeamStatusSnapshot, WorkflowRunSnapshot, WorkspaceChanges
+  AgentEvent, AttachmentSelection, ApprovalRequest, BrowserDockState, BrowserRecordingRegistrySnapshot, BrowserRecordingStudioDetail, DesktopApi, ExtensionSettings, ExtensionStatus, HookSettingsSnapshot, FileAttachment, ImageContentBlock, MemoryCandidateReviewEdit, MemorySettings, MemoryStatusSnapshot, Message, PermissionGovernanceSnapshot, PermissionPolicyDocumentContract, ProviderConfig, ProviderSettings, ScheduleContract, ScheduleRunContract, SessionCompactionRecord, SessionMeta, SkillDetail, SkillStatus, TeamSnapshot, TeamStatusSnapshot, WorkflowRunSnapshot, WorkspaceChanges
 } from '@desktop-agent/contracts';
-import { DEFAULT_BROWSER_SETTINGS, DEFAULT_MEMORY_SETTINGS, DEFAULT_PROVIDERS, DEFAULT_SESSION_TITLE, projectNameFromDirectory } from '@desktop-agent/contracts';
+import { DEFAULT_BROWSER_SETTINGS, DEFAULT_MEMORY_SETTINGS, DEFAULT_PROVIDERS, DEFAULT_SESSION_TITLE, MAX_FILE_ATTACHMENTS, MAX_TOTAL_ATTACHMENT_TEXT, projectNameFromDirectory } from '@desktop-agent/contracts';
 import {
   applyLiveEvent,
   buildConversationSnapshot,
@@ -599,6 +599,25 @@ function App() {
   const [compactions, setCompactions] = useState<SessionCompactionRecord[]>([]);
   const [draft, setDraft] = useState('');
   const [attachments, setAttachments] = useState<ImageContentBlock[]>([]);
+  const [files, setFiles] = useState<FileAttachment[]>([]);
+  const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
+  const [importingFiles, setImportingFiles] = useState(false);
+  const importingFilesRef = useRef(false);
+  const [draggingFiles, setDraggingFiles] = useState(false);
+  const dragDepthRef = useRef(0);
+  const [attachmentWarnings, setAttachmentWarnings] = useState<string[]>([]);
+  useEffect(() => {
+    const preventFileNavigation = (event: DragEvent) => {
+      if (event.dataTransfer?.types.includes('Files')) event.preventDefault();
+    };
+    window.addEventListener('dragover', preventFileNavigation);
+    window.addEventListener('drop', preventFileNavigation);
+    return () => {
+      window.removeEventListener('dragover', preventFileNavigation);
+      window.removeEventListener('drop', preventFileNavigation);
+    };
+  }, []);
+
   const [liveSteps, setLiveSteps] = useState<LiveStep[]>([]);
   const [conversationView, setConversationView] = useState<ConversationViewMode>('chat');
   const [trajectoryExportStatus, setTrajectoryExportStatus] = useState<'idle' | 'exporting' | 'done'>('idle');
@@ -1131,7 +1150,7 @@ function App() {
   };
 
   const selectSession = async (id: string) => {
-    activeIdRef.current = id; turnBaselineRef.current = null; setActiveId(id); setError(''); setWorkspaceChangesError(''); setLiveSteps([]); setTurnStartedAt(null); setInspectedId(null); setReviewOpen(false); setWorkspaceChanges(null); setAttachments([]); setTrajectoryExportStatus('idle');
+    activeIdRef.current = id; turnBaselineRef.current = null; setActiveId(id); setError(''); setWorkspaceChangesError(''); setLiveSteps([]); setTurnStartedAt(null); setInspectedId(null); setReviewOpen(false); setWorkspaceChanges(null); setAttachments([]); setFiles([]); setAttachmentWarnings([]); setAttachmentMenuOpen(false); setDraggingFiles(false); dragDepthRef.current = 0; setTrajectoryExportStatus('idle');
     setMessages([]);
     setCompactions([]);
     const directory = sessionDirectoriesRef.current.get(id);
@@ -1490,18 +1509,73 @@ function App() {
     }
   };
 
+  const addAttachments = async (load: () => Promise<AttachmentSelection>) => {
+    if (importingFilesRef.current || runningRef.current) {
+      setAttachmentWarnings(['请等待当前读取或生成完成后再添加附件。']);
+      return;
+    }
+    const sessionId = activeIdRef.current;
+    importingFilesRef.current = true;
+    setAttachmentMenuOpen(false);
+    setImportingFiles(true);
+    setAttachmentWarnings([]);
+    try {
+      const selected = await load();
+      if (activeIdRef.current !== sessionId) return;
+      const combined = [...files, ...selected.files];
+      const combinedImages = [...attachments, ...(selected.images ?? [])];
+      if (combinedImages.length > 4) throw new Error('每条消息最多添加 4 张图片，请移除部分附件后重试。');
+      if (combined.length > MAX_FILE_ATTACHMENTS) throw new Error('每条消息最多添加 50 个文件，请移除部分附件后重试。');
+      if (combined.reduce((sum, file) => sum + file.text.length, 0) > MAX_TOTAL_ATTACHMENT_TEXT) throw new Error('附件文本总量超过 200,000 字符，请移除部分附件后重试。');
+      setFiles(combined);
+      setAttachments(combinedImages);
+      setAttachmentWarnings(selected.warnings);
+    } catch (cause) {
+      if (activeIdRef.current === sessionId) setAttachmentWarnings([cause instanceof Error ? cause.message : String(cause)]);
+    } finally { importingFilesRef.current = false; setImportingFiles(false); }
+  };
+
+  const chooseAttachments = (mode: 'files' | 'folder' | 'images') => addAttachments(async () => mode === 'images'
+    ? { files: [], warnings: [], images: await window.desktopAgent.chooseImages() }
+    : window.desktopAgent.chooseFiles(mode));
+
+  const dropAttachments = (event: React.DragEvent<HTMLDivElement>) => {
+    if (!event.dataTransfer.types.includes('Files')) return;
+    event.preventDefault();
+    event.stopPropagation();
+    dragDepthRef.current = 0;
+    setDraggingFiles(false);
+    const dropped = Array.from(event.dataTransfer.files);
+    if (dropped.length) void addAttachments(() => window.desktopAgent.importAttachments(dropped));
+  };
+
+  const pasteAttachments = (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const pasted = Array.from(event.clipboardData.files);
+    if (pasted.length) {
+      event.preventDefault();
+      void addAttachments(() => window.desktopAgent.importAttachments(pasted));
+      return;
+    }
+    // Finder may expose only filenames in the DOM; use its native references in that case.
+    if (window.desktopAgent.hasClipboardFiles()) {
+      event.preventDefault();
+      void addAttachments(() => window.desktopAgent.pasteFiles());
+      return;
+    }
+  };
+
   const send = async () => {
     const text = draft.trim();
     const images = attachments;
-    if ((!text && images.length === 0) || !activeId || runningRef.current) return;
+    if ((!text && images.length === 0 && files.length === 0) || !activeId || runningRef.current || importingFilesRef.current) return;
     runningRef.current = true;
-    setDraft(''); setAttachments([]); setError(''); setRunningSessionId(activeId); setLiveSteps(emptyLiveSteps()); setTurnStartedAt(Date.now()); setUsage({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }); setContextUsage(null); setTrajectoryExportStatus('idle'); atBottomRef.current = true; setAtBottom(true);
-    setMessages((items) => [...items, { id: `pending-${Date.now()}`, role: 'user', createdAt: new Date().toISOString(), content: [...(text ? [{ type: 'text' as const, text }] : []), ...images] }]);
+    setDraft(''); setAttachments([]); setFiles([]); setAttachmentWarnings([]); setAttachmentMenuOpen(false); setError(''); setRunningSessionId(activeId); setLiveSteps(emptyLiveSteps()); setTurnStartedAt(Date.now()); setUsage({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }); setContextUsage(null); setTrajectoryExportStatus('idle'); atBottomRef.current = true; setAtBottom(true);
+    setMessages((items) => [...items, { id: `pending-${Date.now()}`, role: 'user', createdAt: new Date().toISOString(), content: [...(text ? [{ type: 'text' as const, text }] : []), ...images, ...files] }]);
     try {
       turnBaselineRef.current = await loadWorkspaceChanges(activeId);
-      await window.desktopAgent.startTurn({ sessionId: activeId, text, images, providerId: settings.activeProviderId, model: selectedModel });
+      await window.desktopAgent.startTurn({ sessionId: activeId, text, images, files, providerId: settings.activeProviderId, model: selectedModel });
     }
-    catch (cause) { setDraft(text); setAttachments(images); runningRef.current = false; setRunningSessionId(null); setTurnStartedAt(null); setLiveSteps([]); setError(cause instanceof Error ? cause.message : String(cause)); }
+    catch (cause) { setDraft(text); setAttachments(images); setFiles(files); runningRef.current = false; setRunningSessionId(null); setTurnStartedAt(null); setLiveSteps([]); setError(cause instanceof Error ? cause.message : String(cause)); }
   };
 
   const active = sessions.find((session) => session.id === activeId);
@@ -1810,28 +1884,53 @@ function App() {
               <button type="button" className="composer-project-browse" disabled={sessionBusy || projectBinding} onClick={() => void bindActiveSessionToProject()}><span aria-hidden="true">＋</span> 打开其他项目…</button>
             </div>}
           </div>}
-          <div className="composer">
-          {attachments.length > 0 && <div className="composer-attachments" aria-label="待发送图片">{attachments.map((image, index) => <figure key={`${image.name ?? 'image'}-${index}`}><img src={`data:${image.mimeType};base64,${image.data}`} alt={image.name ?? '待发送图片'} /><button type="button" aria-label={`移除 ${image.name ?? '图片'}`} onClick={() => setAttachments((items) => items.filter((_, itemIndex) => itemIndex !== index))}>×</button><figcaption>{image.name ?? '图片'}</figcaption></figure>)}</div>}
-          <textarea value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="随心输入" rows={2}
+          <div className={`composer${draggingFiles ? ' dragging-files' : ''}`} onDrop={dropAttachments}
+            onDragEnter={(event) => {
+              if (!event.dataTransfer.types.includes('Files')) return;
+              event.preventDefault();
+              dragDepthRef.current += 1;
+              setDraggingFiles(true);
+            }}
+            onDragOver={(event) => {
+              if (!event.dataTransfer.types.includes('Files')) return;
+              event.preventDefault();
+              event.dataTransfer.dropEffect = sessionBusy || importingFiles ? 'none' : 'copy';
+            }}
+            onDragLeave={(event) => {
+              if (!event.dataTransfer.types.includes('Files')) return;
+              dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+              if (dragDepthRef.current === 0) setDraggingFiles(false);
+            }}>
+          {draggingFiles && <div className="attachment-drop-hint">{sessionBusy || importingFiles ? '请等待当前操作完成' : '松开以添加文件或文件夹'}</div>}
+          {attachments.length > 0 && <div className="composer-attachments" aria-label="待发送图片">{attachments.map((image, index) => <figure key={`${image.name ?? 'image'}-${index}`}><img src={`data:${image.mimeType};base64,${image.data}`} alt={image.name ?? '待发送图片'} /><button type="button" disabled={importingFiles} aria-label={`移除 ${image.name ?? '图片'}`} onClick={() => setAttachments((items) => items.filter((_, itemIndex) => itemIndex !== index))}>×</button><figcaption>{image.name ?? '图片'}</figcaption></figure>)}</div>}
+          {files.length > 0 && <div className="composer-files" aria-label="待发送文件">{files.map((file, index) => <div className="file-chip" key={`${file.attachment.relativePath}-${index}`} title={file.attachment.relativePath}>
+            <span aria-hidden="true">▤</span><span className="file-chip-label"><strong>{file.attachment.relativePath}</strong><small>{Math.max(1, Math.ceil(file.attachment.size / 1024))} KB{file.attachment.truncated ? ' · 部分内容' : ''}</small></span>
+            <button type="button" disabled={importingFiles} aria-label={`移除 ${file.attachment.relativePath}`} onClick={() => setFiles((items) => items.filter((_, itemIndex) => itemIndex !== index))}>×</button>
+          </div>)}</div>}
+          {importingFiles && <div className="attachment-status" role="status">正在读取文件…</div>}
+          {attachmentWarnings.length > 0 && <div className="attachment-warnings" role="status">{attachmentWarnings.map((warning, index) => <div key={index}>{warning}</div>)}<button type="button" onClick={() => setAttachmentWarnings([])}>关闭提示</button></div>}
+          <textarea value={draft} onPaste={pasteAttachments} onChange={(event) => setDraft(event.target.value)} placeholder="随心输入" rows={2}
             onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void send(); } }} />
           <div className="composer-toolbar">
             <div className="composer-context"><span className="approval-status">⌁ 权限 {settings.permissions.mode.toUpperCase()}</span>{contextUsage && <span className={`context-status ${contextUsage.overCapacity ? 'over-capacity' : ''}`} title={contextUsage.overCapacity ? `固定指令与工具定义约 ${contextUsage.fixed} tokens，已超过可用目标 ${contextUsage.target} tokens。请提高上下文窗口或减少工具。` : contextUsage.compacted ? `已压缩 ${contextUsage.compacted} 条历史消息；消息预算 ${contextUsage.messageBudget} tokens` : `上下文估算；消息预算 ${contextUsage.messageBudget} tokens`}>{contextUsage.overCapacity ? '容量不足 · ' : ''}{Math.round(contextUsage.estimated / 1000)}k / {Math.round(contextUsage.window / 1000)}k{contextUsage.maxIterations > 0 ? ` · Loop ${contextUsage.iteration}/${contextUsage.maxIterations}${contextUsage.finalResponseOnly ? ' 收尾' : ''}` : ''}</span>}{(usage.input > 0 || usage.output > 0) && <span className="context-status" title={`缓存读取 ${usage.cacheRead} · 缓存写入 ${usage.cacheWrite}`}>↑{usage.input} ↓{usage.output}</span>}</div>
             <div className="composer-actions">
-              <button className="attach" type="button" aria-label="添加图片" title="添加图片（最多 4 张，每张 10 MB）" disabled={sessionBusy || attachments.length >= 4} onClick={async () => {
-                try {
-                  const selected = await window.desktopAgent.chooseImages();
-                  setAttachments((items) => [...items, ...selected].slice(0, 4));
-                } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
-              }}>＋</button>
+              <div className="attachment-picker">
+                <button className="attach" type="button" aria-label="添加附件" aria-expanded={attachmentMenuOpen} aria-haspopup="menu" title="添加文件、文件夹或图片" disabled={sessionBusy || importingFiles} onClick={() => setAttachmentMenuOpen((open) => !open)}>＋</button>
+                {attachmentMenuOpen && <><button className="attachment-menu-dismiss" aria-label="关闭附件菜单" onClick={() => setAttachmentMenuOpen(false)} /><div className="attachment-menu" role="menu" onKeyDown={(event) => { if (event.key === 'Escape') setAttachmentMenuOpen(false); }}>
+                  <button type="button" role="menuitem" onClick={() => void chooseAttachments('files')}>添加文件<span>PDF、Markdown、HTML、Excel 等</span></button>
+                  <button type="button" role="menuitem" onClick={() => void chooseAttachments('folder')}>添加文件夹<span>递归读取文件，保留目录结构</span></button>
+                  <button type="button" role="menuitem" disabled={attachments.length >= 4} onClick={() => void chooseAttachments('images')}>添加图片<span>最多 4 张，每张 10 MB</span></button>
+                </div></>}
+              </div>
               <select className="model-select" aria-label="本轮使用的模型" title="选择本轮使用的模型" value={selectedModel} disabled={sessionBusy} onChange={(event) => setSelectedModel(event.target.value)}>
                 {selectedProvider.models.map((model) => <option key={model} value={model}>{model}</option>)}
               </select>
               {sessionBusy
                 ? <button className="stop" aria-label="停止生成" title="停止生成" onClick={() => activeId && window.desktopAgent.cancelTurn(activeId)}>■</button>
-                : <button className="send" aria-label="发送消息" title="发送消息" disabled={!draft.trim() && attachments.length === 0} onClick={() => void send()}>↑</button>}
+                : <button className="send" aria-label="发送消息" title="发送消息" disabled={importingFiles || (!draft.trim() && attachments.length === 0 && files.length === 0)} onClick={() => void send()}>↑</button>}
             </div>
           </div>
-        </div><div className="hint">Enter 发送 · Shift+Enter 换行</div></footer>
+        </div><div className="hint">Enter 发送 · Shift+Enter 换行 · 支持拖入或粘贴文件</div></footer>
         </div>
         {visibleDock && activeId
           ? <BrowserDock key={activeId} sessionId={activeId} state={visibleDock} overlayOpen={overlayOpen} />

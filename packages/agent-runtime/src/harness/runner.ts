@@ -743,7 +743,7 @@ async function executeAgentTurn(options: RuntimeAgentRunOptions, resuming: boole
         data,
         runtimeStore,
         state,
-        createUserMessage(options.userText, options.userImages)
+        createUserMessage(options.userText, options.userImages, options.userFiles)
       );
     }
     if (!startedTerminal && hooks.configured('UserPromptSubmit')) {

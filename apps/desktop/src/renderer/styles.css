@@ -1296,3 +1296,29 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   .approval-panel h2 { margin: 16px 0 20px; }
   .approval-actions { margin-top: 21px; }
 }
+
+.composer-files { display: flex; gap: 8px; flex-wrap: wrap; max-height: 180px; overflow-y: auto; padding-bottom: 10px; }
+.file-chip { display: flex; align-items: center; gap: 8px; max-width: 260px; padding: 7px 9px; border: 1px solid #dedfe2; border-radius: 9px; background: #f7f7f8; }
+.file-chip-label { min-width: 0; display: grid; gap: 3px; }
+.file-chip-label strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 500; }
+.file-chip-label small { font-size: 10px; color: #777b83; }
+.composer .file-chip button { width: 22px; height: 22px; flex-shrink: 0; padding: 0 3px; border: 0; background: transparent; color: #777b83; }
+.attachment-status, .attachment-warnings { font-size: 12px; padding-bottom: 8px; }
+.attachment-warnings { max-height: 120px; overflow: auto; color: #88611a; }
+.composer .attachment-warnings button { width: auto; height: auto; font-size: 12px; border: 0; background: none; color: inherit; text-decoration: underline; padding: 3px 0; }
+.attachment-picker { position: relative; }
+.composer .attachment-menu-dismiss { width: auto; height: auto; border-radius: 0; position: fixed; inset: 0; border: 0; background: transparent; z-index: 19; cursor: default; }
+.attachment-menu { position: absolute; bottom: calc(100% + 10px); right: 0; width: 240px; padding: 5px; border: 1px solid #dedfe2; border-radius: 12px; background: #fff; box-shadow: 0 8px 30px #0002; z-index: 20; }
+.composer .attachment-menu button { height: auto; color: #303238; line-height: 1.4; display: flex; flex-direction: column; gap: 4px; width: 100%; padding: 10px; text-align: left; border: 0; background: transparent; border-radius: 7px; font-size: 13px; }
+.composer .attachment-menu button:hover { background: #f4f4f5; }
+.attachment-menu button span { color: #777b83; font-size: 11px; }
+.message-files { display: grid; gap: 6px; margin-bottom: 8px; }
+.message-files details { border: 1px solid #dedfe2; border-radius: 8px; padding: 8px 10px; min-width: 160px; }
+.message-files summary { font-size: 12px; cursor: pointer; overflow-wrap: anywhere; }
+.message-files pre { max-height: 280px; max-width: 100%; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; }
+
+.composer:has(.attachment-menu) { overflow: visible; }
+.composer .attachment-menu-dismiss:hover { background: transparent; }
+.composer .file-chip button:hover, .composer .attachment-warnings button:hover { background: #e8e8ea; }
+.composer.dragging-files { border-color: #6582b8; box-shadow: 0 0 0 3px #6582b825; }
+.attachment-drop-hint { position: absolute; inset: 0; z-index: 21; display: grid; place-items: center; pointer-events: none; border-radius: inherit; background: #f3f7ffed; color: #425d8b; font-size: 14px; }

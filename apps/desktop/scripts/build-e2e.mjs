@@ -22,7 +22,7 @@ const aliases = {
   '@desktop-agent/runtime-composition': path.join(repositoryRoot, 'packages/runtime-composition/src/index.ts'),
   '@desktop-agent/scheduler': path.join(repositoryRoot, 'packages/scheduler/src/index.ts')
 };
-const external = ['electron', 'bufferutil', 'utf-8-validate', /^node:/u, ...builtinModules];
+const external = [/^pdfjs-dist\//u, 'electron', 'bufferutil', 'utf-8-validate', /^node:/u, ...builtinModules];
 const define = {
   MAIN_WINDOW_VITE_DEV_SERVER_URL: 'undefined',
   MAIN_WINDOW_VITE_NAME: JSON.stringify('main_window')
@@ -31,7 +31,7 @@ const define = {
 async function buildNodeTarget(entry, filename, emptyOutDir) {
   await build({
     root: desktopRoot,
-    resolve: { alias: aliases },
+    resolve: { alias: aliases, conditions: ['node', 'module', 'production'] },
     define,
     build: {
       outDir: buildDirectory,
@@ -45,6 +45,7 @@ async function buildNodeTarget(entry, filename, emptyOutDir) {
 }
 
 await buildNodeTarget('src/main/main.ts', 'main.js', true);
+await buildNodeTarget('src/main/file-attachments-worker.ts', 'file-attachments-worker.js', false);
 await buildNodeTarget('src/preload/preload.ts', 'preload.js', false);
 await buildNodeTarget('src/worker/worker.ts', 'worker.js', false);
 await build({

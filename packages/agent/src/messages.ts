@@ -5,14 +5,15 @@ import type { AgentStopReason } from './loop/types.js';
 const createId = (): string => crypto.randomUUID();
 const now = () => new Date().toISOString();
 
-export function createUserMessage(text: string, images: ImageContentBlock[] = []): Message {
+export function createUserMessage(text: string, images: ImageContentBlock[] = [], files: Extract<Message['content'][number], { type: 'text' }>[] = []): Message {
   return {
     id: createId(),
     role: 'user',
     createdAt: now(),
     content: [
       ...(text.trim() ? [{ type: 'text' as const, text }] : []),
-      ...images
+      ...images,
+      ...files
     ]
   };
 }

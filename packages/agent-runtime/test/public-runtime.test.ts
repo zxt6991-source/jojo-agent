@@ -9,6 +9,33 @@ import { emptyProgressState } from '../src/operation/state.js';
 const allow: PermissionGate = { check: async () => ({ decision: 'allow' }) };
 
 describe('public runtime facade', () => {
+  it('passes file-only input to the provider and preserves attachment metadata for follow-up turns', async () => {
+    const requests: ModelRequest[] = [];
+    const provider: ModelProvider = {
+      async *stream(request) {
+        requests.push(request);
+        yield { type: 'text_delta', text: 'answer' };
+        yield { type: 'response_completed', stopReason: 'stop' };
+      }
+    };
+    const runtime = createAgentRuntime({ environment: {
+      host: { kind: 'test' }, providers: { resolve: () => provider },
+      tools: { resolve: () => ({ snapshot: () => [] }) }, permissions: allow
+    } });
+    const session = await runtime.openSession({ id: 'files', executionScope: { kind: 'none' } });
+    const lane = await session.getLane();
+    const file = { type: 'text' as const, text: 'Revenue: 1234', attachment: {
+      name: 'report.xlsx', relativePath: 'finance/report.xlsx', size: 42, truncated: false
+    } };
+    const first = await (await lane.run({ input: { content: [file] }, providerId: 'p', model: 'm' })).result;
+    expect(first.status).toBe('completed');
+    expect(requests[0]?.messages.find((message) => message.role === 'user')?.content).toEqual([file]);
+    await (await lane.run({ input: 'What was the revenue?', providerId: 'p', model: 'm' })).result;
+    expect(requests[1]?.messages.find((message) => message.role === 'user')?.content).toEqual([file]);
+    expect(first.messages.find((message) => message.role === 'user')?.content).toEqual([file]);
+    await runtime.close();
+  });
+
   it('propagates team member identity through every resolution context', async () => {
     const contexts: Array<import('../src/index.js').RuntimeResolutionContext> = [];
     const provider = new ScriptedProvider([[

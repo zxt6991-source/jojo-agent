@@ -94,7 +94,7 @@ function ChatNodeView({
 }) {
   if (node.kind === 'user') {
     return <article className="message user" data-node-id={node.id}>
-      <div className="bubble">{node.images.length > 0 && <div className="rich-images">{node.images.map((image, index) => <figure key={`${node.id}-${index}`}><img src={`data:${image.mimeType};base64,${image.data}`} alt={image.altText ?? image.name ?? '用户图片'} />{image.name && <figcaption>{image.name}</figcaption>}</figure>)}</div>}{node.text && <Markdown text={node.text} />}</div>
+      <div className="bubble">{node.files?.length > 0 && <div className="message-files">{node.files.map((file, index) => <details key={`${node.id}-file-${index}`}><summary>▤ {file.attachment?.relativePath}{file.attachment?.truncated ? ' · 部分内容' : ''}</summary><pre>{file.text}</pre></details>)}</div>}{node.images.length > 0 && <div className="rich-images">{node.images.map((image, index) => <figure key={`${node.id}-${index}`}><img src={`data:${image.mimeType};base64,${image.data}`} alt={image.altText ?? image.name ?? '用户图片'} />{image.name && <figcaption>{image.name}</figcaption>}</figure>)}</div>}{node.text && <Markdown text={node.text} />}</div>
     </article>;
   }
   if (node.kind === 'assistant') {

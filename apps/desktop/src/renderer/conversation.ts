@@ -16,7 +16,7 @@ export type LiveStep = {
   tools: LiveTool[];
 };
 
-export type UserNode = { kind: 'user'; id: string; createdAt: string; text: string; images: ImageContentBlock[] };
+export type UserNode = { kind: 'user'; id: string; createdAt: string; text: string; images: ImageContentBlock[]; files: Extract<Message['content'][number], { type: 'text' }>[] };
 export type AssistantNode = {
   kind: 'assistant';
   id: string;
@@ -359,7 +359,14 @@ function foldMessages(messages: Message[], workingDirectory: string | undefined)
           nodes.push({ kind: 'system', id: message.id, title: systemTitle(text), text });
         }
       } else {
-        nodes.push({ kind: 'user', id: message.id, createdAt: message.createdAt, text, images: messageImages(message) });
+        nodes.push({
+          kind: 'user', id: message.id, createdAt: message.createdAt,
+          text: message.content.flatMap((block) => block.type === 'text' && !block.attachment ? [block.text] : []).join(''),
+          images: messageImages(message),
+          files: message.content.filter((block): block is Extract<typeof block, { type: 'text' }> => (
+            block.type === 'text' && Boolean(block.attachment)
+          ))
+        });
       }
       continue;
     }
@@ -480,7 +487,8 @@ function recordTitle(node: ConversationNode): string {
 }
 
 function recordSummary(node: ConversationNode): string {
-  if (node.kind === 'user' || node.kind === 'assistant') return firstLine(node.text) || '…';
+  if (node.kind === 'user') return firstLine(node.text) || node.files.map((file) => file.attachment?.name).filter(Boolean).join('、') || '图片';
+  if (node.kind === 'assistant') return firstLine(node.text) || '…';
   if (node.kind === 'tool') return node.summary;
   if (node.kind === 'compaction') return node.summary;
   return firstLine(node.text) || node.title;

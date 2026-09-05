@@ -98,7 +98,7 @@ flowchart LR
 - MCP（stdio / Streamable HTTP，含 OAuth）与本地 `SKILL.md`；Server 连接前按安全身份指纹信任，安全身份变化自动失效，stdio 复用 Process Sandbox，Server Instructions 默认不进入上下文；远程 MCP 默认只允许 HTTPS（显式 loopback HTTP 例外），DNS、私网 / Metadata 地址和每次 Redirect 都会重新校验；
 - MCP 工具默认按外部副作用审批；“允许类似命令”绑定当前 Server 配置指纹与精确工具，“本次对话都允许”则覆盖当前对话中的普通交互审批。只有已信任 Server、本地 `trustedReadTools` 策略与 `readOnlyHint=true` 同时满足时才按可信只读处理。大工具集自动切换 manifest + describe/call，Resource / Prompt 仍保持不可信与默认逐次审批；
 - MCP 结果有总量边界；敏感 env / Header 明文配置会被拒绝，可通过运行时 `SecretReference` 注入。Desktop Secret Broker 与 Terminal 共用系统安全存储；缺少命名密钥时用户可直接输入，或主动从 `.zshrc` 等 Shell 配置静态导入（不会执行启动脚本），OAuth Token 继续由 Electron `safeStorage` 加密；
-- 受控 CDP 浏览器（沙箱或附加本机 Chrome）、录制 / 回放 YAML、图片附件与视觉消息；
+- 受控 CDP 浏览器（沙箱或附加本机 Chrome）、录制 / 回放 YAML、文件 / 文件夹附件、图片附件与视觉消息；
 - Markdown 记忆：`memory_status` / `memory_read` / `memory_search` / `memory_write` / `memory_forget` / `memory_restore`，候选治理与语义检索；用户记忆在 `~/.jojo/memory`；
 - 后台 Sub-Agent：Profile（`explore` / `general` / `code-review` / `synthesize`，可叠加 user/project）、Tool Policy、Continue / Send / Close、Structured Output；工具调用进入统一 Governance，actor / profile 会参与 Policy 与 Audit；
 - Persistent Team：稳定 Team / Member 身份与 Runtime Lane、SQLite Task / Inbox、同成员串行与跨成员并行、崩溃安全中断、Team Member Spawn Owner / Cancel 传播，以及 `team_list` / `team_status` / `team_delegate` / `team_wait` / `team_send` / `team_inbox`；设置页支持团队创建编辑、成员策略、运行时启停与任务状态；
@@ -125,8 +125,10 @@ pnpm dev
 1. 打开「设置」，填写 OpenAI Chat Completions 兼容服务的 API Base URL 和 API Key，获取模型列表并选择默认模型；
 2. 在「权限」中选择 ASK / AUTO / YOLO；默认 ASK。需要时可分别配置 Global 与当前 Workspace 的严格 JSON Rules；
 3. 选择一个本地项目目录创建会话（可写 Sub-Agent / Workflow 需要 Git 仓库）；
-4. 在输入框右下角选择本轮模型后发送任务。可用「＋」添加最多 4 张图片；
+4. 在输入框右下角选择本轮模型后发送任务。可用「＋」添加文件、文件夹或最多 4 张图片；
 5. 可选：在「Automations」创建单次 / 间隔 / Cron 自动化，在「Channels」连接 Telegram 或飞书并建立会话绑定。
+
+支持将文件或文件夹直接拖到输入框，也可复制文件后在输入框按 Cmd+V / Ctrl+V 粘贴；剪贴板图片可直接粘贴为图片附件，普通文字粘贴保持不变。文件附件支持 PDF、Markdown、HTML、Excel（`.xlsx` / `.xls` / `.xlsm` / `.xlsb`）、ODS、TXT、CSV、JSON 及常见代码文件。添加文件夹时会递归读取支持的文件并保留相对路径，跳过隐藏项、依赖 / 构建目录与符号链接。文件在本地解析，提取后的文字随消息发送给当前模型；发送后可展开附件查看内容，后续追问会沿用会话中的附件。每条消息最多 50 个文件、总计 200,000 字符，单文件最多 20 MB / 50,000 字符，每次导入最多读取 50 MB；Excel 每张表最多提取前 2,000 行及 500 列。超限截断和解析失败会提示，扫描 PDF 需先 OCR。
 
 项目内检索和公开网页搜索 / 抓取默认允许；ASK 下主会话文件修改会先展示 Diff，Terminal 默认弹出带沙箱能力说明的审批。命令可显式申请主机全局网络和命名密钥，审批会醒目标示；审批菜单可选择仅允许一次、允许同类命令或允许本次对话。AUTO / YOLO 只改变普通 `ask`，不会覆盖底层拒绝或 Mandatory Approval。对话授权不会持久化，项目 Hooks 的版本信任也不会被它绕过。MCP 首次连接或安全配置变化后需要重新信任。可在 Permissions 的 Recent Decisions 中查看最近决策来源、风险、actor 与锁定状态；浏览器、MCP、Skills、记忆与 Hooks 的配置见 [`docs/current-features.md`](./docs/current-features.md)。
 

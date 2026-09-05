@@ -154,7 +154,8 @@ describe('contracts', () => {
       text: 'hello',
       providerId: 'openai',
       model: 'model-b',
-      images: []
+      images: [],
+      files: []
     });
     expect(() => StartTurnInputSchema.parse({ sessionId: 'session-1', text: ' '.repeat(2), model: 'model' })).toThrow();
     expect(() => StartTurnInputSchema.parse({ sessionId: 'session-1', text: 'a'.repeat(100_001), model: 'model' })).toThrow();

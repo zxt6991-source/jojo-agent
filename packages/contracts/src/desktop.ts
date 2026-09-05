@@ -9,8 +9,8 @@ import { JsonValueSchema } from './execution-scope';
 import type { WorkspaceChanges } from './workspace';
 import { ExtensionSettingsSchema } from './integrations';
 import type { ExtensionSettings, ExtensionStatus, SkillDetail, SkillOperationResult } from './integrations';
-import { ImageContentBlockSchema } from './messages';
-import type { ImageContentBlock } from './messages';
+import { FileAttachmentSchema, ImageContentBlockSchema, MAX_FILE_ATTACHMENTS, MAX_TOTAL_ATTACHMENT_TEXT } from './messages';
+import type { AttachmentSelection, ImageContentBlock } from './messages';
 import {
   BROWSER_RECORDING_PARAM_NAME_PATTERN,
   BrowserFramePathSchema,
@@ -59,9 +59,12 @@ export const StartTurnInputSchema = z.object({
   text: z.string().trim().max(100_000),
   providerId: z.string().trim().min(1),
   model: z.string().trim().min(1),
-  images: z.array(ImageContentBlockSchema).max(MAX_IMAGE_ATTACHMENTS).default([])
-}).strict().refine((input) => input.text.trim().length > 0 || input.images.length > 0, {
-  message: 'A turn must contain text or at least one image.'
+  images: z.array(ImageContentBlockSchema).max(MAX_IMAGE_ATTACHMENTS).default([]),
+  files: z.array(FileAttachmentSchema).max(MAX_FILE_ATTACHMENTS).default([])
+}).strict().refine((input) => input.text.trim().length > 0 || input.images.length > 0 || input.files.length > 0, {
+  message: 'A turn must contain text or at least one attachment.'
+}).refine((input) => input.files.reduce((sum, file) => sum + file.text.length, 0) <= MAX_TOTAL_ATTACHMENT_TEXT, {
+  message: '附件文本总量超过 200,000 字符，请减少附件后重试。'
 });
 
 export const BrowserActionSchema = z.discriminatedUnion('action', [
@@ -644,6 +647,10 @@ export type DesktopApi = {
   resolveApproval(input: z.input<typeof ApprovalInputSchema>): Promise<void>;
   chooseDirectory(): Promise<string | null>;
   chooseImages(): Promise<ImageContentBlock[]>;
+  chooseFiles(mode: 'files' | 'folder'): Promise<AttachmentSelection>;
+  importAttachments(files: File[]): Promise<AttachmentSelection>;
+  hasClipboardFiles(): boolean;
+  pasteFiles(): Promise<AttachmentSelection>;
   getSettings(): Promise<ProviderSettings>;
   listModels(input: z.input<typeof ListModelsInputSchema>): Promise<string[]>;
   saveSettings(input: z.input<typeof SaveSettingsInputSchema>): Promise<ProviderSettings>;
@@ -733,6 +740,10 @@ export const IPC = {
   resolveApproval: 'agent:approval',
   chooseDirectory: 'system:choose-directory',
   chooseImages: 'system:choose-images',
+  chooseFiles: 'system:choose-files',
+  importAttachments: 'system:import-attachments',
+  hasClipboardFiles: 'system:has-clipboard-files',
+  pasteFiles: 'system:paste-files',
   getSettings: 'settings:get',
   listModels: 'models:list',
   saveSettings: 'settings:save',

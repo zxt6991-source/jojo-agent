@@ -1,16 +1,17 @@
-import { app, BrowserWindow, dialog, ipcMain, nativeImage, safeStorage, shell, utilityProcess, type IpcMainInvokeEvent, type UtilityProcess } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeImage, safeStorage, shell, utilityProcess, type IpcMainInvokeEvent, type UtilityProcess } from 'electron';
+import { Worker } from 'node:worker_threads';
 import { createHash } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
-import { access, cp, mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
+import { access, cp, mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  AcceptMemoryCandidateInputSchema, ApprovalInputSchema, BindSessionProjectInputSchema, BrowserDockActionSchema, BrowserDockLayoutSchema, BrowserRecordingRegistryActionInputSchema, BrowserRecordingRegistryInputSchema, BrowserRecordingStudioInputSchema, CreateSessionInputSchema, CreateSkillInputSchema, DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS, DEFAULT_MODEL_MAX_OUTPUT_TOKENS, DeleteMemoryEntryInputSchema, DeleteTeamInputSchema, DesktopChannelMutationSchema, DuplicateBrowserRecordingInputSchema, GetExtensionStatusInputSchema, GetHookStatusInputSchema, GetMemoryStatusInputSchema, GetPermissionGovernanceInputSchema, HookProjectActionInputSchema, ImportSkillInputSchema, IPC, ListModelsInputSchema, ListTeamsInputSchema, MAX_IMAGE_ATTACHMENTS, MAX_IMAGE_BYTES, McpServerIdInputSchema, OpenHookConfigInputSchema, PermissionGovernanceSnapshotSchema, RebuildMemoryIndexInputSchema, RebuildSemanticMemoryIndexInputSchema, RejectMemoryCandidateInputSchema, RenameSessionInputSchema, ResolveTerminalSecretInputSchema, SaveBrowserRecordingInputSchema, SaveExtensionSettingsInputSchema, SaveMemorySettingsInputSchema, SavePermissionPolicyInputSchema, SaveSettingsInputSchema, SaveTeamInputSchema, SetTeamMemberEnabledInputSchema,
+  AcceptMemoryCandidateInputSchema, ApprovalInputSchema, BindSessionProjectInputSchema, BrowserDockActionSchema, BrowserDockLayoutSchema, BrowserRecordingRegistryActionInputSchema, BrowserRecordingRegistryInputSchema, BrowserRecordingStudioInputSchema, CreateSessionInputSchema, CreateSkillInputSchema, DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS, DEFAULT_MODEL_MAX_OUTPUT_TOKENS, DeleteMemoryEntryInputSchema, DeleteTeamInputSchema, DesktopChannelMutationSchema, DuplicateBrowserRecordingInputSchema, GetExtensionStatusInputSchema, GetHookStatusInputSchema, GetMemoryStatusInputSchema, GetPermissionGovernanceInputSchema, HookProjectActionInputSchema, ImportSkillInputSchema, IPC, ListModelsInputSchema, ListTeamsInputSchema, MAX_FILE_BYTES, MAX_IMAGE_ATTACHMENTS, MAX_IMAGE_BYTES, McpServerIdInputSchema, OpenHookConfigInputSchema, PermissionGovernanceSnapshotSchema, RebuildMemoryIndexInputSchema, RebuildSemanticMemoryIndexInputSchema, RejectMemoryCandidateInputSchema, RenameSessionInputSchema, ResolveTerminalSecretInputSchema, SaveBrowserRecordingInputSchema, SaveExtensionSettingsInputSchema, SaveMemorySettingsInputSchema, SavePermissionPolicyInputSchema, SaveSettingsInputSchema, SaveTeamInputSchema, SetTeamMemberEnabledInputSchema,
   SaveChannelSecretsInputSchema, SaveScheduleInputSchema, ScheduleIdInputSchema, ScheduleRunIdInputSchema, SetScheduleEnabledInputSchema,
   SessionIdInputSchema, SkillPathInputSchema, StartTurnInputSchema, UpdateSkillInputSchema, WorkflowRunActionInputSchema,
   WorkerCommandSchema, WorkerMessageSchema, serializedIpcBytes,
-  type BrowserHealProposal, type BrowserHealRequest, type ChannelDeliveryReceipt, type ChannelSettingsSnapshot, type ExtensionStatus, type MemoryStatusSnapshot, type PermissionGovernanceSnapshot, type ProviderSettings, type ScheduleContract, type ScheduleRunContract, type SessionCompactionRecord, type TeamSnapshot, type TeamStatusSnapshot, type WorkerCommand, type WorkerMessage, type WorkflowRunSnapshot
+  type AttachmentSelection, type BrowserHealProposal, type BrowserHealRequest, type ChannelDeliveryReceipt, type ChannelSettingsSnapshot, type ExtensionStatus, type MemoryStatusSnapshot, type PermissionGovernanceSnapshot, type ProviderSettings, type ScheduleContract, type ScheduleRunContract, type SessionCompactionRecord, type TeamSnapshot, type TeamStatusSnapshot, type WorkerCommand, type WorkerMessage, type WorkflowRunSnapshot
 } from '@desktop-agent/contracts';
 import { z } from 'zod';
 import { createProvider } from '@desktop-agent/providers';
@@ -24,10 +25,56 @@ import { renderConversationTrajectoryMarkdown, trajectoryExportFilename } from '
 import { BrowserRuntime } from './browser-runtime';
 import { mapChromeCdpError, probeChromeCdp } from './browser-backends/chrome-cdp-client';
 import { SessionLifecycleManager } from './session-lifecycle';
+import { clipboardFilePaths, hasClipboardFiles } from './clipboard-files';
 import { parseShellSecret } from './shell-secret-import';
 
 declare const MAIN_WINDOW_VITE_DEV_SERVER_URL: string | undefined;
 declare const MAIN_WINDOW_VITE_NAME: string;
+
+const IMAGE_MIME_TYPES: Record<string, string> = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif' };
+
+async function importAttachmentPaths(paths: string[], mode: 'files' | 'folder'): Promise<AttachmentSelection> {
+  return new Promise<AttachmentSelection>((resolve, reject) => {
+    const importer = new Worker(path.join(currentDirectory, 'file-attachments-worker.js'), {
+      workerData: { paths, mode },
+      resourceLimits: { maxOldGenerationSizeMb: 512 }
+    });
+    const timeout = setTimeout(() => {
+      reject(new Error('文件解析超时，请减少文件数量或选择较小的文件后重试。'));
+      void importer.terminate();
+    }, 60_000);
+    importer.once('message', (selection: AttachmentSelection) => {
+      clearTimeout(timeout);
+      resolve(selection);
+      void importer.terminate();
+    });
+    importer.once('error', (error) => { clearTimeout(timeout); reject(error); });
+    importer.once('exit', (code) => {
+      clearTimeout(timeout);
+      reject(new Error(`文件解析进程已退出（${code}），请减少文件大小后重试。`));
+    });
+  });
+}
+
+async function importTransferredPaths(paths: string[]): Promise<AttachmentSelection> {
+  const images: NonNullable<AttachmentSelection['images']> = [];
+  const documents: string[] = [];
+  const warnings: string[] = [];
+  for (const filePath of [...new Set(paths)]) {
+    const mimeType = IMAGE_MIME_TYPES[path.extname(filePath).toLowerCase()];
+    if (!mimeType) { documents.push(filePath); continue; }
+    try {
+      const info = await stat(filePath);
+      if (info.isDirectory()) { documents.push(filePath); continue; }
+      if (!info.isFile() || info.size > MAX_IMAGE_BYTES) throw new Error('图片必须小于 10 MB');
+      if (images.length >= MAX_IMAGE_ATTACHMENTS) throw new Error('每条消息最多添加 4 张图片');
+      if (nativeImage.createFromPath(filePath).isEmpty()) throw new Error('无法读取图片');
+      images.push({ type: 'image', data: (await readFile(filePath)).toString('base64'), mimeType, name: path.basename(filePath) });
+    } catch (cause) { warnings.push(`${path.basename(filePath)}：${cause instanceof Error ? cause.message : String(cause)}`); }
+  }
+  const selection = documents.length ? await importAttachmentPaths(documents, 'folder') : { files: [], warnings: [] };
+  return { ...selection, images, warnings: [...warnings, ...selection.warnings] };
+}
 
 const currentDirectory = path.dirname(fileURLToPath(import.meta.url));
 const e2eMode = process.env.JOJO_E2E === '1';
@@ -1005,6 +1052,51 @@ function registerIpc(): void {
   ipcMain.handle(IPC.chooseDirectory, async (event) => {
     assertTrusted(event); const result = await dialog.showOpenDialog(mainWindow!, { properties: ['openDirectory', 'createDirectory'] });
     return result.canceled ? null : result.filePaths[0] ?? null;
+  });
+  ipcMain.handle(IPC.chooseFiles, async (event, raw) => {
+    assertTrusted(event);
+    const mode = z.enum(['files', 'folder']).parse(raw);
+    const result = await dialog.showOpenDialog(mainWindow!, {
+      title: mode === 'folder' ? '添加文件夹中的文件' : '添加文件',
+      properties: mode === 'folder' ? ['openDirectory'] : ['openFile', 'multiSelections']
+    });
+    if (result.canceled) return { files: [], warnings: [] };
+    return importAttachmentPaths(result.filePaths, mode);
+  });
+
+  ipcMain.on(IPC.hasClipboardFiles, (event) => {
+    try { assertTrusted(event); event.returnValue = hasClipboardFiles(clipboard); }
+    catch { event.returnValue = false; }
+  });
+  ipcMain.handle(IPC.pasteFiles, async (event) => {
+    assertTrusted(event);
+    const paths = clipboardFilePaths(clipboard);
+    if (paths.length > 100) throw new Error('一次最多粘贴 100 项，请分批添加。');
+    if (!paths.length) return { files: [], warnings: ['剪贴板中的文件无法读取，请重新复制或拖入文件。'] };
+    return importTransferredPaths(paths);
+  });
+  ipcMain.handle(IPC.importAttachments, async (event, raw) => {
+    assertTrusted(event);
+    const input = z.object({
+      paths: z.array(z.string().min(1).max(4_096).refine((value) => path.isAbsolute(value))).max(100),
+      blobs: z.array(z.object({
+        name: z.string().min(1).max(255).refine((name) => name !== '.' && name !== '..' && !/[\\/\0]/u.test(name)),
+        data: z.instanceof(Uint8Array).refine((data) => data.byteLength <= MAX_FILE_BYTES)
+      }).strict()).max(100)
+    }).strict().refine((value) => value.paths.length + value.blobs.length <= 100 && value.blobs.reduce((size, blob) => size + blob.data.byteLength, 0) <= 50 * 1024 * 1024).parse(raw);
+    if (!input.blobs.length) return importTransferredPaths(input.paths);
+    const temporary = await mkdtemp(path.join(os.tmpdir(), 'jojo-pasted-files-'));
+    try {
+      const paths = [...input.paths];
+      for (const [index, blob] of input.blobs.entries()) {
+        const directory = path.join(temporary, String(index));
+        await mkdir(directory);
+        const filePath = path.join(directory, blob.name);
+        await writeFile(filePath, blob.data);
+        paths.push(filePath);
+      }
+      return await importTransferredPaths(paths);
+    } finally { await rm(temporary, { recursive: true, force: true }); }
   });
   ipcMain.handle(IPC.chooseImages, async (event) => {
     assertTrusted(event);

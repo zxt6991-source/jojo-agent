@@ -41,6 +41,50 @@ afterEach(() => {
 });
 
 describe('Chat Completions request conversion', () => {
+  it('omits assistant history without serializable content or tool calls', () => {
+    const body = createChatCompletionBody(request({
+      instructions: ['Be concise.'],
+      messages: [
+        message('user', [{ type: 'text', text: 'Hello.' }]),
+        message('assistant', []),
+        message('assistant', [{ type: 'text', text: '' }]),
+        message('assistant', [{ type: 'image', mimeType: 'image/png', data: 'aGVsbG8=' }]),
+        message('assistant', [{ type: 'text', text: 'Hello back.' }]),
+        message('user', [{ type: 'text', text: 'Continue.' }]),
+        message('assistant', [])
+      ]
+    }));
+
+    expect(body.messages).toEqual([
+      { role: 'system', content: expect.stringContaining('Be concise.') },
+      { role: 'user', content: 'Hello.' },
+      { role: 'assistant', content: 'Hello back.' },
+      { role: 'user', content: 'Continue.' }
+    ]);
+  });
+
+  it('preserves tool-only turns and their results across empty assistant messages', () => {
+    const body = createChatCompletionBody(request({
+      messages: [
+        message('assistant', [{ type: 'tool_call', call: { id: 'one', name: 'read_file', input: {} } }]),
+        message('assistant', []),
+        message('tool', [{ type: 'tool_result', result: { callId: 'one', ok: true, content: 'contents' } }]),
+        message('assistant', [{ type: 'text', text: '' }]),
+        message('user', [{ type: 'text', text: 'Continue.' }])
+      ]
+    }));
+
+    expect(body.messages).toEqual([
+      { role: 'system', content: expect.any(String) },
+      {
+        role: 'assistant', content: null,
+        tool_calls: [{ id: 'one', type: 'function', function: { name: 'read_file', arguments: '{}' } }]
+      },
+      { role: 'tool', tool_call_id: 'one', content: 'contents' },
+      { role: 'user', content: 'Continue.' }
+    ]);
+  });
+
   it('serializes text, tool calls, tool results, and tool definitions', () => {
     const body = createChatCompletionBody(request({
       messages: [

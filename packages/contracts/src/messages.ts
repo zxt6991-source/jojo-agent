@@ -38,8 +38,30 @@ export const ImageContentBlockSchema = z.object({
 });
 export type ImageContentBlock = z.infer<typeof ImageContentBlockSchema>;
 
+export const MAX_FILE_ATTACHMENTS = 50;
+export const MAX_FILE_BYTES = 20 * 1024 * 1024;
+export const MAX_ATTACHMENT_TEXT = 50_000;
+export const MAX_TOTAL_ATTACHMENT_TEXT = 200_000;
+export const FileAttachmentMetadataSchema = z.object({
+  name: z.string().min(1).max(255),
+  relativePath: z.string().min(1).max(4_096),
+  size: z.number().int().nonnegative().max(MAX_FILE_BYTES),
+  truncated: z.boolean()
+}).strict();
+export const TextContentBlockSchema = z.object({
+  type: z.literal('text'),
+  text: z.string(),
+  attachment: FileAttachmentMetadataSchema.optional()
+});
+export const FileAttachmentSchema = TextContentBlockSchema.extend({
+  text: z.string().min(1).max(MAX_ATTACHMENT_TEXT + 8_192),
+  attachment: FileAttachmentMetadataSchema
+}).strict();
+export type FileAttachment = z.infer<typeof FileAttachmentSchema>;
+export type AttachmentSelection = { files: FileAttachment[]; warnings: string[]; images?: ImageContentBlock[] };
+
 export const ContentBlockSchema = z.discriminatedUnion('type', [
-  z.object({ type: z.literal('text'), text: z.string() }),
+  TextContentBlockSchema,
   ImageContentBlockSchema,
   z.object({ type: z.literal('tool_call'), call: ToolCallSchema }),
   z.object({ type: z.literal('tool_result'), result: ToolResultSchema })

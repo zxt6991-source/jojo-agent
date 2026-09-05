@@ -16,6 +16,7 @@ const config: ForgeConfig = {
   plugins: [
     new VitePlugin({
       build: [
+        { entry: 'src/main/file-attachments-worker.ts', config: 'vite.main.config.ts', target: 'main' },
         { entry: 'src/main/main.ts', config: 'vite.main.config.ts', target: 'main' },
         { entry: 'src/preload/preload.ts', config: 'vite.preload.config.ts', target: 'preload' },
         { entry: 'src/worker/worker.ts', config: 'vite.worker.config.ts', target: 'main' }
