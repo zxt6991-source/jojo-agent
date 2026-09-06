@@ -12,6 +12,7 @@ import { isWebFetchSpillPath } from './web-fetch-storage.js';
 import { resolveWorkspacePath } from './workspace-paths.js';
 import { createProcessSandbox } from '@desktop-agent/process-sandbox';
 import { DefaultTerminalSecurityPolicy, type TerminalSecurityPolicy } from './terminal-security-policy.js';
+import { GeneratedDocumentSchema } from '@desktop-agent/contracts';
 
 export class DefaultPermissionGate implements PermissionGate {
   constructor(
@@ -24,6 +25,10 @@ export class DefaultPermissionGate implements PermissionGate {
     context: { sessionId: string; workingDirectory: string }
   ): Promise<PermissionDecision> {
     switch (call.name) {
+      case 'create_document': {
+        const parsed = GeneratedDocumentSchema.safeParse(call.input);
+        return parsed.success ? { decision: 'allow' } : { decision: 'deny', reason: parsed.error.message, code: 'invalid_input' };
+      }
       case 'terminal':
         return this.checkTerminal(call, context);
       case 'list_files':

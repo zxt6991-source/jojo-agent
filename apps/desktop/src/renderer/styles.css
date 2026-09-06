@@ -1322,3 +1322,10 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .composer .file-chip button:hover, .composer .attachment-warnings button:hover { background: #e8e8ea; }
 .composer.dragging-files { border-color: #6582b8; box-shadow: 0 0 0 3px #6582b825; }
 .attachment-drop-hint { position: absolute; inset: 0; z-index: 21; display: grid; place-items: center; pointer-events: none; border-radius: inherit; background: #f3f7ffed; color: #425d8b; font-size: 14px; }
+/* Generated reports stay in the transcript; saving is an explicit user action. */
+.generated-document { margin: 16px 0 24px; border: 1px solid #d9dfe7; border-radius: 12px; overflow: hidden; }
+.generated-document header { display: flex; align-items: center; gap: 12px; padding: 12px 16px; flex-wrap: wrap; }
+.generated-document header strong { flex: 1; min-width: 120px; overflow-wrap: anywhere; }
+.generated-document header button { padding: 6px 10px; border: 1px solid #d9dfe7; border-radius: 6px; background: transparent; color: inherit; cursor: pointer; }
+.generated-document iframe { display: block; width: 100%; height: 480px; border: 0; border-top: 1px solid #d9dfe7; background: white; }
+.generated-document > p { padding: 0 16px 12px; }

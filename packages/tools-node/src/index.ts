@@ -2,6 +2,7 @@ import type { SecretBroker, Tool } from '@desktop-agent/contracts';
 import os from 'node:os';
 import path from 'node:path';
 import { DefaultPermissionGate } from './default-permission-gate.js';
+import { CreateDocumentTool } from './create-document-tool.js';
 import { DeleteFileTool, EditFileTool, WriteFileTool } from './file-tools.js';
 import { FileSnapshotRegistry } from './file-snapshots.js';
 import { GlobTool } from './glob-tool.js';
@@ -66,6 +67,7 @@ export function createDefaultTools(options: DefaultToolOptions = {}): Tool[] {
     new GlobTool(),
     new WebSearchTool(),
     new WebFetchTool(),
+    new CreateDocumentTool(),
     new WriteFileTool(snapshots, trashDirectory),
     new EditFileTool(snapshots, trashDirectory),
     new DeleteFileTool(snapshots, trashDirectory),

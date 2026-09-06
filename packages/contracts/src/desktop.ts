@@ -622,6 +622,7 @@ export type DesktopApi = {
   loadMessages(sessionId: string): Promise<Message[]>;
   loadSessionCompactions(sessionId: string): Promise<SessionCompactionRecord[]>;
   exportSessionTrajectory(sessionId: string): Promise<{ canceled: boolean; path?: string }>;
+  saveGeneratedDocument(document: import('./generated-document').GeneratedDocument): Promise<{ canceled: boolean; path?: string }>;
   getWorkspaceChanges(sessionId: string): Promise<WorkspaceChanges>;
   startTurn(input: z.input<typeof StartTurnInputSchema>): Promise<void>;
   cancelTurn(sessionId: string): Promise<void>;
@@ -713,6 +714,7 @@ export const IPC = {
   loadMessages: 'sessions:messages',
   loadSessionCompactions: 'sessions:compactions',
   exportSessionTrajectory: 'sessions:export-trajectory',
+  saveGeneratedDocument: 'documents:save',
   getWorkspaceChanges: 'workspace:changes',
   startTurn: 'agent:start',
   cancelTurn: 'agent:cancel',

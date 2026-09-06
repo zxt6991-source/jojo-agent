@@ -1,6 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import DOMPurify from 'dompurify';
 import { marked } from 'marked';
+import { GeneratedDocumentCard } from './GeneratedDocumentCard';
+import { generatedDocuments } from './generated-documents';
 import {
   firstLine,
   hasLiveOutput,
@@ -166,6 +168,7 @@ export function ChatTranscript({
         {...(onInspect ? { onInspect } : {})}
         {...(onOpenAutomation ? { onOpenAutomation } : {})}
       />)}
+      {generatedDocuments(turn.nodes).map((document) => <GeneratedDocumentCard key={document.id} document={{ name: document.name, content: document.content }} />)}
       {renderAfterTurn?.(turn)}
     </React.Fragment>)}
     {waiting && <TurnStatus startedAt={turnStartedAt} />}

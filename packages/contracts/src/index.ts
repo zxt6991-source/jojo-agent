@@ -1,4 +1,5 @@
 export * from './agent';
+export * from './generated-document';
 export * from './browser-recording';
 export * from './desktop';
 export * from './desktop-ipc';

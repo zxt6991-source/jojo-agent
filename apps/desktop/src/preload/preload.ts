@@ -11,6 +11,7 @@ const api: DesktopApi = {
   loadMessages: (sessionId) => ipcRenderer.invoke(IPC.loadMessages, sessionId),
   loadSessionCompactions: (sessionId) => ipcRenderer.invoke(IPC.loadSessionCompactions, sessionId),
   exportSessionTrajectory: (sessionId) => ipcRenderer.invoke(IPC.exportSessionTrajectory, sessionId),
+  saveGeneratedDocument: (document) => ipcRenderer.invoke(IPC.saveGeneratedDocument, document),
   getWorkspaceChanges: (sessionId) => ipcRenderer.invoke(IPC.getWorkspaceChanges, sessionId),
   startTurn: (input) => ipcRenderer.invoke(IPC.startTurn, input),
   cancelTurn: (sessionId) => ipcRenderer.invoke(IPC.cancelTurn, sessionId),

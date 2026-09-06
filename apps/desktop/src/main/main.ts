@@ -14,6 +14,7 @@ import {
   type AttachmentSelection, type BrowserHealProposal, type BrowserHealRequest, type ChannelDeliveryReceipt, type ChannelSettingsSnapshot, type ExtensionStatus, type MemoryStatusSnapshot, type PermissionGovernanceSnapshot, type ProviderSettings, type ScheduleContract, type ScheduleRunContract, type SessionCompactionRecord, type TeamSnapshot, type TeamStatusSnapshot, type WorkerCommand, type WorkerMessage, type WorkflowRunSnapshot
 } from '@desktop-agent/contracts';
 import { z } from 'zod';
+import { GeneratedDocumentSchema } from '@desktop-agent/contracts';
 import { createProvider } from '@desktop-agent/providers';
 import { createSkillSource, discoverSkills, parseSkillSource, skillId, userSkillDirectories, type SkillDirectory } from '@desktop-agent/extensions';
 import { EMPTY_HOOK_CONFIG, FileHookTrustStore, loadHookSettings } from '@desktop-agent/hooks';
@@ -870,6 +871,19 @@ function registerIpc(): void {
   ipcMain.handle(IPC.loadSessionCompactions, async (event, raw) => {
     assertTrusted(event); const { sessionId } = SessionIdInputSchema.parse({ sessionId: raw });
     return loadSessionCompactions(sessionId);
+  });
+  ipcMain.handle(IPC.saveGeneratedDocument, async (event, raw) => {
+    assertTrusted(event);
+    const document = GeneratedDocumentSchema.parse(raw);
+    const selected = await dialog.showSaveDialog(mainWindow!, {
+      title: '保存生成的文档',
+      defaultPath: path.join(app.getPath('downloads'), document.name),
+      buttonLabel: '保存',
+      filters: [{ name: 'HTML 文档', extensions: ['html', 'htm'] }]
+    });
+    if (selected.canceled || !selected.filePath) return { canceled: true };
+    await writeFile(selected.filePath, document.content, { encoding: 'utf8', mode: 0o600 });
+    return { canceled: false, path: selected.filePath };
   });
   ipcMain.handle(IPC.exportSessionTrajectory, async (event, raw) => {
     assertTrusted(event); const { sessionId } = SessionIdInputSchema.parse({ sessionId: raw });
