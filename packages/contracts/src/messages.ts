@@ -71,6 +71,7 @@ export type AttachmentPreview = z.infer<typeof AttachmentPreviewSchema>;
 export const FileAttachmentRefSchema = z.object({
   type: z.literal('file'),
   attachmentId: z.string().min(1).max(256),
+  digest: z.string().regex(/^sha256:[0-9a-f]{64}$/u).optional(),
   name: z.string().min(1).max(255),
   bytes: z.number().int().nonnegative().max(MAX_FILE_BYTES),
   mimeType: z.string().max(255).optional(),

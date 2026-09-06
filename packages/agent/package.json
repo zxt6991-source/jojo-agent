@@ -1,1 +1,10 @@
-{"name":"@desktop-agent/agent","version":"0.1.0","type":"module","exports":"./src/index.ts","dependencies":{"@desktop-agent/contracts":"workspace:*"}}
+{
+  "name": "@desktop-agent/agent",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": "./src/index.ts",
+  "dependencies": {
+    "@desktop-agent/contracts": "workspace:*",
+    "@desktop-agent/attachment-access": "workspace:*"
+  }
+}

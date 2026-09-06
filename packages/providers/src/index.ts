@@ -3,3 +3,4 @@ export { OpenAICompatibleEmbeddingProvider } from './openai-compatible-embedding
 export { PROVIDER_REGISTRY, ProviderRegistry, createProvider } from './registry.js';
 export type { OpenAIProviderOptions } from './types.js';
 export type { DiscoverableModelProvider, ProviderRegistration } from './registry.js';
+export { serializeAttachmentForModel } from './attachment-serialization.js';

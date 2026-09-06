@@ -1,3 +1,4 @@
+import type { AttachmentAccessResolver } from '@desktop-agent/attachment-access';
 import type {
   AgentEvent,
   ApprovalRequest,
@@ -127,6 +128,7 @@ export interface RuntimeRunContextResolver {
 }
 
 export interface RuntimeEnvironment {
+  attachmentAccess?: AttachmentAccessResolver;
   host: RuntimeHostDescriptor;
   providers: ModelProviderResolver;
   tools: ToolResolver;
@@ -477,6 +479,7 @@ class DefaultAgentRuntime implements AgentRuntime {
       ...(input.images.length ? { userImages: input.images } : {}),
       ...(input.files.length ? { userFiles: input.files } : {}),
       provider,
+      ...(this.options.environment.attachmentAccess ? { attachmentAccess: this.options.environment.attachmentAccess } : {}),
       tools: [],
       getTools: ({ contextWindowTokens: resolvedContextWindow, maxOutputTokens: resolvedMaxOutput }) => toolSource.snapshot({
         ...context,

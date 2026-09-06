@@ -122,6 +122,33 @@ export async function createJojoHttpServer(
     });
   }
 
+  // Raw stream parser: no JSON/base64 or full request buffering.
+  app.addContentTypeParser('application/octet-stream', (_request, payload, done) => done(null, payload));
+  app.post('/api/v1/sessions/:sessionId/attachments', async (request, reply) => withHttp(request, reply, options.token, async (ctx) => {
+    const query = parse(z.object({ name: z.string().min(1).max(255) }).strict(), request.query);
+    if (request.headers['content-type']?.split(';')[0]?.trim() !== 'application/octet-stream') {
+      throw new ProtocolFailure({ code: 'invalid_request', message: 'Attachment body must be application/octet-stream.' });
+    }
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    const closed = () => { if (!reply.raw.writableFinished) abort(); };
+    request.raw.once('aborted', abort);
+    reply.raw.once('close', closed);
+    try {
+      if (request.raw.aborted) abort();
+      const length = header(request, 'content-length');
+      const expectedBytes = length === undefined ? undefined : Number(length);
+      const result = await core.uploadAttachment(ctx, param(request, 'sessionId'), {
+        name: query.name, stream: request.body as AsyncIterable<Uint8Array>, signal: controller.signal,
+        ...(expectedBytes !== undefined ? { expectedBytes } : {})
+      });
+      return reply.code(201).send(result);
+    } finally {
+      request.raw.removeListener('aborted', abort);
+      reply.raw.removeListener('close', closed);
+    }
+  }));
+
   app.get('/api/v1/server', async (request, reply) => withHttp(request, reply, options.token, async () => core.info));
   app.get('/api/v1/capabilities', async (request, reply) => withHttp(request, reply, options.token, async () => core.capabilities));
   app.get('/api/v1/models', async (request, reply) => withHttp(request, reply, options.token, async () => core.models));

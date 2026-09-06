@@ -40,6 +40,9 @@ importers:
       '@desktop-agent/agent-runtime':
         specifier: workspace:*
         version: link:../../packages/agent-runtime
+      '@desktop-agent/attachments':
+        specifier: workspace:*
+        version: link:../../packages/attachments
       '@desktop-agent/channel-core':
         specifier: workspace:*
         version: link:../../packages/channel-core
@@ -80,6 +83,12 @@ importers:
       '@desktop-agent/agent-runtime':
         specifier: workspace:*
         version: link:../../packages/agent-runtime
+      '@desktop-agent/attachment-access':
+        specifier: workspace:*
+        version: link:../../packages/attachment-access
+      '@desktop-agent/attachment-extractors':
+        specifier: workspace:*
+        version: link:../../packages/attachment-extractors
       '@desktop-agent/attachments':
         specifier: workspace:*
         version: link:../../packages/attachments
@@ -134,9 +143,6 @@ importers:
       dompurify:
         specifier: ^3.3.0
         version: 3.4.13
-      html-to-text:
-        specifier: ^10.0.1
-        version: 10.0.1
       marked:
         specifier: ^17.0.1
         version: 17.0.6
@@ -152,9 +158,6 @@ importers:
       react-dom:
         specifier: ^19.2.1
         version: 19.2.8(react@19.2.8)
-      xlsx:
-        specifier: https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz
-        version: https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz
       yaml:
         specifier: ^2.9.0
         version: 2.9.0
@@ -189,9 +192,6 @@ importers:
       '@playwright/test':
         specifier: ^1.62.1
         version: 1.62.1
-      '@types/html-to-text':
-        specifier: ^9.0.4
-        version: 9.0.4
       '@types/plist':
         specifier: ^3.0.5
         version: 3.0.5
@@ -210,6 +210,9 @@ importers:
       vite:
         specifier: ^7.2.6
         version: 7.3.6(@types/node@24.13.3)(jiti@2.7.0)(terser@5.49.2)(yaml@2.9.0)
+      xlsx:
+        specifier: https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz
+        version: https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz
 
   apps/server:
     dependencies:
@@ -219,6 +222,9 @@ importers:
       '@desktop-agent/app-service':
         specifier: workspace:*
         version: link:../../packages/app-service
+      '@desktop-agent/attachment-access':
+        specifier: workspace:*
+        version: link:../../packages/attachment-access
       '@desktop-agent/channel-adapters':
         specifier: workspace:*
         version: link:../../packages/channel-adapters
@@ -253,6 +259,9 @@ importers:
 
   packages/agent:
     dependencies:
+      '@desktop-agent/attachment-access':
+        specifier: workspace:*
+        version: link:../attachment-access
       '@desktop-agent/contracts':
         specifier: workspace:*
         version: link:../contracts
@@ -262,6 +271,9 @@ importers:
       '@desktop-agent/agent':
         specifier: workspace:*
         version: link:../agent
+      '@desktop-agent/attachment-access':
+        specifier: workspace:*
+        version: link:../attachment-access
       '@desktop-agent/contracts':
         specifier: workspace:*
         version: link:../contracts
@@ -277,6 +289,43 @@ importers:
       '@desktop-agent/server-protocol':
         specifier: workspace:*
         version: link:../server-protocol
+
+  packages/attachment-access:
+    dependencies:
+      '@desktop-agent/attachments':
+        specifier: workspace:*
+        version: link:../attachments
+      '@desktop-agent/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+
+  packages/attachment-extractors:
+    dependencies:
+      '@desktop-agent/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@xmldom/xmldom':
+        specifier: ^0.9.12
+        version: 0.9.12
+      html-to-text:
+        specifier: ^10.0.1
+        version: 10.0.1
+      pdfjs-dist:
+        specifier: ^6.3.289
+        version: 6.3.289
+      xlsx:
+        specifier: https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz
+        version: https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz
+      yauzl:
+        specifier: ^2.10.0
+        version: 2.10.0
+    devDependencies:
+      '@types/html-to-text':
+        specifier: ^9.0.4
+        version: 9.0.4
+      '@types/yauzl':
+        specifier: ^2.10.3
+        version: 2.10.3
 
   packages/attachments:
     dependencies:
@@ -431,21 +480,28 @@ importers:
 
   packages/providers:
     dependencies:
-      '@desktop-agent/attachments':
-        specifier: workspace:*
-        version: link:../attachments
       '@desktop-agent/contracts':
         specifier: workspace:*
         version: link:../contracts
       zod:
         specifier: ^4.1.13
         version: 4.4.3
+    devDependencies:
+      '@desktop-agent/attachment-access':
+        specifier: workspace:*
+        version: link:../attachment-access
+      '@desktop-agent/attachments':
+        specifier: workspace:*
+        version: link:../attachments
 
   packages/runtime-composition:
     dependencies:
       '@desktop-agent/agent-runtime':
         specifier: workspace:*
         version: link:../agent-runtime
+      '@desktop-agent/attachment-access':
+        specifier: workspace:*
+        version: link:../attachment-access
       '@desktop-agent/contracts':
         specifier: workspace:*
         version: link:../contracts
@@ -474,9 +530,18 @@ importers:
       '@desktop-agent/app-service':
         specifier: workspace:*
         version: link:../app-service
+      '@desktop-agent/attachment-extractors':
+        specifier: workspace:*
+        version: link:../attachment-extractors
+      '@desktop-agent/attachments':
+        specifier: workspace:*
+        version: link:../attachments
       '@desktop-agent/channel-core':
         specifier: workspace:*
         version: link:../channel-core
+      '@desktop-agent/contracts':
+        specifier: workspace:*
+        version: link:../contracts
       '@desktop-agent/scheduler':
         specifier: workspace:*
         version: link:../scheduler
@@ -1632,6 +1697,11 @@ packages:
 
   '@xmldom/xmldom@0.9.10':
     resolution: {integrity: sha512-A9gOqLdi6cV4ibazAjcQufGj0B1y/vDqYrcuP6d/6x8P27gRS8643Dj9o1dEKtB6O7fwxb2FgBmJS2mX7gpvdw==}
+    engines: {node: '>=14.6'}
+    deprecated: this version has critical issues, please update to the latest version
+
+  '@xmldom/xmldom@0.9.12':
+    resolution: {integrity: sha512-5AXjrcMClTryPe9LgZrygpB1lj7s0S9E0+W+AHaVKAVyHanafK86iPSvG5xHVSp/jC+VH1UXu0TAEmY279xH7A==}
     engines: {node: '>=14.6'}
 
   '@xtuc/ieee754@1.2.0':
@@ -5078,7 +5148,6 @@ snapshots:
   '@types/yauzl@2.10.3':
     dependencies:
       '@types/node': 24.13.3
-    optional: true
 
   '@typescript-eslint/eslint-plugin@8.66.0(@typescript-eslint/parser@8.66.0(eslint@9.39.5(jiti@2.7.0))(typescript@5.9.3))(eslint@9.39.5(jiti@2.7.0))(typescript@5.9.3)':
     dependencies:
@@ -5317,6 +5386,8 @@ snapshots:
       '@xtuc/long': 4.2.2
 
   '@xmldom/xmldom@0.9.10': {}
+
+  '@xmldom/xmldom@0.9.12': {}
 
   '@xtuc/ieee754@1.2.0': {}
 
@@ -6896,7 +6967,7 @@ snapshots:
 
   plist@3.1.1:
     dependencies:
-      '@xmldom/xmldom': 0.9.10
+      '@xmldom/xmldom': 0.9.12
       base64-js: 1.5.1
       xmlbuilder: 15.1.1
 

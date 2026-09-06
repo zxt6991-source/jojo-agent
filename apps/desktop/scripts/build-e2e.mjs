@@ -8,6 +8,9 @@ const desktopRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 const repositoryRoot = path.resolve(desktopRoot, '../..');
 const buildDirectory = path.join(desktopRoot, '.vite', 'build');
 const aliases = {
+  '@desktop-agent/attachment-extractors': path.join(repositoryRoot, 'packages/attachment-extractors/src/index.ts'),
+  '@desktop-agent/attachment-access/local': path.join(repositoryRoot, 'packages/attachment-access/src/local.ts'),
+  '@desktop-agent/attachment-access': path.join(repositoryRoot, 'packages/attachment-access/src/index.ts'),
   '@desktop-agent/attachments': path.join(repositoryRoot, 'packages/attachments/src/index.ts'),
   '@desktop-agent/agent-runtime/spi': path.join(repositoryRoot, 'packages/agent-runtime/src/spi/index.ts'),
   '@desktop-agent/agent-runtime': path.join(repositoryRoot, 'packages/agent-runtime/src/index.ts'),

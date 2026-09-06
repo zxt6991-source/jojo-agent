@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@desktop-agent/agent": "workspace:*",
-    "@desktop-agent/contracts": "workspace:*"
+    "@desktop-agent/contracts": "workspace:*",
+    "@desktop-agent/attachment-access": "workspace:*"
   }
 }

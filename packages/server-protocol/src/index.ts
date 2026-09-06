@@ -1,3 +1,4 @@
+import { FileAttachmentRefSchema } from '@desktop-agent/contracts';
 import { z } from 'zod';
 import {
   ApprovalRequestSchema,
@@ -301,7 +302,16 @@ export const RunStatusSchema = z.enum([
 ]);
 export type RunStatus = z.infer<typeof RunStatusSchema>;
 
+export const AttachmentUploadReceiptSchema = z.object({
+  receipt: z.string().uuid(),
+  attachment: FileAttachmentRefSchema,
+  expiresAt: z.string().datetime(),
+  previewWarning: z.string().optional()
+}).strict();
+export type AttachmentUploadReceipt = z.infer<typeof AttachmentUploadReceiptSchema>;
+
 export const StartRunInputSchema = z.object({
+  attachmentReceipts: z.record(z.string().max(256), z.string().uuid()).optional(),
   laneId: z.string().min(1).default('main'),
   input: RuntimeInputSchema,
   providerId: z.string().min(1),

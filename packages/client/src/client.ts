@@ -1,3 +1,4 @@
+import { AttachmentUploadReceiptSchema, type AttachmentUploadReceipt } from '@desktop-agent/server-protocol';
 import {
   ClientHelloSchema,
   ChannelBindingSchema,
@@ -195,6 +196,44 @@ export class JojoClient {
     this.socket?.close(1000, 'client_closed');
     this.socket = undefined;
     this._connectionId = undefined;
+  }
+
+  /** Raw Blob upload. Browser XHR reports transferred bytes; fetch fallback reports completion only. */
+  async uploadAttachment(sessionId: string, file: Blob, name: string, options: {
+    signal?: AbortSignal; onProgress?: (loaded: number, total: number) => void;
+  } = {}): Promise<AttachmentUploadReceipt> {
+    const url = `${this.baseUrl}/api/v1/sessions/${encodeURIComponent(sessionId)}/attachments?name=${encodeURIComponent(name)}`;
+    const headers: Record<string, string> = { 'content-type': 'application/octet-stream' };
+    if (this.options.token) headers.authorization = `Bearer ${this.options.token}`;
+    options.signal?.throwIfAborted();
+    if (options.onProgress && typeof XMLHttpRequest !== 'undefined' && !this.options.fetch) {
+      return new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        const abort = () => xhr.abort();
+        const cleanup = () => options.signal?.removeEventListener('abort', abort);
+        xhr.open('POST', url);
+        for (const [key, value] of Object.entries(headers)) xhr.setRequestHeader(key, value);
+        xhr.upload.onprogress = (event) => options.onProgress?.(event.loaded, file.size);
+        xhr.onerror = () => { cleanup(); reject(new Error('Attachment upload network error')); };
+        xhr.onabort = () => { cleanup(); reject(new DOMException('Upload cancelled', 'AbortError')); };
+        xhr.onload = () => {
+          cleanup();
+          try {
+            const data = JSON.parse(xhr.responseText);
+            if (xhr.status < 200 || xhr.status >= 300) throw new JojoClientError(ErrorResponseSchema.parse(data).error);
+            resolve(AttachmentUploadReceiptSchema.parse(data));
+          } catch (cause) { reject(cause); }
+        };
+        options.signal?.addEventListener('abort', abort, { once: true });
+        xhr.send(file);
+      });
+    }
+    const response = await this.fetchImpl(url, { method: 'POST', headers, body: file, ...(options.signal ? { signal: options.signal } : {}) });
+    const data = await response.json();
+    if (!response.ok) throw new JojoClientError(ErrorResponseSchema.parse(data).error);
+    const receipt = AttachmentUploadReceiptSchema.parse(data);
+    options.onProgress?.(file.size, file.size);
+    return receipt;
   }
 
   getServerInfo(): Promise<ServerInfo> {

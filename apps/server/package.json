@@ -17,7 +17,8 @@
     "@desktop-agent/server-core": "workspace:*",
     "@desktop-agent/server-http": "workspace:*",
     "@desktop-agent/server-protocol": "workspace:*",
-    "@desktop-agent/storage": "workspace:*"
+    "@desktop-agent/storage": "workspace:*",
+    "@desktop-agent/attachment-access": "workspace:*"
   },
   "devDependencies": {
     "@desktop-agent/contracts": "workspace:*"

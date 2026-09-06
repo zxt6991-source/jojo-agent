@@ -1,3 +1,4 @@
+import { resolveModelAttachments } from '@desktop-agent/attachment-access';
 import { createHash } from 'node:crypto';
 import {
   NoopHookRuntime,
@@ -1227,6 +1228,12 @@ async function executeAgentTurn(options: RuntimeAgentRunOptions, resuming: boole
         const step = await runModelStep({
           model: options.model,
           messages: context.messages,
+          attachments: await resolveModelAttachments(context.messages, options.attachmentAccess, {
+            sessionId: options.sessionId,
+            workingDirectory: options.workingDirectory,
+            executionId: state.operationId,
+            signal: options.signal
+          }),
           toolDefinitions: data.toolDefinitions,
           ...(requestInstructions.length ? { instructions: requestInstructions } : {}),
           provider: options.provider,

@@ -1,17 +1,16 @@
-import { lstat, readdir, readFile } from 'node:fs/promises';
+import { lstat, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { LocalAttachmentStore, type AttachmentStore } from '@desktop-agent/attachments';
-import { extractText } from './attachment-preview';
+import { createDefaultAttachmentExtractorRegistry, type AttachmentExtractorRegistry } from '@desktop-agent/attachment-extractors';
 import {
   FileContentBlockSchema, MAX_ATTACHMENT_PREVIEW_TEXT, MAX_ATTACHMENT_PREVIEW_BYTES, MAX_FILE_ATTACHMENTS, MAX_FILE_BYTES,
   MAX_TOTAL_ATTACHMENT_PREVIEW_TEXT, type AttachmentSelection
 } from '@desktop-agent/contracts';
 
-const TEXT_EXTENSIONS = new Set('txt md markdown mdx csv tsv json jsonl html htm xml yaml yml log ini toml js jsx ts tsx py rb go rs java c h cpp hpp css scss sh sql vue svelte r tex rst'.split(' '));
 const SKIP_DIRECTORIES = new Set(['node_modules', 'dist', 'build', 'vendor', '__pycache__']);
 
 /** Only paths explicitly selected in a native dialog enter this importer. */
-export async function importFileAttachments(paths: string[], mode: 'files' | 'folder', store: AttachmentStore = new LocalAttachmentStore()): Promise<AttachmentSelection> {
+export async function importFileAttachments(paths: string[], mode: 'files' | 'folder', store: AttachmentStore = new LocalAttachmentStore(), registry: AttachmentExtractorRegistry = createDefaultAttachmentExtractorRegistry()): Promise<AttachmentSelection> {
   const result: AttachmentSelection = { files: [], warnings: [] };
   let visited = 0;
   let attempted = 0;
@@ -37,22 +36,22 @@ export async function importFileAttachments(paths: string[], mode: 'files' | 'fo
         return;
       }
       if (!info.isFile()) { skipped += 1; return; }
-      const extension = path.extname(filePath).slice(1).toLowerCase();
       attempted += 1;
       if (info.size > MAX_FILE_BYTES) { warn(`${relativePath}：超过单文件 512 MB 限制。`); return; }
       const attachment = await store.saveFile({ path: filePath });
       attachment.relativePath = relativePath;
-      const supported = TEXT_EXTENSIONS.has(extension) || ['pdf', 'xlsx', 'xls', 'xlsm', 'xlsb', 'ods'].includes(extension);
       const remaining = MAX_TOTAL_ATTACHMENT_PREVIEW_TEXT - totalText;
-      if (supported && attachment.bytes <= MAX_ATTACHMENT_PREVIEW_BYTES && remaining > 0) {
+      if (attachment.bytes <= MAX_ATTACHMENT_PREVIEW_BYTES && remaining > 0) {
         try {
-          const storedPath = await store.getPath(attachment.attachmentId);
-          if (!storedPath) throw new Error('附件原文件不可用');
-          const extracted = await extractText(await readFile(storedPath), extension);
-          if (extracted.text.trim()) {
+          const extracted = await registry.extract({
+            metadata: attachment,
+            openStream: () => store.openFile(attachment.attachmentId),
+            getPath: () => store.getPath(attachment.attachmentId)
+          });
+          if (extracted) {
             const limit = Math.min(MAX_ATTACHMENT_PREVIEW_TEXT, remaining);
             attachment.preview = {
-              type: 'text', extractor: extension,
+              ...extracted,
               text: extracted.text.slice(0, limit),
               truncated: extracted.truncated || extracted.text.length > limit
             };

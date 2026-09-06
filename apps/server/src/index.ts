@@ -1,3 +1,4 @@
+import { LocalAttachmentAccessResolver } from '@desktop-agent/attachment-access/local';
 import path from 'node:path';
 import type { AgentRuntime } from '@desktop-agent/agent-runtime';
 import {
@@ -101,6 +102,7 @@ export async function createHeadlessServer(options: HeadlessServerOptions): Prom
     })
     : undefined;
   const runtime = await createJojoRuntime({
+    attachmentAccess: new LocalAttachmentAccessResolver(options.server?.attachmentStore),
     ...options,
     capabilities: [
       ...(options.capabilities ?? []),

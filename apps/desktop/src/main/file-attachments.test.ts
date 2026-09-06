@@ -1,3 +1,5 @@
+import { deck, officeZip, paragraph, word } from '../../../../packages/attachment-extractors/test/fixtures/office';
+import { AttachmentExtractorRegistry } from '@desktop-agent/attachment-extractors';
 import { LocalAttachmentStore } from '@desktop-agent/attachments';
 import { afterEach, describe, expect, it } from 'vitest';
 import { mkdtemp, mkdir, rm, symlink, truncate, writeFile } from 'node:fs/promises';
@@ -23,6 +25,38 @@ async function importFileAttachments(paths: string[], mode: 'files' | 'folder') 
 }
 
 describe('chat file attachments', () => {
+  it('imports Office previews while keeping corrupt Office originals readable', async () => {
+    const root = await fixture();
+    await writeFile(path.join(root, 'report.docx'), officeZip([['word/document.xml', word(paragraph('DOCX revenue 1234'))]]));
+    await writeFile(path.join(root, 'slides.pptx'), officeZip(deck(['PPTX overview'])));
+    await writeFile(path.join(root, 'corrupt.docx'), Buffer.from('corrupt'));
+    const result = await importFileAttachments([root], 'folder');
+    expect(result.files).toHaveLength(3);
+    expect(result.files.find((file) => file.attachment.name === 'report.docx')?.attachment.preview?.text).toContain('DOCX revenue 1234');
+    expect(result.files.find((file) => file.attachment.name === 'slides.pptx')?.attachment.preview?.text).toContain('[幻灯片 1]');
+    const corrupt = result.files.find((file) => file.attachment.name === 'corrupt.docx')!.attachment;
+    expect(corrupt.preview).toBeUndefined();
+    expect(await result.store.exists(corrupt.attachmentId)).toBe(true);
+    expect(result.warnings.join()).toContain('预览不可用');
+  });
+
+  it('keeps stored resources usable when a registered extractor fails', async () => {
+    const root = await fixture();
+    const source = path.join(root, 'sample.txt');
+    await writeFile(source, 'durable bytes');
+    const store = new LocalAttachmentStore(await fixture());
+    const registry = new AttachmentExtractorRegistry();
+    registry.register({ id: 'broken', supports: () => true, extract: async () => { throw new Error('parser failed'); } });
+    const result = await importFiles([source], 'files', store, registry);
+    expect(result.files).toHaveLength(1);
+    expect(result.warnings.join()).toContain('原始文件已保存，预览不可用');
+    const ref = (result.files[0] as FileContentBlock).attachment;
+    expect(ref.preview).toBeUndefined();
+    await rm(source);
+    expect(await store.exists(ref.attachmentId)).toBe(true);
+    expect(await store.getMetadata(ref.attachmentId)).toMatchObject({ name: 'sample.txt', bytes: 13 });
+  });
+
   it('extracts PDF pages, HTML text and every Excel sheet from real file bytes', async () => {
     const root = await fixture();
     await writeFile(path.join(root, 'guide.PDF'), pdfFixture('Annual revenue 1234'));
@@ -65,13 +99,14 @@ describe('chat file attachments', () => {
     const root = await fixture();
     const fixtures: Record<string, string | Buffer> = {
       'broken.pdf': 'not a PDF', 'scan.pdf': pdfFixture(''), 'binary.txt': Buffer.from([0, 1, 2]),
-      'empty.txt': '', 'unsupported.zip': 'zip', 'large.md': '', 'good.md': '# keep me'
+      'empty.txt': '', 'broken.zip': 'zip', 'large.md': '', 'good.md': '# keep me'
     };
     for (const [name, data] of Object.entries(fixtures)) await writeFile(path.join(root, name), data);
     await truncate(path.join(root, 'large.md'), MAX_FILE_BYTES + 1);
     const result = await importFileAttachments(Object.keys(fixtures).map((name) => path.join(root, name)), 'files');
-    expect(result.files.map((file) => file.attachment.name)).toEqual(['broken.pdf', 'scan.pdf', 'binary.txt', 'empty.txt', 'unsupported.zip', 'good.md']);
-    expect(result.warnings).toHaveLength(4);
+    expect(result.files.map((file) => file.attachment.name)).toEqual(['broken.pdf', 'scan.pdf', 'binary.txt', 'empty.txt', 'broken.zip', 'good.md']);
+    expect(result.warnings).toHaveLength(5);
+    expect(result.warnings.some((warning) => warning.includes('broken.zip') && warning.includes('预览不可用'))).toBe(true);
     expect(result.warnings.join()).toContain('OCR');
     expect(result.warnings.join()).toContain('512 MB');
   });

@@ -4,6 +4,10 @@ import path from 'node:path';
 export default defineConfig({
   resolve: {
     alias: {
+      '@desktop-agent/attachment-extractors': path.resolve('packages/attachment-extractors/src/index.ts'),
+      '@desktop-agent/attachment-access/local': path.resolve('packages/attachment-access/src/local.ts'),
+      '@desktop-agent/attachment-access/container': path.resolve('packages/attachment-access/src/container.ts'),
+      '@desktop-agent/attachment-access': path.resolve('packages/attachment-access/src/index.ts'),
       '@desktop-agent/attachments': path.resolve('packages/attachments/src/index.ts'),
       '@desktop-agent/contracts/model': path.resolve('packages/contracts/src/model.ts'),
       '@desktop-agent/contracts/tools': path.resolve('packages/contracts/src/tools.ts'),

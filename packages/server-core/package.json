@@ -9,6 +9,9 @@
     "@desktop-agent/app-service": "workspace:*",
     "@desktop-agent/channel-core": "workspace:*",
     "@desktop-agent/scheduler": "workspace:*",
-    "@desktop-agent/server-protocol": "workspace:*"
+    "@desktop-agent/server-protocol": "workspace:*",
+    "@desktop-agent/attachments": "workspace:*",
+    "@desktop-agent/attachment-extractors": "workspace:*",
+    "@desktop-agent/contracts": "workspace:*"
   }
 }

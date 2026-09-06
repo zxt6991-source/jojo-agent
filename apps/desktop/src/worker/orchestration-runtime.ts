@@ -1,3 +1,4 @@
+import { LocalAttachmentAccessResolver } from '@desktop-agent/attachment-access/local';
 import type { AgentRuntime, RuntimePermissionGate } from '@desktop-agent/agent-runtime';
 import { MemoryAgentRuntimeStore, type AgentRuntimeStore } from '@desktop-agent/agent-runtime/spi';
 import type { MemoryRuntime } from '@desktop-agent/agent-runtime';
@@ -117,6 +118,7 @@ export function createDesktopOrchestratedAgentRunner(options: DesktopLeafAgentRu
   const runtimeStore = options.runtimeStore ?? new MemoryAgentRuntimeStore();
   const environments = options.runtimeService?.environments ?? new RuntimeEnvironmentRegistry();
   const sharedRuntime: AgentRuntime | Promise<AgentRuntime> = options.runtimeService?.runtime ?? createJojoRuntime({
+    attachmentAccess: new LocalAttachmentAccessResolver(),
     host: { kind: 'desktop' },
     store: runtimeStore,
     providers: environments.providers,

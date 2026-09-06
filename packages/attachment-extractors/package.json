@@ -1,0 +1,18 @@
+{
+  "name": "@desktop-agent/attachment-extractors",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": "./src/index.ts",
+  "dependencies": {
+    "@desktop-agent/contracts": "workspace:*",
+    "html-to-text": "^10.0.1",
+    "pdfjs-dist": "^6.3.289",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
+    "yauzl": "^2.10.0",
+    "@xmldom/xmldom": "^0.9.12"
+  },
+  "devDependencies": {
+    "@types/html-to-text": "^9.0.4",
+    "@types/yauzl": "^2.10.3"
+  }
+}

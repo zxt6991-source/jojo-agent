@@ -1,3 +1,4 @@
+import type { AttachmentAccessResolver } from '@desktop-agent/attachment-access';
 import {
   createAgentRuntime,
   type AgentRuntime,
@@ -32,6 +33,7 @@ export interface RuntimeCapability {
 }
 
 export type JojoRuntimeCompositionOptions = {
+  attachmentAccess?: AttachmentAccessResolver;
   host: RuntimeHostDescriptor;
   providers: ModelProviderResolver;
   permissions: RuntimePermissionGate;
@@ -108,6 +110,7 @@ export async function createJojoRuntime(options: JojoRuntimeCompositionOptions):
     ...(options.now ? { now: options.now } : {}),
     environment: {
       host: options.host,
+      ...(options.attachmentAccess ? { attachmentAccess: options.attachmentAccess } : {}),
       providers: options.providers,
       tools: builder.toolResolver(),
       permissions: options.permissions,

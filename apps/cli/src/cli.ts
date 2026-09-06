@@ -1,3 +1,4 @@
+import { attachmentsCommand } from './commands/attachments.js';
 import { Command, InvalidArgumentError } from 'commander';
 import { serveCommand } from './commands/serve.js';
 import {
@@ -76,6 +77,16 @@ export async function runCli(argv = process.argv, io: CliIo = process): Promise<
   for (const action of ['install', 'uninstall', 'start', 'stop', 'restart', 'status'] as ServiceAction[]) {
     service.command(action).option('--config <path>').option('--instance-id <id>').option('--json')
       .action((options) => serviceCommand(action, options, io.stdout));
+  }
+  const attachments = program.command('attachments').description('Inspect and collect unreferenced attachments');
+  for (const action of ['stats', 'gc']) {
+    const command = attachments.command(action)
+      .requiredOption('--root <paths...>', 'all attachment store roots (v1 and v2)')
+      .requiredOption('--source <paths...>', 'all session JSONL directories/files and runtime SQLite databases')
+      .option('--grace-days <days>', 'orphan grace period', '7');
+    if (action === 'gc') command.option('--apply', 'delete candidates; default is preview only')
+      .option('--offline', 'assert all processes writing these attachments and sessions are stopped');
+    command.action((options) => attachmentsCommand(options, io.stdout));
   }
   await program.parseAsync(argv);
 }

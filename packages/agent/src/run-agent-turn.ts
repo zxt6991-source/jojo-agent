@@ -1,3 +1,4 @@
+import { resolveModelAttachments } from '@desktop-agent/attachment-access';
 import type { AgentEvent, Message, Tool, ToolCall, ToolDefinition, ToolResult } from '@desktop-agent/contracts';
 import { AgentError, errorMessage, isAbortError, throwIfAborted } from './errors.js';
 import {
@@ -277,6 +278,11 @@ export async function runAgentTurn(options: AgentRunOptions): Promise<AgentRunRe
       const step = await runModelStep({
         model: options.model,
         messages: context.messages,
+        attachments: await resolveModelAttachments(context.messages, options.attachmentAccess, {
+          sessionId: options.sessionId,
+          workingDirectory: options.workingDirectory,
+          signal: options.signal
+        }),
         toolDefinitions: state.toolDefinitions,
         instructions,
         provider: options.provider,

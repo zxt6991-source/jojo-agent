@@ -1,3 +1,6 @@
+import { AttachmentUploads, type UploadStreamInput } from './attachment-uploads';
+import type { AttachmentStore } from '@desktop-agent/attachments';
+import { StartRunInputSchema, type AttachmentUploadReceipt } from '@desktop-agent/server-protocol';
 import { createHash } from 'node:crypto';
 import type { AppServiceEvent, DurableIdempotencyStore, JojoAppService } from '@desktop-agent/app-service';
 import type {
@@ -79,6 +82,7 @@ export interface ChannelAdminService {
 }
 
 export type JojoServerCoreOptions = {
+  attachmentStore?: AttachmentStore;
   serverId?: string;
   serverVersion?: string;
   models?: ModelInfo[];
@@ -93,6 +97,7 @@ export type JojoServerCoreOptions = {
 };
 
 export interface JojoServerCore {
+  uploadAttachment(ctx: RequestContext, sessionId: string, input: UploadStreamInput): Promise<AttachmentUploadReceipt>;
   readonly info: ServerInfo;
   readonly capabilities: ServerCapabilities;
   readonly models: ModelInfo[];
@@ -168,7 +173,10 @@ class DefaultJojoServerCore implements JojoServerCore {
   private readonly listeners = new Set<(event: ServerCoreEvent) => void>();
   private readonly unsubscribes: Array<() => void>;
 
+  private readonly uploads: AttachmentUploads;
+
   constructor(private readonly service: JojoAppService, options: JojoServerCoreOptions) {
+    this.uploads = new AttachmentUploads(options.attachmentStore);
     this.info = {
       id: options.serverId ?? `srv_${crypto.randomUUID()}`,
       version: options.serverVersion ?? '0.1.0',
@@ -265,12 +273,21 @@ class DefaultJojoServerCore implements JojoServerCore {
     if (ctx.connectionId) this.leases.detach(sessionId, ctx.connectionId);
   }
 
+  async uploadAttachment(ctx: RequestContext, sessionId: string, input: UploadStreamInput): Promise<AttachmentUploadReceipt> {
+    authorize(ctx, 'runs:start');
+    await this.service.getSession(ctx, sessionId);
+    return this.uploads.upload(ctx.principal.id, sessionId, input);
+  }
+
   async startRun(ctx: RequestContext, sessionId: string, input: StartRunInput, key?: string): Promise<RunSnapshot> {
     authorize(ctx, 'runs:start');
     this.leases.requireControl(sessionId, ctx.connectionId);
-    return await this.idempotency.execute(ctx.principal.id, `run.start:${sessionId}`, key, input, () => (
-      this.service.startRun(ctx, sessionId, input)
-    ));
+    return await this.idempotency.execute(ctx.principal.id, `run.start:${sessionId}`, key, input, async () => {
+      const resolved = await this.uploads.resolve(ctx.principal.id, sessionId, input);
+      const validated = StartRunInputSchema.safeParse(resolved);
+      if (!validated.success) throw new ProtocolFailure({ code: 'invalid_request', message: 'Resolved attachment previews exceed message limits.' });
+      return this.service.startRun(ctx, sessionId, validated.data);
+    });
   }
 
   getRun(ctx: RequestContext, sessionId: string, runId: string): Promise<RunSnapshot> {

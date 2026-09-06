@@ -1,3 +1,4 @@
+import { LocalAttachmentAccessResolver } from '@desktop-agent/attachment-access/local';
 import path from 'node:path';
 import os from 'node:os';
 import { createHash } from 'node:crypto';
@@ -262,6 +263,7 @@ const desktopChannelApproval = new DesktopChannelApprovalBridge({
 });
 channelManager.setInteractionHandler(desktopChannelApproval);
 const jojoRuntime = createJojoRuntime({
+  attachmentAccess: new LocalAttachmentAccessResolver(),
   host: { kind: 'desktop' },
   store: agentRuntimeStore,
   providers: runtimeEnvironments.providers,

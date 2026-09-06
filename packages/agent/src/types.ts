@@ -1,3 +1,4 @@
+import type { AttachmentAccessResolver } from '@desktop-agent/attachment-access';
 import type {
   AgentEvent,
   ApprovalRequest,
@@ -21,6 +22,7 @@ export type AgentRunOptions = {
   userImages?: Extract<Message['content'][number], { type: 'image' }>[];
   userFiles?: Extract<Message['content'][number], { type: 'text' | 'file' }>[];
   provider: ModelProvider;
+  attachmentAccess?: AttachmentAccessResolver;
   tools: Tool[];
   /** Trusted runtime instructions, for example connected MCP server instructions. */
   instructions?: string[];

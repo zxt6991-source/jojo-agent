@@ -1,11 +1,23 @@
 import { z } from 'zod';
-import type { Message, ToolCall } from './messages';
+import type { AttachmentPreview, Message, ToolCall } from './messages';
 import type { ToolDefinition } from './tools';
+
+/** Ephemeral, trusted execution projection. Never persisted in FileAttachmentRef. */
+export type ModelAttachmentDescriptor = {
+  attachmentId: string;
+  name: string;
+  bytes: number;
+  preview?: AttachmentPreview;
+  access:
+    | { kind: 'path'; path: string; readonly: boolean }
+    | { kind: 'unavailable'; reason: string };
+};
 
 export type ModelRequest = {
   model: string;
   messages: Message[];
   tools: ToolDefinition[];
+  attachments?: ModelAttachmentDescriptor[];
   /** Trusted extension instructions appended to the provider system message. */
   instructions?: string[];
   signal: AbortSignal;

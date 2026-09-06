@@ -1,3 +1,5 @@
+import { DatabaseSync } from 'node:sqlite';
+import { deck, officeZip, paragraph, word } from '../../../packages/attachment-extractors/test/fixtures/office';
 import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -10,14 +12,19 @@ test('imports files and folders, removes attachments, sends file-only input and 
   const dataDirectory = await mkdtemp(path.join(os.tmpdir(), 'jojo-attachments-e2e-'));
   const folder = path.join(dataDirectory, 'reference');
   await mkdir(folder);
+  await writeFile(path.join(folder, 'report.docx'), officeZip([['word/document.xml', word(paragraph('DOCX revenue 2468'))]]));
+  await writeFile(path.join(folder, 'slides.pptx'), officeZip(deck(['PPTX revenue 1357'])));
   await writeFile(path.join(folder, 'note.md'), '# 附件测试\n本月收入 1234 元。');
-  await writeFile(path.join(folder, 'archive.zip'), Buffer.from([0x50, 0x4b, 3, 4]));
+  await writeFile(path.join(folder, 'archive.zip'), officeZip([['archive-note.txt', 'Archive secret content']]));
   await writeFile(path.join(folder, 'firmware.bin'), Buffer.from([0, 1, 2, 255]));
   await writeFile(path.join(folder, 'page.html'), '<h1>HTML 附件</h1><p>成本 456 元</p>');
   await writeFile(path.join(folder, 'manual.pdf'), pdfFixture('PDF revenue 7890'));
   const workbook = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([['收入', 1234]]), '统计');
   await writeFile(path.join(folder, 'report.xlsx'), XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' }));
+  const database = new DatabaseSync(path.join(folder, 'sample.sqlite'));
+  try { database.exec("CREATE TABLE customer_schema(id INTEGER PRIMARY KEY, label TEXT); INSERT INTO customer_schema VALUES(1, 'SQLite secret content')"); }
+  finally { database.close(); }
   const launched = await launchElectron(dataDirectory);
   try {
     await launched.page.getByRole('button', { name: '新建对话' }).click();
@@ -37,12 +44,12 @@ test('imports files and folders, removes attachments, sends file-only input and 
     await launched.page.getByRole('button', { name: '添加附件' }).click();
     await launched.page.getByRole('menuitem', { name: /添加文件夹/ }).click();
     await expect(launched.page.getByLabel('待发送文件')).toContainText('reference/report.xlsx');
-    await expect(launched.page.getByLabel('待发送文件').locator('.file-chip')).toHaveCount(6);
+    await expect(launched.page.getByLabel('待发送文件').locator('.file-chip')).toHaveCount(9);
     await launched.page.getByRole('button', { name: '发送消息' }).click();
     await expect(launched.page.getByText('hello from offline e2e')).toBeVisible();
-    await expect(launched.page.locator('.message-files details')).toHaveCount(6);
+    await expect(launched.page.locator('.message-files details')).toHaveCount(9);
     await launched.page.reload();
-    await expect(launched.page.locator('.message-files details')).toHaveCount(6);
+    await expect(launched.page.locator('.message-files details')).toHaveCount(9);
     await launched.page.locator('.message-files summary').filter({ hasText: 'report.xlsx' }).click();
     await expect(launched.page.locator('.message-files pre').filter({ hasText: '收入,1234' })).toBeVisible();
     const sessions = await launched.page.evaluate(() => window.desktopAgent.listSessions());
@@ -51,6 +58,12 @@ test('imports files and folders, removes attachments, sends file-only input and 
     expect(journal).toContain('本月收入 1234 元');
     expect(journal).toContain('收入,1234');
     expect(journal).toContain('PDF revenue 7890');
+    expect(journal).toContain('DOCX revenue 2468');
+    expect(journal).toContain('PPTX revenue 1357');
+    expect(journal).toContain('archive-note.txt');
+    expect(journal).toContain('customer_schema');
+    expect(journal).not.toContain('SQLite secret content');
+    expect(journal).not.toContain('Archive secret content');
     expect(journal).toContain('"type":"file"');
     await expect(launched.page.locator('.message-files summary').filter({ hasText: 'firmware.bin' })).toContainText('原始文件');
   } finally { await launched.app.close(); }

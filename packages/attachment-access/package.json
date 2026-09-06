@@ -1,0 +1,14 @@
+{
+  "name": "@desktop-agent/attachment-access",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./local": "./src/local.ts",
+    "./container": "./src/container.ts"
+  },
+  "dependencies": {
+    "@desktop-agent/contracts": "workspace:*",
+    "@desktop-agent/attachments": "workspace:*"
+  }
+}

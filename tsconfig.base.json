@@ -12,6 +12,10 @@
     "exactOptionalPropertyTypes": true,
     "baseUrl": ".",
     "paths": {
+      "@desktop-agent/attachment-extractors": ["packages/attachment-extractors/src/index.ts"],
+      "@desktop-agent/attachment-access/container": ["packages/attachment-access/src/container.ts"],
+      "@desktop-agent/attachment-access": ["packages/attachment-access/src/index.ts"],
+      "@desktop-agent/attachment-access/local": ["packages/attachment-access/src/local.ts"],
       "@desktop-agent/attachments": ["packages/attachments/src/index.ts"],
       "@desktop-agent/contracts": ["packages/contracts/src/index.ts"],
       "@desktop-agent/contracts/model": ["packages/contracts/src/model.ts"],

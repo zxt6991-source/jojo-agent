@@ -2,6 +2,7 @@ import type {
   AgentEvent,
   Message,
   ModelProvider,
+  ModelAttachmentDescriptor,
   ToolCall,
   ToolDefinition
 } from '@desktop-agent/contracts';
@@ -12,6 +13,7 @@ type ModelStepOptions = {
   messages: Message[];
   toolDefinitions: ToolDefinition[];
   instructions?: string[];
+  attachments?: ModelAttachmentDescriptor[];
   provider: ModelProvider;
   signal: AbortSignal;
   maxOutputTokens?: number;
@@ -34,6 +36,7 @@ export async function runModelStep(options: ModelStepOptions): Promise<ModelStep
     model: options.model,
     messages: options.messages,
     tools: options.toolDefinitions,
+    ...(options.attachments ? { attachments: options.attachments } : {}),
     ...(options.instructions?.length ? { instructions: options.instructions } : {}),
     signal: options.signal,
     ...(options.maxOutputTokens !== undefined ? { maxOutputTokens: options.maxOutputTokens } : {})
