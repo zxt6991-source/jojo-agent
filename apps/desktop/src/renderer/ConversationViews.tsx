@@ -1,8 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import DOMPurify from 'dompurify';
 import { marked } from 'marked';
-import { GeneratedDocumentCard } from './GeneratedDocumentCard';
-import { generatedDocuments } from './generated-documents';
+import { ArtifactCard } from './artifacts/ArtifactCard';
+import { detectArtifacts, resolveArtifactReference, type ArtifactDescriptor } from '@desktop-agent/contracts';
 import {
   firstLine,
   hasLiveOutput,
@@ -12,9 +12,25 @@ import {
   type TrajectoryRecord
 } from './conversation';
 
-export function Markdown({ text }: { text: string }) {
+export function Markdown({ text, artifacts = [], onOpenArtifact }: { text: string; artifacts?: ArtifactDescriptor[]; onOpenArtifact?: (id: string) => void }) {
   const html = useMemo(() => DOMPurify.sanitize(marked.parse(text, { async: false }) as string), [text]);
-  return <div className="markdown" dangerouslySetInnerHTML={{ __html: html }} />;
+  const root = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!onOpenArtifact) return;
+    for (const element of root.current?.querySelectorAll<HTMLElement>('a, code') ?? []) {
+      if (element.closest('pre') || (element.tagName === 'CODE' && element.closest('a'))) continue;
+      const artifact = resolveArtifactReference(element.getAttribute('href') ?? element.textContent ?? '', artifacts);
+      if (!artifact) continue;
+      element.dataset.artifactId = artifact.id;
+      element.setAttribute('role', 'button'); element.tabIndex = 0;
+      element.classList.add('artifact-reference');
+    }
+  }, [html, artifacts, onOpenArtifact]);
+  const open = (event: React.MouseEvent | React.KeyboardEvent) => {
+    const element = (event.target as HTMLElement).closest<HTMLElement>('[data-artifact-id]');
+    if (element?.dataset.artifactId && onOpenArtifact) { event.preventDefault(); onOpenArtifact(element.dataset.artifactId); }
+  };
+  return <div ref={root} className="markdown" onClick={open} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') open(event); }} dangerouslySetInnerHTML={{ __html: html }} />;
 }
 
 function DisclosureRow({
@@ -88,8 +104,12 @@ function ToolRow({ node, onInspect }: { node: ToolNode; onInspect?: (id: string)
 function ChatNodeView({
   node,
   onInspect,
-  onOpenAutomation
+  onOpenAutomation,
+  artifacts,
+  onOpenArtifact
 }: {
+  artifacts?: ArtifactDescriptor[];
+  onOpenArtifact?: (id: string) => void;
   node: ConversationNode;
   onInspect?: (id: string) => void;
   onOpenAutomation?: (scheduleId: string) => void;
@@ -106,7 +126,7 @@ function ChatNodeView({
         <div><strong>{node.automation.name}</strong><small>自动化 · {new Date(node.automation.triggeredAt).toLocaleString()}</small></div>
         {onOpenAutomation && <button type="button" onClick={() => onOpenAutomation(node.automation!.scheduleId)}>查看自动化</button>}
       </header>}
-      <div className="bubble"><Markdown text={node.text} /></div>
+      <div className="bubble"><Markdown text={node.text} {...(artifacts ? { artifacts } : {})} {...(onOpenArtifact ? { onOpenArtifact } : {})} /></div>
     </article>;
   }
   if (node.kind === 'tool') {
@@ -145,6 +165,7 @@ function TurnStatus({ startedAt }: { startedAt: number | null }) {
 }
 
 export function ChatTranscript({
+  sessionId,
   snapshot,
   running,
   turnStartedAt,
@@ -152,6 +173,7 @@ export function ChatTranscript({
   onOpenAutomation,
   renderAfterTurn
 }: {
+  sessionId?: string;
   snapshot: ConversationSnapshot;
   running: boolean;
   turnStartedAt: number | null;
@@ -159,16 +181,23 @@ export function ChatTranscript({
   onOpenAutomation?: (scheduleId: string) => void;
   renderAfterTurn?: (turn: ConversationSnapshot['turns'][number]) => React.ReactNode;
 }) {
+  const [openRequest, setOpenRequest] = useState({ id: '', count: 0 });
   const waiting = running && !hasLiveOutput(snapshot);
+  const artifacts = useMemo(() => detectArtifacts(snapshot.nodes), [snapshot.nodes]);
+  // Place each current artifact at its last producing turn, without duplicate cards.
+  const lastTurn = new Map<string, string>();
+  for (const turn of snapshot.turns) for (const artifact of detectArtifacts(turn.nodes)) lastTurn.set(artifact.id, turn.id);
   return <div className="chat-transcript">
     {snapshot.turns.map((turn) => <React.Fragment key={turn.id}>
       {turn.nodes.map((node) => <ChatNodeView
         key={node.id}
         node={node}
+        artifacts={artifacts}
+        onOpenArtifact={(id) => setOpenRequest((previous) => ({ id, count: previous.count + 1 }))}
         {...(onInspect ? { onInspect } : {})}
         {...(onOpenAutomation ? { onOpenAutomation } : {})}
       />)}
-      {generatedDocuments(turn.nodes).map((document) => <GeneratedDocumentCard key={document.id} document={{ name: document.name, content: document.content }} />)}
+      {artifacts.filter((artifact) => lastTurn.get(artifact.id) === turn.id).map((artifact) => <ArtifactCard key={artifact.id} artifact={artifact} openRequest={openRequest.id === artifact.id ? openRequest.count : 0} {...(sessionId ? { sessionId } : {})} />)}
       {renderAfterTurn?.(turn)}
     </React.Fragment>)}
     {waiting && <TurnStatus startedAt={turnStartedAt} />}

@@ -7,6 +7,13 @@ describe('preload push validation', () => {
     expect(parseAgentPush({ type: 'turn.cancelled', unexpected: true })).toBeNull();
   });
 
+  it('preserves structured artifacts in live tool completion events', () => {
+    const artifact = { id: 'artifact', name: 'report.html', kind: 'html', mimeType: 'text/html', source: 'create_document', storage: { type: 'conversation', content: '<h1>Report</h1>' }, version: 1 };
+    const event = { type: 'tool.finished', id: 'call', result: { callId: 'call', ok: true, content: 'Ready', artifacts: [artifact] } };
+    expect(parseAgentPush(event)).toEqual(event);
+    expect(parseAgentPush({ ...event, result: { ...event.result, artifacts: [{ ...artifact, name: '../escape.html' }] } })).toBeNull();
+  });
+
   it('accepts valid agent events', () => {
     expect(parseAgentPush({ type: 'text.delta', text: 'hello' })).toEqual({ type: 'text.delta', text: 'hello' });
   });

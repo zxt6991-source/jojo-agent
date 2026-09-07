@@ -1811,6 +1811,7 @@ function App() {
           {snapshot.nodes.length === 0 && !sessionBusy && conversationView === 'chat' && <div className="empty"><div className="empty-icon">⌁</div><h2>{active.projectBound === false ? '开始一段新对话' : '从本地项目开始'}</h2><p>{active.projectBound === false ? '直接提问，或从侧边栏选择项目后处理本地文件。' : '可以让我阅读文件、列出目录，或在你批准后执行命令。'}</p></div>}
           {conversationView === 'chat'
             ? <ChatTranscript
+              sessionId={active.id}
               snapshot={snapshot}
               running={sessionBusy}
               turnStartedAt={turnStartedAt}

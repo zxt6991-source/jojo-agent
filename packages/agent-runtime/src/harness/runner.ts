@@ -1423,11 +1423,19 @@ async function executeAgentTurn(options: RuntimeAgentRunOptions, resuming: boole
         const existingResult = existing?.type === 'message'
           ? toolResultFromMessage(existing.message, call.id)
           : undefined;
-        const result = existingResult ?? await executeApprovedToolCall(call, data, { ...options, loopSafety: safety });
+        const result = existingResult ?? await executeApprovedToolCall(call, data, {
+          ...options, loopSafety: safety,
+          emit: (event) => {
+            // Artifact content endpoints authorize against durable history. Publish only after commit.
+            if (event.type === 'tool.finished' && event.result.artifacts?.length) return;
+            options.emit(event);
+          }
+        });
         if (result.ok && !toolHasEffect(data, call.name, 'memory.')) data.memorySaveNudge = true;
         if (!existingResult || !data.messages.some((message) => message.id === resultEntryId)) {
           await appendDurableMessage(options, data, runtimeStore, state, createToolMessage(result, resultEntryId));
         }
+        if (result.artifacts?.length) options.emit({ type: 'tool.finished', id: call.id, result });
         if (hooks.configured('PostToolUse')) {
           const payload: PostToolUsePayload = {
             ...hookEnvelope(options, state, 'PostToolUse'),

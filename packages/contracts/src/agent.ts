@@ -1,3 +1,5 @@
+import { ArtifactDescriptorSchema } from './artifact.js';
+import { GeneratedDocumentSchema } from './generated-document.js';
 import { z } from 'zod';
 import { HookErrorCodeSchema, HookEventNameSchema } from './hooks.js';
 import { ToolResultContentBlockSchema, type ToolCall } from './messages.js';
@@ -30,6 +32,7 @@ const IpcToolResultSchema = z.object({
   callId: z.string().min(1).max(256),
   ok: z.boolean(),
   content: z.string().max(1_500_000),
+  artifacts: z.array(ArtifactDescriptorSchema).max(100).optional(),
   contentBlocks: z.array(ToolResultContentBlockSchema).max(100).optional(),
   truncated: z.boolean().optional(),
   code: z.string().max(256).optional()
@@ -106,7 +109,7 @@ export interface PermissionGate {
 const AgentEventBaseSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('turn.started'), sessionId: z.string().min(1).max(256), turnId: z.string().min(1).max(256) }).strict(),
   z.object({ type: z.literal('text.delta'), text: z.string().max(100_000) }).strict(),
-  z.object({ type: z.literal('tool.started'), id: z.string().min(1).max(256), name: z.string().min(1).max(256), input: BoundedJsonValueSchema }).strict(),
+  z.object({ type: z.literal('tool.started'), id: z.string().min(1).max(256), name: z.string().min(1).max(256), input: z.union([BoundedJsonValueSchema, GeneratedDocumentSchema]) }).strict(),
   z.object({ type: z.literal('tool.progress'), id: z.string().min(1).max(256), text: z.string().max(100_000) }).strict(),
   z.object({ type: z.literal('tool.finished'), id: z.string().min(1).max(256), result: IpcToolResultSchema }).strict(),
   z.object({ type: z.literal('approval.required'), request: ApprovalRequestSchema }).strict(),
@@ -179,7 +182,12 @@ export function serializedIpcBytes(value: unknown): number {
 }
 
 export const AgentEventSchema = AgentEventBaseSchema.superRefine((value, context) => {
-  if (serializedIpcBytes(value) > MAX_AGENT_EVENT_BYTES) {
+  const artifactEvent = (value.type === 'tool.finished' && Boolean(value.result.artifacts?.length))
+    || (value.type === 'tool.started' && value.name === 'create_document');
+  if (value.type === 'tool.started' && value.name !== 'create_document' && !BoundedJsonValueSchema.safeParse(value.input).success) {
+    context.addIssue({ code: 'custom', message: 'Tool input exceeds the IPC field limits.' });
+  }
+  if (serializedIpcBytes(value) > (artifactEvent ? 14 * 1024 * 1024 : MAX_AGENT_EVENT_BYTES)) {
     context.addIssue({ code: 'custom', message: 'Agent event exceeds the IPC size limit.' });
   }
 });

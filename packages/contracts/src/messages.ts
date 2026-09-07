@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { ArtifactDescriptorSchema } from './artifact';
 
 export const ToolCallSchema = z.object({
   id: z.string().min(1),
@@ -22,6 +23,7 @@ export const ToolResultSchema = z.object({
   callId: z.string().min(1),
   ok: z.boolean(),
   content: z.string(),
+  artifacts: z.array(ArtifactDescriptorSchema).max(100).optional(),
   structuredResult: z.unknown().optional(),
   contentBlocks: z.array(ToolResultContentBlockSchema).optional(),
   truncated: z.boolean().optional(),

@@ -1,3 +1,5 @@
+import { artifactsFromMessages, type Message } from '@desktop-agent/contracts';
+import { readSessionArtifact } from '@desktop-agent/tools-node';
 import { timingSafeEqual } from 'node:crypto';
 import Fastify, {
   type FastifyBaseLogger,
@@ -251,6 +253,40 @@ export async function createJojoHttpServer(
       header(request, 'idempotency-key')
     )
   )));
+  async function sessionArtifacts(ctx: RequestContext, sessionId: string) {
+    const session = await core.getSession(ctx, sessionId);
+    const messages: Message[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await core.transcript(ctx, sessionId, { laneId: 'main', limit: 500, ...(cursor ? { cursor } : {}) });
+      messages.push(...page.items.map((item) => item.message));
+      cursor = page.nextCursor;
+    } while (cursor);
+    return { session, messages };
+  }
+  app.get('/api/v1/sessions/:sessionId/artifacts', async (request, reply) => withHttp(request, reply, options.token, async (ctx) => {
+    const { messages } = await sessionArtifacts(ctx, param(request, 'sessionId'));
+    return artifactsFromMessages(messages);
+  }));
+  app.get('/api/v1/sessions/:sessionId/artifacts/:artifactId/content', async (request, reply) => withHttp(request, reply, options.token, async (ctx) => {
+    const { session, messages } = await sessionArtifacts(ctx, param(request, 'sessionId'));
+    const artifactId = param(request, 'artifactId');
+    const artifact = artifactsFromMessages(messages).find((item) => item.id === artifactId);
+    if (!artifact) return reply.code(404).send({ error: 'Artifact not found in this session.' });
+    if (artifact.storage.type === 'workspace' && session.executionScope.kind !== 'workspace') return reply.code(403).send({ error: 'Session has no workspace.' });
+    try {
+      const result = await readSessionArtifact(messages, session.executionScope.kind === 'workspace' ? session.executionScope.workingDirectory : '', artifactId);
+      reply.header('Content-Type', artifact.mimeType).header('Content-Length', result.bytes.length)
+        .header('ETag', result.etag).header('Cache-Control', 'private, no-store')
+        .header('X-Content-Type-Options', 'nosniff')
+        .header('Content-Security-Policy', "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'")
+        .header('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(artifact.name)}`);
+      return reply.send(result.bytes);
+    } catch {
+      return reply.code(403).send({ error: 'Artifact unavailable, outside workspace, or exceeds the content limit.' });
+    }
+  }));
+
   app.get('/api/v1/sessions/:sessionId/transcript', async (request, reply) => withHttp(request, reply, options.token, (ctx) => (
     core.transcript(ctx, param(request, 'sessionId'), parse(TranscriptQuerySchema, request.query))
   )));

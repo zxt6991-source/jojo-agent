@@ -1,3 +1,4 @@
+import { readSessionArtifact } from '@desktop-agent/tools-node';
 import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeImage, safeStorage, shell, utilityProcess, type IpcMainInvokeEvent, type UtilityProcess } from 'electron';
 import { Worker } from 'node:worker_threads';
 import { createHash } from 'node:crypto';
@@ -223,6 +224,18 @@ function assertTrusted(event: IpcMainInvokeEvent): void {
   if (!(url.startsWith('file://') || url.startsWith('http://localhost:') || url.startsWith('http://127.0.0.1:'))) {
     throw new Error('Untrusted IPC origin.');
   }
+}
+
+async function loadArtifactMessages(sessionId: string) {
+  const messages = new Map((await sessionStore.messages(sessionId)).map((message) => [message.id, message]));
+  const runtimeStore = new SqliteAgentRuntimeStore(runtimeDatabasePath);
+  try {
+    const lane = await runtimeStore.getLane(sessionId, 'main');
+    if (lane) for (const entry of await runtimeStore.readPath(lane.leafId)) {
+      if (entry.type === 'message') messages.set(entry.message.id, entry.message);
+    }
+    return [...messages.values()];
+  } finally { runtimeStore.close(); }
 }
 
 async function loadSessionCompactions(sessionId: string): Promise<SessionCompactionRecord[]> {
@@ -872,6 +885,22 @@ function registerIpc(): void {
     assertTrusted(event); const { sessionId } = SessionIdInputSchema.parse({ sessionId: raw });
     return loadSessionCompactions(sessionId);
   });
+  for (const channel of [IPC.readArtifact, IPC.saveArtifact]) {
+    ipcMain.handle(channel, async (event, raw) => {
+      assertTrusted(event);
+      const input = z.object({ sessionId: z.string().min(1).max(256), artifactId: z.string().min(1).max(4096) }).strict().parse(raw);
+      const session = await sessionStore.get(input.sessionId);
+      if (!session) throw new Error('Session not found.');
+      const result = await readSessionArtifact(await loadArtifactMessages(input.sessionId), session.workingDirectory, input.artifactId);
+      if (channel === IPC.readArtifact) return { data: result.bytes.toString('base64'), mimeType: result.artifact.mimeType };
+      const selected = await dialog.showSaveDialog(mainWindow!, {
+        title: '保存原始文件', defaultPath: path.join(app.getPath('downloads'), result.artifact.name), buttonLabel: '保存'
+      });
+      if (selected.canceled || !selected.filePath) return { canceled: true };
+      await writeFile(selected.filePath, result.bytes, { mode: 0o600 });
+      return { canceled: false, path: selected.filePath };
+    });
+  }
   ipcMain.handle(IPC.saveGeneratedDocument, async (event, raw) => {
     assertTrusted(event);
     const document = GeneratedDocumentSchema.parse(raw);

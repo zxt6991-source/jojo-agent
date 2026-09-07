@@ -1,3 +1,4 @@
+import { ShowArtifactTool } from './show-artifact-tool.js';
 import type { SecretBroker, Tool } from '@desktop-agent/contracts';
 import os from 'node:os';
 import path from 'node:path';
@@ -68,6 +69,7 @@ export function createDefaultTools(options: DefaultToolOptions = {}): Tool[] {
     new WebSearchTool(),
     new WebFetchTool(),
     new CreateDocumentTool(),
+    new ShowArtifactTool(),
     new WriteFileTool(snapshots, trashDirectory),
     new EditFileTool(snapshots, trashDirectory),
     new DeleteFileTool(snapshots, trashDirectory),
@@ -87,3 +89,6 @@ export function createDefaultToolRuntime(options: Omit<DefaultToolOptions, 'snap
     permissionGate: new DefaultPermissionGate(snapshots, terminalPolicy)
   };
 }
+
+export { ShowArtifactTool } from './show-artifact-tool.js';
+export { readSessionArtifact, produceWorkspaceArtifact } from './artifact-storage.js';

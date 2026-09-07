@@ -1,3 +1,5 @@
+import { classifyArtifact } from '@desktop-agent/contracts';
+import { produceWorkspaceArtifact } from './artifact-storage.js';
 import { chmod, mkdir, rename, rm, stat, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { Tool, ToolContext, ToolResult } from '@desktop-agent/contracts';
@@ -100,7 +102,13 @@ class FileMutationTool implements Tool {
     }
     await this.snapshots.record(prepared.target, true);
     const action = prepared.kind === 'create' ? 'Created' : 'Updated';
-    return toolResult(true, `${action} ${prepared.relativePath}.${trashed ? ' The previous version was saved in the application trash.' : ''}`);
+    const result = toolResult(true, `${action} ${prepared.relativePath}.${trashed ? ' The previous version was saved in the application trash.' : ''}`);
+    result.artifacts = [];
+    if (classifyArtifact(prepared.target).kind !== 'unknown') {
+      try { result.artifacts = [await produceWorkspaceArtifact(context.workingDirectory, prepared.target, this.name as 'write_file' | 'edit_file')]; }
+      catch { result.content += ' Artifact preview unavailable (file changed or exceeds the preview limit).'; }
+    }
+    return result;
   }
 }
 

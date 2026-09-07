@@ -9,6 +9,34 @@ import { emptyProgressState } from '../src/operation/state.js';
 const allow: PermissionGate = { check: async () => ({ decision: 'allow' }) };
 
 describe('public runtime facade', () => {
+  it('publishes artifact completion only after its authorization record is durable', async () => {
+    const store = new MemoryAgentRuntimeStore();
+    const append = store.appendEntry.bind(store);
+    let committed = false;
+    vi.spyOn(store, 'appendEntry').mockImplementation(async (entry) => {
+      const saved = await append(entry);
+      if (entry.type === 'message' && entry.message.content.some((block) => block.type === 'tool_result' && block.result.artifacts?.length)) committed = true;
+      return saved;
+    });
+    const tool: Tool = {
+      definition: { name: 'deliver', description: 'test', inputSchema: { type: 'object' } },
+      execute: async () => ({ callId: '', ok: true, content: 'ready', artifacts: [{ id: 'a', name: 'r.html', kind: 'html', mimeType: 'text/html', source: 'generated', storage: { type: 'conversation', content: '<h1>Ready</h1>' }, version: 1 }] })
+    };
+    const provider = new ScriptedProvider([
+      [{ type: 'tool_call_completed', call: { id: 'c', name: 'deliver', input: {} } }, { type: 'response_completed', stopReason: 'tool_calls' }],
+      [{ type: 'text_delta', text: 'done' }, { type: 'response_completed', stopReason: 'stop' }]
+    ]);
+    const runtime = createAgentRuntime({ store, environment: { host: { kind: 'test' }, providers: { resolve: () => provider }, tools: { resolve: () => ({ snapshot: () => [tool] }) }, permissions: allow } });
+    const observed: boolean[] = [];
+    runtime.subscribe((event) => { if (event.event.type === 'tool.completed') observed.push(committed); });
+    try {
+      const session = await runtime.openSession({ id: 'artifact', executionScope: { kind: 'none' } });
+      const lane = await session.getLane();
+      expect((await (await lane.run({ input: 'deliver', providerId: 'p', model: 'm' })).result).status).toBe('completed');
+      expect(observed).toEqual([true]);
+    } finally { await runtime.close(); }
+  });
+
   it.each(['legacy', 'resource'] as const)('passes %s file input to the provider and preserves metadata for follow-up turns', async (format) => {
     const requests: ModelRequest[] = [];
     const provider: ModelProvider = {

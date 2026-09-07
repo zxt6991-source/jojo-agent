@@ -39,6 +39,7 @@ export type ToolNode = {
   progress: string;
   errorSummary: string | null;
   images: Extract<NonNullable<ToolResult['contentBlocks']>[number], { type: 'image' }>[];
+  artifacts?: import('@desktop-agent/contracts').ArtifactDescriptor[];
   state: ToolRowState;
   iteration?: number;
 };
@@ -291,6 +292,7 @@ export function createToolNode(options: {
   const state = toolState(options.result, options.running === true);
   return {
     kind: 'tool',
+    ...(options.result?.artifacts !== undefined ? { artifacts: options.result.artifacts } : {}),
     id: options.id,
     callId: options.callId,
     name: options.name,

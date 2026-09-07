@@ -12,7 +12,7 @@ import type {
 } from '../types.js';
 
 const READ_TOOLS = new Set([
-  'read_file', 'list_files', 'glob', 'grep', 'web_search', 'web_fetch', 'load_skill',
+  'show_artifact', 'create_document', 'read_file', 'list_files', 'glob', 'grep', 'web_search', 'web_fetch', 'load_skill',
   'memory_search', 'mcp_tool_manifest', 'mcp_tool_describe', 'mcp_list_resources',
   'mcp_read_resource', 'mcp_list_prompts', 'mcp_get_prompt', 'workflow_list',
   'sub_agent_status', 'sub_agent_wait', 'workflow_status', 'workflow_wait',
@@ -102,7 +102,7 @@ function contextFor(context: RuntimeResolutionContext): GovernanceContext {
 function resourceScopeFor(call: ToolCall, source: ToolSource, baseline: PermissionDecision): GovernanceFacts['resourceScope'] {
   if (source === 'browser' || source === 'mcp' || source === 'channel' || call.name === 'web_search' || call.name === 'web_fetch') return 'external';
   if (baseline.decision === 'ask' && call.name === 'read_file' && !baseline.request.preview) return 'outside_workspace';
-  if (['read_file', 'list_files', 'glob', 'grep', 'write_file', 'edit_file', 'delete_file', 'terminal'].includes(call.name)) return 'workspace';
+  if (['show_artifact', 'read_file', 'list_files', 'glob', 'grep', 'write_file', 'edit_file', 'delete_file', 'terminal'].includes(call.name)) return 'workspace';
   return 'none';
 }
 

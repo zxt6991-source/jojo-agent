@@ -1,3 +1,4 @@
+import { ShowArtifactInput } from './show-artifact-tool.js';
 import type {
   ApprovalRequest,
   PermissionDecision,
@@ -28,6 +29,14 @@ export class DefaultPermissionGate implements PermissionGate {
       case 'create_document': {
         const parsed = GeneratedDocumentSchema.safeParse(call.input);
         return parsed.success ? { decision: 'allow' } : { decision: 'deny', reason: parsed.error.message, code: 'invalid_input' };
+      }
+      case 'show_artifact': {
+        const parsed = ShowArtifactInput.safeParse(call.input);
+        if (!parsed.success) return { decision: 'deny', reason: parsed.error.message };
+        try {
+          const resolved = await resolveWorkspacePath(context.workingDirectory, parsed.data.path);
+          return resolved.inside ? { decision: 'allow' } : { decision: 'deny', reason: 'Artifact is outside the workspace.' };
+        } catch (error) { return this.denyError(error); }
       }
       case 'terminal':
         return this.checkTerminal(call, context);

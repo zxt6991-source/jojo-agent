@@ -554,12 +554,18 @@ importers:
       '@desktop-agent/channel-core':
         specifier: workspace:*
         version: link:../channel-core
+      '@desktop-agent/contracts':
+        specifier: workspace:*
+        version: link:../contracts
       '@desktop-agent/server-core':
         specifier: workspace:*
         version: link:../server-core
       '@desktop-agent/server-protocol':
         specifier: workspace:*
         version: link:../server-protocol
+      '@desktop-agent/tools-node':
+        specifier: workspace:*
+        version: link:../tools-node
       '@fastify/websocket':
         specifier: ^11.3.0
         version: 11.3.0

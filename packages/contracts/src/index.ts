@@ -17,3 +17,5 @@ export * from './runtime';
 export * from './scheduler';
 export * from './tools';
 export * from './workspace';
+
+export * from './artifact';

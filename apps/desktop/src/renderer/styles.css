@@ -1329,3 +1329,14 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .generated-document header button { padding: 6px 10px; border: 1px solid #d9dfe7; border-radius: 6px; background: transparent; color: inherit; cursor: pointer; }
 .generated-document iframe { display: block; width: 100%; height: 480px; border: 0; border-top: 1px solid #d9dfe7; background: white; }
 .generated-document > p { padding: 0 16px 12px; }
+
+.artifact-card header { flex-wrap: wrap; }
+.artifact-card small { display: block; padding: 4px 12px; color: var(--text-secondary, #888); }
+.artifact-image { display: block; max-width: 100%; max-height: 65vh; object-fit: contain; margin: auto; }
+.artifact-text { max-height: 65vh; overflow: auto; white-space: pre-wrap; padding: 16px; }
+.artifact-panel { position: fixed; inset: 16px 16px 16px auto; width: min(780px, 65vw); height: calc(100vh - 32px); max-height: none; margin: 0; padding: 16px; border: 1px solid #8885; border-radius: 12px; background: var(--bg, #fff); color: inherit; }
+.artifact-panel::backdrop { background: #0004; }
+.artifact-panel iframe { width: 100%; height: calc(100% - 60px); border: 0; background: white; }
+@media (max-width: 800px) { .artifact-panel { inset: 8px; width: calc(100vw - 16px); height: calc(100vh - 16px); } }
+
+.artifact-reference { cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
