@@ -1330,13 +1330,38 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .generated-document iframe { display: block; width: 100%; height: 480px; border: 0; border-top: 1px solid #d9dfe7; background: white; }
 .generated-document > p { padding: 0 16px 12px; }
 
-.artifact-card header { flex-wrap: wrap; }
-.artifact-card small { display: block; padding: 4px 12px; color: var(--text-secondary, #888); }
-.artifact-image { display: block; max-width: 100%; max-height: 65vh; object-fit: contain; margin: auto; }
-.artifact-text { max-height: 65vh; overflow: auto; white-space: pre-wrap; padding: 16px; }
-.artifact-panel { position: fixed; inset: 16px 16px 16px auto; width: min(780px, 65vw); height: calc(100vh - 32px); max-height: none; margin: 0; padding: 16px; border: 1px solid #8885; border-radius: 12px; background: var(--bg, #fff); color: inherit; }
-.artifact-panel::backdrop { background: #0004; }
-.artifact-panel iframe { width: 100%; height: calc(100% - 60px); border: 0; background: white; }
-@media (max-width: 800px) { .artifact-panel { inset: 8px; width: calc(100vw - 16px); height: calc(100vh - 16px); } }
+/* Artifact delivery: compact chat entry and a normal workspace grid pane. */
+.artifact-card { display: flex; align-items: center; gap: 9px; width: fit-content; max-width: 100%; margin: 10px 0 18px; padding: 9px 12px; border: 1px solid #e5e7eb; border-radius: 9px; background: #fff; color: #374151; text-align: left; cursor: pointer; font: inherit; font-size: 13px; }
+.artifact-card > span:first-of-type { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.artifact-card svg { flex-shrink: 0; }
+.artifact-card:hover { background: #f6f7f9; border-color: #cbd5e1; }
+.artifact-card:focus-visible { outline: 2px solid #7087b0; outline-offset: 2px; }
+.artifact-entry-arrow { color: #9ca3af; }
+.workspace-content.artifact-open { grid-template-columns: minmax(300px, 44%) minmax(0, 56%); }
+.workspace-content.artifact-open .conversation { padding-left: 24px; padding-right: 24px; }
+.workspace-content.artifact-open .composer-wrap { padding-left: 20px; padding-right: 20px; }
+.artifact-panel { min-width: 0; min-height: 0; display: flex; flex-direction: column; border-left: 1px solid #e5e7eb; background: #fff; overflow: hidden; }
+.artifact-panel-header { display: flex; align-items: center; gap: 10px; min-height: 48px; padding: 8px 16px; border-bottom: 1px solid #edf0f3; }
+.artifact-panel-header strong { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 13px; font-weight: 500; }
+.artifact-panel-header button { border: 0; background: transparent; color: #6b7280; font-size: 22px; padding: 0 6px; cursor: pointer; }
+.artifact-panel-toolbar { display: flex; align-items: center; gap: 12px; padding: 10px 16px; border-bottom: 1px solid #edf0f3; font-size: 12px; }
+.artifact-location { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #6b7280; }
+.artifact-panel-toolbar button { flex-shrink: 0; background: #fff; border: 1px solid #e5e7eb; border-radius: 6px; padding: 5px 9px; cursor: pointer; }
+.artifact-panel-content { flex: 1; min-height: 0; overflow: auto; }
+.artifact-panel-content iframe { display: block; width: 100%; height: 100%; border: 0; background: white; }
+.artifact-panel-content > p, .artifact-panel-status { padding: 12px 20px; font-size: 13px; color: #6b7280; }
+.artifact-save-note { padding: 6px 16px; font-size: 11px; color: #9ca3af; }
+.artifact-image { display: block; max-width: 100%; max-height: 100%; object-fit: contain; margin: auto; }
+.artifact-text { white-space: pre-wrap; overflow-wrap: anywhere; padding: 20px; }
+@media (max-width: 800px) { .workspace-content.artifact-open { grid-template-columns: minmax(240px, 44%) minmax(0, 56%); } .workspace-content.artifact-open .conversation, .workspace-content.artifact-open .composer-wrap { padding-left: 12px; padding-right: 12px; } }
 
 .artifact-reference { cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
+
+/* Keep the drag target reachable even when the document fills the content area. */
+.workspace-content.artifact-open > .chat-pane { overflow: hidden; }
+.artifact-panel { position: relative; }
+.artifact-resize-handle { position: absolute; z-index: 5; inset: 0 auto 0 0; width: 8px; cursor: col-resize; touch-action: none; user-select: none; }
+.artifact-resize-handle::after { content: ''; position: absolute; inset: 0 auto 0 0; width: 2px; background: transparent; }
+.artifact-resize-handle:hover::after, .artifact-resize-handle.dragging::after, .artifact-resize-handle:focus-visible::after { background: #7593c2; }
+.artifact-resize-handle:focus-visible { outline: none; background: #7593c225; }
+.artifact-resize-shield { position: fixed; inset: 0; z-index: 4; cursor: col-resize; user-select: none; }

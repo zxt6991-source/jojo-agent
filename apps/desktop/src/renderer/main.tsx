@@ -1,3 +1,5 @@
+import { ArtifactPanel } from './artifacts/ArtifactPanel';
+import { detectArtifacts } from '@desktop-agent/contracts';
 import { attachmentPreviewText } from '@desktop-agent/contracts';
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -700,6 +702,8 @@ function App() {
   const [projectPickerOpen, setProjectPickerOpen] = useState(false);
   const [projectQuery, setProjectQuery] = useState('');
   const [projectBinding, setProjectBinding] = useState(false);
+  const [artifactChatWidth, setArtifactChatWidth] = useState(44);
+  const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(null);
   const [reviewOpen, setReviewOpen] = useState(false);
   const [reviewPath, setReviewPath] = useState('');
   const [browserDock, setBrowserDock] = useState<BrowserDockState | null>(null);
@@ -1151,7 +1155,7 @@ function App() {
   };
 
   const selectSession = async (id: string) => {
-    activeIdRef.current = id; turnBaselineRef.current = null; setActiveId(id); setError(''); setWorkspaceChangesError(''); setLiveSteps([]); setTurnStartedAt(null); setInspectedId(null); setReviewOpen(false); setWorkspaceChanges(null); setAttachments([]); setFiles([]); setAttachmentWarnings([]); setAttachmentMenuOpen(false); setDraggingFiles(false); dragDepthRef.current = 0; setTrajectoryExportStatus('idle');
+    setSelectedArtifactId(null); activeIdRef.current = id; turnBaselineRef.current = null; setActiveId(id); setError(''); setWorkspaceChangesError(''); setLiveSteps([]); setTurnStartedAt(null); setInspectedId(null); setReviewOpen(false); setWorkspaceChanges(null); setAttachments([]); setFiles([]); setAttachmentWarnings([]); setAttachmentMenuOpen(false); setDraggingFiles(false); dragDepthRef.current = 0; setTrajectoryExportStatus('idle');
     setMessages([]);
     setCompactions([]);
     const directory = sessionDirectoriesRef.current.get(id);
@@ -1615,6 +1619,7 @@ function App() {
     running: sessionBusy,
     ...(active?.workingDirectory ? { workingDirectory: active.workingDirectory } : {})
   }), [messages, compactions, liveSteps, sessionBusy, active?.workingDirectory]);
+  const selectedArtifact = useMemo(() => detectArtifacts(snapshot.nodes).find((artifact) => artifact.id === selectedArtifactId), [snapshot.nodes, selectedArtifactId]);
   const workflowsByTurn = useMemo(
     () => workflowsByConversationTurn(visibleWorkflows, snapshot.turns),
     [visibleWorkflows, snapshot.turns]
@@ -1693,6 +1698,7 @@ function App() {
   const openReview = (path?: string) => {
     if (!workspaceChanges?.files.length) return;
     setReviewPath(path ?? workspaceChanges.files[0]!.path);
+    setSelectedArtifactId(null);
     setReviewOpen(true);
   };
 
@@ -1805,13 +1811,13 @@ function App() {
             >{trajectoryExportStatus === 'exporting' ? '导出中…' : trajectoryExportStatus === 'done' ? '已导出' : '导出轨迹'}</button>
           </div>
         </header>
-        <div className={`workspace-content ${browsing ? 'browsing' : reviewOpen ? 'reviewing' : ''}`}>
-        <div className="chat-pane">
+        <div className={`workspace-content ${selectedArtifact ? 'artifact-open' : browsing ? 'browsing' : reviewOpen ? 'reviewing' : ''}`} style={selectedArtifact ? { gridTemplateColumns: `minmax(0, ${artifactChatWidth}fr) minmax(0, ${100 - artifactChatWidth}fr)` } : undefined}>
+        <div className="chat-pane" inert={Boolean(selectedArtifact && artifactChatWidth === 0)} aria-hidden={selectedArtifact && artifactChatWidth === 0 ? true : undefined}>
         <div className="conversation" ref={conversationRef} onScroll={onConversationScroll} role="region" aria-label="对话记录">
           {snapshot.nodes.length === 0 && !sessionBusy && conversationView === 'chat' && <div className="empty"><div className="empty-icon">⌁</div><h2>{active.projectBound === false ? '开始一段新对话' : '从本地项目开始'}</h2><p>{active.projectBound === false ? '直接提问，或从侧边栏选择项目后处理本地文件。' : '可以让我阅读文件、列出目录，或在你批准后执行命令。'}</p></div>}
           {conversationView === 'chat'
             ? <ChatTranscript
-              sessionId={active.id}
+              onOpenArtifact={setSelectedArtifactId}
               snapshot={snapshot}
               running={sessionBusy}
               turnStartedAt={turnStartedAt}
@@ -1934,7 +1940,9 @@ function App() {
           </div>
         </div><div className="hint">Enter 发送 · Shift+Enter 换行 · 支持拖入或粘贴文件</div></footer>
         </div>
-        {visibleDock && activeId
+        {selectedArtifact && activeId
+          ? <ArtifactPanel key={`${activeId}:${selectedArtifact.id}`} artifact={selectedArtifact} sessionId={activeId} chatWidth={artifactChatWidth} onResize={setArtifactChatWidth} onClose={() => setSelectedArtifactId(null)} />
+          : visibleDock && activeId
           ? <BrowserDock key={activeId} sessionId={activeId} state={visibleDock} overlayOpen={overlayOpen} />
           : reviewOpen && workspaceChanges && <ReviewPanel changes={workspaceChanges} selectedPath={reviewPath} onSelect={setReviewPath} onClose={() => setReviewOpen(false)} />}
         </div>

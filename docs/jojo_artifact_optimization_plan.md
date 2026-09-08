@@ -9,20 +9,24 @@
 > - Pi：保留其 Tool Renderer 的优点，但不沿用其已移除的旧 Web Artifact 架构
 
 
-## 本轮实现状态（2026-09-07）
+## 本轮实现状态（更新至 2026-09-08）
 
-已落地本文近期 P0/P1 主链路，并加入 Desktop 预览抽屉：
+已落地本文近期 P0/P1 主链路，并按最新交互要求改为 Desktop 固定右侧预览分栏：
 
 - 共享 Contract：`ArtifactDescriptorSchema`、MIME 分类、Renderer 选择、可扩展 Extractor、历史重放和文件引用解析均位于 `packages/contracts/src/artifact.ts`，可供 Desktop/Serve/Web 消费。
 - 结构化交付：`ToolResult.artifacts` 已贯通持久化、Worker IPC 和 Renderer；保留旧 `create_document` / `write_file` HTML 的兼容适配。
 - 生产工具：`create_document` 保留 conversation-only 语义；成功的 `write_file` / `edit_file` 自动登记受支持的交付文件；`show_artifact` 用于脚本等间接生成的文件。
 - 身份与版本：workspace 路径使用 canonical path 的 SHA-256 作为身份；历史重放合并相同路径，内容 revision 改变时递增版本。相同内容重复展示不产生新版本；当前文件内容在读取时获取，不保存历史二进制副本。
-- Desktop：Turn 末尾显示去重后的最新 Artifact；支持 HTML、Markdown、图片、文本预览，面板、折叠、保存和原始 HTML 语义说明。PDF/Office/未知类型使用下载卡片；最终回复中的代码形式文件名和 Markdown 链接支持 exact path / unique basename 匹配。
+- Desktop：Turn 末尾显示去重后的最新 Artifact；对话中只显示紧凑文件入口；点击后在聊天工作区右侧固定分栏展示 HTML、Markdown、图片或文本，聊天与输入框保持可操作。关闭后恢复聊天宽度，切换会话关闭预览，下载与原始 HTML 语义说明位于右栏。PDF/Office/未知类型使用下载卡片；最终回复中的代码形式文件名和 Markdown 链接支持 exact path / unique basename 匹配。
 - Serve：新增经过现有认证与会话查询授权的 `GET /api/v1/sessions/:sessionId/artifacts` 和 `GET /api/v1/sessions/:sessionId/artifacts/:artifactId/content`。内容响应提供 MIME、长度、ETag、下载文件名、nosniff 和严格 CSP。
 - 内容权限：仅从当前会话的成功工具结果/旧工具记录确定可交付内容；忽略用户消息中伪装的工具结果。读取 workspace 文件重新校验真实路径、regular file、20 MiB 上限及读取期间的文件变化，拒绝越界、符号链接逃逸和跨会话 ID。
-- 测试：新增生产工具、版本、消息恢复、IPC、文件引用、内容 API 和权限边界测试；Electron 用例覆盖 HTML 隔离、面板、取消/确认保存、Markdown/SVG/PDF 交付与刷新恢复。
+- 测试：新增生产工具、版本、消息恢复、IPC、文件引用、内容 API 和权限边界测试；Electron 用例覆盖 HTML 隔离、左右分栏不重叠、聊天输入可用、文件切换、关闭恢复布局、取消/确认保存及刷新后的文件入口。
 
-最终验证：`pnpm lint`、`pnpm typecheck`、Desktop E2E 构建均通过；全量 Vitest 为 **914 passed / 2 skipped**，Artifact Electron 用例 **2 passed**。实时 Artifact 完成事件已调整为持久化后发布，Desktop 从运行时持久记录读取，E2E 日志断言确认不存在 IPC 拒收或提前读取错误。
+首轮实现验证（后续 UI 调整另行验证）：`pnpm lint`、`pnpm typecheck`、Desktop E2E 构建均通过；全量 Vitest 为 **914 passed / 2 skipped**，Artifact Electron 用例 **2 passed**。实时 Artifact 完成事件已调整为持久化后发布，Desktop 从运行时持久记录读取，E2E 日志断言确认不存在 IPC 拒收或提前读取错误。
+
+2026-09-08 拖拽扩展：文档右栏左边缘支持拖动调整宽度，向左拉满时隐藏聊天区并占满内容区，向右拖可恢复；支持展开/恢复按钮、双击分隔线恢复默认比例，以及键盘方向键调整。Electron 已验证跨 iframe 拖动、100% 宽度、拖回和恢复输入，两项端到端用例通过；lint、类型检查和构建通过。
+
+2026-09-08 右侧栏交互验证：5 项相关单元测试、2 项 Electron 端到端测试均通过，lint、类型检查和 Desktop 构建通过。最新交互约定覆盖后文的内联预览/浮层建议：对话仅展示文件入口，点击打开固定右侧分栏，无预览浮层。
 
 本轮边界与后续阶段：
 

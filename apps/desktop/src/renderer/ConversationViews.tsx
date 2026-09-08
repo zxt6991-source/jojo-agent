@@ -25,7 +25,7 @@ export function Markdown({ text, artifacts = [], onOpenArtifact }: { text: strin
       element.setAttribute('role', 'button'); element.tabIndex = 0;
       element.classList.add('artifact-reference');
     }
-  }, [html, artifacts, onOpenArtifact]);
+  }); // Reapply after each React commit: innerHTML replacement removes DOM annotations.
   const open = (event: React.MouseEvent | React.KeyboardEvent) => {
     const element = (event.target as HTMLElement).closest<HTMLElement>('[data-artifact-id]');
     if (element?.dataset.artifactId && onOpenArtifact) { event.preventDefault(); onOpenArtifact(element.dataset.artifactId); }
@@ -165,7 +165,7 @@ function TurnStatus({ startedAt }: { startedAt: number | null }) {
 }
 
 export function ChatTranscript({
-  sessionId,
+  onOpenArtifact,
   snapshot,
   running,
   turnStartedAt,
@@ -173,7 +173,7 @@ export function ChatTranscript({
   onOpenAutomation,
   renderAfterTurn
 }: {
-  sessionId?: string;
+  onOpenArtifact?: (id: string) => void;
   snapshot: ConversationSnapshot;
   running: boolean;
   turnStartedAt: number | null;
@@ -181,7 +181,6 @@ export function ChatTranscript({
   onOpenAutomation?: (scheduleId: string) => void;
   renderAfterTurn?: (turn: ConversationSnapshot['turns'][number]) => React.ReactNode;
 }) {
-  const [openRequest, setOpenRequest] = useState({ id: '', count: 0 });
   const waiting = running && !hasLiveOutput(snapshot);
   const artifacts = useMemo(() => detectArtifacts(snapshot.nodes), [snapshot.nodes]);
   // Place each current artifact at its last producing turn, without duplicate cards.
@@ -193,11 +192,11 @@ export function ChatTranscript({
         key={node.id}
         node={node}
         artifacts={artifacts}
-        onOpenArtifact={(id) => setOpenRequest((previous) => ({ id, count: previous.count + 1 }))}
+        {...(onOpenArtifact ? { onOpenArtifact } : {})}
         {...(onInspect ? { onInspect } : {})}
         {...(onOpenAutomation ? { onOpenAutomation } : {})}
       />)}
-      {artifacts.filter((artifact) => lastTurn.get(artifact.id) === turn.id).map((artifact) => <ArtifactCard key={artifact.id} artifact={artifact} openRequest={openRequest.id === artifact.id ? openRequest.count : 0} {...(sessionId ? { sessionId } : {})} />)}
+      {artifacts.filter((artifact) => lastTurn.get(artifact.id) === turn.id).map((artifact) => <ArtifactCard key={artifact.id} artifact={artifact} {...(onOpenArtifact ? { onOpen: onOpenArtifact } : {})} />)}
       {renderAfterTurn?.(turn)}
     </React.Fragment>)}
     {waiting && <TurnStatus startedAt={turnStartedAt} />}

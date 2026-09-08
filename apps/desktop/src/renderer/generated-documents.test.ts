@@ -24,9 +24,10 @@ describe('generated documents in stored conversations', () => {
     const stored = snapshot(name, input, true);
     expect(generatedDocuments(stored.turns[0]!.nodes)).toEqual([{ id: expect.any(String), name: 'report.html', content }]);
     const html = renderToStaticMarkup(React.createElement(ChatTranscript, { snapshot: stored, running: false, turnStartedAt: null }));
-    expect(html).toContain('下载保存');
-    expect(html).toContain('sandbox=""');
-    expect(html).toContain('Content-Security-Policy');
+    expect(html).toContain('打开文档：report.html');
+    expect(html).not.toContain('<iframe');
+    expect(html).not.toContain('<dialog');
+    expect(html).not.toContain('下载保存');
   });
 
   it('does not offer failed writes, unrelated tools, or non-HTML source files as documents', () => {
