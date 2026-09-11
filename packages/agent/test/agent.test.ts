@@ -30,6 +30,17 @@ function createOptions(
 }
 
 describe('runAgentTurn', () => {
+  it('never executes collected calls from an incomplete model response', async () => {
+    const execute = vi.fn(echoTool.execute);
+    const provider: ModelProvider = { async *stream() {
+      yield { type: 'text_delta', text: 'unfinished' };
+      yield { type: 'tool_call_completed', call: { id: 'unsafe', name: 'echo', input: {} } };
+    } };
+    await expect(runAgentTurn(createOptions(provider, { tools: [{ ...echoTool, execute }] })))
+      .rejects.toMatchObject({ code: 'provider_stream_incomplete' });
+    expect(execute).not.toHaveBeenCalled();
+  });
+
   it('returns accumulated messages at the iteration limit when partial results are enabled', async () => {
     const provider = new ScriptedProvider([[
       { type: 'text_delta', text: 'partial evidence' },

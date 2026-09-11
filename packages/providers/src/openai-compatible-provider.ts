@@ -6,7 +6,9 @@ import {
   toTextOnlyChatCompletionBody
 } from './chat-completions-request.js';
 import { parseChatCompletionStream } from './chat-completions-stream.js';
-import type { OpenAIProviderOptions } from './types.js';
+import { ProviderStreamError, isRetryableStatus, isTransientNetworkError } from './provider-errors.js';
+import { abortable, requestPolicy, retryDelay, timeoutError, waitForRetry } from './request-policy.js';
+import type { OpenAIProviderOptions, ProviderRequestDiagnostic } from './types.js';
 
 const DEFAULT_BASE_URL = 'https://api.openai.com/v1';
 const DEFAULT_TIMEOUT_MS = 90_000;
@@ -47,6 +49,24 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+async function readErrorDetail(response: Response, signal: AbortSignal): Promise<string> {
+  if (!response.body) return '';
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let detail = '';
+  try {
+    while (detail.length < MAX_ERROR_DETAIL_LENGTH) {
+      const { done, value } = await abortable(reader.read(), signal);
+      if (done) break;
+      detail += decoder.decode(value.subarray(0, MAX_ERROR_DETAIL_LENGTH * 4), { stream: true });
+    }
+    return (detail + decoder.decode()).slice(0, MAX_ERROR_DETAIL_LENGTH);
+  } finally {
+    void reader.cancel().catch(() => {});
+    reader.releaseLock();
+  }
+}
+
 export class OpenAICompatibleProvider implements ModelProvider {
   private readonly baseUrl: string;
   private readonly timeoutMs: number;
@@ -54,6 +74,11 @@ export class OpenAICompatibleProvider implements ModelProvider {
   constructor(private readonly options: OpenAIProviderOptions) {
     this.baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, '');
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  }
+
+  private diagnose(event: ProviderRequestDiagnostic): void {
+    try { this.options.onDiagnostic?.(event); }
+    catch { /* Diagnostics must not change request delivery or retry semantics. */ }
   }
 
   async listModels(): Promise<string[]> {
@@ -105,14 +130,13 @@ export class OpenAICompatibleProvider implements ModelProvider {
 
   async *stream(request: ModelRequest): AsyncIterable<ModelEvent> {
     if (request.signal.aborted) throw cancellationError();
-
+    const policy = requestPolicy(this.options.timeoutMs, this.options.requestPolicy);
     const controller = new AbortController();
-    const timeout = setTimeout(
-      () => controller.abort(new Error('Provider request timed out.')),
-      this.timeoutMs
-    );
-    const cancelRequest = () => controller.abort(request.signal.reason);
+    const deadline = Date.now() + policy.totalTimeoutMs;
+    const timeout = setTimeout(() => controller.abort(timeoutError('total')), policy.totalTimeoutMs);
+    const cancelRequest = () => controller.abort(cancellationError());
     request.signal.addEventListener('abort', cancelRequest, { once: true });
+    let published = false;
 
     try {
       const richBody = createChatCompletionBody(request);
@@ -121,61 +145,101 @@ export class OpenAICompatibleProvider implements ModelProvider {
       let requestBody = isDeepSeek
         ? deepSeekRequestBody(hasChatImageInputs(richBody) ? toTextOnlyChatCompletionBody(richBody) : richBody)
         : richBody;
-      const post = (body: Record<string, unknown>) => fetch(`${this.baseUrl}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          Authorization: `Bearer ${this.options.apiKey.trim()}`
-        },
-        body: JSON.stringify(body),
-        signal: controller.signal
-      });
-      let response = await post(requestBody);
-
-      if (!response.ok) {
-        let detail = (await response.text()).slice(0, MAX_ERROR_DETAIL_LENGTH);
-        if (requestBody === richBody && hasChatImageInputs(richBody) && rejectsImageMessageContent(response.status, detail)) {
-          requestBody = toTextOnlyChatCompletionBody(richBody);
-          response = await post(requestBody);
-          if (!response.ok) detail = (await response.text()).slice(0, MAX_ERROR_DETAIL_LENGTH);
-        }
-        if (!response.ok) {
-          yield {
-            type: 'response_failed',
-            code: httpErrorCode(response.status, detail),
-            message: providerErrorMessage(response.status, detail)
-          };
-          return;
-        }
-      }
-
-      if (!response.body) {
-        yield {
-          type: 'response_failed',
-          code: 'empty_response',
-          message: 'The provider response had no body.'
+      let downgraded = false;
+      for (let attempt = 1; attempt <= policy.maxAttempts; attempt++) {
+        controller.signal.throwIfAborted();
+        const attemptController = new AbortController();
+        const signal = AbortSignal.any([controller.signal, attemptController.signal]);
+        let phaseTimer: ReturnType<typeof setTimeout> | undefined;
+        const phase = (name: string, ms: number) => {
+          clearTimeout(phaseTimer);
+          phaseTimer = setTimeout(() => attemptController.abort(timeoutError(name)), ms);
         };
-        return;
+        const startedAt = Date.now();
+        let usageReceived = false;
+        let response: Response | undefined;
+        let failure: unknown;
+        let retryable = false;
+        let retryAfter: string | null = null;
+        let downgrade = false;
+        try {
+          phase('response_headers', policy.responseHeadersTimeoutMs);
+          const pendingResponse = fetch(`${this.baseUrl}/chat/completions`, {
+            method: 'POST',
+            headers: {
+              'content-type': 'application/json',
+              Authorization: `Bearer ${this.options.apiKey.trim()}`
+            },
+            body: JSON.stringify(requestBody),
+            signal
+          });
+          // Dispose a late response from transports that ignore the abort signal.
+          void pendingResponse.then((late) => {
+            if (signal.aborted) void late.body?.cancel().catch(() => {});
+          }, () => {});
+          response = await abortable(pendingResponse, signal);
+          phase('first_content', policy.firstContentTimeoutMs);
+          if (!response.ok) {
+            const detail = await readErrorDetail(response, signal);
+            failure = new ProviderStreamError(httpErrorCode(response.status, detail), providerErrorMessage(response.status, detail));
+            downgrade = !downgraded && requestBody === richBody && hasChatImageInputs(richBody)
+              && rejectsImageMessageContent(response.status, detail);
+            retryable = isRetryableStatus(response.status);
+            retryAfter = response.headers.get('retry-after');
+          } else {
+            if (!response.body) throw new ProviderStreamError('empty_response', 'The provider response had no body.');
+            for await (const event of parseChatCompletionStream(response.body, {
+              signal,
+              finishDrainTimeoutMs: policy.finishDrainTimeoutMs,
+              onProgress: (progress) => {
+                if (progress === 'finish') clearTimeout(phaseTimer);
+                else phase('idle', policy.idleTimeoutMs);
+              }
+            })) {
+              signal.throwIfAborted();
+              if (event.type === 'usage') usageReceived = true;
+              published = true; // Usage is public progress too: never retry after any event.
+              yield event;
+            }
+            if (request.signal.aborted) throw cancellationError();
+            return;
+          }
+        } catch (error) {
+          failure = signal.aborted ? signal.reason : error;
+          retryable = !(failure instanceof ProviderStreamError) && isTransientNetworkError(failure);
+        } finally {
+          clearTimeout(phaseTimer);
+          this.diagnose({ type: 'attempt', attempt, elapsedMs: Date.now() - startedAt, published, usageReceived });
+          attemptController.abort();
+          if (response?.body && !response.body.locked) void response.body.cancel().catch(() => {});
+        }
+        controller.signal.throwIfAborted();
+        if (published || attempt === policy.maxAttempts || (!downgrade && !retryable)) throw failure;
+        if (downgrade) {
+          downgraded = true;
+          requestBody = toTextOnlyChatCompletionBody(richBody);
+          continue;
+        }
+        const delay = retryDelay(attempt, retryAfter, policy);
+        // Retry-After is a minimum: do not shorten it to fit the remaining budget.
+        if (delay >= deadline - Date.now()) throw failure;
+        this.diagnose({ type: 'retry', attempt, delayMs: delay });
+        await waitForRetry(delay, controller.signal);
       }
-
-      yield* parseChatCompletionStream(response.body);
     } catch (error) {
       if (request.signal.aborted) throw cancellationError();
-      if (controller.signal.aborted) {
-        yield {
-          type: 'response_failed',
-          code: 'timeout',
-          message: 'The model request timed out.'
-        };
-        return;
-      }
+      const failure = controller.signal.aborted ? controller.signal.reason : error;
+      const detail = failure instanceof ProviderStreamError ? failure.message
+        : `The model provider request failed: ${errorMessage(failure).slice(0, MAX_ERROR_DETAIL_LENGTH)}`;
       yield {
         type: 'response_failed',
-        code: 'network',
-        message: `The model provider request failed: ${errorMessage(error)}`
+        code: failure instanceof ProviderStreamError ? failure.code : 'network',
+        message: published && !detail.includes('not saved as a completed result')
+          ? `${detail} Response interrupted; this output was not saved as a completed result.` : detail
       };
     } finally {
       clearTimeout(timeout);
+      controller.abort();
       request.signal.removeEventListener('abort', cancelRequest);
     }
   }

@@ -447,8 +447,8 @@ describe('OpenAICompatibleProvider', () => {
     [500, 'provider_unavailable'],
     [400, 'provider_request']
   ])('maps HTTP %i to %s', async (status, code) => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('upstream detail', { status })));
-    const provider = new OpenAICompatibleProvider({ apiKey: 'secret' });
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => new Response('upstream detail', { status })));
+    const provider = new OpenAICompatibleProvider({ apiKey: 'secret', requestPolicy: { maxAttempts: 1 } });
 
     await expect(collect(provider.stream(request()))).resolves.toEqual([{
       type: 'response_failed',
@@ -490,7 +490,7 @@ describe('OpenAICompatibleProvider', () => {
     await expect(result).resolves.toEqual([{
       type: 'response_failed',
       code: 'timeout',
-      message: 'The model request timed out.'
+      message: 'The model request timed out (total).'
     }]);
   });
 

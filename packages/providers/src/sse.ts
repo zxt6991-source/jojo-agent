@@ -1,9 +1,11 @@
+import { abortable } from './request-policy.js';
+
 function dataValue(line: string): string {
   const value = line.slice('data:'.length);
   return value.startsWith(' ') ? value.slice(1) : value;
 }
 
-export async function* readSseData(body: ReadableStream<Uint8Array>): AsyncIterable<string> {
+export async function* readSseData(body: ReadableStream<Uint8Array>, signal?: AbortSignal): AsyncIterable<string> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
@@ -24,7 +26,7 @@ export async function* readSseData(body: ReadableStream<Uint8Array>): AsyncItera
 
   try {
     while (true) {
-      const { done, value } = await reader.read();
+      const { done, value } = await (signal ? abortable(reader.read(), signal) : reader.read());
       if (done) {
         fullyRead = true;
         break;
@@ -49,7 +51,7 @@ export async function* readSseData(body: ReadableStream<Uint8Array>): AsyncItera
   } finally {
     if (!fullyRead) {
       try {
-        await reader.cancel();
+        void reader.cancel().catch(() => {});
       } catch {
         // The originating request may already have aborted the stream.
       }

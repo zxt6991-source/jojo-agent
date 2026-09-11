@@ -128,6 +128,7 @@ export function createChatCompletionBody(request: ModelRequest): Record<string, 
   return {
     model: request.model,
     stream: true,
+    n: 1,
     stream_options: { include_usage: true },
     ...(request.maxOutputTokens !== undefined ? { max_completion_tokens: request.maxOutputTokens } : {}),
     messages: instructions.length > 0

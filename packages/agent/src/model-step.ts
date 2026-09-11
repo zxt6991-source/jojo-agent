@@ -31,6 +31,7 @@ export async function runModelStep(options: ModelStepOptions): Promise<ModelStep
   let stopReason = 'stop';
   const calls: ToolCall[] = [];
   let receivedEvent = false;
+  let completed = false;
 
   const events = options.provider.stream({
     model: options.model,
@@ -45,6 +46,10 @@ export async function runModelStep(options: ModelStepOptions): Promise<ModelStep
   for await (const event of events) {
     receivedEvent = true;
     throwIfAborted(options.signal);
+
+    if (completed && event.type !== 'usage') {
+      throw new AgentError('provider_protocol_error', 'The provider sent an event after completion.');
+    }
 
     switch (event.type) {
       case 'text_delta':
@@ -65,6 +70,7 @@ export async function runModelStep(options: ModelStepOptions): Promise<ModelStep
         });
         break;
       case 'response_completed':
+        completed = true;
         stopReason = event.stopReason;
         break;
       case 'response_failed':
@@ -74,6 +80,8 @@ export async function runModelStep(options: ModelStepOptions): Promise<ModelStep
     }
   }
 
+  throwIfAborted(options.signal);
   if (!receivedEvent) throw new AgentError('empty_response', 'The provider returned no events.');
+  if (!completed) throw new AgentError('provider_stream_incomplete', 'Response interrupted; this output was not saved as a completed result.');
   return { text, calls, stopReason };
 }

@@ -1,7 +1,7 @@
 # OPT-01：Provider 流响应正确性与有界重试
 
 > 日期：2026-09-10 · 基线：`e544bae` · 优先级：P0  
-> 状态：详细设计，尚未实施。文中的新增类型、文件和选项均为建议。  
+> 状态：已实施（2026-09-11）。下文保留原设计，实际配置与验证结果见第 10 节。
 > 上级文档：[P0 实施索引](README.md) · [后续优化总方案](../jojo_next_optimization_plan.md)
 
 ## 1. 问题与交付目标
@@ -249,4 +249,25 @@ fetch 的 headers 期限覆盖 DNS / 连接 / 等待响应头，不把它误称�
 
 完成条件：所有异常样本均不会误报成功，所有合法基线样本保持兼容，失败步骤不会执行工具，重试不会重放历史效果，事件与持久 Run 终态一致。
 
-上线后首先观察流不完整错误、协议错误、attempt 次数和请求耗时。允许关闭新增重试或调整期限；不能回退到无条件 EOF 成功。本文只输出实施方案，不表示上述测试和修复已经完成。
+上线后首先观察流不完整错误、协议错误、attempt 次数和请求耗时。允许关闭新增重试或调整期限；不能回退到无条件 EOF 成功。实施与验证记录见下一节。
+
+
+## 10. 实施与验证记录（2026-09-11）
+
+基于 `3e0709e` 工作区实现 PR-01A / B / C 的代码范围（未创建 Git 提交或远端 PR）：
+
+- Parser 使用显式 finish reason 校验，区分空响应、截断、服务端错误、协议错误及过滤；工具调用在完整性和全批身份验证通过后发布。保留 finish-only、length 文本续写和完整响应中 `_invalidJson` 的兼容语义。
+- SSE reader 支持 AbortSignal，提前 DONE、尾部窗口、用户取消、消费方退出和读取异常均取消并释放 reader。合法 finish 后只有传输异常可以按完成收尾，协议错误仍失败。
+- `runModelStep` 要求完成事件，拒绝重复完成和完成后非 usage 事件；EOF 再次检查取消。普通 Agent 与 Runtime 均在它成功返回后才执行工具。
+- `OpenAIProviderOptions.requestPolicy` 支持第 6 节的九项内部配置，默认值按设计落地，`timeoutMs` 仍映射到默认 90 秒总期限；显式 `requestPolicy.totalTimeoutMs` 优先。设 `maxAttempts: 1` 可关闭重试，同时也占满图片降级预算。
+- HTTP attempts 与单次 text-only 降级共享总期限和尝试预算；只重试指定状态码及可识别瞬时网络故障，任何公开事件（含 usage）后均不重试。退避采用指数上限的 50%–100% jitter；Retry-After 作为最短等待要求。
+- 可选 `onDiagnostic` 提供 attempt 次数、耗时、公开事件/usage 接收状态及重试等待时长，不含正文和凭据，也不修改 ModelEvent / IPC / REST Schema。没有 usage 的 attempt 计量未知；接收方异常不影响模型请求。
+- 没有改动 Desktop Renderer、模型发现请求或 Embedding 行为；没有增加部分输出持久化能力。失败说明通过既有错误消息路径传递。
+
+验证环境：macOS / Node `v25.1.0` / pnpm `10.33.0`。新增测试位于：
+
+- `packages/providers/test/stream-correctness.test.ts`：S01–S09、分阶段期限、心跳/空工具增量不刷新期限、尾部窗口、HTTP/网络重试、降级预算、取消和资源释放。
+- `packages/agent/test/model-step.test.ts` 与 `agent.test.ts`：第三方 Provider 完成契约、取消竞争和失败步骤零工具执行。
+- `packages/storage/test/provider-stream-runtime.test.ts`：真实 SQLite 与公开 Runtime，注入截断/error envelope/坏 JSON/第三方缺完成四种故障。断言历史工具只执行一次、当前工具零执行、失败码落库并在重新打开后可查询、Lane 可运行下一任务；HTTP 重试保持本轮上下文相同。
+
+检查结果：`pnpm typecheck`、`pnpm lint` 通过；全量 `pnpm test`：172 个测试文件通过、1 个跳过，986 项通过、2 项跳过。首次沙箱内全量测试因本地监听端口 `EPERM` 失败，允许本地测试服务器后重新执行。未修改 Renderer，因此未增加 Electron E2E；本次验证不依赖真实供应商请求。
