@@ -1,3 +1,4 @@
+import { ServerDataOwnership } from '@desktop-agent/storage';
 import type { NetworkServer } from '@desktop-agent/server';
 import type { SqliteAgentRuntimeStore } from '@desktop-agent/storage';
 import path from 'node:path';
@@ -19,6 +20,7 @@ export async function serve(config: EffectiveConfig, logger: Logger): Promise<vo
   }
   const lock = await acquireInstanceLock(config);
   logger.info({ event: 'instance.lock.acquired', component: 'server', lockFile: config.paths.lockFile });
+  let ownership: ServerDataOwnership | undefined;
   let server: NetworkServer | undefined;
   let runtimeStore: SqliteAgentRuntimeStore | undefined;
   let runtimeStoreClosed = false;
@@ -44,12 +46,14 @@ export async function serve(config: EffectiveConfig, logger: Logger): Promise<vo
     ]);
     const dependencies = createRuntimeDependencies(config, logger.child({ component: 'runtime' }));
     logger.info({ event: 'runtime.initializing', component: 'runtime' });
+    ownership = ServerDataOwnership.acquire(config.paths.dataDir);
     runtimeStore = new SqliteAgentRuntimeStore(path.join(config.paths.dataDir, 'runtime.sqlite'));
     const serverToken = resolveSecret(config.server.token);
     server = await createNetworkServer({
       ...dependencies,
       store: runtimeStore,
       dataDir: config.paths.dataDir,
+      ownership,
       instanceId: config.runtime.instanceId,
       scheduler: config.scheduler.enabled,
       server: {
@@ -91,6 +95,7 @@ export async function serve(config: EffectiveConfig, logger: Logger): Promise<vo
   } finally {
     shutdown.dispose();
     await closeResources().catch(() => undefined);
+    ownership?.release();
     await lock.release();
     await flushLogger(logger).catch(() => undefined);
   }

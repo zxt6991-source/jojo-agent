@@ -36,6 +36,9 @@ function assertToolsState(state: ToolsState): void {
 }
 
 export function assertOperationState(state: OperationState): void {
+  if (!state || !['ready', 'model_pending', 'tools', 'checkpoint', 'final_response', 'completed', 'failed', 'aborted', 'suspended'].includes(state.phase)) {
+    throw new OperationInvariantError('Unknown operation phase.');
+  }
   if (!state.operationId) throw new OperationInvariantError('Operation id is required.');
   if (!state.lane) throw new OperationInvariantError('Lane name is required.');
   if ('iteration' in state && (!Number.isInteger(state.iteration) || state.iteration < 0)) {

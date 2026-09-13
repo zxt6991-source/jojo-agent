@@ -256,6 +256,9 @@ importers:
       '@desktop-agent/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      jiti:
+        specifier: 2.7.0
+        version: 2.7.0
 
   packages/agent:
     dependencies:

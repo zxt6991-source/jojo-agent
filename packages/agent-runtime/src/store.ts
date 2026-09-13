@@ -24,7 +24,7 @@ export interface AgentRuntimeStore {
   saveLane(lane: LaneState): Promise<void>;
   startOperation(meta: OperationMeta, initialState: OperationState): Promise<void>;
   loadOperation(operationId: string): Promise<StoredOperation | null>;
-  saveOperationState(state: OperationState): Promise<void>;
+  saveOperationState(state: OperationState, options?: { expectedState: OperationState; expectedLaneOperationId: string }): Promise<void>;
   appendUsage(usage: UsageRecord): Promise<void>;
   readUsage(sessionId: string): Promise<UsageRecord[]>;
 }

@@ -1,3 +1,5 @@
+import { isTerminalState } from '../operation/state.js';
+import { interruptStoredOperation, type RecoveryOutcome, type RuntimeRecoveryReport, type InterruptOperationRequest } from '../recovery/interrupted-operation.js';
 import type { EffectiveModelLimits } from '@desktop-agent/contracts';
 import type { AttachmentAccessResolver } from '@desktop-agent/attachment-access';
 import type {
@@ -60,6 +62,8 @@ export type RuntimeRunSnapshot = {
   laneId: string;
   status: 'running' | 'suspended' | 'completed' | 'failed' | 'cancelled';
   result?: RunResult;
+  /** Legacy terminal snapshots may lack a durable transcript boundary. */
+  resultReconstruction?: 'unavailable';
 };
 
 export type RuntimeResolutionContext = {
@@ -152,6 +156,8 @@ export type AgentRuntimeOptions = {
 };
 
 export interface AgentRuntime {
+  interruptOperation(request: InterruptOperationRequest): Promise<RecoveryOutcome>;
+  recoverInterruptedOperations(input: { reason: 'host_restart' }): Promise<RuntimeRecoveryReport>;
   openSession(request: OpenSessionRequest): Promise<RuntimeSession>;
   getSession(id: string): Promise<RuntimeSession | undefined>;
   listSessions(): Promise<SessionInfo[]>;
@@ -210,6 +216,9 @@ class DefaultAgentRuntime implements AgentRuntime {
   private readonly idGenerator: () => string;
   private readonly now: () => Date;
   private closed = false;
+  private recovery: Promise<RuntimeRecoveryReport> | undefined;
+  private readonly startingLanes = new Set<string>();
+  private interrupting = false;
 
   constructor(private readonly options: AgentRuntimeOptions) {
     this.store = options.store ?? new MemoryAgentRuntimeStore();
@@ -217,6 +226,41 @@ class DefaultAgentRuntime implements AgentRuntime {
     eventSequencesByStore.set(this.store, this.sequence);
     this.idGenerator = options.idGenerator ?? defaultId;
     this.now = options.now ?? (() => new Date());
+  }
+
+  recoverInterruptedOperations(input: { reason: 'host_restart' }): Promise<RuntimeRecoveryReport> {
+    this.assertOpen();
+    if (this.recovery) return this.recovery;
+    if (this.activeRuns.size || this.startingLanes.size || this.interrupting) return Promise.reject(new Error('runtime_recovery_busy'));
+    this.recovery = (async () => {
+      const outcomes: RecoveryOutcome[] = [];
+      for (const session of await this.store.listSessions()) {
+        for (const lane of await this.store.listLanes(session.id)) {
+          if (!lane.currentOperationId) continue;
+          const operation = await this.store.loadOperation(lane.currentOperationId);
+          outcomes.push(operation ? await interruptStoredOperation(this.store, operation, lane, input.reason) : {
+            operationId: lane.currentOperationId, sessionId: session.id, laneId: lane.name,
+            status: 'conflict', uncertainToolCallIds: [], errorCode: 'runtime_operation_missing'
+          });
+        }
+      }
+      return { outcomes, ready: outcomes.every(item => item.status !== 'conflict') };
+    })().finally(() => { this.recovery = undefined; });
+    return this.recovery;
+  }
+
+  async interruptOperation(request: InterruptOperationRequest): Promise<RecoveryOutcome> {
+    this.assertOpen();
+    if (this.recovery || this.interrupting) throw new Error('runtime_recovery_busy');
+    this.interrupting = true;
+    try {
+      const operation = await this.store.loadOperation(request.operationId);
+      if (!operation) throw Object.assign(new Error(`runtime_operation_not_found: ${request.operationId}`), { code: 'runtime_operation_not_found' });
+      if (this.activeRuns.has(request.operationId) || this.startingLanes.has(JSON.stringify([operation.meta.sessionId, operation.meta.lane]))) throw new Error('runtime_recovery_busy');
+      const lane = await this.store.getLane(operation.meta.sessionId, operation.meta.lane);
+      if (!lane) throw new Error('runtime_lane_not_found');
+      return await interruptStoredOperation(this.store, operation, lane, request.reason);
+    } finally { this.interrupting = false; }
   }
 
   async openSession(request: OpenSessionRequest): Promise<RuntimeSession> {
@@ -261,8 +305,10 @@ class DefaultAgentRuntime implements AgentRuntime {
         status: state.phase === 'suspended' ? 'suspended' : 'running'
       };
     }
-    const lane = await this.store.getLane(meta.sessionId, meta.lane);
-    const messages = projectEntriesToMessages(await this.store.readPath(lane?.leafId ?? null));
+    const detail = state.phase === 'failed' ? state.error.detail : undefined;
+    const leafId = state.phase === 'completed' ? state.finalEntryId
+      : detail && typeof detail === 'object' && 'leafId' in detail && typeof detail.leafId === 'string' ? detail.leafId : null;
+    const messages = projectEntriesToMessages(await this.store.readPath(leafId));
     if (state.phase === 'completed') {
       const finalText = finalAssistantText(messages);
       const result: RunResult = {
@@ -285,22 +331,26 @@ class DefaultAgentRuntime implements AgentRuntime {
         stopReason: state.reason,
         messages
       };
-      return { id: runId, sessionId: meta.sessionId, laneId: meta.lane, status: 'cancelled', result };
+      return { id: runId, sessionId: meta.sessionId, laneId: meta.lane, status: 'cancelled', result, resultReconstruction: 'unavailable' };
     }
     const result: RunResult = {
       runId,
       sessionId: meta.sessionId,
       laneId: meta.lane,
       status: 'failed',
-      messages: [],
-      error: runtimeError(state.error)
+      messages,
+      error: { ...runtimeError(state.error), ...(state.error.detail !== undefined ? { detail: state.error.detail as JsonValue } : {}) }
     };
-    return { id: runId, sessionId: meta.sessionId, laneId: meta.lane, status: 'failed', result };
+    return { id: runId, sessionId: meta.sessionId, laneId: meta.lane, status: 'failed', result,
+      ...(!detail || typeof detail !== 'object' || !('leafId' in detail) ? { resultReconstruction: 'unavailable' as const } : {})
+    };
   }
 
   async resumeOperation(request: ResumeOperationRequest): Promise<RunHandle> {
     this.assertOpen();
+    if (this.recovery || this.interrupting) throw new Error('runtime_recovery_busy');
     const operation = await this.store.loadOperation(request.operationId);
+    if (operation && isTerminalState(operation.state)) throw new Error('runtime_operation_terminal');
     if (!operation) throw new Error(`runtime_operation_not_found: ${request.operationId}`);
     const session = await this.store.getSession(operation.meta.sessionId);
     if (!session) throw new Error(`runtime_session_not_found: ${operation.meta.sessionId}`);
@@ -329,6 +379,7 @@ class DefaultAgentRuntime implements AgentRuntime {
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
+    await this.recovery?.catch(() => undefined);
     const active = [...this.activeRuns.values()];
     for (const run of active) run.controller.abort('runtime_closed');
     await Promise.allSettled(active.map((run) => run.handle.result));
@@ -416,150 +467,160 @@ class DefaultAgentRuntime implements AgentRuntime {
     resuming = false
   ): Promise<RunHandle> {
     this.assertOpen();
-    const lane = await this.store.getLane(sessionId, laneId);
-    if (!lane) throw new Error(`runtime_lane_not_found: ${laneId}`);
-    if (lane.currentOperationId && lane.currentOperationId !== runId) {
-      throw new Error(`runtime_lane_busy: ${laneId}`);
-    }
-    if (this.activeRuns.has(runId)) throw new Error(`runtime_run_active: ${runId}`);
-
-    const session = await this.store.getSession(sessionId);
-    if (!session) throw new Error(`runtime_session_not_found: ${sessionId}`);
-    const persistedScope = scopeFromMetadata(session.metadata);
-    const executionScope = persistedScope;
-    const workingDirectory = executionScope.kind === 'workspace' ? executionScope.workingDirectory : '';
-    const context: RuntimeResolutionContext = {
-      sessionId,
-      laneId,
-      runId,
-      executionScope,
-      providerId: request.providerId,
-      model: request.model,
-      workingDirectory,
-      ...(request.actor ? { actor: request.actor } : {}),
-      ...(request.trigger ? { trigger: request.trigger } : {}),
-      ...(request.workflow ? { workflow: request.workflow } : {}),
-      ...(request.team ? { team: request.team } : {})
-    };
-    const [provider, toolSource, hooks, runContext] = await Promise.all([
-      this.options.environment.providers.resolve(context),
-      this.options.environment.tools.resolve(context),
-      resolveHooks(this.options.environment.hooks, context),
-      this.options.environment.runContext?.resolve(context)
-    ]);
-    const modelLimits = await this.options.environment.providers.resolveLimits?.(context, request.budget);
-    const controller = new AbortController();
-    let cancelReason: string | undefined;
-    const abortFromRequest = () => controller.abort(request.signal?.reason);
-    if (request.signal?.aborted) abortFromRequest();
-    else request.signal?.addEventListener('abort', abortFromRequest, { once: true });
-
-    const handle: RunHandle = {
-      id: runId,
-      result: Promise.resolve(undefined as never),
-      cancel: async (reason) => {
-        cancelReason = reason;
-        controller.abort(reason ?? 'cancelled');
+    if (this.recovery || this.interrupting) throw new Error('runtime_recovery_busy');
+    const key = JSON.stringify([sessionId, laneId]);
+    if (this.startingLanes.has(key)) throw new Error('runtime_lane_busy');
+    this.startingLanes.add(key);
+    try {
+      if (resuming) {
+        const operation = await this.store.loadOperation(runId);
+        if (!operation || isTerminalState(operation.state)) throw new Error('runtime_operation_terminal');
       }
-    };
-    this.activeRuns.set(runId, { controller, handle });
-    if (resuming) this.publish(sessionId, laneId, runId, { type: 'run.resumed' });
-
-    const input = normalizeInput(request.input);
-    const history = projectEntriesToMessages(await this.store.readPath(lane.leafId));
-    const budget = request.budget;
-    const contextWindowTokens = modelLimits?.contextWindowTokens ?? budget?.contextWindowTokens;
-    const maxOutputTokens = modelLimits?.requestMaxOutputTokens ?? budget?.maxOutputTokens;
-    const runnerOptions: RuntimeAgentRunOptions = {
-      sessionId,
-      workingDirectory,
-      executionScope,
-      model: request.model,
-      providerId: request.providerId,
-      history,
-      userText: input.text,
-      ...(input.content ? { userContent: input.content } : {}),
-      ...(input.images.length ? { userImages: input.images } : {}),
-      ...(input.files.length ? { userFiles: input.files } : {}),
-      provider,
-      ...(this.options.environment.attachmentAccess ? { attachmentAccess: this.options.environment.attachmentAccess } : {}),
-      tools: [],
-      getTools: ({ contextWindowTokens: resolvedContextWindow, maxOutputTokens: resolvedMaxOutput }) => toolSource.snapshot({
-        ...context,
-        contextWindowTokens: resolvedContextWindow,
-        maxOutputTokens: resolvedMaxOutput
-      }),
-      permissionGate: {
-        check: (call) => this.options.environment.permissions.check(call, context)
-      },
-      signal: controller.signal,
-      runtimeStore: this.store,
-      operationId: runId,
-      lane: laneId,
-      ...(request.instructions ? { instructions: request.instructions } : {}),
-      ...(budget?.maxIterations !== undefined ? { maxIterations: budget.maxIterations } : {}),
-      ...(budget?.allowPartialOnLimit !== undefined
-        ? { allowPartialOnMaxIterations: budget.allowPartialOnLimit }
-        : {}),
-      ...(contextWindowTokens !== undefined ? { contextWindowTokens } : {}),
-      ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
-      ...(runContext?.projectIdentity ? { projectIdentity: runContext.projectIdentity } : {}),
-      ...(runContext?.memoryBinding ? { memoryBinding: runContext.memoryBinding } : {}),
-      hookMeta: {
-        transport: hostTransport(this.options.environment.host.kind),
-        agent: request.actor ?? { kind: 'main' },
-        ...(request.workflow ? { workflow: {
-          runId: request.workflow.runId ?? request.workflow.id,
-          ...(request.workflow.stepId ? { stepId: request.workflow.stepId } : {})
-        } } : {})
-      },
-      ...(this.options.environment.memory ? { memoryRuntime: this.options.environment.memory } : {}),
-      ...(hooks ? { hooks } : {}),
-      ...(this.options.environment.summarizer ? {
-        summarize: (source, signal) => this.options.environment.summarizer!.summarize({
-          sessionId, laneId, runId, source
-        }, signal)
-      } : {}),
-      emit: (event) => this.onAgentEvent(sessionId, laneId, runId, event, resuming, () => cancelReason, context),
-      approve: (approvalRequest, signal) => this.options.environment.approval
-        ? this.options.environment.approval.requestApproval(approvalRequest, context, signal)
-        : Promise.resolve(false)
-    };
-
-    const result = (async (): Promise<RunResult> => {
-      try {
-        const completed = resuming
-          ? await resumeAgentTurn({ ...runnerOptions, runtimeStore: this.store, operationId: runId })
-          : await runAgentTurn(runnerOptions);
-        const status = completed.stopReason === 'cancelled' ? 'cancelled' as const : 'completed' as const;
-        const finalText = finalAssistantText(completed.messages);
-        return {
-          runId,
-          sessionId,
-          laneId,
-          status,
-          stopReason: completed.stopReason,
-          ...(finalText ? { finalText } : {}),
-          messages: completed.messages
-        };
-      } catch (error) {
-        return {
-          runId,
-          sessionId,
-          laneId,
-          status: 'failed',
-          messages: [],
-          error: runtimeError(error)
-        };
-      } finally {
-        request.signal?.removeEventListener('abort', abortFromRequest);
-        this.activeRuns.delete(runId);
-        try { await toolSource.dispose?.(); }
-        catch { /* Capability cleanup never replaces the Run result. */ }
+      const lane = await this.store.getLane(sessionId, laneId);
+      if (!lane) throw new Error(`runtime_lane_not_found: ${laneId}`);
+      if (lane.currentOperationId && lane.currentOperationId !== runId) {
+        throw new Error(`runtime_lane_busy: ${laneId}`);
       }
-    })();
-    Object.defineProperty(handle, 'result', { value: result, enumerable: true });
-    return handle;
+      if (this.activeRuns.has(runId)) throw new Error(`runtime_run_active: ${runId}`);
+
+      const session = await this.store.getSession(sessionId);
+      if (!session) throw new Error(`runtime_session_not_found: ${sessionId}`);
+      const persistedScope = scopeFromMetadata(session.metadata);
+      const executionScope = persistedScope;
+      const workingDirectory = executionScope.kind === 'workspace' ? executionScope.workingDirectory : '';
+      const context: RuntimeResolutionContext = {
+        sessionId,
+        laneId,
+        runId,
+        executionScope,
+        providerId: request.providerId,
+        model: request.model,
+        workingDirectory,
+        ...(request.actor ? { actor: request.actor } : {}),
+        ...(request.trigger ? { trigger: request.trigger } : {}),
+        ...(request.workflow ? { workflow: request.workflow } : {}),
+        ...(request.team ? { team: request.team } : {})
+      };
+      const [provider, toolSource, hooks, runContext] = await Promise.all([
+        this.options.environment.providers.resolve(context),
+        this.options.environment.tools.resolve(context),
+        resolveHooks(this.options.environment.hooks, context),
+        this.options.environment.runContext?.resolve(context)
+      ]);
+      const modelLimits = await this.options.environment.providers.resolveLimits?.(context, request.budget);
+      const controller = new AbortController();
+      let cancelReason: string | undefined;
+      const abortFromRequest = () => controller.abort(request.signal?.reason);
+      if (request.signal?.aborted) abortFromRequest();
+      else request.signal?.addEventListener('abort', abortFromRequest, { once: true });
+
+      const handle: RunHandle = {
+        id: runId,
+        result: Promise.resolve(undefined as never),
+        cancel: async (reason) => {
+          cancelReason = reason;
+          controller.abort(reason ?? 'cancelled');
+        }
+      };
+      this.activeRuns.set(runId, { controller, handle });
+      if (resuming) this.publish(sessionId, laneId, runId, { type: 'run.resumed' });
+
+      const input = normalizeInput(request.input);
+      const history = projectEntriesToMessages(await this.store.readPath(lane.leafId));
+      const budget = request.budget;
+      const contextWindowTokens = modelLimits?.contextWindowTokens ?? budget?.contextWindowTokens;
+      const maxOutputTokens = modelLimits?.requestMaxOutputTokens ?? budget?.maxOutputTokens;
+      const runnerOptions: RuntimeAgentRunOptions = {
+        sessionId,
+        workingDirectory,
+        executionScope,
+        model: request.model,
+        providerId: request.providerId,
+        history,
+        userText: input.text,
+        ...(input.content ? { userContent: input.content } : {}),
+        ...(input.images.length ? { userImages: input.images } : {}),
+        ...(input.files.length ? { userFiles: input.files } : {}),
+        provider,
+        ...(this.options.environment.attachmentAccess ? { attachmentAccess: this.options.environment.attachmentAccess } : {}),
+        tools: [],
+        getTools: ({ contextWindowTokens: resolvedContextWindow, maxOutputTokens: resolvedMaxOutput }) => toolSource.snapshot({
+          ...context,
+          contextWindowTokens: resolvedContextWindow,
+          maxOutputTokens: resolvedMaxOutput
+        }),
+        permissionGate: {
+          check: (call) => this.options.environment.permissions.check(call, context)
+        },
+        signal: controller.signal,
+        runtimeStore: this.store,
+        operationId: runId,
+        lane: laneId,
+        ...(request.instructions ? { instructions: request.instructions } : {}),
+        ...(budget?.maxIterations !== undefined ? { maxIterations: budget.maxIterations } : {}),
+        ...(budget?.allowPartialOnLimit !== undefined
+          ? { allowPartialOnMaxIterations: budget.allowPartialOnLimit }
+          : {}),
+        ...(contextWindowTokens !== undefined ? { contextWindowTokens } : {}),
+        ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
+        ...(runContext?.projectIdentity ? { projectIdentity: runContext.projectIdentity } : {}),
+        ...(runContext?.memoryBinding ? { memoryBinding: runContext.memoryBinding } : {}),
+        hookMeta: {
+          transport: hostTransport(this.options.environment.host.kind),
+          agent: request.actor ?? { kind: 'main' },
+          ...(request.workflow ? { workflow: {
+            runId: request.workflow.runId ?? request.workflow.id,
+            ...(request.workflow.stepId ? { stepId: request.workflow.stepId } : {})
+          } } : {})
+        },
+        ...(this.options.environment.memory ? { memoryRuntime: this.options.environment.memory } : {}),
+        ...(hooks ? { hooks } : {}),
+        ...(this.options.environment.summarizer ? {
+          summarize: (source, signal) => this.options.environment.summarizer!.summarize({
+            sessionId, laneId, runId, source
+          }, signal)
+        } : {}),
+        emit: (event) => this.onAgentEvent(sessionId, laneId, runId, event, resuming, () => cancelReason, context),
+        approve: (approvalRequest, signal) => this.options.environment.approval
+          ? this.options.environment.approval.requestApproval(approvalRequest, context, signal)
+          : Promise.resolve(false)
+      };
+
+      const result = (async (): Promise<RunResult> => {
+        try {
+          const completed = resuming
+            ? await resumeAgentTurn({ ...runnerOptions, runtimeStore: this.store, operationId: runId })
+            : await runAgentTurn(runnerOptions);
+          const status = completed.stopReason === 'cancelled' ? 'cancelled' as const : 'completed' as const;
+          const finalText = finalAssistantText(completed.messages);
+          return {
+            runId,
+            sessionId,
+            laneId,
+            status,
+            stopReason: completed.stopReason,
+            ...(finalText ? { finalText } : {}),
+            messages: completed.messages
+          };
+        } catch (error) {
+          return {
+            runId,
+            sessionId,
+            laneId,
+            status: 'failed',
+            messages: [],
+            error: runtimeError(error)
+          };
+        } finally {
+          request.signal?.removeEventListener('abort', abortFromRequest);
+          this.activeRuns.delete(runId);
+          try { await toolSource.dispose?.(); }
+          catch { /* Capability cleanup never replaces the Run result. */ }
+        }
+      })();
+      Object.defineProperty(handle, 'result', { value: result, enumerable: true });
+      return handle;
+    } finally { this.startingLanes.delete(key); }
   }
 
   async cancelLane(sessionId: string, laneId: string, reason?: string): Promise<void> {

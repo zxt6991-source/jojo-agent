@@ -13,7 +13,7 @@ import { FakeChannelAdapter } from '@desktop-agent/channel-core/testing';
 import { MemoryChannelStore } from '@desktop-agent/channel-runtime';
 import type { PermissionGate } from '@desktop-agent/contracts';
 import type { RequestContext } from '@desktop-agent/server-protocol';
-import { SqliteAgentRuntimeStore } from '@desktop-agent/storage';
+import { ServerDataOwnership, SqliteAgentRuntimeStore } from '@desktop-agent/storage';
 import { createHeadlessServer, createNetworkServer } from './index.js';
 
 const allow: PermissionGate = { check: async () => ({ decision: 'allow' }) };
@@ -182,10 +182,12 @@ describe('headless server consumer', () => {
   it('keeps metadata and terminal run results after a full server restart', async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), 'jojo-headless-restart-'));
     const runtimeFile = path.join(directory, 'runtime.sqlite');
+    const ownershipA = ServerDataOwnership.acquire(directory);
     const runtimeStoreA = new SqliteAgentRuntimeStore(runtimeFile);
     const serverA = await createHeadlessServer({
       dataDir: directory,
       store: runtimeStoreA,
+      ownership: ownershipA,
       providers: { resolve: () => new ScriptedProvider([[
         { type: 'text_delta', text: 'persisted answer' },
         { type: 'response_completed', stopReason: 'stop' }
@@ -208,10 +210,12 @@ describe('headless server consumer', () => {
     await serverA.close();
     runtimeStoreA.close();
 
+    const ownershipB = ServerDataOwnership.acquire(directory);
     const runtimeStoreB = new SqliteAgentRuntimeStore(runtimeFile);
     const serverB = await createHeadlessServer({
       dataDir: directory,
       store: runtimeStoreB,
+      ownership: ownershipB,
       providers: { resolve: () => new ScriptedProvider([]) },
       permissions: allow
     });
@@ -231,10 +235,12 @@ describe('headless server consumer', () => {
     const input = {
       id: 'idempotent-session', title: 'Exactly once-ish', executionScope: { kind: 'none' as const }
     };
+    const ownershipA = ServerDataOwnership.acquire(directory);
     const runtimeStoreA = new SqliteAgentRuntimeStore(runtimeFile);
     const serverA = await createHeadlessServer({
       dataDir: directory,
       store: runtimeStoreA,
+      ownership: ownershipA,
       providers: { resolve: () => new ScriptedProvider([]) },
       permissions: allow
     });
@@ -242,10 +248,12 @@ describe('headless server consumer', () => {
     await serverA.close();
     runtimeStoreA.close();
 
+    const ownershipB = ServerDataOwnership.acquire(directory);
     const runtimeStoreB = new SqliteAgentRuntimeStore(runtimeFile);
     const serverB = await createHeadlessServer({
       dataDir: directory,
       store: runtimeStoreB,
+      ownership: ownershipB,
       providers: { resolve: () => new ScriptedProvider([]) },
       permissions: allow
     });
@@ -267,10 +275,12 @@ describe('headless server consumer', () => {
       providerId: 'test',
       model: 'scripted'
     };
+    const ownershipA = ServerDataOwnership.acquire(directory);
     const runtimeStoreA = new SqliteAgentRuntimeStore(runtimeFile);
     const serverA = await createHeadlessServer({
       dataDir: directory,
       store: runtimeStoreA,
+      ownership: ownershipA,
       providers: { resolve: () => new ScriptedProvider([[
         { type: 'text_delta', text: 'single execution' },
         { type: 'response_completed', stopReason: 'stop' }
@@ -293,10 +303,12 @@ describe('headless server consumer', () => {
     await serverA.close();
     runtimeStoreA.close();
 
+    const ownershipB = ServerDataOwnership.acquire(directory);
     const runtimeStoreB = new SqliteAgentRuntimeStore(runtimeFile);
     const serverB = await createHeadlessServer({
       dataDir: directory,
       store: runtimeStoreB,
+      ownership: ownershipB,
       providers: { resolve: () => new ScriptedProvider([]) },
       permissions: allow
     });
@@ -367,10 +379,12 @@ describe('headless server consumer', () => {
   it('restores persisted schedules from the headless scheduler database', async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), 'jojo-scheduler-restart-'));
     const runtimeFile = path.join(directory, 'runtime.sqlite');
+    const ownershipA = ServerDataOwnership.acquire(directory);
     const runtimeStoreA = new SqliteAgentRuntimeStore(runtimeFile);
     const serverA = await createHeadlessServer({
       dataDir: directory,
       store: runtimeStoreA,
+      ownership: ownershipA,
       providers: { resolve: () => new ScriptedProvider([]) },
       permissions: allow
     });
@@ -390,10 +404,12 @@ describe('headless server consumer', () => {
     await serverA.close();
     runtimeStoreA.close();
 
+    const ownershipB = ServerDataOwnership.acquire(directory);
     const runtimeStoreB = new SqliteAgentRuntimeStore(runtimeFile);
     const serverB = await createHeadlessServer({
       dataDir: directory,
       store: runtimeStoreB,
+      ownership: ownershipB,
       providers: { resolve: () => new ScriptedProvider([]) },
       permissions: allow
     });

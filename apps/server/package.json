@@ -21,6 +21,7 @@
     "@desktop-agent/attachment-access": "workspace:*"
   },
   "devDependencies": {
-    "@desktop-agent/contracts": "workspace:*"
+    "@desktop-agent/contracts": "workspace:*",
+    "jiti": "2.7.0"
   }
 }

@@ -1,3 +1,4 @@
+import { DatabaseSync } from 'node:sqlite';
 import { mkdtemp } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -20,6 +21,26 @@ describe('SqliteAgentRuntimeStore conformance', () => {
 });
 
 describe('SqliteAgentRuntimeStore durability', () => {
+  it('rolls back the terminal state when lane release fails inside the transaction', async () => {
+    const filename = await databaseFile('runtime-atomic-');
+    const store = new SqliteAgentRuntimeStore(filename);
+    const db = new DatabaseSync(filename);
+    try {
+      await store.createSession({ id: 's', createdAt: 0 });
+      await store.saveLane({ sessionId: 's', name: 'main', leafId: null, currentOperationId: null });
+      const initial = { phase: 'ready' as const, operationId: 'old', lane: 'main', iteration: 0, outputContinuations: 0,
+        progress: { toolCallCounts: {}, observationFingerprints: [], recoveryStepsRemaining: null } };
+      await store.startOperation({ id: 'old', sessionId: 's', lane: 'main', kind: 'run', createdAt: 0, providerId: 'p', model: 'm', maxIterations: 1 }, initial);
+      db.exec("CREATE TRIGGER fail_release BEFORE UPDATE ON lanes WHEN NEW.current_operation_id IS NULL BEGIN SELECT RAISE(ABORT, 'injected lane failure'); END");
+      await expect(store.saveOperationState({ phase: 'failed', operationId: 'old', lane: 'main', error: { code: 'runtime_interrupted', message: 'restart' } }, {
+        expectedState: initial, expectedLaneOperationId: 'old'
+      })).rejects.toThrow('injected lane failure');
+      expect((await store.loadOperation('old'))?.state).toEqual(initial);
+      expect((await store.getLane('s', 'main'))?.currentOperationId).toBe('old');
+      expect(db.prepare('PRAGMA integrity_check').get()).toMatchObject({ integrity_check: 'ok' });
+    } finally { db.close(); store.close(); }
+  });
+
   it('reopens lanes, operation snapshots, compactions, and usage', async () => {
     const filename = await databaseFile('agent-runtime-sqlite-reopen-');
     const store = new SqliteAgentRuntimeStore(filename, { now: () => 1_000 });

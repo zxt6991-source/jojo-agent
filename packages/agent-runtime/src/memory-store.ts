@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import { assertOperationState } from './operation/invariants.js';
 import type { OperationMeta, StoredOperation } from './operation/meta.js';
 import { isTerminalState, type OperationState } from './operation/state.js';
@@ -143,11 +144,18 @@ export class MemoryAgentRuntimeStore implements AgentRuntimeStore {
     return operation ? clone(operation) : null;
   }
 
-  async saveOperationState(state: OperationState): Promise<void> {
+  async saveOperationState(state: OperationState, options?: { expectedState: OperationState; expectedLaneOperationId: string }): Promise<void> {
     assertOperationState(state);
     const operation = this.operations.get(state.operationId);
     if (!operation) throw new Error(`runtime_operation_not_found: ${state.operationId}`);
     if (operation.meta.lane !== state.lane) throw new Error('runtime_operation_lane_mismatch');
+    const owner = this.lanes.get(laneKey(operation.meta.sessionId, operation.meta.lane))?.currentOperationId;
+    if (options && (!isDeepStrictEqual(operation.state, options.expectedState) || owner !== options.expectedLaneOperationId)) {
+      throw new Error('runtime_operation_conflict');
+    }
+    if (isTerminalState(operation.state) && !isDeepStrictEqual(operation.state, state)) {
+      throw new Error('runtime_operation_terminal');
+    }
     this.operations.set(state.operationId, { meta: operation.meta, state: clone(state) });
     if (isTerminalState(state)) {
       const key = laneKey(operation.meta.sessionId, operation.meta.lane);

@@ -1,3 +1,4 @@
+import { MemoryAgentRuntimeStore } from '@desktop-agent/agent-runtime/spi';
 import { describe, expect, it } from 'vitest';
 import { ScriptedProvider } from '@desktop-agent/agent-runtime/testing';
 import type { PermissionGate } from '@desktop-agent/contracts';
@@ -7,6 +8,30 @@ import { MemoryServerStateStore, ServerRecoveryCoordinator } from '../src/index.
 const allow: PermissionGate = { check: async () => ({ decision: 'allow' }) };
 
 describe('ServerRecoveryCoordinator', () => {
+  it.each(['orphan', 'interrupted'] as const)('clears %s legacy runtime ownership without inventing or overwriting business history', async scenario => {
+    const runtimeStore = new MemoryAgentRuntimeStore();
+    const runtime = await createJojoRuntime({ store: runtimeStore, host: { kind: 'server' }, providers: { resolve: () => new ScriptedProvider([]) }, permissions: allow });
+    await runtime.openSession({ id: 's' });
+    await runtimeStore.startOperation({ id: 'old', sessionId: 's', lane: 'main', kind: 'run', createdAt: 0, providerId: 'p', model: 'm', maxIterations: 1 }, {
+      phase: 'ready', operationId: 'old', lane: 'main', iteration: 0, outputContinuations: 0,
+      progress: { toolCallCounts: {}, observationFingerprints: [], recoveryStepsRemaining: null }
+    });
+    const store = new MemoryServerStateStore();
+    if (scenario === 'interrupted') {
+      await store.sessions.ensureActive({ sessionId: 's' });
+      const run = await store.runs.createAccepted({ id: 'old', sessionId: 's', laneId: 'main', providerId: 'p', model: 'm', inputHash: 'hash' });
+      await store.runs.markInterrupted('old', { code: 'legacy', message: 'old history' }, run.version);
+    }
+    const before = await store.runs.get('old');
+    await new ServerRecoveryCoordinator(runtime, store).reconcile();
+    expect(await store.runs.get('old')).toEqual(before);
+    expect(await runtimeStore.getLane('s', 'main')).toMatchObject({ currentOperationId: null });
+    expect(await runtime.inspectRun('old')).toMatchObject({ result: { error: { code: 'runtime_interrupted' } } });
+    await new ServerRecoveryCoordinator(runtime, store).reconcile();
+    expect(await store.runs.get('old')).toEqual(before);
+    await runtime.close();
+  });
+
   it('reconciles session sagas, approvals, and non-terminal runs conservatively', async () => {
     const runtime = await createJojoRuntime({
       host: { kind: 'server' },
@@ -41,7 +66,7 @@ describe('ServerRecoveryCoordinator', () => {
     await store.close();
   });
 
-  it('projects a durable Runtime terminal fact instead of marking it interrupted', async () => {
+  it.each(['accepted', 'starting'] as const)('projects a durable Runtime terminal fact from %s', async status => {
     const runtime = await createJojoRuntime({
       host: { kind: 'server' },
       providers: { resolve: () => new ScriptedProvider([[
@@ -63,7 +88,7 @@ describe('ServerRecoveryCoordinator', () => {
       id: 'run-terminal', sessionId: 'session-terminal', laneId: 'main',
       providerId: 'test', model: 'test', inputHash: 'hash'
     });
-    await store.runs.markStarting('run-terminal', accepted.version);
+    if (status === 'starting') await store.runs.markStarting('run-terminal', accepted.version);
 
     await new ServerRecoveryCoordinator(runtime, store).reconcile();
 

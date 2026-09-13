@@ -311,3 +311,5 @@ export class JsonConfigStore {
     await rename(temporary, this.filePath);
   }
 }
+
+export { ServerDataOwnership } from './server-data-ownership.js';

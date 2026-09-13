@@ -102,7 +102,12 @@ function compositeToolSource(sources: RuntimeToolSource[]): RuntimeToolSource {
 export async function createJojoRuntime(options: JojoRuntimeCompositionOptions): Promise<AgentRuntime> {
   const builder = new RuntimeEnvironmentBuilder();
   if (options.tools) builder.addToolSource((context) => options.tools!.resolve(context));
-  for (const capability of options.capabilities ?? []) await capability.contribute(builder);
+  try {
+    for (const capability of options.capabilities ?? []) await capability.contribute(builder);
+  } catch (error) {
+    try { await builder.dispose(); } catch { /* Preserve the initialization failure after attempting every disposer. */ }
+    throw error;
+  }
 
   return createAgentRuntime({
     ...(options.store ? { store: options.store } : {}),

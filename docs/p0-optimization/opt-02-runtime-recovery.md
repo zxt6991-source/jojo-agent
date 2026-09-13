@@ -1,7 +1,7 @@
 # OPT-02：Runtime 与 Server 崩溃恢复闭环
 
-> 状态：详细实现建议，尚未实施。代码核对基线：`e544bae`，核对日期：2026-09-10。
-> 本文新增类型、方法、文件和状态字段均为拟议设计；未注明新增的代码依据指基线已有实现。
+> 状态：已实现并通过本机验证（2026-09-13）。实施结果、调用约束与验证证据见第 14 节。
+> 第 1–13 节保留原设计与验收要求；其中“当前”“建议新增”等表述的代码核对基线为 `e544bae`（2026-09-10），不代表实施后的接口状态。
 
 ## 1. 目标、范围与默认决策
 
@@ -330,3 +330,59 @@ Windows 使用实际强制结束进程的等价实现并验证退出；不声称
 - 运行 `pnpm typecheck`、`pnpm lint`，以及 Runtime、storage、app-service、server 的相关 Vitest 用例。
 - PR 附上实际执行命令、平台、通过用例数与失败日志；未执行的跨平台测试明确标注。
 - 文档和对外行为说明明确：默认中断可继续会话，但不承诺回滚外部效果或自动继续旧任务。
+
+
+## 14. 实施结果与验证记录（2026-09-13）
+
+已实现 Server 默认 `interrupt` 策略。重启恢复先失效 pending 审批，扫描全部 Runtime 占用 Lane，修复工具消息，原子提交 `failed/runtime_interrupted` 并释放对应 owner，再更新业务 Run。存在损坏、占用冲突或写入失败时启动失败，Channel/Scheduler 不启动。
+
+### 已交付的行为
+
+- 公共 API：`interruptOperation`、`recoverInterruptedOperations`，以及对应的请求、结果与报告类型。恢复不解析 provider/tools、不重放工具、不触发运行事件或 Stop Hook。
+- 启动恢复调用共享进行中的 Promise；完成后不缓存报告。start/resume 的建立阶段也受闸门保护；已终态 operation 不允许 resume。
+- Memory、SQLite 与现有 JSONL store 均支持 `expectedState` / `expectedLaneOperationId` 条件写入和终态不可逆保护。SQLite 校验、终态写入和按 operationId 释放 Lane 位于同一事务。
+- 工具结果按稳定 entry ID 修复。真实结果保留；执行阶段不明的结果标 `interrupted_uncertain_effect`；尚未进入效果阶段的调用标 `interrupted_before_execution`。消息已追加、leaf 尚未推进和多结果已接链的重启窗口均可重复收敛。
+- `inspectRun` 保留恢复审计 detail，并使用 operation 自身的 `finalEntryId` / 恢复 `leafId`。旧 cancelled/failed 缺少可靠边界时返回空消息，并在 Runtime snapshot 标记 `resultReconstruction: unavailable`。
+- accepted 也核对 Runtime 事实；已有完成事实先转 starting 再投影终态。业务版本冲突后重读一次；旧业务终态不覆盖；恢复 interrupted 的 `retryable` 为 false。
+- 初始化失败清理覆盖恢复和 capability 构造。Desktop 保持显式 resume 路径。
+
+### 数据目录所有权与嵌入方调用
+
+`@desktop-agent/storage` 导出 `ServerDataOwnership`。它将目录规范化为 realpath，在独立的 `.server-ownership.sqlite` 中持有生命周期级 `BEGIN IMMEDIATE` 事务；不同 instanceId 或目录符号链接不能绕过锁。进程被强杀后 SQLite/OS 释放锁，无需判断旧 PID 或删除锁文件。
+
+CLI 在打开 Runtime SQLite 前获取该锁，同时保留原有实例状态锁。外部传入持久化 Runtime/ServerState store 的 Headless 调用方必须先获取真实 ownership，再打开数据库，并把 ownership 传给 Host；缺失证明会报 `server_data_ownership_required`。Host 自己创建的持久化 ServerState 数据库会在获取目录锁后打开。Host 在关闭或初始化失败后释放 ownership；外部 store 仍由创建它的调用方关闭。
+
+```ts
+const ownership = ServerDataOwnership.acquire(dataDir);
+let store: SqliteAgentRuntimeStore | undefined;
+let host: HeadlessServer | undefined;
+try {
+  store = new SqliteAgentRuntimeStore(path.join(dataDir, 'runtime.sqlite'));
+  host = await createHeadlessServer({ ...dependencies, dataDir, store, ownership });
+  // 使用 host；NetworkServer 还需显式 listen。
+} finally {
+  try { await host?.close(); }
+  finally { store?.close(); ownership.release(); }
+}
+```
+
+### 验证证据
+
+平台：macOS / arm64，Node.js v25.1.0。执行命令：
+
+```sh
+pnpm typecheck
+pnpm lint
+pnpm exec vitest run packages/agent-runtime/test packages/storage/test packages/app-service/test packages/runtime-composition/test apps/server/src apps/cli/src/bootstrap
+```
+
+相关 Vitest 共 **35 个文件、159 个用例通过**，其中真实子进程 SIGKILL 用例 12 个：
+
+- accepted、operation 创建、model_pending、assistant entry、pending approval、effect_pending、外部效果 fsync、真实结果 entry 提交后强杀。
+- 恢复结果追加、终态 UPDATE 尚未释放 Lane、终态 COMMIT 尚未业务投影、业务更新尚未 Host ready 时再次强杀。
+
+每个强杀用例均打开两个真实 SQLite 文件，重复重启，验证不调用 provider、不增加外部效果、旧消息 ID 不增长，并通过 App Service 在同一会话完成新任务。审批用例还验证旧点击返回 `approval_interrupted`；事务窗口用例在下一次恢复之前读取数据库，确认终态 UPDATE 已回滚，并执行 `integrity_check`。
+
+补充契约测试覆盖条件冲突、旧 owner 不释放新 owner、终态不可逆、真实结果接链、多结果 leaf 不回退、无业务记录、旧业务 interrupted、accepted 已有完成事实、目录独占、恢复失败清理和构造失败清理。
+
+未执行 Windows/Linux 的强杀验证；不据本机结果宣称跨平台验收通过。默认中断允许用户继续原会话，但不回滚已发生的外部效果，也不自动继续旧任务。

@@ -6,6 +6,27 @@ import type { AgentRuntimeStore, Clock } from '../src/store.js';
 export type StoreFactory = (clock: Clock) => Promise<AgentRuntimeStore> | AgentRuntimeStore;
 
 export function runtimeStoreConformance(factory: StoreFactory): void {
+  it('checks expected state and owner atomically and never rewrites terminal facts', async () => {
+    const store = await factory({ now: () => 1 });
+    await store.createSession({ id: 'cas', createdAt: 0 });
+    await store.saveLane({ sessionId: 'cas', name: 'main', leafId: null, currentOperationId: null });
+    const initial = createReadyState('old');
+    const meta = { id: 'old', sessionId: 'cas', lane: 'main', kind: 'run' as const, createdAt: 0, providerId: 'p', model: 'm', maxIterations: 1 };
+    await store.startOperation(meta, initial);
+    const terminal: OperationState = { phase: 'failed', operationId: 'old', lane: 'main', error: { code: 'runtime_interrupted', message: 'interrupted' } };
+    await expect(store.saveOperationState(terminal, { expectedState: { ...initial, iteration: 99 }, expectedLaneOperationId: 'old' })).rejects.toThrow('runtime_operation_conflict');
+    expect((await store.loadOperation('old'))?.state).toEqual(initial);
+    expect((await store.getLane('cas', 'main'))?.currentOperationId).toBe('old');
+    await expect(store.saveOperationState(terminal, { expectedState: initial, expectedLaneOperationId: 'wrong' })).rejects.toThrow('runtime_operation_conflict');
+    await store.saveOperationState(terminal, { expectedState: initial, expectedLaneOperationId: 'old' });
+    await store.saveOperationState(terminal);
+    await expect(store.saveOperationState(initial)).rejects.toThrow('runtime_operation_terminal');
+    await expect(store.saveOperationState({ ...terminal, error: { code: 'different', message: 'different' } })).rejects.toThrow('runtime_operation_terminal');
+    await store.startOperation({ ...meta, id: 'new' }, createReadyState('new'));
+    await store.saveOperationState(terminal);
+    expect((await store.getLane('cas', 'main'))?.currentOperationId).toBe('new');
+  });
+
   it('stores sessions, immutable entries, lanes, operation snapshots, and usage', async () => {
     let time = 1_000;
     const clock: Clock = { now: () => time += 1 };

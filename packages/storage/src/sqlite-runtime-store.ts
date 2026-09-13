@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
@@ -289,15 +290,26 @@ export class SqliteAgentRuntimeStore implements AgentRuntimeStore {
     const meta = json<OperationMeta>(row.meta_json, 'operation meta');
     const state = json<OperationState>(row.state_json, 'operation state');
     assertOperationState(state);
+    if (meta.id !== operationId || state.operationId !== operationId || meta.sessionId !== row.session_id || meta.lane !== row.lane || state.lane !== row.lane) {
+      throw new Error('runtime_operation_identity_conflict');
+    }
     return clone({ meta, state });
   }
 
-  async saveOperationState(state: OperationState): Promise<void> {
+  async saveOperationState(state: OperationState, options?: { expectedState: OperationState; expectedLaneOperationId: string }): Promise<void> {
     assertOperationState(state);
     this.transaction(() => {
       const operation = this.operationRow(state.operationId);
       if (!operation) throw new Error(`runtime_operation_not_found: ${state.operationId}`);
       if (operation.lane !== state.lane) throw new Error('runtime_operation_lane_mismatch');
+      const previous = json<OperationState>(operation.state_json, 'operation state');
+      const owner = this.laneRow(String(operation.session_id), String(operation.lane))?.current_operation_id;
+      if (options && (!isDeepStrictEqual(previous, options.expectedState) || owner !== options.expectedLaneOperationId)) {
+        throw new Error('runtime_operation_conflict');
+      }
+      if (isTerminalState(previous) && !isDeepStrictEqual(previous, state)) {
+        throw new Error('runtime_operation_terminal');
+      }
       this.database.prepare('UPDATE operations SET state_json = ?, updated_at = ? WHERE id = ?')
         .run(JSON.stringify(state), this.clock.now(), state.operationId);
       if (isTerminalState(state)) {

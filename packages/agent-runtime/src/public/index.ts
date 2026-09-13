@@ -1,3 +1,4 @@
+export type { RecoveryOutcome, RuntimeRecoveryReport, InterruptOperationRequest } from '../recovery/interrupted-operation.js';
 export { createAgentRuntime } from './runtime.js';
 export type {
   AgentRuntime,

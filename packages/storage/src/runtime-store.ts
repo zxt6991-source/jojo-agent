@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import { appendFile, mkdir, readFile, readdir, stat, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import {
@@ -338,7 +339,7 @@ export class JsonlAgentRuntimeStore implements AgentRuntimeStore {
     return operation ? clone(operation) : null;
   }
 
-  async saveOperationState(state: OperationState): Promise<void> {
+  async saveOperationState(state: OperationState, options?: { expectedState: OperationState; expectedLaneOperationId: string }): Promise<void> {
     assertOperationState(state);
     const sessionId = await this.findOperationSession(state.operationId);
     if (!sessionId) throw new Error(`runtime_operation_not_found: ${state.operationId}`);
@@ -346,6 +347,13 @@ export class JsonlAgentRuntimeStore implements AgentRuntimeStore {
       const operation = snapshot.operations.get(state.operationId);
       if (!operation) throw new Error(`runtime_operation_not_found: ${state.operationId}`);
       if (operation.meta.lane !== state.lane) throw new Error('runtime_operation_lane_mismatch');
+      const owner = snapshot.lanes.get(operation.meta.lane)?.currentOperationId;
+      if (options && (!isDeepStrictEqual(operation.state, options.expectedState) || owner !== options.expectedLaneOperationId)) {
+        throw new Error('runtime_operation_conflict');
+      }
+      if (isTerminalState(operation.state) && !isDeepStrictEqual(operation.state, state)) {
+        throw new Error('runtime_operation_terminal');
+      }
       await this.append(sessionId, {
         schemaVersion: 1, type: 'operation.state', operationId: state.operationId,
         createdAt: this.clock.now(), state: clone(state)

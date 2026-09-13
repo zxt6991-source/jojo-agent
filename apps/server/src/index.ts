@@ -1,3 +1,4 @@
+import { MemoryAgentRuntimeStore } from '@desktop-agent/agent-runtime/spi';
 import { LocalAttachmentAccessResolver } from '@desktop-agent/attachment-access/local';
 import path from 'node:path';
 import type { AgentRuntime } from '@desktop-agent/agent-runtime';
@@ -35,7 +36,7 @@ import {
   type JojoRuntimeCompositionOptions
 } from '@desktop-agent/runtime-composition';
 import type { ScheduleService } from '@desktop-agent/scheduler';
-import { SqliteServerStateStore } from '@desktop-agent/storage';
+import { ServerDataOwnership, SqliteAgentRuntimeStore, SqliteServerStateStore } from '@desktop-agent/storage';
 import { createHeadlessSchedulerRuntime } from './scheduler-runtime.js';
 
 export type HeadlessChannelOptions = {
@@ -48,6 +49,8 @@ export type HeadlessChannelOptions = {
 };
 
 export type HeadlessServerOptions = Omit<JojoRuntimeCompositionOptions, 'host' | 'approval'> & {
+  /** Acquire before opening externally supplied persistent stores; held until Host close. */
+  ownership?: ServerDataOwnership;
   instanceId?: string;
   dataDir?: string;
   stateStore?: ServerStateStore;
@@ -70,61 +73,84 @@ export type HeadlessServer = {
 
 /** Creates the Server Host without Electron, IPC, UtilityProcess, or a Renderer. */
 export async function createHeadlessServer(options: HeadlessServerOptions): Promise<HeadlessServer> {
-  const stateStore = options.stateStore
-    ?? (options.dataDir
-      ? new SqliteServerStateStore(path.join(options.dataDir, 'server-state.sqlite'), {
-        now: () => options.now?.().getTime() ?? Date.now()
-      })
-      : new MemoryServerStateStore(options.now));
-  const approvalBroker = new ServerApprovalBroker({
-    store: stateStore.approvals,
-    ...(options.now ? { now: options.now } : {})
-  });
-  const channelStore = options.channels?.store
-    ?? (options.channels
-      ? options.dataDir
-        ? new SqliteChannelStore(path.join(options.dataDir, 'channels.sqlite'))
-        : new MemoryChannelStore()
-      : undefined);
-  const registry = options.channels ? channelRegistry(options.channels) : undefined;
-  let channelAgent: ChannelAgentBridge | undefined;
-  const channelManager = options.channels && channelStore && registry
-    ? new DefaultChannelManager({
-      store: channelStore,
-      registry,
-      secrets: options.channels.secrets,
-      agent: {
-        ensureSession: (...args) => requireChannelAgent(channelAgent).ensureSession(...args),
-        run: (...args) => requireChannelAgent(channelAgent).run(...args)
-      },
-      ...(options.now ? { now: options.now } : {}),
-      ...(options.idGenerator ? { idGenerator: options.idGenerator } : {})
-    })
-    : undefined;
-  const runtime = await createJojoRuntime({
-    attachmentAccess: new LocalAttachmentAccessResolver(options.server?.attachmentStore),
-    ...options,
-    capabilities: [
-      ...(options.capabilities ?? []),
-      ...(channelManager ? [new ChannelRuntimeCapability(channelManager)] : [])
-    ],
-    approval: approvalBroker,
-    host: {
-      kind: 'server',
-      ...(options.instanceId ? { instanceId: options.instanceId } : {})
-    }
-  });
-  await new ServerRecoveryCoordinator(runtime, stateStore).reconcile();
-  const service = createRuntimeAppService(runtime);
-  const appService = createJojoAppService(runtime, {
-    approvalBroker,
-    stateStore,
-    ...(options.idGenerator ? { idGenerator: options.idGenerator } : {}),
-    ...(options.now ? { now: options.now } : {})
-  });
-  let channelApproval: ChannelApprovalBridge | undefined;
-  let scheduleService: ScheduleService | undefined;
+  const runtimeDataDir = options.store instanceof SqliteAgentRuntimeStore && options.store.filename !== ':memory:' ? path.dirname(options.store.filename) : undefined;
+  const stateDataDir = options.stateStore instanceof SqliteServerStateStore && options.stateStore.filename !== ':memory:' ? path.dirname(options.stateStore.filename) : undefined;
+  const externalStore = options.store && !(options.store instanceof MemoryAgentRuntimeStore)
+    && !(options.store instanceof SqliteAgentRuntimeStore && options.store.filename === ':memory:');
+  const externalState = options.stateStore && !(options.stateStore instanceof MemoryServerStateStore)
+    && !(options.stateStore instanceof SqliteServerStateStore && options.stateStore.filename === ':memory:');
+  if ((externalStore || externalState) && !options.ownership) throw new Error('server_data_ownership_required');
+  const dataDir = options.dataDir ?? runtimeDataDir ?? stateDataDir;
+  const ownership = options.ownership ?? (dataDir ? ServerDataOwnership.acquire(dataDir) : undefined);
+  let cleanup: (() => Promise<void>) | undefined;
   try {
+    if (ownership) ServerDataOwnership.assertHeld(ownership, dataDir ?? ownership.dataDir);
+    if (runtimeDataDir) ServerDataOwnership.assertHeld(ownership!, runtimeDataDir);
+    if (stateDataDir) ServerDataOwnership.assertHeld(ownership!, stateDataDir);
+    const stateStore = options.stateStore
+      ?? (options.dataDir
+        ? new SqliteServerStateStore(path.join(options.dataDir, 'server-state.sqlite'), {
+          now: () => options.now?.().getTime() ?? Date.now()
+        })
+        : new MemoryServerStateStore(options.now));
+    cleanup = () => stateStore.close();
+    const approvalBroker = new ServerApprovalBroker({
+      store: stateStore.approvals,
+      ...(options.now ? { now: options.now } : {})
+    });
+    const channelStore = options.channels?.store
+      ?? (options.channels
+        ? options.dataDir
+          ? new SqliteChannelStore(path.join(options.dataDir, 'channels.sqlite'))
+          : new MemoryChannelStore()
+        : undefined);
+    cleanup = async () => { await Promise.allSettled([stateStore.close(), channelStore?.close()]); };
+    const registry = options.channels ? channelRegistry(options.channels) : undefined;
+    let channelAgent: ChannelAgentBridge | undefined;
+    const channelManager = options.channels && channelStore && registry
+      ? new DefaultChannelManager({
+        store: channelStore,
+        registry,
+        secrets: options.channels.secrets,
+        agent: {
+          ensureSession: (...args) => requireChannelAgent(channelAgent).ensureSession(...args),
+          run: (...args) => requireChannelAgent(channelAgent).run(...args)
+        },
+        ...(options.now ? { now: options.now } : {}),
+        ...(options.idGenerator ? { idGenerator: options.idGenerator } : {})
+      })
+      : undefined;
+    const runtime = await createJojoRuntime({
+      attachmentAccess: new LocalAttachmentAccessResolver(options.server?.attachmentStore),
+      ...options,
+      capabilities: [
+        ...(options.capabilities ?? []),
+        ...(channelManager ? [new ChannelRuntimeCapability(channelManager)] : [])
+      ],
+      approval: approvalBroker,
+      host: {
+        kind: 'server',
+        ...(options.instanceId ? { instanceId: options.instanceId } : {})
+      }
+    });
+    cleanup = async () => { await Promise.allSettled([runtime.close(), stateStore.close(), channelStore?.close()]); };
+    await new ServerRecoveryCoordinator(runtime, stateStore).reconcile();
+    const service = createRuntimeAppService(runtime);
+    const appService = createJojoAppService(runtime, {
+      approvalBroker,
+      stateStore,
+      ...(options.idGenerator ? { idGenerator: options.idGenerator } : {}),
+      ...(options.now ? { now: options.now } : {})
+    });
+    let channelApproval: ChannelApprovalBridge | undefined;
+    let scheduleService: ScheduleService | undefined;
+    cleanup = async () => {
+      await channelApproval?.stop().catch(() => undefined);
+      await channelManager?.stop().catch(() => undefined);
+      await scheduleService?.close().catch(() => undefined);
+      await appService.close().catch(() => undefined);
+      await channelStore?.close().catch(() => undefined);
+    };
     if (channelManager && channelStore && options.channels) {
       channelAgent = new JojoAppChannelBridge(appService, {
         defaultProviderId: options.channels.defaultProviderId,
@@ -149,34 +175,37 @@ export async function createHeadlessServer(options: HeadlessServerOptions): Prom
         ...(channelManager ? { deliveryService: new ChannelScheduleDeliveryService(channelManager) } : {})
       });
     }
+    const core = createJojoServerCore(appService, {
+      ...(options.server ?? {}),
+      idempotencyStore: options.server?.idempotencyStore ?? stateStore.idempotency,
+      ...(options.instanceId && !options.server?.serverId ? { serverId: options.instanceId } : {}),
+      ...(options.idGenerator ? { idGenerator: options.idGenerator } : {}),
+      ...(options.now ? { now: options.now } : {}),
+      ...(scheduleService ? { scheduler: scheduleService } : {}),
+      ...(channelManager ? { channels: channelManager, channelKinds: registry?.list() ?? [] } : {})
+    });
+    let closed = false;
+    return {
+      runtime, service, appService, core,
+      ...(scheduleService ? { scheduleService } : {}),
+      ...(channelManager ? { channelManager } : {}),
+      async close() {
+        if (closed) return;
+        closed = true;
+        try {
+          await channelApproval?.stop();
+          await channelManager?.stop();
+          await core.close();
+        } finally {
+          await cleanup?.();
+          ownership?.release();
+        }
+      }
+    };
   } catch (error) {
-    await channelApproval?.stop();
-    await channelManager?.stop();
-    await appService.close();
+    try { await cleanup?.(); } finally { ownership?.release(); }
     throw error;
   }
-  const core = createJojoServerCore(appService, {
-    ...(options.server ?? {}),
-    idempotencyStore: options.server?.idempotencyStore ?? stateStore.idempotency,
-    ...(options.instanceId && !options.server?.serverId ? { serverId: options.instanceId } : {}),
-    ...(options.idGenerator ? { idGenerator: options.idGenerator } : {}),
-    ...(options.now ? { now: options.now } : {}),
-    ...(scheduleService ? { scheduler: scheduleService } : {}),
-    ...(channelManager ? { channels: channelManager, channelKinds: registry?.list() ?? [] } : {})
-  });
-  let closed = false;
-  return {
-    runtime, service, appService, core,
-    ...(scheduleService ? { scheduleService } : {}),
-    ...(channelManager ? { channelManager } : {}),
-    async close() {
-      if (closed) return;
-      closed = true;
-      await channelApproval?.stop();
-      await channelManager?.stop();
-      await core.close();
-    }
-  };
 }
 
 export type NetworkServerOptions = HeadlessServerOptions & {
