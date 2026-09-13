@@ -1,3 +1,4 @@
+import { resolveModelForRun } from '@desktop-agent/contracts';
 import { LocalAttachmentAccessResolver } from '@desktop-agent/attachment-access/local';
 import type { AgentRuntime, RuntimePermissionGate } from '@desktop-agent/agent-runtime';
 import { MemoryAgentRuntimeStore, type AgentRuntimeStore } from '@desktop-agent/agent-runtime/spi';
@@ -138,7 +139,7 @@ export function createDesktopOrchestratedAgentRunner(options: DesktopLeafAgentRu
       const providerRuntime = options.resolveProvider(request.providerId);
       if (!providerRuntime) throw new OrchestrationError('provider_error', `Provider is unavailable: ${request.providerId}`);
       const model = profile.model && profile.model !== 'inherit' ? profile.model : request.model;
-      if (!providerRuntime.config.models.includes(model)) {
+      if (!providerRuntime.config.models.some((item) => item.id === model)) {
         throw new OrchestrationError('provider_error', `Model ${model} is not configured.`);
       }
       const toolRuntime = createDefaultToolRuntime({
@@ -200,6 +201,7 @@ export function createDesktopOrchestratedAgentRunner(options: DesktopLeafAgentRu
         : new NonInteractivePermissionGate(scopedPermissionGate);
       const binding = environments.bind(request.sessionId, laneId, {
         provider,
+        models: providerRuntime.config.models,
         tools: { snapshot: () => tools },
         permissions: {
           check: (call, context) => permissionGate.check(call, {
@@ -267,8 +269,8 @@ export function createDesktopOrchestratedAgentRunner(options: DesktopLeafAgentRu
           budget: {
             ...(request.maxIterations !== undefined ? { maxIterations: request.maxIterations } : {}),
             allowPartialOnLimit: true,
-            contextWindowTokens: providerRuntime.config.contextWindowTokens,
-            maxOutputTokens: Math.min(providerRuntime.config.maxOutputTokens, 4_096)
+            contextWindowTokens: resolveModelForRun(providerRuntime.config, model).contextWindowTokens,
+            maxOutputTokens: resolveModelForRun(providerRuntime.config, model, { maxOutputTokens: 4_096 }).requestMaxOutputTokens
           }
         });
         const result = await handle.result;

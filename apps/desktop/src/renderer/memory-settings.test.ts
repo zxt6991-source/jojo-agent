@@ -1,3 +1,4 @@
+import { legacyModelConfig } from '@desktop-agent/contracts';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
@@ -101,8 +102,7 @@ describe('MemorySettingsPage', () => {
       busy: false,
       providers: [{
         id: 'remote', name: 'Remote Embeddings', protocol: 'openai_chat_completions',
-        baseUrl: 'https://embed.example/v1', model: 'embed-model', models: ['embed-model'],
-        contextWindowTokens: 32_000, maxOutputTokens: 2_000, hasApiKey: true
+        baseUrl: 'https://embed.example/v1', model: 'embed-model', models: [legacyModelConfig('embed-model', 32_000, 2_000)], hasApiKey: true
       }],
       onChange: () => undefined,
       onSave: async () => undefined,

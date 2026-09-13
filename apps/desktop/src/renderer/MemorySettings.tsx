@@ -286,14 +286,14 @@ export function MemorySettingsPage({
           <label>Provider
             <select disabled={inactive || !draft.suggestions.enabled} value={draft.suggestions.providerId ?? utilityModel?.providerId ?? ''} onChange={(event) => {
               const provider = providers.find((item) => item.id === event.target.value);
-              update({ suggestions: { ...draft.suggestions, providerId: event.target.value, model: provider?.model ?? provider?.models[0] ?? '' } });
+              update({ suggestions: { ...draft.suggestions, providerId: event.target.value, model: provider?.model ?? provider?.models[0]?.id ?? '' } });
             }}>
               <option value="">未配置</option>{providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}
             </select>
           </label>
           <label>Model
             <select disabled={inactive || !draft.suggestions.enabled || !suggestionProvider} value={draft.suggestions.model ?? utilityModel?.model ?? ''} onChange={(event) => update({ suggestions: { ...draft.suggestions, model: event.target.value } })}>
-              <option value="">未配置</option>{suggestionProvider?.models.map((model) => <option key={model} value={model}>{model}</option>)}
+              <option value="">未配置</option>{suggestionProvider?.models.map((model) => <option key={model.id} value={model.id}>{model.id}</option>)}
             </select>
           </label>
           <label>每回合最多候选
@@ -336,14 +336,14 @@ export function MemorySettingsPage({
           <label>Provider
             <select disabled={inactive || !draft.semantic.enabled} value={draft.semantic.providerId ?? ''} onChange={(event) => {
               const provider = providers.find((item) => item.id === event.target.value);
-              update({ semantic: { ...draft.semantic, providerId: event.target.value, model: provider?.model ?? provider?.models[0] ?? '', remoteAllowed: false } });
+              update({ semantic: { ...draft.semantic, providerId: event.target.value, model: provider?.model ?? provider?.models[0]?.id ?? '', remoteAllowed: false } });
             }}>
               <option value="">未配置</option>{providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}
             </select>
           </label>
           <label>Embedding Model
             <select disabled={inactive || !draft.semantic.enabled || !semanticProvider} value={draft.semantic.model ?? ''} onChange={(event) => update({ semantic: { ...draft.semantic, model: event.target.value } })}>
-              <option value="">未配置</option>{semanticProvider?.models.map((model) => <option key={model} value={model}>{model}</option>)}
+              <option value="">未配置</option>{semanticProvider?.models.map((model) => <option key={model.id} value={model.id}>{model.id}</option>)}
             </select>
           </label>
           <label>Search Mode

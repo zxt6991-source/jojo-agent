@@ -19,3 +19,5 @@ export * from './tools';
 export * from './workspace';
 
 export * from './artifact';
+
+export * from './model-metadata';

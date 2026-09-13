@@ -114,7 +114,7 @@ export function scheduleInputFromDraft(
   if (!prompt) throw new Error('请输入运行提示词。');
   const provider = providers.find((item) => item.id === draft.providerId);
   if (!provider) throw new Error('所选 Provider 已不存在。');
-  if (!provider.models.includes(draft.model)) throw new Error('所选模型不在 Provider 的可用模型中。');
+  if (!provider.models.some((item) => item.id === draft.model)) throw new Error('所选模型不在 Provider 的可用模型中。');
   if (draft.targetKind === 'team_member') {
     const team = teams.find((item) => item.id === draft.teamId);
     if (!team) throw new Error('请选择团队。');
@@ -172,11 +172,7 @@ export function scheduleInputFromDraft(
         providerId: draft.providerId,
         model: draft.model,
         input: { content: [{ type: 'text', text: prompt }] },
-        lane: { mode: 'dedicated' },
-        budget: {
-          contextWindowTokens: provider.contextWindowTokens,
-          maxOutputTokens: provider.maxOutputTokens
-        }
+        lane: { mode: 'dedicated' }
       } : draft.targetKind === 'team_member' ? {
         kind: 'team_member',
         teamId: draft.teamId,
@@ -451,7 +447,7 @@ export function SchedulerSettingsPage({
                 <label><span>运行于</span><select value={draft.sessionId} onChange={(event) => { const session = sessions.find((item) => item.id === event.target.value); update({ sessionId: event.target.value, workingDirectory: session?.workingDirectory ?? '' }); }}>{sessions.map((session) => <option key={session.id} value={session.id}>{session.title}</option>)}</select></label>
                 <label><span>运行目标</span><select value={draft.targetKind} onChange={(event) => update({ targetKind: event.target.value as ScheduleDraft['targetKind'] })}><option value="agent">Agent</option><option value="team_member">Team Member</option><option value="workflow">Workflow</option></select></label>
                 <label><span>Provider</span><select value={draft.providerId} onChange={(event) => { const provider = providers.find((item) => item.id === event.target.value); update({ providerId: event.target.value, model: provider?.model ?? '' }); }}>{providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}</select></label>
-                <label><span>模型</span><select value={draft.model} onChange={(event) => update({ model: event.target.value })}>{activeProvider?.models.map((model) => <option key={model} value={model}>{model}</option>)}</select></label>
+                <label><span>模型</span><select value={draft.model} onChange={(event) => update({ model: event.target.value })}>{activeProvider?.models.map((model) => <option key={model.id} value={model.id}>{model.id}</option>)}</select></label>
                 {draft.targetKind === 'team_member' && <>
                   <label><span>团队</span><select value={draft.teamId} onChange={(event) => { const team = teams.find((item) => item.id === event.target.value); update({ teamId: event.target.value, memberId: team?.members[0]?.id ?? '' }); }}>{teams.map((team) => <option key={team.id} value={team.id}>{team.name}</option>)}</select></label>
                   <label><span>成员</span><select value={draft.memberId} onChange={(event) => update({ memberId: event.target.value })}>{activeTeam?.members.map((member) => <option key={member.id} value={member.id}>{member.name}</option>)}</select></label>

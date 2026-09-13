@@ -1365,3 +1365,57 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .artifact-resize-handle:hover::after, .artifact-resize-handle.dragging::after, .artifact-resize-handle:focus-visible::after { background: #7593c2; }
 .artifact-resize-handle:focus-visible { outline: none; background: #7593c225; }
 .artifact-resize-shield { position: fixed; inset: 0; z-index: 4; cursor: col-resize; user-select: none; }
+
+/* Model preferences: compact macOS-style grouped rows. */
+.model-settings-page {
+  padding: 32px max(28px, calc((100% - 720px) / 2)) 40px;
+  background: #ffffff;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 13px;
+  color: #252528;
+}
+.model-settings-page .settings-heading { margin-bottom: 26px; }
+.model-settings-page .settings-heading h1 { font-size: 24px; font-weight: 650; letter-spacing: -.5px; }
+.model-settings-page .settings-heading p { margin-top: 6px; color: #7b7b82; }
+.model-group-title { margin: 0 0 9px; padding: 0 14px; color: #68686e; font-size: 12px; font-weight: 600; }
+.model-group-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.model-group-heading .model-group-title { margin: 0; }
+.model-selection-section, .model-limits-section { margin-top: 24px; }
+.model-preferences-group, .model-advanced { overflow: hidden; border: 1px solid #dedee3; border-radius: 10px; background: #fff; }
+.model-preference-row { display: flex; align-items: center; justify-content: space-between; gap: 24px; min-height: 50px; margin: 0 14px; padding: 10px 0; }
+.model-preference-row + .model-preference-row { border-top: 1px solid #ededf0; }
+.model-preference-label { flex-shrink: 0; font-size: 13px; font-weight: 400; }
+.model-settings-page input, .model-settings-page select { min-width: 0; height: 30px; padding: 4px 9px; border: 1px solid #dcdce0; border-radius: 6px; background: #fff; color: #303035; font-size: 12px; transition: border-color .15s, box-shadow .15s; }
+.model-settings-page input { width: 60%; }
+.model-settings-page select { max-width: 68%; }
+.model-settings-page input::placeholder { color: #a0a0a7; }
+.model-settings-page input:focus-visible, .model-settings-page select:focus-visible { outline: 0; border-color: #6ca4ef; box-shadow: 0 0 0 3px #007aff20; }
+.model-inline-note { display: block; margin-top: 3px; color: #8a8a91; font-size: 11px; font-weight: 400; }
+.model-footnote { margin: 8px 14px 0; color: #88888f; font-size: 11px; line-height: 1.6; }
+.model-notice { color: #98662b; }
+.model-metadata-fieldset { min-width: 0; margin: 0; padding: 0; border: 0; }
+.model-limit-value { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; font-size: 13px; font-variant-numeric: tabular-nums; }
+.model-limit-value small { color: #8a8a91; font-size: 10px; }
+.model-unit { color: #919198; font-size: 11px; font-weight: 400; }
+.model-advanced { margin-top: 16px; }
+.model-advanced summary { display: flex; align-items: center; justify-content: space-between; padding: 14px; font-size: 12px; cursor: pointer; list-style: none; }
+.model-advanced summary::-webkit-details-marker { display: none; }
+.model-advanced summary:hover { background: #fafafa; }
+.model-advanced summary:focus-visible { outline: 2px solid #007aff; outline-offset: -3px; border-radius: 8px; }
+.model-disclosure { color: #96969d; font-size: 19px; line-height: 12px; transition: transform .15s; }
+.model-advanced[open] .model-disclosure { transform: rotate(90deg); }
+.model-advanced-body { border-top: 1px solid #ededf0; }
+.model-advanced-body .model-footnote { margin-top: 12px; margin-bottom: 4px; }
+.model-advanced-body input { width: 150px; text-align: right; font-variant-numeric: tabular-nums; }
+.model-reset-row { display: flex; justify-content: flex-end; padding: 8px 14px 14px; }
+.model-secondary-button { min-height: 26px; padding: 3px 10px; border: 1px solid #d9d9df; border-radius: 6px; background: #fff; color: #515158; font-size: 11px; box-shadow: 0 1px 1px #00000004; }
+.model-secondary-button:hover { background: #f4f4f6; }
+.model-save-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 24px; }
+.model-save-row > span { color: #8a8a91; font-size: 11px; }
+.model-save-button { min-height: 30px; padding: 5px 14px; border: 1px solid #0070ed; border-radius: 6px; background: #007aff; color: #fff; font-size: 12px; font-weight: 500; box-shadow: 0 1px 2px #0000000a; }
+.model-save-button:hover { background: #0071ed; }
+.model-settings-page button:disabled { opacity: .5; cursor: default; }
+@media (max-width: 1050px) {
+  .model-settings-page { padding: 24px 24px 32px; }
+  .model-preference-row { gap: 12px; }
+}

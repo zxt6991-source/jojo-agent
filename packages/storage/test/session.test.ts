@@ -1,3 +1,4 @@
+import { legacyModelConfig } from '@desktop-agent/contracts';
 import { appendFile, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -65,13 +66,13 @@ describe('JsonlSessionStore', () => {
 });
 
 describe('JsonConfigStore', () => {
-  it('uses 128k context and 8192 output as the model settings defaults', async () => {
+  it('uses 256k context and 16384 output as the model settings defaults', async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), 'desktop-agent-config-defaults-'));
     const settings = await new JsonConfigStore(path.join(directory, 'config.json')).get();
 
-    expect(settings.providers[0]).toMatchObject({
-      contextWindowTokens: 128_000,
-      maxOutputTokens: 8_192
+    expect(settings.providers[0]?.models[0]?.discovered).toMatchObject({
+      contextWindowTokens: 256_000,
+      maxOutputTokens: 16_384
     });
   });
 
@@ -88,7 +89,7 @@ describe('JsonConfigStore', () => {
       providers: expect.arrayContaining([
         expect.objectContaining({
           id: 'openai', baseUrl: 'https://provider.example/v1', model: 'legacy-model',
-          models: ['legacy-model'], hasApiKey: true
+          models: [legacyModelConfig('legacy-model')], hasApiKey: true
         })
       ]),
       utilityModel: { providerId: 'openai', model: 'legacy-model' },
@@ -126,14 +127,14 @@ describe('JsonConfigStore', () => {
     });
   });
 
-  it('persists multiple providers in the v3 config format without API keys', async () => {
+  it('persists multiple providers in the v4 config format without API keys', async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), 'desktop-agent-config-'));
     const file = path.join(directory, 'config.json');
     const store = new JsonConfigStore(file);
     const settings = await store.get({ openai: 'secret' });
     settings.providers[0] = {
       ...settings.providers[0]!, baseUrl: 'https://provider.example/v1', model: 'model-b',
-      models: ['model-a', 'model-b'], hasApiKey: true
+      models: [legacyModelConfig('model-a'), legacyModelConfig('model-b')], hasApiKey: true
     };
     settings.utilityModel = { providerId: 'openai', model: 'model-a' };
     settings.permissions = { mode: 'yolo' };
@@ -147,8 +148,8 @@ describe('JsonConfigStore', () => {
 
     const stored = JSON.parse(await readFile(file, 'utf8'));
     expect(stored).toMatchObject({
-      schemaVersion: 3, activeProviderId: 'openai',
-      providers: expect.arrayContaining([expect.objectContaining({ id: 'openai', model: 'model-b', models: ['model-a', 'model-b'] })]),
+      schemaVersion: 4, activeProviderId: 'openai',
+      providers: expect.arrayContaining([expect.objectContaining({ id: 'openai', model: 'model-b', models: [legacyModelConfig('model-a'), legacyModelConfig('model-b')] })]),
       utilityModel: { providerId: 'openai', model: 'model-a' }
     });
     expect(stored.extensions).toEqual(settings.extensions);

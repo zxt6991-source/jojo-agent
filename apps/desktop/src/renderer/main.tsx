@@ -1,3 +1,5 @@
+import { ModelMetadataSettings } from './ModelMetadataSettings';
+import { ModelConfigSchema, isModelMetadataStale, type ModelConfig } from '@desktop-agent/contracts';
 import { ArtifactPanel } from './artifacts/ArtifactPanel';
 import { detectArtifacts } from '@desktop-agent/contracts';
 import { attachmentPreviewText } from '@desktop-agent/contracts';
@@ -638,11 +640,10 @@ function App() {
   const [settingsDraft, setSettingsDraft] = useState<ProviderSettings>(defaultSettings);
   const [selectedModel, setSelectedModel] = useState(providerById(defaultSettings, defaultSettings.activeProviderId).model);
   const [apiKey, setApiKey] = useState('');
+  const modelRefreshGeneration = useRef(0);
   const [modelsFresh, setModelsFresh] = useState(true);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsError, setModelsError] = useState('');
-  const [contextWindowInput, setContextWindowInput] = useState(String(providerById(defaultSettings, defaultSettings.activeProviderId).contextWindowTokens));
-  const [maxOutputInput, setMaxOutputInput] = useState(String(providerById(defaultSettings, defaultSettings.activeProviderId).maxOutputTokens));
   const [settingsError, setSettingsError] = useState('');
   const [permissionError, setPermissionError] = useState('');
   const [permissionBusy, setPermissionBusy] = useState(false);
@@ -1414,31 +1415,60 @@ function App() {
     return () => window.removeEventListener('keydown', handleSkillDetailShortcut);
   }, [selectedSkill]);
 
-  const fetchProviderModels = async (): Promise<{ models: string[]; model: string } | null> => {
+  const fetchProviderModels = async (): Promise<{ models: ModelConfig[]; model: string } | null> => {
+    const generation = ++modelRefreshGeneration.current;
     setModelsLoading(true);
     setModelsError('');
     try {
       const draftProvider = providerById(settingsDraft, settingsDraft.activeProviderId);
       const models = await window.desktopAgent.listModels({
+        providerId: draftProvider.id,
         protocol: draftProvider.protocol,
         baseUrl: draftProvider.baseUrl,
         ...(apiKey ? { apiKey } : {})
       });
-      const model = models.includes(draftProvider.model) ? draftProvider.model : models[0]!;
+      if (generation !== modelRefreshGeneration.current) return null;
+      const model = draftProvider.model;
+      // Keep draft overrides, including a reset made since the persisted snapshot.
+      const previous = new Map(draftProvider.models.map((item) => [item.id, item]));
+      for (let index = 0; index < models.length; index += 1) {
+        const next = models[index]!;
+        const old = previous.get(next.id);
+        if (!old) continue;
+        const automatic = { ...next }; delete automatic.override;
+        const merged = ModelConfigSchema.safeParse({ ...automatic, ...(old.override ? { override: old.override } : {}) });
+        models[index] = merged.success ? merged.data : old;
+      }
+      if (!models.some((item) => item.id === model)) models.push(draftProvider.models.find((item) => item.id === model)!);
       setSettingsDraft((current) => ({
         ...current,
         providers: current.providers.map((provider) => provider.id === current.activeProviderId ? { ...provider, model, models } : provider),
-        utilityModel: { providerId: current.activeProviderId, model }
+        utilityModel: current.utilityModel
       }));
       setModelsFresh(true);
+      const saved = await window.desktopAgent.getSettings();
+      if (generation === modelRefreshGeneration.current) setSettings(saved);
       return { models, model };
     } catch (cause) {
-      setModelsError(cause instanceof Error ? cause.message : String(cause));
+      if (generation !== modelRefreshGeneration.current) return null;
+      setModelsError(`模型元数据刷新失败，继续使用缓存：${cause instanceof Error ? cause.message : String(cause)}`);
       return null;
     } finally {
-      setModelsLoading(false);
+      if (generation === modelRefreshGeneration.current) setModelsLoading(false);
     }
   };
+
+  useEffect(() => {
+    if (settingsOpen && settingsSection === 'models' && draftProvider.hasApiKey && draftProvider.models.some((item) => isModelMetadataStale(item))) {
+      void fetchProviderModels();
+    }
+    return () => {
+      modelRefreshGeneration.current += 1;
+      setModelsLoading(false);
+      void window.desktopAgent.cancelModelRefresh(settingsDraft.activeProviderId);
+    };
+  // Refresh once per settings visit, never on each draft edit.
+  }, [settingsOpen, settingsSection]);
 
   const createSessionForDirectory = async (directory: string) => {
     const session = await window.desktopAgent.createSession({ title: DEFAULT_SESSION_TITLE, workingDirectory: directory });
@@ -1703,10 +1733,7 @@ function App() {
   };
 
   const openSettings = (section: SettingsSection = 'models') => {
-    const provider = providerById(settings, settings.activeProviderId);
     setSettingsDraft(settings); setApiKey(''); setModelsFresh(true); setModelsError(''); setSettingsError(''); setPermissionError('');
-    setContextWindowInput(String(provider.contextWindowTokens));
-    setMaxOutputInput(String(provider.maxOutputTokens));
     setExtensionDraft(settings.extensions);
     setMcpServersJson(JSON.stringify(settings.extensions.mcpServers, null, 2));
     setSkillDirectories(settings.extensions.skills.directories.join('\n'));
@@ -1931,7 +1958,7 @@ function App() {
                 </div></>}
               </div>
               <select className="model-select" aria-label="本轮使用的模型" title="选择本轮使用的模型" value={selectedModel} disabled={sessionBusy} onChange={(event) => setSelectedModel(event.target.value)}>
-                {selectedProvider.models.map((model) => <option key={model} value={model}>{model}</option>)}
+                {selectedProvider.models.map((model) => <option key={model.id} value={model.id}>{model.id}</option>)}
               </select>
               {sessionBusy
                 ? <button className="stop" aria-label="停止生成" title="停止生成" onClick={() => activeId && window.desktopAgent.cancelTurn(activeId)}>■</button>
@@ -2064,62 +2091,51 @@ function App() {
     {settingsSection === 'models' && <form className="settings-content model-settings-page" aria-labelledby="settings-title" onSubmit={async (event) => {
       event.preventDefault();
       setSettingsError('');
-      const contextWindowTokens = Number(contextWindowInput);
-      const maxOutputTokens = Number(maxOutputInput);
-      if (!Number.isInteger(contextWindowTokens) || contextWindowTokens < 8_192 || contextWindowTokens > 2_000_000) {
-        setSettingsError('上下文窗口必须是 8,192 到 2,000,000 之间的整数。');
-        return;
-      }
-      if (!Number.isInteger(maxOutputTokens) || maxOutputTokens < 256 || maxOutputTokens > 128_000) {
-        setSettingsError('最大输出必须是 256 到 128,000 之间的整数。');
-        return;
-      }
-      if (maxOutputTokens >= contextWindowTokens) {
-        setSettingsError('最大输出必须小于上下文窗口。');
-        return;
-      }
-      const fetched = modelsFresh ? { models: draftProvider.models, model: draftProvider.model } : await fetchProviderModels();
-      if (!fetched) return;
-      const provider = { ...draftProvider, model: fetched.model, models: fetched.models, contextWindowTokens, maxOutputTokens };
-      const providerInput = {
-        id: provider.id, name: provider.name, protocol: provider.protocol, baseUrl: provider.baseUrl,
-        model: provider.model, models: provider.models, contextWindowTokens: provider.contextWindowTokens,
-        maxOutputTokens: provider.maxOutputTokens
-      };
-      const saved = await window.desktopAgent.saveSettings({
-        activeProviderId: settingsDraft.activeProviderId,
-        provider: providerInput,
-        utilityModel: { providerId: provider.id, model: provider.model },
-        ...(apiKey ? { apiKey } : {})
-      });
-      setSettings(saved);
-      setSettingsDraft(saved);
-      const activeProvider = providerById(saved, saved.activeProviderId);
-      setSelectedModel((current) => activeProvider.models.includes(current) ? current : activeProvider.model);
-      setApiKey('');
+      try {
+        const fetched = modelsFresh ? { models: draftProvider.models, model: draftProvider.model } : await fetchProviderModels();
+        if (!fetched) return;
+        const provider = { ...draftProvider, model: fetched.model, models: fetched.models.map((item) => ModelConfigSchema.parse(item)) };
+        const providerInput = { id: provider.id, name: provider.name, protocol: provider.protocol, baseUrl: provider.baseUrl, model: provider.model, models: provider.models };
+        const saved = await window.desktopAgent.saveSettings({
+          activeProviderId: settingsDraft.activeProviderId,
+          provider: providerInput,
+          utilityModel: settingsDraft.utilityModel,
+          ...(apiKey ? { apiKey } : {})
+        });
+        setSettings(saved);
+        setSettingsDraft(saved);
+        const activeProvider = providerById(saved, saved.activeProviderId);
+        setSelectedModel((current) => activeProvider.models.some((item) => item.id === current) ? current : activeProvider.model);
+        setApiKey('');
+      } catch (cause) { setSettingsError(cause instanceof Error ? cause.message : String(cause)); }
     }}>
-      <div className="settings-heading"><div><h1 id="settings-title">模型</h1><p>配置模型服务、默认模型与上下文容量。</p></div></div>
-      <section className="settings-section-card">
-      <div className="settings-section-title"><h2>模型服务</h2><p>连接兼容的模型 API，配置将应用于新的智能体回合。</p></div>
-      <div className="settings-fields">
-        <label>API Base URL<input required value={draftProvider.baseUrl} onChange={(event) => { updateDraftProvider({ baseUrl: event.target.value }); setModelsFresh(false); setModelsError(''); }} /></label>
-        <label>API Key <span>{draftProvider.hasApiKey ? '（已安全保存）' : ''}</span><input type="password" value={apiKey} placeholder={draftProvider.hasApiKey ? '留空以保留当前密钥' : '输入 API Key'} onChange={(event) => { setApiKey(event.target.value); setModelsFresh(false); setModelsError(''); }} /></label>
-        <div className="model-setting">
-          <div className="model-setting-head"><label htmlFor="default-model">默认模型</label><button type="button" disabled={modelsLoading} onClick={() => void fetchProviderModels()}>{modelsLoading ? '获取中…' : '刷新模型'}</button></div>
-          <select id="default-model" required value={draftProvider.model} disabled={modelsLoading} onChange={(event) => updateDraftProvider({ model: event.target.value })}>
-            {draftProvider.models.map((model) => <option key={model} value={model}>{model}</option>)}
-          </select>
-          <div className={`models-status ${modelsError ? 'failed' : ''}`}>{modelsError || (modelsFresh ? `已配置 ${draftProvider.models.length} 个模型` : 'Provider 配置已变化，保存时将自动重新获取')}</div>
-        </div>
-        <div className="settings-grid">
-          <label>上下文窗口（tokens）<input type="number" required min="8192" max="2000000" step="1" value={contextWindowInput} onChange={(event) => { setContextWindowInput(event.target.value); setSettingsError(''); }} /></label>
-          <label>最大输出（tokens）<input type="number" required min="256" max="128000" step="1" value={maxOutputInput} onChange={(event) => { setMaxOutputInput(event.target.value); setSettingsError(''); }} /></label>
-        </div>
-        {settingsError && <div className="settings-error" role="alert">{settingsError}</div>}
+      <div className="settings-heading"><div><h1 id="settings-title">模型</h1><p>管理模型连接与使用偏好。</p></div></div>
+      <section className="model-connection-section" aria-labelledby="model-connection-title">
+      <h2 className="model-group-title" id="model-connection-title">连接</h2>
+      <div className="model-preferences-group">
+        <label className="model-preference-row"><span className="model-preference-label">API Base URL</span><input required value={draftProvider.baseUrl} onChange={(event) => { updateDraftProvider({ baseUrl: event.target.value }); modelRefreshGeneration.current += 1; setModelsLoading(false); void window.desktopAgent.cancelModelRefresh(draftProvider.id); setModelsFresh(false); setModelsError(''); }} /></label>
+        <label className="model-preference-row"><span className="model-preference-label">API Key {draftProvider.hasApiKey && <small className="model-inline-note">已安全保存</small>}</span><input type="password" value={apiKey} placeholder={draftProvider.hasApiKey ? '留空以保留当前密钥' : '输入 API Key'} onChange={(event) => { setApiKey(event.target.value); modelRefreshGeneration.current += 1; setModelsLoading(false); void window.desktopAgent.cancelModelRefresh(draftProvider.id); setModelsFresh(false); setModelsError(''); }} /></label>
       </div>
-      <p className="security-note">密钥由操作系统安全存储加密，不会写入普通配置或会话。</p>
-      <div className="settings-actions"><button className="primary" type="submit" disabled={modelsLoading}>保存模型设置</button></div>
+      <p className="model-footnote">密钥由操作系统安全存储加密，不会写入普通配置或会话。</p>
       </section>
+      <section className="model-selection-section" aria-labelledby="model-selection-title">
+        <div className="model-group-heading"><h2 className="model-group-title" id="model-selection-title">模型</h2><button className="model-secondary-button" type="button" disabled={modelsLoading} onClick={() => void fetchProviderModels()}>{modelsLoading ? '获取中…' : '刷新模型'}</button></div>
+        <div className="model-preferences-group"><label className="model-preference-row" htmlFor="default-model"><span className="model-preference-label">默认模型</span>
+          <select id="default-model" required value={draftProvider.model} disabled={modelsLoading} onChange={(event) => updateDraftProvider({ model: event.target.value })}>
+            {draftProvider.models.map((model) => <option key={model.id} value={model.id}>{model.id}</option>)}
+          </select>
+        </label></div>
+        <p className={`model-footnote ${modelsError ? 'model-notice' : ''}`}>{modelsError || (modelsFresh ? `已配置 ${draftProvider.models.length} 个模型` : '连接已变化，保存时将重新获取模型')}</p>
+      </section>
+      <section className="model-limits-section" aria-labelledby="model-limits-title">
+        <h2 className="model-group-title" id="model-limits-title">模型容量</h2>
+        {draftProvider.models.find((item) => item.id === draftProvider.model) && <fieldset className="model-metadata-fieldset" disabled={modelsLoading}><ModelMetadataSettings
+          model={draftProvider.models.find((item) => item.id === draftProvider.model)!}
+          onChange={(next) => updateDraftProvider({ models: draftProvider.models.map((item) => item.id === next.id ? next : item) })}
+        /></fieldset>}
+      </section>
+      {settingsError && <div className="settings-error" role="alert">{settingsError}</div>}
+      <div className="model-save-row"><span>更改将在下一轮对话生效</span><button className="model-save-button" type="submit" disabled={modelsLoading}>保存模型设置</button></div>
     </form>}
     {settingsSection === 'permissions' && <PermissionsSettingsPage
       snapshot={permissionSnapshot}

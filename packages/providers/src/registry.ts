@@ -1,5 +1,6 @@
 import type {
   Disposable,
+  DiscoveredModel,
   JsonValue,
   ModelProvider,
   ProviderConfig,
@@ -23,9 +24,9 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistration[] = [
   }
 ];
 
-export type DiscoverableModelProvider = ModelProvider & { listModels(): Promise<string[]> };
+export type DiscoverableModelProvider = ModelProvider & { listModels(signal?: AbortSignal): Promise<DiscoveredModel[]> };
 
-export function createProvider(config: ProviderConfig, apiKey: string, timeoutMs?: number): DiscoverableModelProvider {
+export function createProvider(config: Pick<ProviderConfig, 'baseUrl'>, apiKey: string, timeoutMs?: number): DiscoverableModelProvider {
   const options = { apiKey, baseUrl: config.baseUrl, ...(timeoutMs !== undefined ? { timeoutMs } : {}) };
   return new OpenAICompatibleProvider(options);
 }

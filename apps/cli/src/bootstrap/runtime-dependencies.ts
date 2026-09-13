@@ -1,14 +1,37 @@
+import { MODEL_METADATA_TTL_MS, resolveEffectiveModelLimits, type ModelConfig } from '@desktop-agent/contracts';
 import { randomUUID } from 'node:crypto';
 import type { RuntimePermissionGate, TelemetrySink } from '@desktop-agent/agent-runtime';
 import type { ChannelSecretResolver } from '@desktop-agent/channel-core';
-import { OpenAICompatibleProvider } from '@desktop-agent/providers';
+import { mergeRefreshedModels, ModelDiscoveryRefresh, resolveModelMetadata, OpenAICompatibleProvider } from '@desktop-agent/providers';
 import type { Logger } from 'pino';
 import { ExitCode, JojoCliError } from '../errors.js';
 import { resolveSecret, secretEnvironmentName } from '../config/redact.js';
 import type { EffectiveConfig } from '../config/schema.js';
 
 export function createRuntimeDependencies(config: EffectiveConfig, logger: Logger) {
+  const metadata = new Map<string, { models: ModelConfig[]; refreshAfter: number }>();
+  const refresh = new ModelDiscoveryRefresh();
   const providers = {
+    resolveLimits: async (context: { providerId: string; model: string }, request?: { maxOutputTokens?: number }) => {
+      const configured = config.provider.providers[context.providerId];
+      const cached = metadata.get(context.providerId);
+      let models = cached?.models ?? [];
+      if (configured && (!cached || Date.now() >= cached.refreshAfter)) {
+        try {
+          const apiKey = resolveSecret(configured.apiKey);
+          if (!apiKey) throw new Error('Provider credentials unavailable.');
+          const remote = await refresh.refresh(context.providerId, configured.baseUrl,
+            (signal) => new OpenAICompatibleProvider({ baseUrl: configured.baseUrl, apiKey, timeoutMs: 15_000 }).listModels(signal));
+          models = mergeRefreshedModels(models, remote);
+          metadata.set(context.providerId, { models, refreshAfter: Date.now() + MODEL_METADATA_TTL_MS });
+        } catch {
+          // Offline/unsupported discovery must not block a usable chat endpoint.
+          metadata.set(context.providerId, { models, refreshAfter: Date.now() + 60_000 });
+        }
+      }
+      return resolveEffectiveModelLimits(models.find((model) => model.id === context.model)
+        ?? resolveModelMetadata({ discovered: { id: context.model } }), request);
+    },
     resolve: (context: { providerId: string }) => {
       const providerConfig = config.provider.providers[context.providerId];
       if (!providerConfig) {

@@ -1,4 +1,5 @@
-import type { ModelEvent, ModelProvider, ModelRequest } from '@desktop-agent/contracts';
+import { normalizeDiscoveredModel } from './model-metadata/provider-normalizer.js';
+import type { DiscoveredModel, ModelEvent, ModelProvider, ModelRequest } from '@desktop-agent/contracts';
 
 import {
   createChatCompletionBody,
@@ -81,7 +82,8 @@ export class OpenAICompatibleProvider implements ModelProvider {
     catch { /* Diagnostics must not change request delivery or retry semantics. */ }
   }
 
-  async listModels(): Promise<string[]> {
+  async listModels(signal?: AbortSignal): Promise<DiscoveredModel[]> {
+    signal?.throwIfAborted();
     const controller = new AbortController();
     const timeout = setTimeout(
       () => controller.abort(new Error('Provider request timed out.')),
@@ -98,7 +100,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
       const response = await fetch(modelsUrl.toString(), {
         method: 'GET',
         headers: { Authorization: `Bearer ${this.options.apiKey.trim()}` },
-        signal: controller.signal
+        signal: signal ? AbortSignal.any([signal, controller.signal]) : controller.signal
       });
       if (!response.ok) {
         const detail = (await response.text()).slice(0, MAX_ERROR_DETAIL_LENGTH);
@@ -109,18 +111,17 @@ export class OpenAICompatibleProvider implements ModelProvider {
       if (!payload || typeof payload !== 'object' || !Array.isArray((payload as { data?: unknown }).data)) {
         throw new Error('The provider returned an invalid model list.');
       }
-      const models = Array.from(new Set((payload as { data: unknown[] }).data.flatMap((item) => {
-        if (!item || typeof item !== 'object') return [];
-        const model = item as { id?: unknown; supported_parameters?: unknown };
-        if (isOpenRouter && (!Array.isArray(model.supported_parameters) || !model.supported_parameters.includes('tools'))) {
-          return [];
-        }
-        const id = model.id;
-        return typeof id === 'string' && id.trim() ? [id.trim()] : [];
-      }))).sort((left, right) => left.localeCompare(right));
+      const byId = new Map<string, DiscoveredModel>();
+      for (const item of (payload as { data: unknown[] }).data) {
+        const model = normalizeDiscoveredModel(item);
+        if (!model || (isOpenRouter && model.capabilities?.toolCalls !== true)) continue;
+        if (!byId.has(model.id)) byId.set(model.id, model);
+      }
+      const models = [...byId.values()].sort((left, right) => left.id.localeCompare(right.id));
       if (models.length === 0) throw new Error('The provider returned no available models.');
       return models;
     } catch (error) {
+      signal?.throwIfAborted();
       if (controller.signal.aborted) throw new Error('The model list request timed out.');
       throw error;
     } finally {

@@ -324,7 +324,7 @@ describe('OpenAICompatibleProvider', () => {
       baseUrl: 'https://provider.example/v1///'
     });
 
-    await expect(provider.listModels()).resolves.toEqual(['model-a', 'model-z']);
+    await expect(provider.listModels()).resolves.toEqual([{ id: 'model-a' }, { id: 'model-z' }]);
     expect(fetchMock).toHaveBeenCalledWith('https://provider.example/v1/models', expect.objectContaining({
       method: 'GET',
       headers: { Authorization: 'Bearer secret' }
@@ -347,7 +347,7 @@ describe('OpenAICompatibleProvider', () => {
       baseUrl: 'https://openrouter.ai/api/v1'
     });
 
-    await expect(provider.listModels()).resolves.toEqual(['tool-model']);
+    await expect(provider.listModels()).resolves.toEqual([{ id: 'tool-model', capabilities: { toolCalls: true, structuredOutput: false } }]);
     expect(fetchMock.mock.calls[0]?.[0]).toBe(
       'https://openrouter.ai/api/v1/models/user?supported_parameters=tools'
     );
@@ -509,8 +509,7 @@ describe('provider registry', () => {
   it('registers and constructs the OpenAI-compatible adapter', () => {
     expect(PROVIDER_REGISTRY.map((entry) => entry.protocol)).toEqual(['openai_chat_completions']);
     expect(createProvider({
-      id: 'compatible', name: 'Compatible', protocol: 'openai_chat_completions', baseUrl: 'https://provider.example/v1',
-      model: 'model-a', models: ['model-a'], contextWindowTokens: 32_000, maxOutputTokens: 2_000, hasApiKey: true
+      baseUrl: 'https://provider.example/v1'
     }, 'secret')).toBeInstanceOf(OpenAICompatibleProvider);
   });
 });

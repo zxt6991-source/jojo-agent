@@ -10,10 +10,11 @@ import type {
   TelemetrySink,
   ToolResolver
 } from '@desktop-agent/agent-runtime';
-import { NoopHookRuntime, type HookRuntime, type ModelProvider } from '@desktop-agent/contracts';
+import { resolveModelForRun, type ModelConfig, NoopHookRuntime, type HookRuntime, type ModelProvider } from '@desktop-agent/contracts';
 
 export type RuntimeExecutionEnvironment = {
   provider: ModelProvider;
+  models?: ModelConfig[];
   tools: RuntimeToolSource;
   permissions: RuntimePermissionGate;
   hooks?: HookRuntime;
@@ -38,7 +39,11 @@ export class RuntimeEnvironmentRegistry {
   private readonly environments = new Map<string, { token: symbol; value: RuntimeExecutionEnvironment }>();
 
   readonly providers: ModelProviderResolver = {
-    resolve: (context) => this.resolve(context).provider
+    resolve: (context) => this.resolve(context).provider,
+    resolveLimits: (context, request) => {
+      const models = this.resolve(context).models;
+      return models ? resolveModelForRun({ models }, context.model, request) : undefined;
+    }
   };
 
   readonly tools: ToolResolver = {

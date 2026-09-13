@@ -1,3 +1,4 @@
+import { legacyModelConfig } from '@desktop-agent/contracts';
 import { execFileSync } from 'node:child_process';
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
@@ -33,9 +34,7 @@ const providerConfig: ProviderConfig = {
   protocol: 'openai_chat_completions',
   baseUrl: 'https://example.test/v1',
   model: 'e2e-model',
-  models: ['e2e-model'],
-  contextWindowTokens: 128_000,
-  maxOutputTokens: 4_096,
+  models: [legacyModelConfig('e2e-model', 128_000, 4_096)],
   hasApiKey: true
 };
 

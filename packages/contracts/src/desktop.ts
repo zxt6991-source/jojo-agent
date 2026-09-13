@@ -1,3 +1,4 @@
+import { ModelConfigSchema, type ModelConfig } from './model-metadata';
 import { z } from 'zod';
 import type { AgentEvent } from './agent';
 import type { ConversationMessageCreatedEvent, Message } from './messages';
@@ -248,9 +249,7 @@ export const SaveSettingsInputSchema = z.object({
     protocol: z.literal('openai_chat_completions'),
     baseUrl: z.string().url(),
     model: z.string().min(1),
-    models: z.array(z.string().trim().min(1)).min(1),
-    contextWindowTokens: z.number().int().min(8_192).max(2_000_000),
-    maxOutputTokens: z.number().int().min(256).max(128_000)
+    models: z.array(ModelConfigSchema).min(1)
   }),
   utilityModel: z.object({ providerId: z.string().min(1), model: z.string().min(1) }),
   permissions: z.object({ mode: z.enum(['ask', 'auto', 'yolo']) }).strict().optional(),
@@ -313,6 +312,7 @@ export const PermissionGovernanceSnapshotSchema = z.object({
 export type PermissionGovernanceSnapshot = z.infer<typeof PermissionGovernanceSnapshotSchema>;
 
 export const ListModelsInputSchema = z.object({
+  providerId: z.string().min(1),
   protocol: z.literal('openai_chat_completions'),
   baseUrl: z.string().url(),
   apiKey: z.string().trim().min(1).optional()
@@ -655,7 +655,8 @@ export type DesktopApi = {
   hasClipboardFiles(): boolean;
   pasteFiles(): Promise<AttachmentSelection>;
   getSettings(): Promise<ProviderSettings>;
-  listModels(input: z.input<typeof ListModelsInputSchema>): Promise<string[]>;
+  cancelModelRefresh(providerId: string): Promise<void>;
+  listModels(input: z.input<typeof ListModelsInputSchema>): Promise<ModelConfig[]>;
   saveSettings(input: z.input<typeof SaveSettingsInputSchema>): Promise<ProviderSettings>;
   getPermissionGovernance(input?: z.input<typeof GetPermissionGovernanceInputSchema>): Promise<PermissionGovernanceSnapshot>;
   savePermissionPolicy(input: z.input<typeof SavePermissionPolicyInputSchema>): Promise<PermissionGovernanceSnapshot>;
@@ -751,6 +752,7 @@ export const IPC = {
   hasClipboardFiles: 'system:has-clipboard-files',
   pasteFiles: 'system:paste-files',
   getSettings: 'settings:get',
+  cancelModelRefresh: 'models:cancel-refresh',
   listModels: 'models:list',
   saveSettings: 'settings:save',
   getPermissionGovernance: 'permissions:get',

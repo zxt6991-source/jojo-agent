@@ -3794,22 +3794,22 @@ function mergeRefreshedModels(
 
 功能验收：
 
-- [ ] 一个 Provider 下不同模型可以保存不同 Context Window；
-- [ ] 切模型后下一轮立即使用新 Context Window；
-- [ ] 不再要求普通用户手工填写 Context；
-- [ ] Provider 提供 metadata 时自动使用；
-- [ ] Provider 不提供时自动使用 Builtin；
-- [ ] Builtin 不认识时自动使用 fallback；
-- [ ] 用户可以 override；
-- [ ] refresh 不覆盖 override；
-- [ ] reset override 恢复自动值；
-- [ ] `max_completion_tokens` 使用 request budget；
-- [ ] Context Manager 也使用相同 request budget；
-- [ ] model max output 不会被错误当成本次输出预算；
-- [ ] v3 配置无损迁移到 v4；
-- [ ] metadata refresh 失败不破坏旧配置；
-- [ ] API Key 不进入 config.json；
-- [ ] Headless 和 Desktop 使用相同 Effective Limits 解析。
+- [x] 一个 Provider 下不同模型可以保存不同 Context Window；
+- [x] 切模型后下一轮立即使用新 Context Window；
+- [x] 不再要求普通用户手工填写 Context；
+- [x] Provider 提供 metadata 时自动使用；
+- [x] Provider 不提供时自动使用 Builtin；
+- [x] Builtin 不认识时自动使用 fallback；
+- [x] 用户可以 override；
+- [x] refresh 不覆盖 override；
+- [x] reset override 恢复自动值；
+- [x] `max_completion_tokens` 使用 request budget；
+- [x] Context Manager 也使用相同 request budget；
+- [x] model max output 不会被错误当成本次输出预算；
+- [x] v3 配置无损迁移到 v4；
+- [x] metadata refresh 失败不破坏旧配置；
+- [x] API Key 不进入 config.json；
+- [x] Headless 和 Desktop 使用相同 Effective Limits 解析。
 
 ---
 
@@ -3988,3 +3988,29 @@ Provider
 ```
 
 这条路径能把核心改造拆开，每一阶段都可以单独测试和回滚。
+
+# 103. MVP 实施记录（2026-09-12）
+
+本次按第 94 节的 `discovered + override + defaultOutputTokens` 结构落地。
+
+已实现：
+
+- `contracts/model-metadata.ts` 定义模型配置、字段来源、限制校验、TTL 和统一 Effective Limits。共享纯解析函数放在 contracts，避免 Renderer、Storage 依赖 Provider 传输实现。
+- `/models` 返回 `DiscoveredModel[]`，兼容 id-only、OpenRouter 扩展字段、无效可选值、重复 ID 和取消请求。当前内置库覆盖经官方文档核验的 GPT-4.1、GPT-5 Mini 及其命名空间/日期别名；其他模型依赖 Provider 元数据或 fallback。
+- Desktop 配置保存为 v4，读取 v1/v2/v3 时转换。旧限制保留为 fallback，不创建 override；API Key 继续留在安全存储。
+- Desktop 主回合、Scheduler、Sub-Agent、Workflow、Team、Channel 与 Headless 通过 Runtime 的 `resolveLimits` 接口使用同一解析函数。辅助模型调用也限制实际请求输出。新建日程不再复制模型上下文窗口，执行时读取当前模型配置。
+- 模型设置展示自动值、来源、刷新时间、过期/不可用状态；高级参数按字段覆盖，支持恢复自动检测。修改仍通过现有 `saveSettings` 保存。
+- 打开模型设置时对超过 24 小时的缓存后台刷新；更改端点/密钥后保存时重新发现。取消或失败不清空缓存，远端缺失模型继续保留，刷新不会改动 utility model。
+- Desktop 对整个发现、合并、保存流程去重，防止并发写入；Headless 使用进程内 TTL 缓存，失败后保留已有结果并进行 60 秒重试退避。
+
+当新自动限制与现有覆盖值冲突时，保留旧有效配置并显示提示，用户可调整覆盖或恢复自动值。能力字段目前只用于发现信息与原有 OpenRouter tools 筛选，完整能力来源及路由联动留在文档定义的可选后续阶段。Headless 缓存暂不跨进程持久化，CLI YAML 继续接受 `models: string[]`。
+
+验证结果：
+
+- `pnpm typecheck`：通过。
+- `pnpm lint`：通过。
+- `pnpm test`：1001 通过，2 跳过；最终刷新去重改动另通过定向回归。
+- `pnpm test:runtime-smoke`：3 通过，包含窗口切换及实际输出预算一致性。
+- `pnpm test:e2e:electron`：13 通过，包含 64K → 1M 切换、覆盖/恢复、重启持久化、并发 IPC 去重和失败保留缓存。
+
+未执行付费真实 Provider 联调；发现解析通过模拟响应和本地 HTTP 服务验证。

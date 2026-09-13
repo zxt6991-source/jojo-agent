@@ -1,3 +1,4 @@
+import { resolveModelForRun } from '@desktop-agent/contracts';
 import { ARTIFACT_DELIVERY_PROMPT } from '@desktop-agent/contracts';
 import { LocalAttachmentAccessResolver } from '@desktop-agent/attachment-access/local';
 import path from 'node:path';
@@ -615,7 +616,7 @@ async function utilityCompletion(
   let costUsd = 0;
   const startedAt = Date.now();
   for await (const event of createProvider(config, apiKey).stream({
-    model: selection.model, messages: [message], tools: [], signal, maxOutputTokens
+    model: selection.model, messages: [message], tools: [], signal, maxOutputTokens: resolveModelForRun(config, selection.model, { maxOutputTokens }).requestMaxOutputTokens
   })) {
     if (event.type === 'text_delta') text += event.text;
     else if (event.type === 'response_failed') throw new Error(event.message);
@@ -840,7 +841,7 @@ async function startTurn(
     if (!providerConfig) throw new Error(`Provider“${providerId}”不存在。`);
     const apiKey = e2eMode ? 'e2e-offline-key' : runtime.apiKeys[providerId];
     if (!apiKey) throw new Error(`请先在设置中配置 ${providerConfig.name} API Key。`);
-    if (!providerConfig.models.includes(model)) throw new Error(`模型“${model}”不在 ${providerConfig.name} 的可用模型中。`);
+    if (!providerConfig.models.some((item) => item.id === model)) throw new Error(`模型“${model}”不在 ${providerConfig.name} 的可用模型中。`);
     const session = await store.get(sessionId);
     if (!session) throw new Error('Session not found.');
     await memoryReady;
@@ -1009,8 +1010,8 @@ async function startTurn(
     const schedulerTools = createSchedulerTools(activeScheduler.service, {
       providerId,
       model,
-      contextWindowTokens: providerConfig.contextWindowTokens,
-      maxOutputTokens: providerConfig.maxOutputTokens,
+      contextWindowTokens: resolveModelForRun(providerConfig, model).contextWindowTokens,
+      maxOutputTokens: resolveModelForRun(providerConfig, model).requestMaxOutputTokens,
       principal: { id: 'desktop-user', type: 'user' },
       defaultTimezone: schedulerTimezone
     });
@@ -1071,6 +1072,7 @@ async function startTurn(
     );
     runtimeBinding = runtimeEnvironments.bind(sessionId, 'main', {
       provider: e2eMode ? createE2eProvider() : createProvider(providerConfig, apiKey),
+      models: providerConfig.models,
       tools: {
         snapshot: (context) => {
           const skillTool = createSkillTool(skills, { loadedSkillIds });
@@ -1129,8 +1131,8 @@ async function startTurn(
       ...(origin ? { runId: origin.runId, actor: origin.actor, trigger: origin.trigger } : { actor: { kind: 'main' as const } }),
       signal: controller.signal,
       budget: {
-        contextWindowTokens: providerConfig.contextWindowTokens,
-        maxOutputTokens: providerConfig.maxOutputTokens
+        contextWindowTokens: resolveModelForRun(providerConfig, model).contextWindowTokens,
+        maxOutputTokens: resolveModelForRun(providerConfig, model).requestMaxOutputTokens
       }
     })).result;
     await projectRuntimeMessagesToLegacy(completed.messages, commitRuntimeMessage);
@@ -1175,7 +1177,7 @@ function scheduledAgentConfiguration(target: AgentScheduleTarget) {
   if (!runtime) throw new Error('schedule_target_invalid: Model settings are unavailable.');
   const providerConfig = runtime.settings.providers.find((provider) => provider.id === target.providerId);
   if (!providerConfig) throw new Error(`schedule_target_invalid: Provider "${target.providerId}" does not exist.`);
-  if (!providerConfig.models.includes(target.model)) {
+  if (!providerConfig.models.some((item) => item.id === target.model)) {
     throw new Error(`schedule_target_invalid: Model "${target.model}" is not available for ${providerConfig.name}.`);
   }
   const apiKey = e2eMode ? 'e2e-offline-key' : runtime.apiKeys[target.providerId];
@@ -1344,6 +1346,7 @@ async function prepareScheduledAgent(
   );
   const binding = runtimeEnvironments.bind(session.id, laneId, {
     provider: e2eMode ? createE2eProvider() : createProvider(providerConfig, apiKey),
+    models: providerConfig.models,
     tools: { snapshot: (context) => [...staticTools, ...mcpManager.getTools(context)] },
     permissions: permissionGate,
     hooks: loadedHooks.runtime,

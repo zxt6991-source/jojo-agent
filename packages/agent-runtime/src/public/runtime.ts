@@ -1,3 +1,4 @@
+import type { EffectiveModelLimits } from '@desktop-agent/contracts';
 import type { AttachmentAccessResolver } from '@desktop-agent/attachment-access';
 import type {
   AgentEvent,
@@ -82,6 +83,7 @@ export type RuntimeHostDescriptor = {
 };
 
 export interface ModelProviderResolver {
+  resolveLimits?(context: RuntimeResolutionContext, request?: { maxOutputTokens?: number }): EffectiveModelLimits | Promise<EffectiveModelLimits> | undefined;
   resolve(context: RuntimeResolutionContext): ModelProvider | Promise<ModelProvider>;
 }
 
@@ -445,6 +447,7 @@ class DefaultAgentRuntime implements AgentRuntime {
       resolveHooks(this.options.environment.hooks, context),
       this.options.environment.runContext?.resolve(context)
     ]);
+    const modelLimits = await this.options.environment.providers.resolveLimits?.(context, request.budget);
     const controller = new AbortController();
     let cancelReason: string | undefined;
     const abortFromRequest = () => controller.abort(request.signal?.reason);
@@ -465,8 +468,8 @@ class DefaultAgentRuntime implements AgentRuntime {
     const input = normalizeInput(request.input);
     const history = projectEntriesToMessages(await this.store.readPath(lane.leafId));
     const budget = request.budget;
-    const contextWindowTokens = budget?.contextWindowTokens;
-    const maxOutputTokens = budget?.maxOutputTokens;
+    const contextWindowTokens = modelLimits?.contextWindowTokens ?? budget?.contextWindowTokens;
+    const maxOutputTokens = modelLimits?.requestMaxOutputTokens ?? budget?.maxOutputTokens;
     const runnerOptions: RuntimeAgentRunOptions = {
       sessionId,
       workingDirectory,

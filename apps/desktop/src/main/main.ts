@@ -1,3 +1,5 @@
+import type { ModelConfig } from '@desktop-agent/contracts';
+import { ModelDiscoveryRefresh, mergeRefreshedModels } from '@desktop-agent/providers';
 import { readSessionArtifact } from '@desktop-agent/tools-node';
 import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeImage, safeStorage, shell, utilityProcess, type IpcMainInvokeEvent, type UtilityProcess } from 'electron';
 import { Worker } from 'node:worker_threads';
@@ -8,7 +10,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  AcceptMemoryCandidateInputSchema, ApprovalInputSchema, BindSessionProjectInputSchema, BrowserDockActionSchema, BrowserDockLayoutSchema, BrowserRecordingRegistryActionInputSchema, BrowserRecordingRegistryInputSchema, BrowserRecordingStudioInputSchema, CreateSessionInputSchema, CreateSkillInputSchema, DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS, DEFAULT_MODEL_MAX_OUTPUT_TOKENS, DeleteMemoryEntryInputSchema, DeleteTeamInputSchema, DesktopChannelMutationSchema, DuplicateBrowserRecordingInputSchema, GetExtensionStatusInputSchema, GetHookStatusInputSchema, GetMemoryStatusInputSchema, GetPermissionGovernanceInputSchema, HookProjectActionInputSchema, ImportSkillInputSchema, IPC, ListModelsInputSchema, ListTeamsInputSchema, MAX_FILE_BYTES, MAX_IMAGE_ATTACHMENTS, MAX_IMAGE_BYTES, McpServerIdInputSchema, OpenHookConfigInputSchema, PermissionGovernanceSnapshotSchema, RebuildMemoryIndexInputSchema, RebuildSemanticMemoryIndexInputSchema, RejectMemoryCandidateInputSchema, RenameSessionInputSchema, ResolveTerminalSecretInputSchema, SaveBrowserRecordingInputSchema, SaveExtensionSettingsInputSchema, SaveMemorySettingsInputSchema, SavePermissionPolicyInputSchema, SaveSettingsInputSchema, SaveTeamInputSchema, SetTeamMemberEnabledInputSchema,
+  AcceptMemoryCandidateInputSchema, ApprovalInputSchema, BindSessionProjectInputSchema, BrowserDockActionSchema, BrowserDockLayoutSchema, BrowserRecordingRegistryActionInputSchema, BrowserRecordingRegistryInputSchema, BrowserRecordingStudioInputSchema, CreateSessionInputSchema, CreateSkillInputSchema, DeleteMemoryEntryInputSchema, DeleteTeamInputSchema, DesktopChannelMutationSchema, DuplicateBrowserRecordingInputSchema, GetExtensionStatusInputSchema, GetHookStatusInputSchema, GetMemoryStatusInputSchema, GetPermissionGovernanceInputSchema, HookProjectActionInputSchema, ImportSkillInputSchema, IPC, ListModelsInputSchema, ListTeamsInputSchema, MAX_FILE_BYTES, MAX_IMAGE_ATTACHMENTS, MAX_IMAGE_BYTES, McpServerIdInputSchema, OpenHookConfigInputSchema, PermissionGovernanceSnapshotSchema, RebuildMemoryIndexInputSchema, RebuildSemanticMemoryIndexInputSchema, RejectMemoryCandidateInputSchema, RenameSessionInputSchema, ResolveTerminalSecretInputSchema, SaveBrowserRecordingInputSchema, SaveExtensionSettingsInputSchema, SaveMemorySettingsInputSchema, SavePermissionPolicyInputSchema, SaveSettingsInputSchema, SaveTeamInputSchema, SetTeamMemberEnabledInputSchema,
   SaveChannelSecretsInputSchema, SaveScheduleInputSchema, ScheduleIdInputSchema, ScheduleRunIdInputSchema, SetScheduleEnabledInputSchema,
   SessionIdInputSchema, SkillPathInputSchema, StartTurnInputSchema, UpdateSkillInputSchema, WorkflowRunActionInputSchema,
   WorkerCommandSchema, WorkerMessageSchema, serializedIpcBytes,
@@ -1189,19 +1191,33 @@ function registerIpc(): void {
       ...(input.workingDirectory ? { workingDirectory: input.workingDirectory } : {})
     });
   });
+  const modelRefresh = new ModelDiscoveryRefresh<ModelConfig[]>();
+  ipcMain.handle(IPC.cancelModelRefresh, (event, providerId) => {
+    assertTrusted(event);
+    if (typeof providerId === 'string') modelRefresh.cancel(providerId);
+  });
   ipcMain.handle(IPC.listModels, async (event, raw) => {
     assertTrusted(event);
     const input = ListModelsInputSchema.parse(raw);
     const settings = await configStore.get(await readApiKeys());
-    const configured = settings.providers.find((provider) => provider.protocol === input.protocol);
+    const configured = settings.providers.find((provider) => provider.id === input.providerId);
     const apiKey = input.apiKey || (configured ? (await readApiKeys())[configured.id] : undefined);
     if (!apiKey) throw new Error('请先填写模型 API Key。');
-    return createProvider({
-      id: configured?.id ?? 'discovery', name: configured?.name ?? 'Provider', protocol: input.protocol,
-      baseUrl: input.baseUrl, model: configured?.model ?? 'discovery', models: configured?.models ?? ['discovery'],
-      contextWindowTokens: configured?.contextWindowTokens ?? DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS,
-      maxOutputTokens: configured?.maxOutputTokens ?? DEFAULT_MODEL_MAX_OUTPUT_TOKENS, hasApiKey: true
-    }, apiKey, 15_000).listModels();
+    return modelRefresh.refresh(input.providerId, JSON.stringify([input.baseUrl, apiKey]), async (signal) => {
+      const remote = await createProvider({ baseUrl: input.baseUrl }, apiKey, 15_000).listModels(signal);
+      const keys = await readApiKeys();
+      const latest = await configStore.get(keys);
+      const current = latest.providers.find((provider) => provider.id === input.providerId);
+      signal.throwIfAborted();
+      const models = mergeRefreshedModels(current?.models ?? [], remote);
+      if (current && current.baseUrl === input.baseUrl && keys[current.id] === apiKey) {
+        await configStore.save({ ...latest, providers: latest.providers.map((provider) => provider.id === current.id ? { ...provider, models } : provider) });
+        await pushConfig();
+      }
+      return mergeRefreshedModels((current?.models ?? []).map((model) => {
+        const automatic = { ...model }; delete automatic.override; return automatic;
+      }), remote);
+    });
   });
   ipcMain.handle(IPC.saveSettings, async (event, raw) => {
     assertTrusted(event); const input = SaveSettingsInputSchema.parse(raw);

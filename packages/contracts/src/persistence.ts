@@ -1,3 +1,4 @@
+import { DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS, DEFAULT_MODEL_MAX_OUTPUT_TOKENS, ModelConfigSchema, legacyModelConfig } from './model-metadata';
 import { z } from 'zod';
 import { MessageSchema } from './messages';
 import { ExtensionSettingsSchema, DEFAULT_BROWSER_SETTINGS } from './integrations';
@@ -5,8 +6,7 @@ import { DEFAULT_MEMORY_SETTINGS, MemorySettingsSchema, ProjectIdentitySchema } 
 
 export const DEFAULT_SESSION_TITLE = '新会话';
 export const SESSION_TITLE_MAX_LENGTH = 120;
-export const DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS = 128_000;
-export const DEFAULT_MODEL_MAX_OUTPUT_TOKENS = 8_192;
+export { DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS, DEFAULT_MODEL_MAX_OUTPUT_TOKENS } from './model-metadata';
 
 export const PermissionSettingsSchema = z.object({
   mode: z.enum(['ask', 'auto', 'yolo']).default('ask')
@@ -99,9 +99,7 @@ export const ProviderConfigSchema = z.object({
   protocol: ProviderProtocolSchema,
   baseUrl: z.string().url(),
   model: z.string().trim().min(1),
-  models: z.array(z.string().trim().min(1)).min(1),
-  contextWindowTokens: z.number().int().min(8_192).max(2_000_000),
-  maxOutputTokens: z.number().int().min(256).max(128_000),
+  models: z.array(ModelConfigSchema).min(1),
   hasApiKey: z.boolean().default(false)
 });
 export type ProviderConfig = z.infer<typeof ProviderConfigSchema>;
@@ -109,9 +107,7 @@ export type ProviderConfig = z.infer<typeof ProviderConfigSchema>;
 export const DEFAULT_PROVIDERS: ProviderConfig[] = [
   {
     id: 'openai', name: 'OpenAI / 兼容服务', protocol: 'openai_chat_completions',
-    baseUrl: 'https://api.openai.com/v1', model: 'gpt-5-mini', models: ['gpt-5-mini'],
-    contextWindowTokens: DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS,
-    maxOutputTokens: DEFAULT_MODEL_MAX_OUTPUT_TOKENS,
+    baseUrl: 'https://api.openai.com/v1', model: 'gpt-5-mini', models: [legacyModelConfig('gpt-5-mini', DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS, DEFAULT_MODEL_MAX_OUTPUT_TOKENS)],
     hasApiKey: false
   }
 ];
@@ -130,16 +126,16 @@ export const ProviderSettingsSchema = z.object({
   for (const provider of settings.providers) {
     if (ids.has(provider.id)) context.addIssue({ code: 'custom', message: `Duplicate provider id: ${provider.id}` });
     ids.add(provider.id);
-    if (!provider.models.includes(provider.model)) {
+    if (!provider.models.some((model) => model.id === provider.model)) {
       context.addIssue({ code: 'custom', message: `Default model is missing from provider ${provider.id}.` });
     }
-    if (provider.maxOutputTokens >= provider.contextWindowTokens) {
-      context.addIssue({ code: 'custom', message: `Max output must be smaller than the context window for ${provider.id}.` });
+    if (new Set(provider.models.map((model) => model.id)).size !== provider.models.length) {
+      context.addIssue({ code: 'custom', message: `Duplicate model id in ${provider.id}.` });
     }
   }
   if (!ids.has(settings.activeProviderId)) context.addIssue({ code: 'custom', message: 'Active provider does not exist.' });
   const utilityProvider = settings.providers.find((provider) => provider.id === settings.utilityModel.providerId);
-  if (!utilityProvider?.models.includes(settings.utilityModel.model)) {
+  if (!utilityProvider?.models.some((model) => model.id === settings.utilityModel.model)) {
     context.addIssue({ code: 'custom', message: 'Utility model does not exist.' });
   }
 });

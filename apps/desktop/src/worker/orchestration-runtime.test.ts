@@ -1,3 +1,4 @@
+import { legacyModelConfig } from '@desktop-agent/contracts';
 import { describe, expect, it } from 'vitest';
 import { ScriptedProvider } from '@desktop-agent/agent';
 import { createAgentRuntime } from '@desktop-agent/agent-runtime';
@@ -16,9 +17,7 @@ const providerConfig: ProviderConfig = {
   protocol: 'openai_chat_completions',
   baseUrl: 'https://example.test/v1',
   model: 'test-model',
-  models: ['test-model'],
-  contextWindowTokens: 128_000,
-  maxOutputTokens: 4_096,
+  models: [legacyModelConfig('test-model', 128_000, 4_096)],
   hasApiKey: true
 };
 

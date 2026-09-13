@@ -69,3 +69,31 @@ describe('headless Jojo runtime composition', () => {
     await runtime.close();
   });
 });
+
+it('uses per-model limits for context diagnostics and the same capped request budget', async () => {
+  const { legacyModelConfig, resolveModelForRun } = await import('@desktop-agent/contracts');
+  const models = [legacyModelConfig('small', 64_000, 4_096), { ...legacyModelConfig('large', 1_000_000, 128_000), defaultOutputTokens: 8_192 }];
+  const requests: number[] = [];
+  const windows: number[] = [];
+  const provider = new ScriptedProvider(Array.from({ length: 2 }, () => [
+    { type: 'text_delta' as const, text: 'done' }, { type: 'response_completed' as const, stopReason: 'stop' as const }
+  ]));
+  const runtime = await createJojoRuntime({
+    host: { kind: 'server' }, permissions: allow,
+    providers: {
+      resolve: () => ({ stream: (request) => { requests.push(request.maxOutputTokens!); return provider.stream(); } }),
+      resolveLimits: (context, request) => resolveModelForRun({ models }, context.model, request)
+    },
+    telemetry: { diagnostic: (event) => { if (event.type === 'context.updated') windows.push(event.contextWindowTokens); } }
+  });
+  try {
+    const session = await runtime.openSession({ id: 'metadata-switch', executionScope: { kind: 'none' } });
+    const lane = await session.getLane();
+    for (const model of ['small', 'large']) {
+      const result = await (await lane.run({ providerId: 'same', model, input: { content: [{ type: 'text', text: 'hello' }] } })).result;
+      expect(result.status).toBe('completed');
+    }
+    expect(windows).toEqual([64_000, 1_000_000]);
+    expect(requests).toEqual([4_096, 8_192]);
+  } finally { await runtime.close(); }
+});

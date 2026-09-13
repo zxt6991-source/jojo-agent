@@ -1,3 +1,4 @@
+import { legacyModelConfig } from '@desktop-agent/contracts';
 import { describe, expect, it } from 'vitest';
 import type { ProviderConfig, SessionMeta } from '@desktop-agent/contracts';
 import {
@@ -22,9 +23,7 @@ const providers: ProviderConfig[] = [{
   protocol: 'openai_chat_completions',
   baseUrl: 'https://api.openai.com/v1',
   model: 'gpt-5',
-  models: ['gpt-5'],
-  contextWindowTokens: 128_000,
-  maxOutputTokens: 8_192,
+  models: [legacyModelConfig('gpt-5', 128_000, 8_192)],
   hasApiKey: true
 }];
 
@@ -46,8 +45,7 @@ describe('scheduler settings draft', () => {
         providerId: 'openai',
         model: 'gpt-5',
         input: { content: [{ type: 'text', text: 'Review the current workspace changes.' }] },
-        lane: { mode: 'dedicated' },
-        budget: { contextWindowTokens: 128_000, maxOutputTokens: 8_192 }
+        lane: { mode: 'dedicated' }
       },
       misfire: { kind: 'fire_once', graceMs: 86_400_000 },
       concurrency: 'skip'

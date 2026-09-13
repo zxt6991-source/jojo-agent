@@ -1,3 +1,4 @@
+import { legacyModelConfig } from '@desktop-agent/contracts';
 import { describe, expect, expectTypeOf, it } from 'vitest';
 import {
   ContentBlockSchema,
@@ -74,7 +75,7 @@ describe('contracts', () => {
       activeProviderId: 'custom',
       provider: {
         id: 'custom', name: 'Custom', protocol: 'openai_chat_completions', baseUrl: 'https://example.com/v1',
-        model: 'model', models: ['model', 'other'], contextWindowTokens: 32_000, maxOutputTokens: 2_000
+        model: 'model', models: [legacyModelConfig('model', 32_000, 2_000), legacyModelConfig('other', 32_000, 2_000)]
       },
       utilityModel: { providerId: 'custom', model: 'model' },
       permissions: { mode: 'auto' }
@@ -237,9 +238,9 @@ describe('contracts', () => {
     expect(BrowserActionSchema.parse({ action: 'errors', kind: 'exception', limit: 10 }))
       .toEqual({ action: 'errors', kind: 'exception', limit: 10, clear: false });
     expect(() => BrowserActionSchema.parse({ action: 'errors', kind: 'crash' })).toThrow();
-    expect(ListModelsInputSchema.parse({ protocol: 'openai_chat_completions', baseUrl: 'https://provider.example/v1' })).toEqual({
+    expect(ListModelsInputSchema.parse({ providerId: 'custom', protocol: 'openai_chat_completions', baseUrl: 'https://provider.example/v1' })).toEqual({
       protocol: 'openai_chat_completions',
-      baseUrl: 'https://provider.example/v1'
+      baseUrl: 'https://provider.example/v1', providerId: 'custom'
     });
     expect(() => ListModelsInputSchema.parse({ baseUrl: 'not-a-url' })).toThrow();
   });

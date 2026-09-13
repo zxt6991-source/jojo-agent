@@ -59,6 +59,7 @@ const api: DesktopApi = {
   getSettings: () => ipcRenderer.invoke(IPC.getSettings),
   getPermissionGovernance: (input) => ipcRenderer.invoke(IPC.getPermissionGovernance, input),
   savePermissionPolicy: (input) => ipcRenderer.invoke(IPC.savePermissionPolicy, input),
+  cancelModelRefresh: (providerId) => ipcRenderer.invoke(IPC.cancelModelRefresh, providerId),
   listModels: (input) => ipcRenderer.invoke(IPC.listModels, input),
   saveSettings: (input) => ipcRenderer.invoke(IPC.saveSettings, input),
   getExtensionStatus: (input) => ipcRenderer.invoke(IPC.getExtensionStatus, input),

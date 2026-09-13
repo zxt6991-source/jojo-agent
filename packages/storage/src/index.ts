@@ -3,6 +3,8 @@ import path from 'node:path';
 import { z } from 'zod';
 import {
   MessageSchema,
+  ProviderConfigSchema,
+  legacyModelConfig,
   DEFAULT_PROVIDERS,
   ProviderSettingsSchema,
   SessionMetaSchema,
@@ -60,7 +62,10 @@ const StoredConfigV3Schema = z.object({
   extensions: z.unknown().optional()
 });
 
-const StoredConfigSchema = z.union([StoredConfigV1Schema, StoredConfigV2Schema, StoredConfigV3Schema]);
+const StoredConfigV4Schema = StoredConfigV3Schema.extend({
+  schemaVersion: z.literal(4), providers: z.array(ProviderConfigSchema).min(1)
+});
+const StoredConfigSchema = z.union([StoredConfigV1Schema, StoredConfigV2Schema, StoredConfigV3Schema, StoredConfigV4Schema]);
 
 export class JsonlSessionStore {
   private readonly locks = new Set<string>();
@@ -244,7 +249,7 @@ export class JsonConfigStore {
       if (stored.schemaVersion === 1 || stored.schemaVersion === 2) {
         const models = stored.schemaVersion === 1 ? [stored.provider.model] : stored.provider.models;
         const providers = DEFAULT_PROVIDERS.map((provider) => provider.id === 'openai'
-          ? { ...provider, ...stored.provider, models, hasApiKey: hasKey('openai') }
+          ? { ...provider, ...stored.provider, models: [...new Set([...models, stored.provider.model])].map((id) => legacyModelConfig(id)), hasApiKey: hasKey('openai') }
           : { ...provider, hasApiKey: hasKey(provider.id) });
         return ProviderSettingsSchema.parse({
           activeProviderId: 'openai', providers,
@@ -253,7 +258,13 @@ export class JsonConfigStore {
       }
       const providers = stored.providers
         .filter((provider) => provider.protocol === 'openai_chat_completions')
-        .map((provider) => ({ ...provider, protocol: 'openai_chat_completions' as const, hasApiKey: hasKey(provider.id) }));
+        .map((provider) => {
+          if ('contextWindowTokens' in provider) {
+            const { contextWindowTokens, maxOutputTokens, ...rest } = provider;
+            return { ...rest, models: [...new Set([...provider.models, provider.model])].map((id) => legacyModelConfig(id, contextWindowTokens, maxOutputTokens)), protocol: 'openai_chat_completions' as const, hasApiKey: hasKey(provider.id) };
+          }
+          return { ...provider, protocol: 'openai_chat_completions' as const, hasApiKey: hasKey(provider.id) };
+        });
       if (providers.length === 0) {
         return ProviderSettingsSchema.parse({
           activeProviderId: 'openai',
@@ -263,7 +274,7 @@ export class JsonConfigStore {
       }
       const activeProvider = providers.find((provider) => provider.id === stored.activeProviderId) ?? providers[0]!;
       const utilityProvider = providers.find((provider) => provider.id === stored.utilityModel.providerId);
-      const utilityModel = utilityProvider?.models.includes(stored.utilityModel.model)
+      const utilityModel = utilityProvider?.models.some((model) => model.id === stored.utilityModel.model)
         ? stored.utilityModel
         : { providerId: activeProvider.id, model: activeProvider.model };
       return ProviderSettingsSchema.parse({
@@ -288,7 +299,7 @@ export class JsonConfigStore {
     try { await copyFile(this.filePath, `${this.filePath}.bak`); } catch { /* first save */ }
     const temporary = `${this.filePath}.tmp`;
     const stored = {
-      schemaVersion: 3,
+      schemaVersion: 4,
       activeProviderId: validSettings.activeProviderId,
       providers: validSettings.providers.map(({ hasApiKey: _hasApiKey, ...provider }) => provider),
       utilityModel: validSettings.utilityModel,
