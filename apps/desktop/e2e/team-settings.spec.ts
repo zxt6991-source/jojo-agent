@@ -1,0 +1,66 @@
+import { mkdtemp } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { expect, test } from '@playwright/test';
+import { launchElectron } from './helpers/launch-electron';
+
+test('creates a team through semantic settings and preserves advanced configuration', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'jojo-team-settings-'));
+  const { app, page } = await launchElectron(directory);
+  try {
+    await page.getByRole('button', { name: '新建对话' }).click();
+    await page.getByRole('button', { name: '⚙ 设置' }).click();
+    await page.getByRole('button', { name: '团队', exact: true }).click();
+    await expect(page.getByText('请先打开项目', { exact: true })).toBeVisible();
+    await page.evaluate(async (workspace) => {
+      const sessions = await window.desktopAgent.listSessions();
+      await window.desktopAgent.bindSessionProject({ sessionId: sessions[0]!.id, workingDirectory: workspace });
+    }, directory);
+    await page.getByRole('button', { name: /软件开发团队 从架构分析/ }).click();
+    await expect(page.getByRole('textbox', { name: '团队 ID', exact: true })).toBeHidden();
+    await expect(page.getByRole('textbox', { name: 'Profile', exact: true })).toHaveCount(0);
+    await page.getByRole('button', { name: '编辑', exact: true }).nth(1).click();
+    const dialog = page.getByRole('dialog', { name: '编辑成员' });
+    await dialog.getByRole('textbox', { name: '成员名称', exact: true }).fill('后端开发');
+    await dialog.getByRole('textbox', { name: '主要职责' }).fill('实现后端功能并验证相关测试');
+    await dialog.getByRole('combobox', { name: '工作权限' }).selectOption('read');
+    await dialog.getByRole('combobox', { name: '工作权限' }).selectOption('write');
+    await dialog.getByRole('combobox', { name: '复杂任务时' }).selectOption('disabled');
+    await dialog.getByRole('combobox', { name: '复杂任务时' }).selectOption('auto');
+    await dialog.getByText('高级设置', { exact: true }).click();
+    await dialog.getByRole('textbox', { name: '系统提示词覆盖' }).fill('保留自定义的后端开发提示词。');
+    await dialog.getByRole('textbox', { name: '工具拒绝列表（逗号分隔）' }).fill('shell');
+    await dialog.getByRole('button', { name: '完成编辑' }).click();
+    await page.getByRole('button', { name: '添加成员', exact: true }).click();
+    await dialog.getByRole('combobox', { name: '角色类型' }).selectOption('review');
+    await expect(dialog.getByRole('combobox', { name: '工作权限' })).toHaveValue('read');
+    await dialog.getByRole('button', { name: '完成编辑' }).click();
+    await page.getByRole('button', { name: '移除成员' }).last().click();
+    await page.getByRole('button', { name: '下一步：查看工作方式' }).click();
+    await expect(page.getByText('3 名长期成员 · 1 名可以修改项目 · 2 名只读')).toBeVisible();
+    await page.getByRole('button', { name: '创建团队', exact: true }).click();
+    await expect(page.getByRole('status')).toContainText('已创建');
+    await page.getByRole('button', { name: '运行情况', exact: true }).click();
+    await expect(page.getByRole('heading', { name: '当前任务 · 0' })).toBeVisible();
+    await page.getByRole('checkbox', { name: '后端开发 · 空闲' }).click();
+    await expect(page.getByRole('checkbox', { name: '后端开发 · 已停用' })).not.toBeChecked();
+    await page.getByRole('button', { name: '成员与职责', exact: true }).click();
+    await page.getByRole('textbox', { name: '团队名称', exact: true }).fill('后端团队');
+    await page.getByRole('button', { name: '刷新', exact: true }).click();
+    await expect(page.getByRole('textbox', { name: '团队名称', exact: true })).toHaveValue('后端团队');
+    await page.getByRole('button', { name: '保存团队', exact: true }).click();
+    await expect(page.getByRole('status')).toContainText('团队已保存');
+    await page.getByRole('button', { name: '编辑', exact: true }).nth(1).click();
+    await dialog.getByText(/^高级设置/).click();
+    await expect(dialog.getByRole('textbox', { name: '系统提示词覆盖' })).toHaveValue('保留自定义的后端开发提示词。');
+    await expect(dialog.getByRole('textbox', { name: '工具拒绝列表（逗号分隔）' })).toHaveValue('shell');
+    await dialog.getByRole('combobox', { name: '模型', exact: true }).selectOption('custom');
+    await dialog.getByRole('textbox', { name: 'Provider', exact: true }).fill('test-provider');
+    await dialog.getByRole('textbox', { name: '模型', exact: true }).fill('test-model');
+    await dialog.getByRole('combobox', { name: '模型', exact: true }).selectOption('inherit');
+    await dialog.getByRole('button', { name: '完成编辑' }).click();
+    await page.getByRole('button', { name: '保存团队', exact: true }).click();
+    await expect(page.getByRole('status')).toContainText('团队已保存');
+    await page.screenshot({ path: path.join(directory, 'team-settings.png'), fullPage: true });
+  } finally { await app.close(); }
+});

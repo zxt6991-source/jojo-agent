@@ -2198,7 +2198,7 @@ function App() {
     />}
     {settingsSection === 'channels' && <ChannelsSettingsPage api={window.desktopAgent} />}
     {settingsSection === 'teams' && <TeamSettingsPage
-      {...(active?.workingDirectory ? { workspace: active.workingDirectory } : {})}
+      {...(active?.workingDirectory && active.projectBound !== false ? { workspace: active.workingDirectory } : {})}
       teams={teams}
       selectedTeamId={selectedTeamId}
       status={teamStatus}

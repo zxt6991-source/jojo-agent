@@ -1419,3 +1419,35 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   .model-settings-page { padding: 24px 24px 32px; }
   .model-preference-row { gap: 12px; }
 }
+
+/* Team settings semantic editor */
+.team-editor-fields { min-width: 0; margin: 0; padding: 0; border: 0; }
+.team-tabs { display: flex; gap: 8px; margin-bottom: 18px; }
+.team-tabs button, .team-member-title button, .team-member-dialog button { padding: 8px 12px; border: 1px solid #d8d9dd; border-radius: 8px; background: #fff; color: #454950; cursor: pointer; }
+.team-tabs button[aria-pressed="true"] { background: #e9edff; border-color: #a6b2e7; color: #384ca0; }
+.team-member-summary, .team-preview, .team-template-picker { padding: 20px; }
+.team-member-summary p, .team-preview p, .team-template-picker p { font-size: 12px; line-height: 1.7; color: #626771; overflow-wrap: anywhere; }
+.team-member-summary small, .team-help { color: #777d87; font-size: 11px; line-height: 1.65; }
+.team-member-summary .danger-link { display: block; margin: 8px 0 0 auto; }
+.team-preview { margin-top: 20px; }
+.team-preview h2, .team-template-picker h2 { margin-top: 0; font-size: 16px; }
+.team-preview-members { display: flex; flex-wrap: wrap; gap: 8px; }
+.team-preview-members span { padding: 9px 12px; border-radius: 8px; background: #f0f2fa; color: #45537a; font-size: 12px; }
+.team-template-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.team-template-grid button { display: flex; flex-direction: column; gap: 10px; padding: 18px; border: 1px solid #dedfe5; border-radius: 10px; background: #fff; text-align: left; cursor: pointer; }
+.team-template-grid button:hover { background: #f4f6ff; border-color: #8f9ed9; }
+.team-template-grid span { color: #777d87; font-size: 11px; line-height: 1.5; }
+.team-wizard-steps { color: #626b86; font-size: 12px; margin: 0 0 18px; }
+.team-notice { padding: 14px; border-radius: 10px; background: #edf6ee; color: #365e40; font-size: 12px; line-height: 1.7; }
+.team-member-dialog { width: min(580px, calc(100vw - 48px)); max-height: 85vh; padding: 0; border: 1px solid #ddd; border-radius: 16px; color: #303238; box-shadow: 0 20px 80px #0003; }
+.team-member-dialog::backdrop { background: #18203366; }
+.team-member-dialog .settings-fields { padding: 8px 24px; }
+.team-member-dialog .team-editor-actions { padding: 16px 24px; }
+.team-member-dialog h2 { font-size: 17px; }
+.team-settings-page details { margin: 16px 0; padding: 12px; border: 1px solid #e1e3ea; border-radius: 8px; }
+.team-settings-page summary { cursor: pointer; font-size: 12px; font-weight: 600; color: #586078; }
+.team-runtime-members { display: flex; flex-wrap: wrap; gap: 14px; padding: 18px; font-size: 12px; }
+.team-runtime-members label { display: flex; gap: 6px; align-items: center; }
+.team-runtime-group { padding: 12px 20px; margin: 0; background: #f6f7fa; font-size: 13px; }
+.team-task-row small { display: block; margin-top: 6px; color: #777d87; font-size: 10px; }
+@media (max-width: 760px) { .team-settings-layout { grid-template-columns: 1fr; } .team-list { position: static; } .team-template-grid { grid-template-columns: 1fr; } .team-task-row { grid-template-columns: 65px minmax(0, 1fr); } .team-task-row time { grid-column: 2; } }
