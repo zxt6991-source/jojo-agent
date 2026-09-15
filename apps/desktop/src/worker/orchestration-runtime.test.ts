@@ -1,3 +1,4 @@
+import { describeTestProvider } from '@desktop-agent/agent-runtime/testing';
 import { legacyModelConfig } from '@desktop-agent/contracts';
 import { describe, expect, it } from 'vitest';
 import { ScriptedProvider } from '@desktop-agent/agent';
@@ -28,7 +29,7 @@ async function seedMainLane(runtimeStore: MemoryAgentRuntimeStore, sessionId = '
     store: runtimeStore,
     environment: {
       host: { kind: 'test' },
-      providers: { resolve: () => new ScriptedProvider([[
+      providers: { describe: describeTestProvider, resolve: () => new ScriptedProvider([[
       { type: 'text_delta', text: 'main answer' },
       { type: 'response_completed', stopReason: 'stop' }
       ]]) },

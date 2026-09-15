@@ -162,3 +162,24 @@ export interface ExtensionAPI {
   /** Preview. */
   registerMemoryAdapter(contribution: MemoryAdapterContribution): Disposable;
 }
+
+/** Stable registry ordering shared with durable instruction capture. */
+export function normalizeContextBlocks<T extends ContextBlock>(blocks: readonly T[]): T[] {
+  const identities = new Map<string, T>();
+  for (const block of blocks) {
+    const key = JSON.stringify([block.kind, block.source, block.id]);
+    const existing = identities.get(key);
+    if (existing && (existing.content !== block.content || existing.priority !== block.priority
+      || ('sourceFingerprint' in existing && 'sourceFingerprint' in block && existing.sourceFingerprint !== block.sourceFingerprint))) {
+      throw new Error('runtime_execution_snapshot_invalid: instructions.contributed');
+    }
+    if (!existing) identities.set(key, block);
+  }
+  const sorted = [...identities.values()].sort((a, b) => b.priority - a.priority || a.source.localeCompare(b.source) || a.id.localeCompare(b.id));
+  const winners = new Map<string, T>();
+  for (const block of sorted) {
+    const key = JSON.stringify([block.kind, block.id]);
+    if (!winners.has(key)) winners.set(key, block);
+  }
+  return [...winners.values()];
+}

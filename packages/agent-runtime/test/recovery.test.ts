@@ -1,3 +1,4 @@
+import { createTestExecutionSnapshot, describeTestProvider } from '../src/testing/index.js';
 import { describe, expect, it, vi } from 'vitest';
 import type { Message, ModelProvider, ModelRequest, PermissionGate, Tool, ToolCall, ToolResult } from '@desktop-agent/contracts';
 import { fingerprintToolBatch, ScriptedProvider } from '@desktop-agent/agent';
@@ -6,6 +7,7 @@ import { MemoryAgentRuntimeStore } from '../src/memory-store.js';
 import type { OperationMeta } from '../src/operation/meta.js';
 import type { OperationState, ToolsState } from '../src/operation/state.js';
 
+const execution = createTestExecutionSnapshot({ budget: { maxIterations: 12, maxOutputTokens: 1024, contextWindowTokens: 128000, allowPartialOnLimit: false } });
 const time = '2026-08-20T00:00:00.000Z';
 const allow: PermissionGate = { check: async () => ({ decision: 'allow' }) };
 const progress = { toolCallCounts: {}, observationFingerprints: [], recoveryStepsRemaining: null };
@@ -31,6 +33,8 @@ function options(
   history: Message[]
 ): ResumeAgentRunOptions {
   return {
+    execution,
+    describeProvider: () => describeTestProvider({ providerId: 'provider-1', model: 'model-1' }),
     runtimeStore: store,
     operationId: 'operation-1',
     sessionId: 'session-1',
@@ -53,7 +57,7 @@ async function operationStore(state: OperationState): Promise<MemoryAgentRuntime
   await store.saveLane({ sessionId: 'session-1', name: 'main', leafId: null, currentOperationId: null });
   const meta: OperationMeta = {
     id: 'operation-1', sessionId: 'session-1', lane: 'main', kind: 'run', createdAt: 2,
-    providerId: 'provider-1', model: 'model-1', maxIterations: 12
+    execution, providerId: 'provider-1', model: 'model-1', maxIterations: 12
   };
   await store.startOperation(meta, state);
   return store;
@@ -114,7 +118,7 @@ describe('crash recovery', () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
-  it('clamps a legacy oversized persisted limit to the absolute fuse on resume', async () => {
+  it('refuses a legacy oversized persisted limit without execution context', async () => {
     const store = new MemoryAgentRuntimeStore();
     await store.createSession({ id: 'session-1', createdAt: 1 });
     await store.saveLane({ sessionId: 'session-1', name: 'main', leafId: null, currentOperationId: null });
@@ -138,14 +142,11 @@ describe('crash recovery', () => {
       replay: 'safe', execute: async () => ({ callId: '', ok: true, content: 'unused' })
     };
 
-    const result = await resumeAgentTurn(options(store, provider, tool, []));
-
-    expect(result.stopReason).toBe('absolute_iteration_limit');
-    expect(requests).toHaveLength(1);
-    expect(requests[0]?.tools).toEqual([]);
+    await expect(resumeAgentTurn(options(store, provider, tool, []))).rejects.toThrow('runtime_resume_context_missing');
+    expect(requests).toHaveLength(0);
   });
 
-  it('restores the same pending approval instead of generating a new request', async () => {
+  it('rechecks current permissions instead of trusting a persisted approval', async () => {
     const state = pendingTool('never');
     state.calls[0] = {
       ...state.calls[0]!,
@@ -172,11 +173,8 @@ describe('crash recovery', () => {
 
     await resumeAgentTurn(resumeOptions);
 
-    expect(gate.check).not.toHaveBeenCalled();
-    expect(approve).toHaveBeenCalledWith(
-      expect.objectContaining({ requestId: 'approval-original' }),
-      resumeOptions.signal
-    );
+    expect(gate.check).toHaveBeenCalledOnce();
+    expect(approve).not.toHaveBeenCalled();
     expect(execute).toHaveBeenCalledOnce();
   });
 
@@ -242,7 +240,7 @@ describe('crash recovery', () => {
     await store.saveLane({ sessionId: 'session-1', name: 'main', leafId: null, currentOperationId: null });
     await store.startOperation({
       id: 'operation-1', sessionId: 'session-1', lane: 'main', kind: 'run', createdAt: 2,
-      providerId: 'provider-1', model: 'model-1', maxIterations: 12
+      execution, providerId: 'provider-1', model: 'model-1', maxIterations: 12
     }, {
       phase: 'model_pending', operationId: 'operation-1', lane: 'main', iteration: 0,
       outputContinuations: 0, progress, responseEntryId: 'reserved-response', usageId: 'reserved-usage',

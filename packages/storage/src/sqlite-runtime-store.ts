@@ -1,3 +1,4 @@
+import { validateOperationExecution, MAX_OPERATION_META_BYTES } from '@desktop-agent/agent-runtime/spi';
 import { isDeepStrictEqual } from 'node:util';
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
@@ -263,6 +264,7 @@ export class SqliteAgentRuntimeStore implements AgentRuntimeStore {
   }
 
   async startOperation(meta: OperationMeta, initialState: OperationState): Promise<void> {
+    validateOperationExecution(meta, initialState);
     this.requireSession(meta.sessionId);
     if (this.operationRow(meta.id)) throw new Error(`runtime_operation_exists: ${meta.id}`);
     if (initialState.operationId !== meta.id || initialState.lane !== meta.lane) {
@@ -287,12 +289,14 @@ export class SqliteAgentRuntimeStore implements AgentRuntimeStore {
   async loadOperation(operationId: string): Promise<StoredOperation | null> {
     const row = this.operationRow(operationId);
     if (!row) return null;
+    if (Buffer.byteLength(String(row.meta_json)) > MAX_OPERATION_META_BYTES) throw new Error('runtime_execution_snapshot_too_large');
     const meta = json<OperationMeta>(row.meta_json, 'operation meta');
     const state = json<OperationState>(row.state_json, 'operation state');
     assertOperationState(state);
     if (meta.id !== operationId || state.operationId !== operationId || meta.sessionId !== row.session_id || meta.lane !== row.lane || state.lane !== row.lane) {
       throw new Error('runtime_operation_identity_conflict');
     }
+    validateOperationExecution(meta, state);
     return clone({ meta, state });
   }
 

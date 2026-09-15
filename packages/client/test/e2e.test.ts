@@ -1,3 +1,4 @@
+import { describeTestProvider } from '@desktop-agent/agent-runtime/testing';
 import { describe, expect, it } from 'vitest';
 import { ScriptedProvider } from '@desktop-agent/agent-runtime/testing';
 import type { PermissionGate, Tool } from '@desktop-agent/contracts';
@@ -9,7 +10,7 @@ const allow: PermissionGate = { check: async () => ({ decision: 'allow' }) };
 describe('Jojo client SDK', () => {
   it('runs a remote turn and recovers the result through the queryable run snapshot', async () => {
     const server = await createNetworkServer({
-      providers: { resolve: () => new ScriptedProvider([[
+      providers: { describe: describeTestProvider, resolve: () => new ScriptedProvider([[
         { type: 'text_delta', text: 'sdk answer' },
         { type: 'response_completed', stopReason: 'stop' }
       ]]) },
@@ -48,7 +49,7 @@ describe('Jojo client SDK', () => {
       })
     };
     const server = await createNetworkServer({
-      providers: { resolve: () => new ScriptedProvider([
+      providers: { describe: describeTestProvider, resolve: () => new ScriptedProvider([
         [
           { type: 'tool_call_completed', call: { id: 'tool-1', name: 'approved_tool', input: {} } },
           { type: 'response_completed', stopReason: 'tool_calls' }
@@ -84,7 +85,7 @@ describe('Jojo client SDK', () => {
 
   it('manages durable schedules over REST and receives scheduler events over WebSocket', async () => {
     const server = await createNetworkServer({
-      providers: { resolve: () => new ScriptedProvider([[
+      providers: { describe: describeTestProvider, resolve: () => new ScriptedProvider([[
         { type: 'text_delta', text: 'scheduled SDK answer' },
         { type: 'response_completed', stopReason: 'stop' }
       ]]) },

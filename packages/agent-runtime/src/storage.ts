@@ -11,3 +11,5 @@ export type {
   SessionEntry
 } from './session/types.js';
 export type { UsageRecord } from './usage/types.js';
+
+export { validateOperationExecution, validateOperationRecordSize, parseExecutionSnapshot, MAX_OPERATION_META_BYTES } from './operation/execution-snapshot.js';

@@ -1,3 +1,4 @@
+import { describeTestProvider } from '@desktop-agent/agent-runtime/testing';
 import { describe, expect, it } from 'vitest';
 import type { FastifyBaseLogger } from 'fastify';
 import { ScriptedProvider } from '@desktop-agent/agent-runtime/testing';
@@ -13,7 +14,7 @@ describe('HTTP server adapter', () => {
   it('authenticates and validates session resources without exposing runtime internals', async () => {
     const runtime = await createJojoRuntime({
       host: { kind: 'server' },
-      providers: { resolve: () => new ScriptedProvider([]) },
+      providers: { describe: describeTestProvider, resolve: () => new ScriptedProvider([]) },
       permissions: allow
     });
     const core = createJojoServerCore(createJojoAppService(runtime), { serverId: 'http-test' });
@@ -42,7 +43,7 @@ describe('HTTP server adapter', () => {
 
   it('forwards unauthenticated channel webhooks with their exact raw JSON bytes', async () => {
     const runtime = await createJojoRuntime({
-      host: { kind: 'server' }, providers: { resolve: () => new ScriptedProvider([]) }, permissions: allow
+      host: { kind: 'server' }, providers: { describe: describeTestProvider, resolve: () => new ScriptedProvider([]) }, permissions: allow
     });
     const core = createJojoServerCore(createJojoAppService(runtime), { serverId: 'webhook-test' });
     const received: Array<{ instanceId: string; rawBody?: string | Uint8Array; authorization?: string }> = [];
@@ -76,7 +77,7 @@ describe('HTTP server adapter', () => {
 
   it('emits one structured completion record with the request id and no request body', async () => {
     const runtime = await createJojoRuntime({
-      host: { kind: 'server' }, providers: { resolve: () => new ScriptedProvider([]) }, permissions: allow
+      host: { kind: 'server' }, providers: { describe: describeTestProvider, resolve: () => new ScriptedProvider([]) }, permissions: allow
     });
     const core = createJojoServerCore(createJojoAppService(runtime), { serverId: 'logging-test' });
     const records: unknown[] = [];

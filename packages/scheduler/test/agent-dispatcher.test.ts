@@ -1,3 +1,4 @@
+import { describeTestProvider } from '@desktop-agent/agent-runtime/testing';
 import { ScriptedProvider } from '@desktop-agent/agent';
 import { createAgentRuntime } from '@desktop-agent/agent-runtime';
 import { describe, expect, it } from 'vitest';
@@ -9,7 +10,7 @@ describe('AgentScheduleDispatcher', () => {
     const runtime = createAgentRuntime({
       environment: {
         host: { kind: 'test' },
-        providers: { resolve: (context) => {
+        providers: { describe: describeTestProvider, resolve: (context) => {
           contexts.push(context);
           return new ScriptedProvider([[
             { type: 'text_delta', text: 'scheduled answer' },

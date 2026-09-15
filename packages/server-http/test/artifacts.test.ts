@@ -1,3 +1,4 @@
+import { describeTestProvider } from '@desktop-agent/agent-runtime/testing';
 import { expect, it, vi } from 'vitest';
 import { mkdtemp, rm, symlink, truncate, writeFile } from 'node:fs/promises';
 import os from 'node:os';
@@ -13,7 +14,7 @@ import { createJojoHttpServer } from '../src';
 it('serves only session artifacts with authenticated content, safe headers and bounded reads', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'serve-artifact-'));
   const outside = await mkdtemp(path.join(os.tmpdir(), 'outside-artifact-'));
-  const runtime = await createJojoRuntime({ host: { kind: 'server' }, providers: { resolve: () => new ScriptedProvider([]) }, permissions: { check: async () => ({ decision: 'allow' }) } });
+  const runtime = await createJojoRuntime({ host: { kind: 'server' }, providers: { describe: describeTestProvider, resolve: () => new ScriptedProvider([]) }, permissions: { check: async () => ({ decision: 'allow' }) } });
   const core = createJojoServerCore(createJojoAppService(runtime), { workspaceRoots: [root] });
   const server = await createJojoHttpServer(core, { token: 'secret' });
   const headers = { authorization: 'Bearer secret' };

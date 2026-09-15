@@ -55,3 +55,7 @@ export type {
   MemoryTurnSettledInput
 } from '../memory/runtime.js';
 export { NoopMemoryRuntime } from '../memory/runtime.js';
+
+export type { RuntimeProviderBinding, ExecutionInstructionBlock, OperationExecutionSnapshotV1, RuntimeExecutionSummary } from './execution.js';
+export { executionFingerprint, instructionContentHash } from '../operation/execution-snapshot.js';
+export { describeProviderConfiguration, assertPersistableInstructions } from '../operation/execution-snapshot.js';

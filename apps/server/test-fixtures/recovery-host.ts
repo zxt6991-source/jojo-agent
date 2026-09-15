@@ -1,3 +1,4 @@
+import { describeTestProvider } from '@desktop-agent/agent-runtime/testing';
 import { ServerApprovalBroker } from '@desktop-agent/app-service';
 import { appendFileSync, closeSync, fsyncSync, openSync, readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -58,7 +59,7 @@ async function main() {
   let providerCalls = 0;
   const host = await createHeadlessServer({
     ownership, store, stateStore, dataDir: directory, scheduler: false,
-    providers: { resolve: () => { providerCalls++; return new ScriptedProvider(mode === 'seed' ? [
+    providers: { describe: describeTestProvider, resolve: () => { providerCalls++; return new ScriptedProvider(mode === 'seed' ? [
       [{ type: 'tool_call_completed', call: { id: 'call', name: 'effect', input: {} } }, { type: 'response_completed', stopReason: 'tool_calls' }],
       [{ type: 'text_delta', text: 'done' }, { type: 'response_completed', stopReason: 'stop' }]
     ] : [[{ type: 'text_delta', text: 'new response' }, { type: 'response_completed', stopReason: 'stop' }]]); } },

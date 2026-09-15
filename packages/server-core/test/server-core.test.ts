@@ -1,3 +1,4 @@
+import { describeTestProvider } from '@desktop-agent/agent-runtime/testing';
 import { describe, expect, it } from 'vitest';
 import { ScriptedProvider } from '@desktop-agent/agent-runtime/testing';
 import type { PermissionGate } from '@desktop-agent/contracts';
@@ -19,7 +20,7 @@ describe('server core', () => {
     const approvalBroker = new ServerApprovalBroker();
     const runtime = await createJojoRuntime({
       host: { kind: 'server' },
-      providers: { resolve: () => new ScriptedProvider([[
+      providers: { describe: describeTestProvider, resolve: () => new ScriptedProvider([[
         { type: 'text_delta', text: 'remote answer' },
         { type: 'response_completed', stopReason: 'stop' }
       ]]) },
@@ -66,7 +67,7 @@ describe('server core', () => {
   it('rejects a second control lease without cancelling the first client run state', async () => {
     const runtime = await createJojoRuntime({
       host: { kind: 'server' },
-      providers: { resolve: () => new ScriptedProvider([]) },
+      providers: { describe: describeTestProvider, resolve: () => new ScriptedProvider([]) },
       permissions: allow
     });
     const core = createJojoServerCore(createJojoAppService(runtime));

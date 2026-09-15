@@ -1,3 +1,4 @@
+import { describeTestProvider } from '@desktop-agent/agent-runtime/testing';
 import { expect, it, vi } from 'vitest';
 import type { FileAttachmentRef, ModelProvider, ModelRequest } from '@desktop-agent/contracts';
 import { createJojoRuntime } from '../src';
@@ -12,7 +13,7 @@ it('projects attachments on each request and follow-up without persisting execut
   let projectedPath = '/container/first/report.txt';
   const resolve = vi.fn(async () => ({ kind: 'path' as const, path: projectedPath, readonly: true }));
   const runtime = await createJojoRuntime({
-    host: { kind: 'server' }, providers: { resolve: () => provider },
+    host: { kind: 'server' }, providers: { describe: describeTestProvider, resolve: () => provider },
     permissions: { check: async () => ({ decision: 'allow' }) },
     attachmentAccess: { resolve }
   });

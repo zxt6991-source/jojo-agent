@@ -1,3 +1,4 @@
+import { describeTestProvider } from '@desktop-agent/agent-runtime/testing';
 import { describe, expect, it } from 'vitest';
 import { ScriptedProvider, verifyRuntimeContract } from '@desktop-agent/agent-runtime/testing';
 import type { PermissionGate, Tool } from '@desktop-agent/contracts';
@@ -26,7 +27,7 @@ describe('headless Jojo runtime composition', () => {
     ]);
     const runtime = await createJojoRuntime({
       host: { kind: 'server', instanceId: 'node-smoke' },
-      providers: { resolve: () => provider },
+      providers: { describe: describeTestProvider, resolve: () => provider },
       permissions: allow,
       capabilities: [capability]
     });
@@ -54,7 +55,7 @@ describe('headless Jojo runtime composition', () => {
   it('passes the reusable Runtime Host conformance suite', async () => {
     const runtime = await createJojoRuntime({
       host: { kind: 'server' },
-      providers: { resolve: () => new ScriptedProvider([[
+      providers: { describe: describeTestProvider, resolve: () => new ScriptedProvider([[
         { type: 'text_delta', text: 'contract complete' },
         { type: 'response_completed', stopReason: 'stop' }
       ]]) },
@@ -80,7 +81,7 @@ it('uses per-model limits for context diagnostics and the same capped request bu
   ]));
   const runtime = await createJojoRuntime({
     host: { kind: 'server' }, permissions: allow,
-    providers: {
+    providers: { describe: describeTestProvider,
       resolve: () => ({ stream: (request) => { requests.push(request.maxOutputTokens!); return provider.stream(); } }),
       resolveLimits: (context, request) => resolveModelForRun({ models }, context.model, request)
     },

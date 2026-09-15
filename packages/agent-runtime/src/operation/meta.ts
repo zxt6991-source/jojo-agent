@@ -11,6 +11,7 @@ export type OperationMeta = {
   providerId: string;
   model: string;
   maxIterations: number;
+  execution?: import('../public/execution.js').OperationExecutionSnapshotV1;
   config?: Record<string, JsonValue>;
 };
 

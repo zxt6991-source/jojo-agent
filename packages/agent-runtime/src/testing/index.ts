@@ -1,3 +1,4 @@
+import { parseExecutionSnapshot, normalizeExecutionBudget, executionInstructions, executionFingerprint } from '../operation/execution-snapshot.js';
 import type { ApprovalRequest, Message, ModelProvider, PermissionGate, Tool } from '@desktop-agent/contracts';
 import type { RuntimeEventEnvelope } from '@desktop-agent/contracts/runtime';
 import { MemoryAgentRuntimeStore } from '../memory-store.js';
@@ -59,7 +60,7 @@ export function createTestRuntime(options: TestRuntimeOptions): TestRuntime {
     ...(options.now ? { now: options.now } : {}),
     environment: {
       host: { kind: 'test' },
-      providers: { resolve: () => options.provider },
+      providers: { describe: describeTestProvider, resolve: () => options.provider },
       tools: {
         resolve: () => ({
           snapshot: () => typeof options.tools === 'function' ? options.tools() : options.tools ?? []
@@ -100,3 +101,15 @@ export async function seedLane(
 
 export type { ModelProvider } from '@desktop-agent/contracts';
 export type { AgentRuntime } from '../public/runtime.js';
+
+/** Explicit stable, credential-free description for scripted providers in tests. */
+export function describeTestProvider(context: { providerId: string; model: string }) {
+  return { providerId: context.providerId, model: context.model, configurationFingerprint: `sha256:${'1'.repeat(64)}` };
+}
+
+export function createTestExecutionSnapshot(overrides: Partial<import('../public/execution.js').OperationExecutionSnapshotV1> = {}): import('../public/execution.js').OperationExecutionSnapshotV1 {
+  return parseExecutionSnapshot({ schemaVersion: 1, capturedAt: 1, origin: 'trusted-harness', executionScope: { kind: 'none' },
+    actor: { kind: 'main' }, providerBinding: describeTestProvider({ providerId: 'provider-1', model: 'model-1' }),
+    budget: normalizeExecutionBudget({ maxIterations: 12 }), instructions: executionInstructions([], []),
+    runContext: { executionPolicyFingerprint: executionFingerprint('runtime-main-policy-v1') }, ...overrides });
+}

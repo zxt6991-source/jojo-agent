@@ -1,3 +1,4 @@
+import { describeTestProvider } from '@desktop-agent/agent-runtime/testing';
 import { mkdtemp } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -55,7 +56,7 @@ describe('headless server consumer', () => {
     }
     const adapter = new WebhookAdapter('webhook-test', channelInstance.id);
     const server = await createNetworkServer({
-      providers: { resolve: () => new ScriptedProvider([]) }, permissions: allow,
+      providers: { describe: describeTestProvider, resolve: () => new ScriptedProvider([]) }, permissions: allow,
       channels: {
         store, builtInAdapters: false, defaultProviderId: 'test', defaultModel: 'scripted',
         secrets: { resolve: async () => 'secret' },
@@ -145,7 +146,7 @@ describe('headless server consumer', () => {
   it('uses only Runtime Public API and Runtime Composition', async () => {
     const server = await createHeadlessServer({
       instanceId: 'server-test',
-      providers: { resolve: () => new ScriptedProvider([[
+      providers: { describe: describeTestProvider, resolve: () => new ScriptedProvider([[
         { type: 'text_delta', text: 'server answer' },
         { type: 'response_completed', stopReason: 'stop' }
       ]]) },
@@ -169,7 +170,7 @@ describe('headless server consumer', () => {
 
   it('can disable the headless scheduler at composition time', async () => {
     const server = await createHeadlessServer({
-      providers: { resolve: () => new ScriptedProvider([]) },
+      providers: { describe: describeTestProvider, resolve: () => new ScriptedProvider([]) },
       permissions: allow,
       scheduler: false
     });
@@ -188,7 +189,7 @@ describe('headless server consumer', () => {
       dataDir: directory,
       store: runtimeStoreA,
       ownership: ownershipA,
-      providers: { resolve: () => new ScriptedProvider([[
+      providers: { describe: describeTestProvider, resolve: () => new ScriptedProvider([[
         { type: 'text_delta', text: 'persisted answer' },
         { type: 'response_completed', stopReason: 'stop' }
       ]]) },
@@ -216,7 +217,7 @@ describe('headless server consumer', () => {
       dataDir: directory,
       store: runtimeStoreB,
       ownership: ownershipB,
-      providers: { resolve: () => new ScriptedProvider([]) },
+      providers: { describe: describeTestProvider, resolve: () => new ScriptedProvider([]) },
       permissions: allow
     });
     await expect(serverB.appService.getSession(context, session.id)).resolves.toMatchObject({
@@ -241,7 +242,7 @@ describe('headless server consumer', () => {
       dataDir: directory,
       store: runtimeStoreA,
       ownership: ownershipA,
-      providers: { resolve: () => new ScriptedProvider([]) },
+      providers: { describe: describeTestProvider, resolve: () => new ScriptedProvider([]) },
       permissions: allow
     });
     const first = await serverA.core.createSession(context, input, 'session-create-key');
@@ -254,7 +255,7 @@ describe('headless server consumer', () => {
       dataDir: directory,
       store: runtimeStoreB,
       ownership: ownershipB,
-      providers: { resolve: () => new ScriptedProvider([]) },
+      providers: { describe: describeTestProvider, resolve: () => new ScriptedProvider([]) },
       permissions: allow
     });
     await expect(serverB.core.createSession(context, input, 'session-create-key')).resolves.toEqual(first);
@@ -281,7 +282,7 @@ describe('headless server consumer', () => {
       dataDir: directory,
       store: runtimeStoreA,
       ownership: ownershipA,
-      providers: { resolve: () => new ScriptedProvider([[
+      providers: { describe: describeTestProvider, resolve: () => new ScriptedProvider([[
         { type: 'text_delta', text: 'single execution' },
         { type: 'response_completed', stopReason: 'stop' }
       ]]) },
@@ -309,7 +310,7 @@ describe('headless server consumer', () => {
       dataDir: directory,
       store: runtimeStoreB,
       ownership: ownershipB,
-      providers: { resolve: () => new ScriptedProvider([]) },
+      providers: { describe: describeTestProvider, resolve: () => new ScriptedProvider([]) },
       permissions: allow
     });
     await serverB.core.attach(controlContext, 'run-idempotency-session', 'control');
@@ -325,7 +326,7 @@ describe('headless server consumer', () => {
 
   it('runs Agent schedules through scoped control-plane methods without a session lease', async () => {
     const server = await createHeadlessServer({
-      providers: { resolve: () => new ScriptedProvider([[
+      providers: { describe: describeTestProvider, resolve: () => new ScriptedProvider([[
         { type: 'text_delta', text: 'scheduled answer' },
         { type: 'response_completed', stopReason: 'stop' }
       ]]) },
@@ -385,7 +386,7 @@ describe('headless server consumer', () => {
       dataDir: directory,
       store: runtimeStoreA,
       ownership: ownershipA,
-      providers: { resolve: () => new ScriptedProvider([]) },
+      providers: { describe: describeTestProvider, resolve: () => new ScriptedProvider([]) },
       permissions: allow
     });
     await serverA.core.createSession(context, { id: 'persisted-schedule-session', executionScope: { kind: 'none' } });
@@ -410,7 +411,7 @@ describe('headless server consumer', () => {
       dataDir: directory,
       store: runtimeStoreB,
       ownership: ownershipB,
-      providers: { resolve: () => new ScriptedProvider([]) },
+      providers: { describe: describeTestProvider, resolve: () => new ScriptedProvider([]) },
       permissions: allow
     });
     await expect(serverB.core.getSchedule(context, schedule.id)).resolves.toMatchObject({

@@ -8,6 +8,7 @@
     "./spi": "./src/spi/index.ts"
   },
   "dependencies": {
+    "zod": "^4.1.13",
     "@desktop-agent/agent": "workspace:*",
     "@desktop-agent/contracts": "workspace:*",
     "@desktop-agent/attachment-access": "workspace:*"

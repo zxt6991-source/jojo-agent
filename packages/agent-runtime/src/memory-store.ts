@@ -1,3 +1,4 @@
+import { validateOperationExecution } from './operation/execution-snapshot.js';
 import { isDeepStrictEqual } from 'node:util';
 import { assertOperationState } from './operation/invariants.js';
 import type { OperationMeta, StoredOperation } from './operation/meta.js';
@@ -124,6 +125,7 @@ export class MemoryAgentRuntimeStore implements AgentRuntimeStore {
   }
 
   async startOperation(meta: OperationMeta, initialState: OperationState): Promise<void> {
+    validateOperationExecution(meta, initialState);
     this.requireSession(meta.sessionId);
     if (this.operations.has(meta.id)) throw new Error(`runtime_operation_exists: ${meta.id}`);
     if (initialState.operationId !== meta.id || initialState.lane !== meta.lane) {
@@ -141,6 +143,7 @@ export class MemoryAgentRuntimeStore implements AgentRuntimeStore {
 
   async loadOperation(operationId: string): Promise<StoredOperation | null> {
     const operation = this.operations.get(operationId);
+    if (operation) validateOperationExecution(operation.meta, operation.state);
     return operation ? clone(operation) : null;
   }
 

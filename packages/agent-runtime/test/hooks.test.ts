@@ -1,3 +1,4 @@
+import { createTestExecutionSnapshot, describeTestProvider } from '../src/testing/index.js';
 import { describe, expect, it, vi } from 'vitest';
 import { ScriptedProvider } from '@desktop-agent/agent';
 import type {
@@ -55,6 +56,9 @@ class ScriptedHooks implements HookRuntime {
 
 function options(provider: ModelProvider, hooks: HookRuntime, overrides: Partial<RuntimeAgentRunOptions> = {}): RuntimeAgentRunOptions {
   return {
+    describeProvider: () => describeTestProvider({ providerId: 'provider-1', model: 'model-1' }),
+    execution: createTestExecutionSnapshot(),
+    maxIterations: 12,
     sessionId: 'session-hooks',
     operationId: 'operation-hooks',
     workingDirectory: process.cwd(),
@@ -198,7 +202,7 @@ describe('agent runtime hook integration', () => {
     await store.saveLane({ sessionId: 'session-hooks', name: 'main', leafId: null, currentOperationId: null });
     await store.startOperation({
       id: 'operation-hooks', sessionId: 'session-hooks', lane: 'main', kind: 'run', createdAt: Date.now(),
-      providerId: 'provider-1', model: 'model-1', maxIterations: 12
+      execution: createTestExecutionSnapshot(), providerId: 'provider-1', model: 'model-1', maxIterations: 12
     }, createReadyState('operation-hooks'));
     await store.appendEntry({ id: user.id, sessionId: 'session-hooks', parentId: null, type: 'message', message: user });
     await store.saveLane({ sessionId: 'session-hooks', name: 'main', leafId: user.id, currentOperationId: 'operation-hooks' });
@@ -249,7 +253,7 @@ describe('agent runtime hook integration', () => {
     await resumed.saveLane({ sessionId: 'session-hooks', name: 'main', leafId: null, currentOperationId: null });
     await resumed.startOperation({
       id: 'operation-hooks', sessionId: 'session-hooks', lane: 'main', kind: 'run', createdAt: Date.now(),
-      providerId: 'provider-1', model: 'model-1', maxIterations: 12
+      execution: createTestExecutionSnapshot(), providerId: 'provider-1', model: 'model-1', maxIterations: 12
     }, createReadyState('operation-hooks'));
     await resumed.appendEntry({ id: user.id, sessionId: 'session-hooks', parentId: null, type: 'message', message: user });
     await resumed.saveLane({ sessionId: 'session-hooks', name: 'main', leafId: user.id, currentOperationId: 'operation-hooks' });
@@ -262,7 +266,7 @@ describe('agent runtime hook integration', () => {
     expect((resumeHooks.injections[0]?.payload as SessionStartPayload).source).toBe('resume');
   });
 
-  it('does not rerun PreToolUse after permission is already resolved', async () => {
+  it('revalidates PreToolUse and permissions when resuming an unfinished effect', async () => {
     const assistant: Message = {
       id: 'assistant-entry', role: 'assistant', createdAt: new Date().toISOString(),
       content: [{ type: 'tool_call', call: { id: 'call-1', name: 'echo', input: {} } }]
@@ -279,7 +283,7 @@ describe('agent runtime hook integration', () => {
       runtimeStore: store,
       operationId: 'operation-hooks'
     });
-    expect(hooks.events).not.toContain('PreToolUse');
+    expect(hooks.events).toContain('PreToolUse');
     expect(execute).toHaveBeenCalledOnce();
   });
 
@@ -362,13 +366,13 @@ describe('agent runtime hook integration', () => {
     const resumedAgain = new ScriptedHooks(['PostToolUse', 'Stop'], {
       additionalContext: 'should not inject again', hookIds: ['builtin.audit']
     });
-    await resumeAgentTurn({
+    await expect(resumeAgentTurn({
       ...options(new ScriptedProvider([[
         { type: 'text_delta', text: 'already complete' }, { type: 'response_completed', stopReason: 'stop' }
       ]]), resumedAgain, { history: [assistant, toolMessage], tools: [{ ...tool, execute }] }),
       runtimeStore: store,
       operationId: 'operation-hooks'
-    });
+    })).rejects.toThrow('runtime_operation_terminal');
     expect(resumedAgain.events).not.toContain('PostToolUse');
     expect(resumedAgain.events).not.toContain('Stop');
   });
@@ -422,7 +426,7 @@ async function toolsOperationStore(
   await store.saveLane({ sessionId: 'session-hooks', name: 'main', leafId: null, currentOperationId: null });
   const meta: OperationMeta = {
     id: 'operation-hooks', sessionId: 'session-hooks', lane: 'main', kind: 'run', createdAt: 2,
-    providerId: 'provider-1', model: 'model-1', maxIterations: 12
+    execution: createTestExecutionSnapshot(), providerId: 'provider-1', model: 'model-1', maxIterations: 12
   };
   const state: ToolsState = {
     phase: 'tools', operationId: 'operation-hooks', lane: 'main', iteration: 0,

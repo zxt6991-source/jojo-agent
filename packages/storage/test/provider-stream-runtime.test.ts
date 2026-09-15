@@ -1,3 +1,4 @@
+import { describeTestProvider } from '@desktop-agent/agent-runtime/testing';
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -36,7 +37,7 @@ describe('provider stream failures across durable runtime', () => {
         if (step !== 2) yield { type: 'response_completed', stopReason: step === 1 ? 'tool_calls' : 'stop' };
       } };
       const environment = {
-        host: { kind: 'test' as const }, providers: { resolve: () => kind === 'third_party' ? thirdParty : adapter },
+        host: { kind: 'test' as const }, providers: { describe: describeTestProvider, resolve: () => kind === 'third_party' ? thirdParty : adapter },
         tools: { resolve: () => ({ snapshot: () => [tool] }) },
         permissions: { check: async () => ({ decision: 'allow' as const }) }
       };

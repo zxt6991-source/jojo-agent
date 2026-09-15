@@ -1,3 +1,4 @@
+import { describeTestProvider } from '@desktop-agent/agent-runtime/testing';
 import { describe, expect, it, vi } from 'vitest';
 import { ScriptedProvider } from '@desktop-agent/agent';
 import { createAgentRuntime } from '../src/index.js';
@@ -7,7 +8,7 @@ import type { OperationState, ToolsState } from '../src/operation/state.js';
 
 function runtimeFor(store: MemoryAgentRuntimeStore, resolve = vi.fn(() => new ScriptedProvider([[{ type: 'text_delta', text: 'new answer' }, { type: 'response_completed', stopReason: 'stop' }]]))) {
   return { resolve, runtime: createAgentRuntime({ store, environment: {
-    host: { kind: 'test' }, providers: { resolve }, tools: { resolve: () => ({ snapshot: () => [] }) },
+    host: { kind: 'test' }, providers: { describe: describeTestProvider, resolve }, tools: { resolve: () => ({ snapshot: () => [] }) },
     permissions: { check: async () => ({ decision: 'allow' }) }
   } }) };
 }

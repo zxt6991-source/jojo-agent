@@ -1,3 +1,4 @@
+import { describeTestProvider, createTestExecutionSnapshot } from '@desktop-agent/agent-runtime/testing';
 import { DatabaseSync } from 'node:sqlite';
 import { mkdtemp } from 'node:fs/promises';
 import os from 'node:os';
@@ -59,7 +60,7 @@ describe('SqliteAgentRuntimeStore durability', () => {
     await store.saveLane({ sessionId: 'session-1', name: 'main', leafId: compaction.id, currentOperationId: null });
     await store.startOperation({
       id: 'operation-1', sessionId: 'session-1', lane: 'main', kind: 'run', createdAt: 901,
-      providerId: 'provider', model: 'model', maxIterations: 12
+      execution: createTestExecutionSnapshot({ providerBinding: describeTestProvider({ providerId: 'provider', model: 'model' }) }), providerId: 'provider', model: 'model', maxIterations: 12
     }, {
       phase: 'ready', operationId: 'operation-1', lane: 'main', iteration: 0,
       outputContinuations: 0,
@@ -100,11 +101,11 @@ describe('SqliteAgentRuntimeStore durability', () => {
     };
     await store.startOperation({
       id: 'operation-1', sessionId: 'session-1', lane: 'main', kind: 'run', createdAt: 901,
-      providerId: 'provider', model: 'model', maxIterations: 12
+      execution: createTestExecutionSnapshot({ providerBinding: describeTestProvider({ providerId: 'provider', model: 'model' }) }), providerId: 'provider', model: 'model', maxIterations: 12
     }, state);
     await expect(store.startOperation({
       id: 'operation-2', sessionId: 'session-1', lane: 'main', kind: 'run', createdAt: 902,
-      providerId: 'provider', model: 'model', maxIterations: 12
+      execution: createTestExecutionSnapshot({ providerBinding: describeTestProvider({ providerId: 'provider', model: 'model' }) }), providerId: 'provider', model: 'model', maxIterations: 12
     }, { ...state, operationId: 'operation-2' })).rejects.toThrow(/runtime_lane_busy/);
     expect(await store.loadOperation('operation-2')).toBeNull();
     expect(await store.getLane('session-1', 'main')).toMatchObject({ currentOperationId: 'operation-1' });
@@ -126,7 +127,7 @@ describe('SqliteAgentRuntimeStore durability', () => {
     await store.saveLane({ sessionId: 'session-1', name: 'main', leafId: root.id, currentOperationId: null });
     await store.startOperation({
       id: 'operation-1', sessionId: 'session-1', lane: 'main', kind: 'run', createdAt: 901,
-      providerId: 'provider', model: 'model', maxIterations: 12
+      execution: createTestExecutionSnapshot({ providerBinding: describeTestProvider({ providerId: 'provider', model: 'model' }) }), providerId: 'provider', model: 'model', maxIterations: 12
     }, {
       phase: 'ready', operationId: 'operation-1', lane: 'main', iteration: 0,
       outputContinuations: 0,
@@ -144,7 +145,7 @@ describe('SqliteAgentRuntimeStore durability', () => {
       store: reopened,
       environment: {
         host: { kind: 'test' },
-        providers: { resolve: () => new ScriptedProvider([[
+        providers: { describe: describeTestProvider, resolve: () => new ScriptedProvider([[
           { type: 'text_delta', text: 'recovered answer' },
           { type: 'response_completed', stopReason: 'stop' }
         ]]) },

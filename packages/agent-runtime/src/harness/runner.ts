@@ -1,3 +1,5 @@
+import { DEFAULT_CONTEXT_WINDOW_TOKENS, DEFAULT_MAX_OUTPUT_TOKENS, normalizeExecutionBudget, validateOperationExecution, validateExecutionWorkspace, parseExecutionSnapshot, executionFingerprint, executionError } from '../operation/execution-snapshot.js';
+import type { OperationExecutionSnapshotV1, RuntimeProviderBinding } from '../public/execution.js';
 import { resolveModelAttachments } from '@desktop-agent/attachment-access';
 import { createHash } from 'node:crypto';
 import {
@@ -90,6 +92,9 @@ import { EXECUTION_SCOPE_METADATA, LEGACY_WORKING_DIRECTORY_METADATA } from '../
 type CoreAgentRunOptions = AgentRunOptions;
 
 export type RuntimeAgentRunOptions = CoreAgentRunOptions & {
+  /** Internal trusted semantic input; never accepted on public RunRequest. */
+  execution?: OperationExecutionSnapshotV1;
+  describeProvider?: () => RuntimeProviderBinding | Promise<RuntimeProviderBinding>;
   runtimeStore?: AgentRuntimeStore;
   providerId?: string;
   lane?: string;
@@ -112,8 +117,6 @@ export type ResumeAgentRunOptions = Omit<RuntimeAgentRunOptions, 'userText' | 'r
   operationId: string;
 };
 
-const DEFAULT_CONTEXT_WINDOW_TOKENS = 128_000;
-const DEFAULT_MAX_OUTPUT_TOKENS = 8_192;
 const MAX_OUTPUT_CONTINUATIONS = 2;
 const sessionStartsInProcess = new WeakMap<AgentRuntimeStore, Set<string>>();
 
@@ -532,7 +535,13 @@ function failedState(state: OperationState, error: unknown): OperationState {
  * operation-scoped memory store.
  */
 async function executeAgentTurn(options: RuntimeAgentRunOptions, resuming: boolean): Promise<AgentRunResult> {
-  const data = createRunnerData(options);
+  if (options.execution) {
+    const snapshot = parseExecutionSnapshot(options.execution);
+    normalizeExecutionBudget(snapshot.budget);
+    options = { ...options, contextWindowTokens: snapshot.budget.contextWindowTokens,
+      maxOutputTokens: snapshot.budget.maxOutputTokens, allowPartialOnMaxIterations: snapshot.budget.allowPartialOnLimit,
+      instructions: [...snapshot.instructions.requested, ...snapshot.instructions.contributed.map(block => block.content)] };
+  }
   const runtimeStore = options.runtimeStore ?? new MemoryAgentRuntimeStore();
   const hooks = options.hooks ?? NoopHookRuntime.instance;
   const memory = options.memoryRuntime ?? NoopMemoryRuntime.instance;
@@ -549,6 +558,13 @@ async function executeAgentTurn(options: RuntimeAgentRunOptions, resuming: boole
   if (resuming) {
     const operation = await runtimeStore.loadOperation(operationId);
     if (!operation) throw new AgentError('operation_corrupted', `Operation not found: ${operationId}`);
+    if (isTerminalState(operation.state)) executionError('runtime_operation_terminal');
+    validateOperationExecution(operation.meta, operation.state);
+    if (!operation.meta.execution || !options.execution) executionError('runtime_resume_context_missing');
+    if (executionFingerprint(operation.meta.execution) !== executionFingerprint(options.execution)) executionError();
+    if (!options.describeProvider) executionError('runtime_resume_provider_unavailable');
+    if (executionFingerprint(await options.describeProvider()) !== executionFingerprint(options.execution.providerBinding)) executionError('runtime_resume_provider_changed');
+    await validateExecutionWorkspace(options.execution);
     if (operation.meta.sessionId !== options.sessionId) {
       throw new AgentError('operation_corrupted', 'The operation belongs to a different session.');
     }
@@ -625,6 +641,7 @@ async function executeAgentTurn(options: RuntimeAgentRunOptions, resuming: boole
     operationStarted = true;
   } else {
     state = createReadyState(operationId, laneName, iterationBudget.currentLimit);
+    state.progress.startedAt = Date.now();
     operationStarted = false;
     if (!await runtimeStore.getSession(options.sessionId)) {
       await runtimeStore.createSession({
@@ -666,6 +683,7 @@ async function executeAgentTurn(options: RuntimeAgentRunOptions, resuming: boole
       providerId: options.providerId ?? 'compatibility',
       model: options.model,
       maxIterations,
+      ...(options.execution ? { execution: options.execution } : {}),
       config: {
         dynamicIterationBudget: iterationBudget.dynamic,
         initialIterationLimit: iterationBudget.currentLimit,
@@ -689,6 +707,10 @@ async function executeAgentTurn(options: RuntimeAgentRunOptions, resuming: boole
     operationStarted = true;
   }
 
+  const data = createRunnerData(options);
+  if (resuming && state.phase === 'tools' && state.calls.some(call => call.status !== 'completed' && !data.toolsByName.has(call.toolName))) {
+    executionError('runtime_resume_environment_unavailable', 'tools');
+  }
   if ('progress' in state) {
     data.toolCallCounts = new Map(Object.entries(state.progress.toolCallCounts));
     data.observationFingerprints = new Set(state.progress.observationFingerprints);
@@ -700,6 +722,15 @@ async function executeAgentTurn(options: RuntimeAgentRunOptions, resuming: boole
     data.toolCalls = state.progress.toolCalls ?? 0;
     data.compactions = state.progress.compactions ?? 0;
     data.startedAt = state.progress.startedAt ?? Date.now();
+  }
+  if (resuming && state.phase === 'tools') {
+    state = { ...state, calls: state.calls.map(call => {
+      if (call.status !== 'planned') return call.status === 'effect_pending' && data.toolsByName.get(call.toolName)?.replay !== 'safe'
+        ? { ...call, replay: 'never' as const } : call;
+      const pending = { ...call };
+      delete pending.approvalRequest;
+      return { ...pending, permission: 'pending' as const };
+    }) };
   }
   if (state.phase === 'tools') {
     data.executedCallIds = new Set(
@@ -764,12 +795,16 @@ async function executeAgentTurn(options: RuntimeAgentRunOptions, resuming: boole
       );
     }
 
-    if (isTerminalState(state)) {
-      if (state.phase === 'completed') return { messages: data.messages, stopReason: state.stopReason };
-      if (state.phase === 'aborted') return { messages: data.messages, stopReason: state.reason };
-      throw new AgentError(state.error.code, state.error.message);
+    if (resuming && (state.phase === 'tools' || (state.phase === 'model_pending' && !state.request.finalResponseOnly))) {
+      const decision = await evaluateLoopGuards(runtimeGuardContext(data, loopBudget, safety, iterationBudget, state));
+      if (decision.action === 'finalize') {
+        if (state.phase === 'tools') await appendInterruptedResults(state, data, options, runtimeStore);
+        await appendDurableMessage(options, data, runtimeStore, state, createSafetyFinalMessage(decision.reason, iterationBudget.absoluteLimit));
+        state = await transition(state.phase === 'model_pending'
+          ? enterFinalResponseAfterModel(state, decision.reason)
+          : enterFinalResponse({ ...state, phase: 'checkpoint' }, decision.reason));
+      }
     }
-
     while (!isTerminalState(state)) {
       throwIfAborted(options.signal);
       assertOperationState(state);
@@ -1259,7 +1294,7 @@ async function executeAgentTurn(options: RuntimeAgentRunOptions, resuming: boole
           ));
         }
         const predictedToolCalls = data.toolCalls + step.calls.length;
-        const toolBudgetExceeded = loopBudget.maxToolCalls !== undefined
+        const toolBudgetExceeded = step.calls.length > 0 && loopBudget.maxToolCalls !== undefined
           && predictedToolCalls > loopBudget.maxToolCalls;
         const resourceDecision = await evaluateLoopGuards(runtimeGuardContext(
           data, loopBudget, safety, iterationBudget, pending
@@ -1423,7 +1458,20 @@ async function executeAgentTurn(options: RuntimeAgentRunOptions, resuming: boole
         const existingResult = existing?.type === 'message'
           ? toolResultFromMessage(existing.message, call.id)
           : undefined;
-        const result = existingResult ?? await executeApprovedToolCall(call, data, {
+        let recoveryDenied: ToolResult | undefined;
+        if (!existingResult && uncertainEffectCallIds.has(call.id)) {
+          const decision = await options.permissionGate.check(call, {
+            sessionId: options.sessionId, workingDirectory: options.workingDirectory,
+            ...(options.executionScope ? { executionScope: options.executionScope } : {})
+          });
+          let allowed = decision.decision === 'allow';
+          if (decision.decision === 'ask') {
+            options.emit({ type: 'approval.required', request: decision.request });
+            allowed = await options.approve(decision.request, options.signal);
+          }
+          if (!allowed) recoveryDenied = { callId: call.id, ok: false, code: 'permission_denied', content: 'Current permissions do not allow replaying this tool.' };
+        }
+        const result = existingResult ?? recoveryDenied ?? await executeApprovedToolCall(call, data, {
           ...options, loopSafety: safety,
           emit: (event) => {
             // Artifact content endpoints authorize against durable history. Publish only after commit.

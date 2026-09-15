@@ -1,3 +1,4 @@
+import { describeTestProvider } from '@desktop-agent/agent-runtime/testing';
 import { MemoryAgentRuntimeStore } from '@desktop-agent/agent-runtime/spi';
 import { describe, expect, it } from 'vitest';
 import { ScriptedProvider } from '@desktop-agent/agent-runtime/testing';
@@ -10,7 +11,7 @@ const allow: PermissionGate = { check: async () => ({ decision: 'allow' }) };
 describe('ServerRecoveryCoordinator', () => {
   it.each(['orphan', 'interrupted'] as const)('clears %s legacy runtime ownership without inventing or overwriting business history', async scenario => {
     const runtimeStore = new MemoryAgentRuntimeStore();
-    const runtime = await createJojoRuntime({ store: runtimeStore, host: { kind: 'server' }, providers: { resolve: () => new ScriptedProvider([]) }, permissions: allow });
+    const runtime = await createJojoRuntime({ store: runtimeStore, host: { kind: 'server' }, providers: { describe: describeTestProvider, resolve: () => new ScriptedProvider([]) }, permissions: allow });
     await runtime.openSession({ id: 's' });
     await runtimeStore.startOperation({ id: 'old', sessionId: 's', lane: 'main', kind: 'run', createdAt: 0, providerId: 'p', model: 'm', maxIterations: 1 }, {
       phase: 'ready', operationId: 'old', lane: 'main', iteration: 0, outputContinuations: 0,
@@ -35,7 +36,7 @@ describe('ServerRecoveryCoordinator', () => {
   it('reconciles session sagas, approvals, and non-terminal runs conservatively', async () => {
     const runtime = await createJojoRuntime({
       host: { kind: 'server' },
-      providers: { resolve: () => new ScriptedProvider([]) },
+      providers: { describe: describeTestProvider, resolve: () => new ScriptedProvider([]) },
       permissions: allow
     });
     await runtime.openSession({ id: 'existing', executionScope: { kind: 'none' } });
@@ -69,7 +70,7 @@ describe('ServerRecoveryCoordinator', () => {
   it.each(['accepted', 'starting'] as const)('projects a durable Runtime terminal fact from %s', async status => {
     const runtime = await createJojoRuntime({
       host: { kind: 'server' },
-      providers: { resolve: () => new ScriptedProvider([[
+      providers: { describe: describeTestProvider, resolve: () => new ScriptedProvider([[
         { type: 'text_delta', text: 'recovered terminal result' },
         { type: 'response_completed', stopReason: 'stop' }
       ]]) },

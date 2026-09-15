@@ -1,3 +1,4 @@
+import { describeProviderConfiguration } from '@desktop-agent/agent-runtime';
 import { MODEL_METADATA_TTL_MS, resolveEffectiveModelLimits, type ModelConfig } from '@desktop-agent/contracts';
 import { randomUUID } from 'node:crypto';
 import type { RuntimePermissionGate, TelemetrySink } from '@desktop-agent/agent-runtime';
@@ -12,6 +13,12 @@ export function createRuntimeDependencies(config: EffectiveConfig, logger: Logge
   const metadata = new Map<string, { models: ModelConfig[]; refreshAfter: number }>();
   const refresh = new ModelDiscoveryRefresh();
   const providers = {
+    describe: (context: { providerId: string; model: string }) => {
+      const configured = config.provider.providers[context.providerId];
+      if (!configured) throw new Error('runtime_resume_provider_unavailable');
+      if (!resolveSecret(configured.apiKey)) throw new Error('runtime_resume_credential_required');
+      return describeProviderConfiguration({ id: context.providerId, protocol: configured.type, baseUrl: configured.baseUrl }, context.model);
+    },
     resolveLimits: async (context: { providerId: string; model: string }, request?: { maxOutputTokens?: number }) => {
       const configured = config.provider.providers[context.providerId];
       const cached = metadata.get(context.providerId);

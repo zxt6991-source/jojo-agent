@@ -1,3 +1,4 @@
+import { describeTestProvider, createTestExecutionSnapshot } from '@desktop-agent/agent-runtime/testing';
 import { describe, expect, it, vi } from 'vitest';
 import { ScriptedProvider } from '@desktop-agent/agent';
 import type { Message, ModelProvider, ModelRequest, PermissionGate, Tool } from '@desktop-agent/contracts';
@@ -26,7 +27,7 @@ describe('public runtime facade', () => {
       [{ type: 'tool_call_completed', call: { id: 'c', name: 'deliver', input: {} } }, { type: 'response_completed', stopReason: 'tool_calls' }],
       [{ type: 'text_delta', text: 'done' }, { type: 'response_completed', stopReason: 'stop' }]
     ]);
-    const runtime = createAgentRuntime({ store, environment: { host: { kind: 'test' }, providers: { resolve: () => provider }, tools: { resolve: () => ({ snapshot: () => [tool] }) }, permissions: allow } });
+    const runtime = createAgentRuntime({ store, environment: { host: { kind: 'test' }, providers: { describe: describeTestProvider, resolve: () => provider }, tools: { resolve: () => ({ snapshot: () => [tool] }) }, permissions: allow } });
     const observed: boolean[] = [];
     runtime.subscribe((event) => { if (event.event.type === 'tool.completed') observed.push(committed); });
     try {
@@ -47,7 +48,7 @@ describe('public runtime facade', () => {
       }
     };
     const runtime = createAgentRuntime({ environment: {
-      host: { kind: 'test' }, providers: { resolve: () => provider },
+      host: { kind: 'test' }, providers: { describe: describeTestProvider, resolve: () => provider },
       tools: { resolve: () => ({ snapshot: () => [] }) }, permissions: allow
     } });
     const session = await runtime.openSession({ id: 'files', executionScope: { kind: 'none' } });
@@ -76,7 +77,7 @@ describe('public runtime facade', () => {
     const runtime = createAgentRuntime({
       environment: {
         host: { kind: 'test' },
-        providers: { resolve: (context) => { contexts.push(context); return provider; } },
+        providers: { describe: describeTestProvider, resolve: (context) => { contexts.push(context); return provider; } },
         tools: { resolve: (context) => { contexts.push(context); return { snapshot: () => [] }; } },
         permissions: allow,
         runContext: { resolve: (context) => { contexts.push(context); return {}; } }
@@ -103,7 +104,7 @@ describe('public runtime facade', () => {
     const runtime = createAgentRuntime({
       environment: {
         host: { kind: 'test' },
-        providers: { resolve: (context) => {
+        providers: { describe: describeTestProvider, resolve: (context) => {
           contexts.push(context);
           return new ScriptedProvider([[
             { type: 'text_delta', text: 'scheduled result' },
@@ -143,7 +144,7 @@ describe('public runtime facade', () => {
       idGenerator: () => `id-${++nextId}`,
       environment: {
         host: { kind: 'test' },
-        providers: { resolve: () => provider },
+        providers: { describe: describeTestProvider, resolve: () => provider },
         tools: { resolve: () => ({ snapshot: () => [] }) },
         permissions: allow
       }
@@ -184,7 +185,7 @@ describe('public runtime facade', () => {
     const runtime = createAgentRuntime({
       environment: {
         host: { kind: 'test' },
-        providers: { resolve: () => provider },
+        providers: { describe: describeTestProvider, resolve: () => provider },
         tools: { resolve: () => ({ snapshot: () => [] }) },
         permissions: allow
       }
@@ -215,14 +216,14 @@ describe('public runtime facade', () => {
       store,
       environment: {
         host: { kind: 'test' },
-        providers: { resolve: () => provider },
+        providers: { describe: describeTestProvider, resolve: () => provider },
         tools: { resolve: () => ({ snapshot: () => [] }) },
         permissions: allow
       }
     });
     await runtime.openSession({
       id: 'session-recovery',
-      executionScope: { kind: 'workspace', workingDirectory: '/workspace' }
+      executionScope: { kind: 'none' }
     });
     await store.startOperation({
       id: 'operation-recovery',
@@ -232,7 +233,8 @@ describe('public runtime facade', () => {
       createdAt: 1,
       providerId: 'provider',
       model: 'model',
-      maxIterations: 8
+      maxIterations: 8,
+      execution: createTestExecutionSnapshot({ providerBinding: describeTestProvider({ providerId: 'provider', model: 'model' }), budget: { maxIterations: 8, maxOutputTokens: 1024, contextWindowTokens: 48000, allowPartialOnLimit: true } })
     }, {
       phase: 'model_pending',
       operationId: 'operation-recovery',
@@ -294,7 +296,7 @@ describe('public runtime facade', () => {
     const runtime = createAgentRuntime({
       environment: {
         host: { kind: 'test' },
-        providers: { resolve: () => provider },
+        providers: { describe: describeTestProvider, resolve: () => provider },
         tools: {
           resolve: () => ({
             snapshot: () => activated ? [manifest, dynamic] : [manifest],
@@ -337,7 +339,7 @@ describe('public runtime facade', () => {
       store,
       environment: {
         host: { kind: 'test' },
-        providers: { resolve: () => new ScriptedProvider([[
+        providers: { describe: describeTestProvider, resolve: () => new ScriptedProvider([[
           { type: 'text_delta', text: 'answer after compaction' },
           { type: 'response_completed', stopReason: 'stop' }
         ]]) },

@@ -1,3 +1,4 @@
+import { describeTestProvider } from '@desktop-agent/agent-runtime/testing';
 import { mkdtemp, rm, symlink } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -10,7 +11,7 @@ import { ServerDataOwnership, SqliteAgentRuntimeStore } from '@desktop-agent/sto
 import { createHeadlessServer } from './index.js';
 
 const dependencies = {
-  providers: { resolve: () => new ScriptedProvider([]) },
+  providers: { describe: describeTestProvider, resolve: () => new ScriptedProvider([]) },
   permissions: { check: async () => ({ decision: 'allow' as const }) },
   scheduler: false as const
 };
@@ -72,7 +73,7 @@ describe('server recovery lifecycle', () => {
     const disposed = vi.fn();
     const resolve = vi.fn(dependencies.providers.resolve);
     try {
-      await expect(createHeadlessServer({ ...dependencies, providers: { resolve }, scheduler: true, dataDir: dir, store, stateStore,
+      await expect(createHeadlessServer({ ...dependencies, providers: { describe: describeTestProvider, resolve }, scheduler: true, dataDir: dir, store, stateStore,
         capabilities: [{ contribute(builder) { builder.addDisposable({ dispose: disposed }); } }],
         channels: { store: channelStore, builtInAdapters: false, defaultProviderId: 'p', defaultModel: 'm', secrets: { resolve: async () => 'secret' } }
       })).rejects.toThrow(fault === 'missing_operation' ? 'runtime_recovery_conflict' : 'database write failure');

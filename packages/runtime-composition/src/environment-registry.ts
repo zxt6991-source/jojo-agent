@@ -1,3 +1,5 @@
+import { describeProviderConfiguration } from '@desktop-agent/agent-runtime';
+import type { ProviderConfig } from '@desktop-agent/contracts';
 import type {
   AgentRuntime,
   ModelProviderResolver,
@@ -14,6 +16,8 @@ import { resolveModelForRun, type ModelConfig, NoopHookRuntime, type HookRuntime
 
 export type RuntimeExecutionEnvironment = {
   provider: ModelProvider;
+  /** Host configuration used to construct this exact provider instance. */
+  providerConfig: Pick<ProviderConfig, 'id' | 'protocol' | 'baseUrl' | 'models'>;
   models?: ModelConfig[];
   tools: RuntimeToolSource;
   permissions: RuntimePermissionGate;
@@ -39,7 +43,17 @@ export class RuntimeEnvironmentRegistry {
   private readonly environments = new Map<string, { token: symbol; value: RuntimeExecutionEnvironment }>();
 
   readonly providers: ModelProviderResolver = {
-    resolve: (context) => this.resolve(context).provider,
+    describe: (context) => {
+      const config = this.resolve(context).providerConfig;
+      if (!config || config.id !== context.providerId) throw new Error('runtime_resume_provider_unavailable');
+      return describeProviderConfiguration(config, context.model);
+    },
+    resolve: (context) => {
+      const value = this.resolve(context);
+      if (!value.providerConfig || value.providerConfig.id !== context.providerId) throw new Error('runtime_resume_provider_unavailable');
+      describeProviderConfiguration(value.providerConfig, context.model);
+      return value.provider;
+    },
     resolveLimits: (context, request) => {
       const models = this.resolve(context).models;
       return models ? resolveModelForRun({ models }, context.model, request) : undefined;
@@ -78,7 +92,7 @@ export class RuntimeEnvironmentRegistry {
   bind(sessionId: string, laneId: string, value: RuntimeExecutionEnvironment): RuntimeEnvironmentBinding {
     const key = environmentKey(sessionId, laneId);
     const token = Symbol(key);
-    this.environments.set(key, { token, value });
+    this.environments.set(key, { token, value: { ...value, providerConfig: structuredClone(value.providerConfig) } });
     return {
       dispose: () => {
         if (this.environments.get(key)?.token === token) this.environments.delete(key);

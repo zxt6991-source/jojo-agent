@@ -1,3 +1,4 @@
+import { normalizeContextBlocks } from '@desktop-agent/contracts';
 import type {
   ContextBlock,
   ContextContribution,
@@ -87,17 +88,7 @@ export class ContextContributionRegistry {
       [...this.registrations.values()].map((registration) => this.invoke(registration, request))
     );
     const trace = contributions.map((entry) => entry.trace);
-    const deduped = new Map<string, ContextBlock>();
-    for (const entry of contributions) {
-      for (const block of entry.contribution?.blocks ?? []) {
-        const key = `${block.kind}:${block.id}`;
-        const existing = deduped.get(key);
-        if (!existing || block.priority > existing.priority) deduped.set(key, block);
-      }
-    }
-    const sorted = [...deduped.values()].sort((left, right) => (
-      right.priority - left.priority || left.source.localeCompare(right.source) || left.id.localeCompare(right.id)
-    ));
+    const sorted = normalizeContextBlocks(contributions.flatMap(entry => entry.contribution?.blocks ?? []));
     const maxCharacters = options.maxCharacters ?? Number.POSITIVE_INFINITY;
     const blocks: ContextBlock[] = [];
     let totalCharacters = 0;

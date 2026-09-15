@@ -1,6 +1,19 @@
 # OPT-03：恢复执行上下文的持久化与一致性
 
-状态：详细实施设计，尚未实现。基线：`e544bae`。本文只规划 execution snapshot 与 `resumeOperation` 的上下文恢复；本次不修改生产代码。
+状态：已实现（2026-09-15）。下文保留基于 `e544bae` 的设计说明；当前实现与验收见本节。
+
+### 实现与验收
+
+- 新公共 Run 在原 `startOperation` 中原子保存 v1 execution；Memory、JSONL、SQLite 共用严格版本、大小、哈希和交叉一致性校验。旧记录仍可读取，无快照的非终态运行返回 `runtime_resume_context_missing`。
+- `resumeOperation` 保留原 actor、trigger、workflow、team、scope、指令、有效预算、项目和 Memory 引用，另以 `recovery.operationId` 标识恢复。恢复前校验 Lane 所有权及当前配置，终态不可复活。
+- Desktop、CLI 和编排环境已接入 provider 描述。描述仅散列白名单配置；凭据轮换不改变绑定，endpoint/model/config 变化会阻断恢复。Desktop 先查看原运行摘要，再准备对应环境；恢复成功后才处理排队输入。
+- MCP 指令从 Desktop 基础指令中分离，使用配置 ID 派生的稳定贡献 ID，复用 ContextContributionRegistry 的去重和排序。超限或已知凭据污染直接拒绝；恢复不会再次叠加当前贡献。
+- runner 继续使用已持久化的累计消耗和启动时间。已批准但尚未执行的工具重新检查当前权限；正在重放的安全工具也必须通过当前 gate。补齐 pending 阶段预算检查，并修复工具预算耗尽后最终回复反复进入收尾的情况。
+- 新增 schema、三种 Store、五类 actor、Memory 绑定、符号链接替换、MCP 来源以及 provider 路由测试。Electron E2E 实际启动 Worker、在 `model_pending` 强制杀进程、重启后恢复，并比较恢复前后的模型、输出上限和全部指令，校验 operation ID 和原快照保持不变。
+
+验证结果：`pnpm typecheck`、`pnpm lint` 通过；`pnpm test` 为 1093 通过、2 跳过；`pnpm test:e2e:electron` 为 15 通过。最后补强 JSONL 读取限额后，schema/storage 相关 74 项测试再次通过。
+
+兼容与发布限制：未升级的直接 harness 调用仍可创建 legacy 运行，但不能恢复；可信 harness 的 v1 恢复还需提供当前 provider 描述。没有历史数据迁移或 best-effort 恢复开关。旧二进制不具备这些校验，回滚前必须受控结束进行中的运行，禁止用旧二进制恢复 v1 运行。
 
 ## 1. 目标、边界与交付结果
 

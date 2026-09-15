@@ -1,3 +1,4 @@
+import { executionFingerprint } from '@desktop-agent/agent-runtime';
 import { resolveModelForRun } from '@desktop-agent/contracts';
 import { LocalAttachmentAccessResolver } from '@desktop-agent/attachment-access/local';
 import type { AgentRuntime, RuntimePermissionGate } from '@desktop-agent/agent-runtime';
@@ -200,6 +201,7 @@ export function createDesktopOrchestratedAgentRunner(options: DesktopLeafAgentRu
           )
         : new NonInteractivePermissionGate(scopedPermissionGate);
       const binding = environments.bind(request.sessionId, laneId, {
+        providerConfig: providerRuntime.config,
         provider,
         models: providerRuntime.config.models,
         tools: { snapshot: () => tools },
@@ -210,14 +212,13 @@ export function createDesktopOrchestratedAgentRunner(options: DesktopLeafAgentRu
           })
         },
         ...(hooks ? { hooks } : {}),
-        ...(request.memoryBinding ? {
-          runContext: {
-            ...(request.memoryBinding?.projectIdentity
-              ? { projectIdentity: request.memoryBinding.projectIdentity }
-              : {}),
-            ...(request.memoryBinding ? { memoryBinding: request.memoryBinding } : {})
-          }
-        } : {}),
+        runContext: {
+          executionPolicyFingerprint: executionFingerprint({ policy: 'desktop-orchestration-v1', tools: [...allowedTools].sort() }),
+          ...(request.memoryBinding?.projectIdentity
+            ? { projectIdentity: request.memoryBinding.projectIdentity }
+            : {}),
+          ...(request.memoryBinding ? { memoryBinding: request.memoryBinding } : {})
+        },
         telemetry: {
           diagnostic: (event) => {
             if (event.type === 'usage') accrueUsage(usage, event);

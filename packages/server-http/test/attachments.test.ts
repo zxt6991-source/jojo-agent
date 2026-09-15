@@ -1,3 +1,4 @@
+import { describeTestProvider } from '@desktop-agent/agent-runtime/testing';
 import { expect, it } from 'vitest';
 import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -14,7 +15,7 @@ import { createJojoHttpServer } from '../src';
 async function setup() {
   const root = await mkdtemp(path.join(tmpdir(), 'serve-upload-'));
   const store = new LocalAttachmentStore(root);
-  const runtime = await createJojoRuntime({ host: { kind: 'server' }, providers: { resolve: () => new ScriptedProvider([[{ type: 'text_delta', text: 'done' }, { type: 'response_completed', stopReason: 'stop' }]]) }, permissions: { check: async () => ({ decision: 'allow' }) } });
+  const runtime = await createJojoRuntime({ host: { kind: 'server' }, providers: { describe: describeTestProvider, resolve: () => new ScriptedProvider([[{ type: 'text_delta', text: 'done' }, { type: 'response_completed', stopReason: 'stop' }]]) }, permissions: { check: async () => ({ decision: 'allow' }) } });
   const core = createJojoServerCore(createJojoAppService(runtime), { attachmentStore: store });
   const server = await createJojoHttpServer(core, { token: 'secret', port: 0 });
   const ctx = { requestId: 'test', principal: { id: 'token', type: 'token' as const, scopes: ['admin'] } };

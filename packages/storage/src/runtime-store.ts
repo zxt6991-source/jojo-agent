@@ -1,3 +1,4 @@
+import { validateOperationExecution, validateOperationRecordSize } from '@desktop-agent/agent-runtime/spi';
 import { isDeepStrictEqual } from 'node:util';
 import { appendFile, mkdir, readFile, readdir, stat, unlink } from 'node:fs/promises';
 import path from 'node:path';
@@ -313,6 +314,9 @@ export class JsonlAgentRuntimeStore implements AgentRuntimeStore {
   }
 
   async startOperation(meta: OperationMeta, initialState: OperationState): Promise<void> {
+    meta = clone(meta);
+    initialState = clone(initialState);
+    validateOperationExecution(meta, initialState);
     await this.enqueue(meta.sessionId, async (snapshot) => {
       this.requireSession(snapshot, meta.sessionId);
       if (snapshot.operations.has(meta.id)) throw new Error(`runtime_operation_exists: ${meta.id}`);
@@ -336,6 +340,7 @@ export class JsonlAgentRuntimeStore implements AgentRuntimeStore {
     const sessionId = await this.findOperationSession(operationId);
     if (!sessionId) return null;
     const operation = (await this.loadSnapshot(sessionId)).operations.get(operationId);
+    if (operation) validateOperationExecution(operation.meta, operation.state);
     return operation ? clone(operation) : null;
   }
 
@@ -406,6 +411,7 @@ export class JsonlAgentRuntimeStore implements AgentRuntimeStore {
     }
     for (const [index, line] of content.split('\n').entries()) {
       if (!line.trim()) continue;
+      validateOperationRecordSize(line);
       let raw: unknown;
       try { raw = JSON.parse(line); }
       catch {

@@ -1,3 +1,4 @@
+import { normalizeContextBlocks } from '@desktop-agent/contracts';
 import { createHash } from 'node:crypto';
 import {
   auth,
@@ -36,7 +37,7 @@ import { EnvironmentSecretBroker, resolveMcpConfigValues } from './mcp-security/
 const CONNECT_TIMEOUT_MS = 15_000;
 const TOOL_CATALOG_CONTEXT_RATIO = 0.08;
 const CONNECT_RETRY_DELAYS_MS = [250, 750] as const;
-const MCP_INSTRUCTION_MAX_BYTES = 8 * 1024;
+
 const resultNormalizer = new McpResultNormalizer();
 const ManifestInput = z.object({
   query: z.string().trim().max(500).default(''),
@@ -177,6 +178,16 @@ async function defaultConnectionFactory(
     clearTimeout(timer);
   }
   const instructions = client.getInstructions();
+  const knownSecrets = [
+    ...Object.entries(config.transport === 'stdio' ? config.env ?? {} : {}).flatMap(([name, value]) =>
+      typeof value === 'object' && 'secretRef' in value && env?.values[name] ? [env.values[name]!] : []),
+    ...Object.entries(config.transport === 'streamable_http' ? config.headers ?? {} : {}).flatMap(([name, value]) =>
+      typeof value === 'object' && 'secretRef' in value && headers?.values[name] ? [headers.values[name]!, headers.values[name]!.replace(/^Bearer /iu, '')] : [])
+  ];
+  if (instructions && knownSecrets.some(secret => secret.length > 0 && instructions.includes(secret))) {
+    try { await client.close(); } finally { leases.forEach(lease => lease.dispose()); }
+    throw new Error('runtime_execution_snapshot_invalid: instructions.contributed');
+  }
   return {
     listTools: () => client.listTools(),
     callTool: (name, input, signal) => client.callTool({ name, arguments: input }, { signal }),
@@ -691,14 +702,36 @@ export class McpManager {
     ];
   }
 
+  getInstructionContributions() {
+    return normalizeContextBlocks(this.configs.flatMap(config => {
+      if (!config.enabled || config.security?.allowInstructions !== true) return [];
+      if (this.security.trustStore && !this.trustedServers.has(config.id)) return [];
+      const instructions = this.connections.get(config.id)?.instructions;
+      if (!instructions?.trim()) return [];
+      const content = `Untrusted MCP server “${config.name}” instructions:\n${instructions}`;
+      if (Buffer.byteLength(content) > 32 * 1024) throw new Error('runtime_execution_snapshot_too_large: instructions.contributed');
+      const values = config.transport === 'stdio' ? config.env : config.headers;
+      const secrets = Object.entries(values ?? {}).flatMap(([name, value]) => /api.?key|auth|token|secret|password|cookie/iu.test(name)
+        ? typeof value === 'string' ? [value, value.replace(/^Bearer /iu, '')] : 'value' in value ? [value.value] : [] : []);
+      if (secrets.some(secret => secret.length > 0 && content.includes(secret))) throw new Error('runtime_execution_snapshot_invalid: instructions.contributed');
+      const identity = this.fingerprints.get(config.id)?.identity;
+      if (!identity) throw new Error('runtime_execution_snapshot_invalid: instructions.source');
+      if (config.transport === 'streamable_http') {
+        const endpoint = new URL(config.url);
+        if (endpoint.username || endpoint.password || endpoint.search) throw new Error('runtime_execution_snapshot_invalid: instructions.source');
+      }
+      const argumentsText = (identity.args ?? []).join(' ');
+      if (/--?(?:api[-_]?key|token|password|secret|authorization)(?:[=\s]|$)/iu.test(argumentsText)
+        || secrets.some(secret => secret.length > 0 && argumentsText.includes(secret))) throw new Error('runtime_execution_snapshot_invalid: instructions.source');
+      const fingerprint = createHash('sha256').update(JSON.stringify({ producer: 'mcp-instructions-v1', id: config.id, identity })).digest('hex');
+      return [{ id: `server-${createHash('sha256').update(config.id).digest('hex')}`, source: 'mcp', kind: 'instruction' as const,
+        content, priority: 50, sourceFingerprint: `sha256:${fingerprint}`,
+        contentHash: `sha256:${createHash('sha256').update(content).digest('hex')}` }];
+    }));
+  }
+
   getInstructions(): string[] {
-    return this.configs.flatMap((config) => {
-      if (config.security?.allowInstructions !== true) return [];
-      const instructions = this.connections.get(config.id)?.instructions?.trim();
-      if (!instructions) return [];
-      const bounded = Buffer.from(instructions, 'utf8').subarray(0, MCP_INSTRUCTION_MAX_BYTES).toString('utf8');
-      return [`Untrusted MCP server “${config.name}” instructions:\n${bounded}`];
-    });
+    return this.getInstructionContributions().map(block => block.content);
   }
 
   private createManifestTool(): Tool {

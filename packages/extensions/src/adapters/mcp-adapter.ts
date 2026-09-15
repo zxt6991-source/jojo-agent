@@ -31,14 +31,7 @@ export class McpContributionAdapter implements Disposable {
       this.contextDisposable = this.contexts.register(this.owner, {
         id: 'server-instructions',
         contribute: async () => ({
-          blocks: this.manager.getInstructions().map((content, index) => ({
-            id: `server-${index + 1}`,
-            kind: 'instruction' as const,
-            content,
-            priority: 50,
-            source: this.owner.id,
-            cachePolicy: 'turn' as const
-          }))
+          blocks: this.manager.getInstructionContributions().map(block => ({ ...block, cachePolicy: 'turn' as const }))
         })
       });
     }

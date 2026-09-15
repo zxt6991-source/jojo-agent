@@ -1,3 +1,5 @@
+import type { ExecutionInstructionBlock, RuntimeProviderBinding, OperationExecutionSnapshotV1, RuntimeExecutionSummary } from './execution.js';
+import { executionError, executionFingerprint, executionInstructions, executionSummary, normalizeExecutionBudget, parseExecutionSnapshot, validateOperationExecution, validateExecutionWorkspace } from '../operation/execution-snapshot.js';
 import { isTerminalState } from '../operation/state.js';
 import { interruptStoredOperation, type RecoveryOutcome, type RuntimeRecoveryReport, type InterruptOperationRequest } from '../recovery/interrupted-operation.js';
 import type { EffectiveModelLimits } from '@desktop-agent/contracts';
@@ -57,6 +59,7 @@ export type ResumeOperationRequest = {
 };
 
 export type RuntimeRunSnapshot = {
+  execution?: RuntimeExecutionSummary;
   id: string;
   sessionId: string;
   laneId: string;
@@ -67,6 +70,7 @@ export type RuntimeRunSnapshot = {
 };
 
 export type RuntimeResolutionContext = {
+  recovery?: { operationId: string };
   sessionId: string;
   laneId: string;
   runId: string;
@@ -87,6 +91,7 @@ export type RuntimeHostDescriptor = {
 };
 
 export interface ModelProviderResolver {
+  describe?(context: RuntimeResolutionContext): RuntimeProviderBinding | Promise<RuntimeProviderBinding>;
   resolveLimits?(context: RuntimeResolutionContext, request?: { maxOutputTokens?: number }): EffectiveModelLimits | Promise<EffectiveModelLimits> | undefined;
   resolve(context: RuntimeResolutionContext): ModelProvider | Promise<ModelProvider>;
 }
@@ -125,6 +130,8 @@ export interface RuntimeHookResolver {
 }
 
 export type RuntimeRunContext = {
+  instructionBlocks?: ExecutionInstructionBlock[];
+  executionPolicyFingerprint?: string;
   projectIdentity?: ProjectIdentity;
   memoryBinding?: SubAgentMemoryBinding | WorkflowMemoryBinding | TeamMemberMemoryBinding;
 };
@@ -297,8 +304,10 @@ class DefaultAgentRuntime implements AgentRuntime {
     const operation = await this.store.loadOperation(runId);
     if (!operation) return undefined;
     const { meta, state } = operation;
+    const execution = meta.execution ? { execution: executionSummary(meta.execution) } : {};
     if (state.phase !== 'completed' && state.phase !== 'failed' && state.phase !== 'aborted') {
       return {
+        ...execution,
         id: runId,
         sessionId: meta.sessionId,
         laneId: meta.lane,
@@ -320,7 +329,7 @@ class DefaultAgentRuntime implements AgentRuntime {
         ...(finalText ? { finalText } : {}),
         messages
       };
-      return { id: runId, sessionId: meta.sessionId, laneId: meta.lane, status: 'completed', result };
+      return { ...execution, id: runId, sessionId: meta.sessionId, laneId: meta.lane, status: 'completed', result };
     }
     if (state.phase === 'aborted') {
       const result: RunResult = {
@@ -331,7 +340,7 @@ class DefaultAgentRuntime implements AgentRuntime {
         stopReason: state.reason,
         messages
       };
-      return { id: runId, sessionId: meta.sessionId, laneId: meta.lane, status: 'cancelled', result, resultReconstruction: 'unavailable' };
+      return { ...execution, id: runId, sessionId: meta.sessionId, laneId: meta.lane, status: 'cancelled', result, resultReconstruction: 'unavailable' };
     }
     const result: RunResult = {
       runId,
@@ -341,7 +350,7 @@ class DefaultAgentRuntime implements AgentRuntime {
       messages,
       error: { ...runtimeError(state.error), ...(state.error.detail !== undefined ? { detail: state.error.detail as JsonValue } : {}) }
     };
-    return { id: runId, sessionId: meta.sessionId, laneId: meta.lane, status: 'failed', result,
+    return { ...execution, id: runId, sessionId: meta.sessionId, laneId: meta.lane, status: 'failed', result,
       ...(!detail || typeof detail !== 'object' || !('leafId' in detail) ? { resultReconstruction: 'unavailable' as const } : {})
     };
   }
@@ -354,6 +363,9 @@ class DefaultAgentRuntime implements AgentRuntime {
     if (!operation) throw new Error(`runtime_operation_not_found: ${request.operationId}`);
     const session = await this.store.getSession(operation.meta.sessionId);
     if (!session) throw new Error(`runtime_session_not_found: ${operation.meta.sessionId}`);
+    validateOperationExecution(operation.meta, operation.state);
+    if (!operation.meta.execution) executionError('runtime_resume_context_missing');
+    const execution = parseExecutionSnapshot(operation.meta.execution);
     return this.startRun(
       operation.meta.sessionId,
       operation.meta.lane,
@@ -361,8 +373,12 @@ class DefaultAgentRuntime implements AgentRuntime {
         input: '',
         providerId: operation.meta.providerId,
         model: operation.meta.model,
-        trigger: { kind: 'resume', id: request.operationId },
-        budget: { maxIterations: operation.meta.maxIterations },
+        actor: execution.actor,
+        ...(execution.trigger ? { trigger: execution.trigger } : {}),
+        ...(execution.workflow ? { workflow: execution.workflow } : {}),
+        ...(execution.team ? { team: execution.team } : {}),
+        instructions: execution.instructions.requested,
+        budget: execution.budget,
         ...(request.signal ? { signal: request.signal } : {})
       },
       request.operationId,
@@ -471,13 +487,21 @@ class DefaultAgentRuntime implements AgentRuntime {
     const key = JSON.stringify([sessionId, laneId]);
     if (this.startingLanes.has(key)) throw new Error('runtime_lane_busy');
     this.startingLanes.add(key);
+    let preparedTools: RuntimeToolSource | undefined;
+    let handedOff = false;
+    request = structuredCloneRequest(request);
     try {
+      let recovered: OperationExecutionSnapshotV1 | undefined;
       if (resuming) {
         const operation = await this.store.loadOperation(runId);
         if (!operation || isTerminalState(operation.state)) throw new Error('runtime_operation_terminal');
+        validateOperationExecution(operation.meta, operation.state);
+        if (!operation.meta.execution) executionError('runtime_resume_context_missing');
+        recovered = parseExecutionSnapshot(operation.meta.execution);
       }
       const lane = await this.store.getLane(sessionId, laneId);
       if (!lane) throw new Error(`runtime_lane_not_found: ${laneId}`);
+      if (resuming && lane.currentOperationId !== runId) executionError('runtime_operation_identity_mismatch', 'lane.currentOperationId');
       if (lane.currentOperationId && lane.currentOperationId !== runId) {
         throw new Error(`runtime_lane_busy: ${laneId}`);
       }
@@ -486,7 +510,10 @@ class DefaultAgentRuntime implements AgentRuntime {
       const session = await this.store.getSession(sessionId);
       if (!session) throw new Error(`runtime_session_not_found: ${sessionId}`);
       const persistedScope = scopeFromMetadata(session.metadata);
-      const executionScope = persistedScope;
+      if (recovered && executionFingerprint(persistedScope) !== executionFingerprint(recovered.executionScope)) executionError('runtime_resume_scope_changed');
+      if (recovered) await validateExecutionWorkspace(recovered);
+      normalizeExecutionBudget(request.budget);
+      const executionScope = recovered?.executionScope ?? persistedScope;
       const workingDirectory = executionScope.kind === 'workspace' ? executionScope.workingDirectory : '';
       const context: RuntimeResolutionContext = {
         sessionId,
@@ -496,18 +523,58 @@ class DefaultAgentRuntime implements AgentRuntime {
         providerId: request.providerId,
         model: request.model,
         workingDirectory,
-        ...(request.actor ? { actor: request.actor } : {}),
+        actor: request.actor ?? { kind: 'main' },
+        ...(resuming ? { recovery: { operationId: runId } } : {}),
         ...(request.trigger ? { trigger: request.trigger } : {}),
         ...(request.workflow ? { workflow: request.workflow } : {}),
         ...(request.team ? { team: request.team } : {})
       };
-      const [provider, toolSource, hooks, runContext] = await Promise.all([
-        this.options.environment.providers.resolve(context),
-        this.options.environment.tools.resolve(context),
-        resolveHooks(this.options.environment.hooks, context),
-        this.options.environment.runContext?.resolve(context)
-      ]);
-      const modelLimits = await this.options.environment.providers.resolveLimits?.(context, request.budget);
+      const environment = this.options.environment;
+      if (!environment.providers.describe) executionError(resuming ? 'runtime_resume_provider_unavailable' : 'runtime_execution_provider_description_required');
+      const providerBinding = await environment.providers.describe(context);
+      if (providerBinding.providerId !== request.providerId || providerBinding.model !== request.model) executionError('runtime_resume_provider_changed');
+      if (recovered && executionFingerprint(providerBinding) !== executionFingerprint(recovered.providerBinding)) executionError('runtime_resume_provider_changed');
+      const runContext = await environment.runContext?.resolve(context);
+      const semanticContext = {
+        executionPolicyFingerprint: runContext?.executionPolicyFingerprint ?? executionFingerprint('runtime-main-policy-v1'),
+        ...(runContext?.projectIdentity ? { projectIdentity: runContext.projectIdentity } : {}),
+        ...(runContext?.memoryBinding ? { memoryBinding: runContext.memoryBinding } : {})
+      };
+      if (recovered) {
+        if (executionFingerprint(semanticContext.projectIdentity ?? null) !== executionFingerprint(recovered.runContext.projectIdentity ?? null)) executionError('runtime_resume_scope_changed');
+        if (executionFingerprint(semanticContext.memoryBinding ?? null) !== executionFingerprint(recovered.runContext.memoryBinding ?? null)) executionError('runtime_resume_memory_binding_changed');
+        if (semanticContext.executionPolicyFingerprint !== recovered.runContext.executionPolicyFingerprint) executionError('runtime_resume_policy_changed');
+        const currentInstructions = executionInstructions(request.instructions ?? [], runContext?.instructionBlocks ?? []);
+        if (currentInstructions.fingerprint !== recovered.instructions.fingerprint) executionError('runtime_resume_instructions_changed');
+        const binding = recovered.runContext.memoryBinding;
+        if (binding && (!('mode' in binding) || binding.mode !== 'none')) {
+          const snapshotId = 'childSnapshotId' in binding ? binding.childSnapshotId : binding.memorySnapshotId;
+          const path = await this.store.readPath(lane.leafId);
+          if (!path.some(entry => entry.type === 'memory_snapshot' && entry.snapshotId === snapshotId
+            && (!('contentHash' in binding) || entry.contentHash === binding.contentHash))) executionError('runtime_resume_memory_binding_changed');
+        }
+      }
+      // Validate all persisted semantics before resolving capabilities or fetching model metadata.
+      let execution = parseExecutionSnapshot(recovered ?? {
+        schemaVersion: 1, origin: 'public-runtime', capturedAt: this.now().getTime(), executionScope,
+        actor: context.actor, trigger: request.trigger, workflow: request.workflow, team: request.team,
+        providerBinding, budget: normalizeExecutionBudget(request.budget),
+        instructions: executionInstructions(request.instructions ?? [], runContext?.instructionBlocks ?? []),
+        runContext: semanticContext
+      });
+      const modelLimits = await environment.providers.resolveLimits?.(context, request.budget);
+      if (recovered && modelLimits && (modelLimits.contextWindowTokens < recovered.budget.contextWindowTokens
+        || modelLimits.requestMaxOutputTokens < recovered.budget.maxOutputTokens)) executionError('runtime_resume_provider_changed');
+      if (!recovered) execution = parseExecutionSnapshot({ ...execution, budget: normalizeExecutionBudget({ ...request.budget,
+        contextWindowTokens: request.budget?.contextWindowTokens === undefined ? modelLimits?.contextWindowTokens
+          : Math.min(request.budget.contextWindowTokens, modelLimits?.contextWindowTokens ?? Infinity),
+        maxOutputTokens: modelLimits?.requestMaxOutputTokens ?? request.budget?.maxOutputTokens
+      }) });
+      if (modelLimits && (execution.budget.contextWindowTokens > modelLimits.contextWindowTokens
+        || execution.budget.maxOutputTokens > modelLimits.requestMaxOutputTokens)) executionError(undefined, 'budget.modelLimits');
+      const provider = await environment.providers.resolve(context);
+      const hooks = await resolveHooks(environment.hooks, context);
+      const toolSource = preparedTools = await environment.tools.resolve(context);
       const controller = new AbortController();
       let cancelReason: string | undefined;
       const abortFromRequest = () => controller.abort(request.signal?.reason);
@@ -527,10 +594,11 @@ class DefaultAgentRuntime implements AgentRuntime {
 
       const input = normalizeInput(request.input);
       const history = projectEntriesToMessages(await this.store.readPath(lane.leafId));
-      const budget = request.budget;
-      const contextWindowTokens = modelLimits?.contextWindowTokens ?? budget?.contextWindowTokens;
-      const maxOutputTokens = modelLimits?.requestMaxOutputTokens ?? budget?.maxOutputTokens;
+      const budget = execution.budget;
+      const { contextWindowTokens, maxOutputTokens } = budget;
       const runnerOptions: RuntimeAgentRunOptions = {
+        execution,
+        describeProvider: () => environment.providers.describe!(context),
         sessionId,
         workingDirectory,
         executionScope,
@@ -556,8 +624,8 @@ class DefaultAgentRuntime implements AgentRuntime {
         runtimeStore: this.store,
         operationId: runId,
         lane: laneId,
-        ...(request.instructions ? { instructions: request.instructions } : {}),
-        ...(budget?.maxIterations !== undefined ? { maxIterations: budget.maxIterations } : {}),
+        instructions: [...execution.instructions.requested, ...execution.instructions.contributed.map(block => block.content)],
+        ...(request.budget?.maxIterations !== undefined ? { maxIterations: budget.maxIterations } : {}),
         ...(budget?.allowPartialOnLimit !== undefined
           ? { allowPartialOnMaxIterations: budget.allowPartialOnLimit }
           : {}),
@@ -618,9 +686,16 @@ class DefaultAgentRuntime implements AgentRuntime {
           catch { /* Capability cleanup never replaces the Run result. */ }
         }
       })();
+      handedOff = true;
       Object.defineProperty(handle, 'result', { value: result, enumerable: true });
       return handle;
-    } finally { this.startingLanes.delete(key); }
+    } finally {
+      this.startingLanes.delete(key);
+      if (!handedOff) {
+        this.activeRuns.delete(runId);
+        await preparedTools?.dispose?.();
+      }
+    }
   }
 
   async cancelLane(sessionId: string, laneId: string, reason?: string): Promise<void> {
@@ -808,4 +883,9 @@ function parseTranscriptCursor(cursor: string | undefined): number {
   const value = Number(cursor);
   if (!Number.isSafeInteger(value) || value < 0) throw new Error('runtime_transcript_cursor_invalid');
   return value;
+}
+
+function structuredCloneRequest(request: RunRequest): RunRequest {
+  const { signal, ...data } = request;
+  return { ...structuredClone(data), ...(signal ? { signal } : {}) };
 }

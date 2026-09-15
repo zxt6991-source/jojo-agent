@@ -1,3 +1,4 @@
+import { describeTestProvider } from '@desktop-agent/agent-runtime/testing';
 import { describe, expect, it } from 'vitest';
 import { ScriptedProvider } from '@desktop-agent/agent';
 import type { PermissionGate } from '@desktop-agent/contracts';
@@ -10,7 +11,7 @@ describe('runtime public query surface', () => {
     const runtime = createAgentRuntime({
       environment: {
         host: { kind: 'test' },
-        providers: { resolve: () => new ScriptedProvider([[
+        providers: { describe: describeTestProvider, resolve: () => new ScriptedProvider([[
           { type: 'text_delta', text: 'answer' },
           { type: 'response_completed', stopReason: 'stop' }
         ]]) },
