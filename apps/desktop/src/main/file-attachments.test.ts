@@ -1,26 +1,37 @@
 import { deck, officeZip, paragraph, word } from '../../../../packages/attachment-extractors/test/fixtures/office';
 import { AttachmentExtractorRegistry } from '@desktop-agent/attachment-extractors';
 import { LocalAttachmentStore } from '@desktop-agent/attachments';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtemp, mkdir, rm, symlink, truncate, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import * as XLSX from 'xlsx';
-import { MAX_ATTACHMENT_PREVIEW_BYTES, MAX_ATTACHMENT_TEXT, attachmentPreviewText, type FileContentBlock, MAX_FILE_BYTES, MAX_TOTAL_ATTACHMENT_TEXT, StartTurnInputSchema } from '@desktop-agent/contracts';
+import { MAX_ATTACHMENT_PREVIEW_BYTES, MAX_ATTACHMENT_TEXT, attachmentPreviewText, type FileContentBlock, MAX_FILE_ATTACHMENTS, MAX_FILE_BYTES, MAX_TOTAL_ATTACHMENT_TEXT, StartTurnInputSchema } from '@desktop-agent/contracts';
 import { importFileAttachments as importFiles } from './file-attachments';
 import { pdfFixture } from '../../test-fixtures/pdf';
 
 const directories: string[] = [];
+const activeImports = new Set<ReturnType<typeof importFiles>>();
+async function trackedImport(...args: Parameters<typeof importFiles>) {
+  const operation = importFiles(...args);
+  activeImports.add(operation);
+  try { return await operation; }
+  finally { activeImports.delete(operation); }
+}
 async function fixture() {
   const root = await mkdtemp(path.join(tmpdir(), 'chat-attachments-'));
   directories.push(root);
   return root;
 }
-afterEach(async () => { await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true }))); });
+afterEach(async () => {
+  // Vitest timeouts do not cancel the test's Promise. Let writers finish before deleting their store.
+  await Promise.allSettled([...activeImports]);
+  await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
+});
 
 async function importFileAttachments(paths: string[], mode: 'files' | 'folder') {
   const store = new LocalAttachmentStore(await fixture());
-  const result = await importFiles(paths, mode, store);
+  const result = await trackedImport(paths, mode, store);
   return { ...result, files: result.files as FileContentBlock[], store };
 }
 
@@ -47,7 +58,7 @@ describe('chat file attachments', () => {
     const store = new LocalAttachmentStore(await fixture());
     const registry = new AttachmentExtractorRegistry();
     registry.register({ id: 'broken', supports: () => true, extract: async () => { throw new Error('parser failed'); } });
-    const result = await importFiles([source], 'files', store, registry);
+    const result = await trackedImport([source], 'files', store, registry);
     expect(result.files).toHaveLength(1);
     expect(result.warnings.join()).toContain('原始文件已保存，预览不可用');
     const ref = (result.files[0] as FileContentBlock).attachment;
@@ -111,7 +122,7 @@ describe('chat file attachments', () => {
     expect(result.warnings.join()).toContain('512 MB');
   });
 
-  it('bounds text and attachment count and explicitly marks truncation for the model', async () => {
+  it('bounds preview text and explicitly marks truncation for the model', async () => {
     const root = await fixture();
     for (let index = 0; index < 6; index += 1) await writeFile(path.join(root, `${index}.txt`), '文'.repeat(MAX_ATTACHMENT_TEXT + 1));
     const result = await importFileAttachments([root], 'folder');
@@ -120,10 +131,23 @@ describe('chat file attachments', () => {
     expect(result.files.filter((file) => !file.attachment.preview)).toHaveLength(2);
     expect(result.files.reduce((sum, file) => sum + attachmentPreviewText(file).length, 0)).toBeLessThanOrEqual(MAX_TOTAL_ATTACHMENT_TEXT);
     expect(() => StartTurnInputSchema.parse({ sessionId: 's', text: '', providerId: 'p', model: 'm', files: result.files })).not.toThrow();
-    const second = await fixture();
-    for (let index = 0; index < 51; index += 1) await writeFile(path.join(second, `${index}.md`), 'small file');
-    const limited = await importFileAttachments([second], 'folder');
-    expect(limited.files).toHaveLength(50);
+  });
+
+  it('stops importing at the attachment count limit', async () => {
+    const root = await fixture();
+    const names = Array.from({ length: MAX_FILE_ATTACHMENTS + 1 }, (_, index) => `${String(index).padStart(3, '0')}.md`);
+    await Promise.all(names.map((name) => writeFile(path.join(root, name), 'small file')));
+    const store = new LocalAttachmentStore(await fixture());
+    // This tests traversal/count limits. Real persistence and extraction are covered above;
+    // avoid 50 unrelated durable writes (and their fsyncs) in this boundary test.
+    const saveFile = vi.spyOn(store, 'saveFile').mockImplementation(async ({ path: source }) => ({
+      type: 'file', attachmentId: `att_count_${path.basename(source, '.md')}`,
+      name: path.basename(source), bytes: 10
+    }));
+    const limited = await trackedImport([root], 'folder', store, new AttachmentExtractorRegistry());
+    expect(limited.files).toHaveLength(MAX_FILE_ATTACHMENTS);
+    expect(saveFile).toHaveBeenCalledTimes(MAX_FILE_ATTACHMENTS);
+    expect(saveFile.mock.calls.map(([input]) => path.basename(input.path))).toEqual(names.slice(0, MAX_FILE_ATTACHMENTS));
     expect(limited.warnings.join()).toContain('上限');
   });
 
