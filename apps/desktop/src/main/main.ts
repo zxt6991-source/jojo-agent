@@ -1,6 +1,8 @@
+import { createArtifactExporter } from './artifact-export';
+import { ArtifactReadRequestV2Schema, ArtifactSaveRequestV2Schema, type ArtifactTargetV2 } from '@desktop-agent/contracts';
 import type { ModelConfig } from '@desktop-agent/contracts';
 import { ModelDiscoveryRefresh, mergeRefreshedModels } from '@desktop-agent/providers';
-import { readSessionArtifact } from '@desktop-agent/tools-node';
+import { ArtifactContentError, artifactFailure, artifactReadValue, readSessionArtifactV2, readSessionArtifact } from '@desktop-agent/tools-node';
 import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeImage, safeStorage, shell, utilityProcess, type IpcMainInvokeEvent, type UtilityProcess } from 'electron';
 import { Worker } from 'node:worker_threads';
 import { createHash } from 'node:crypto';
@@ -887,6 +889,36 @@ function registerIpc(): void {
     assertTrusted(event); const { sessionId } = SessionIdInputSchema.parse({ sessionId: raw });
     return loadSessionCompactions(sessionId);
   });
+  const authorizeArtifact = async (target: ArtifactTargetV2) => {
+    if (sessionLifecycle.state(target.sessionId) !== 'active') throw new ArtifactContentError('FORBIDDEN');
+    const session = await sessionStore.get(target.sessionId);
+    if (!session) throw new ArtifactContentError('NOT_FOUND');
+    return { messages: await loadArtifactMessages(target.sessionId), workingDirectory: session.workingDirectory };
+  };
+  const exportArtifact = createArtifactExporter({
+    authorize: authorizeArtifact,
+    select: (name) => dialog.showSaveDialog(mainWindow!, {
+      title: '保存原始文件', defaultPath: path.join(app.getPath('downloads'), name), buttonLabel: '保存'
+    }),
+    write: (destination, bytes) => writeFile(destination, bytes, { mode: 0o600 })
+  });
+  for (const channel of [IPC.readArtifactV2, IPC.saveArtifactV2]) {
+    ipcMain.handle(channel, async (event, raw) => {
+      try {
+        try { assertTrusted(event); } catch (error) { throw new ArtifactContentError('FORBIDDEN', undefined, { cause: error }); }
+        if (channel === IPC.saveArtifactV2) {
+          const parsed = ArtifactSaveRequestV2Schema.safeParse(raw);
+          if (!parsed.success) throw new ArtifactContentError('INVALID_REQUEST');
+          return await exportArtifact(event.sender.id, parsed.data);
+        }
+        const parsed = ArtifactReadRequestV2Schema.safeParse(raw);
+        if (!parsed.success) throw new ArtifactContentError('INVALID_REQUEST');
+        const authorization = await authorizeArtifact(parsed.data);
+        const result = await readSessionArtifactV2(authorization.messages, authorization.workingDirectory, parsed.data.sessionId, parsed.data.artifactId);
+        return { ok: true, value: artifactReadValue(result, parsed.data) };
+      } catch (error) { return artifactFailure(error); }
+    });
+  }
   for (const channel of [IPC.readArtifact, IPC.saveArtifact]) {
     ipcMain.handle(channel, async (event, raw) => {
       assertTrusted(event);
@@ -906,6 +938,7 @@ function registerIpc(): void {
   ipcMain.handle(IPC.saveGeneratedDocument, async (event, raw) => {
     assertTrusted(event);
     const document = GeneratedDocumentSchema.parse(raw);
+    const bytes = Buffer.from(document.content, 'utf8');
     const selected = await dialog.showSaveDialog(mainWindow!, {
       title: '保存生成的文档',
       defaultPath: path.join(app.getPath('downloads'), document.name),
@@ -913,7 +946,7 @@ function registerIpc(): void {
       filters: [{ name: 'HTML 文档', extensions: ['html', 'htm'] }]
     });
     if (selected.canceled || !selected.filePath) return { canceled: true };
-    await writeFile(selected.filePath, document.content, { encoding: 'utf8', mode: 0o600 });
+    await writeFile(selected.filePath, bytes, { mode: 0o600 });
     return { canceled: false, path: selected.filePath };
   });
   ipcMain.handle(IPC.exportSessionTrajectory, async (event, raw) => {

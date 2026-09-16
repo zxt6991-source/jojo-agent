@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
-import { MAX_FILE_BYTES, IPC, type DesktopApi } from '@desktop-agent/contracts';
+import { ArtifactReadResponseV2Schema, ArtifactSaveResponseV2Schema, MAX_FILE_BYTES, IPC, type DesktopApi } from '@desktop-agent/contracts';
 import { parseAgentPush, parseBrowserDockPush, parseBrowserSecretPush, parseConversationMessageCreatedPush, parseOrchestrationPush, parseSchedulePush, parseTerminalSecretPush } from './push-validation';
 
 const api: DesktopApi = {
@@ -11,6 +11,8 @@ const api: DesktopApi = {
   loadMessages: (sessionId) => ipcRenderer.invoke(IPC.loadMessages, sessionId),
   loadSessionCompactions: (sessionId) => ipcRenderer.invoke(IPC.loadSessionCompactions, sessionId),
   exportSessionTrajectory: (sessionId) => ipcRenderer.invoke(IPC.exportSessionTrajectory, sessionId),
+  readArtifactV2: async (input) => ArtifactReadResponseV2Schema.parse(await ipcRenderer.invoke(IPC.readArtifactV2, input)),
+  saveArtifactV2: async (input) => ArtifactSaveResponseV2Schema.parse(await ipcRenderer.invoke(IPC.saveArtifactV2, input)),
   readArtifact: (input) => ipcRenderer.invoke(IPC.readArtifact, input),
   saveArtifact: (input) => ipcRenderer.invoke(IPC.saveArtifact, input),
   saveGeneratedDocument: (document) => ipcRenderer.invoke(IPC.saveGeneratedDocument, document),

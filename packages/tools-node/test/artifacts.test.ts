@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdtemp, mkdir, rm, symlink, truncate, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, symlink, truncate, utimes, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { AgentEventSchema, ArtifactDescriptorSchema, artifactsFromMessages, artifactRenderer, detectArtifacts, MAX_ARTIFACT_BYTES, MessageSchema, resolveArtifactReference, type ArtifactDescriptor, type Message, type ToolContext } from '@desktop-agent/contracts';
-import { produceWorkspaceArtifact, readSessionArtifact } from '../src/artifact-storage';
+import { artifactReadValue, artifactRevision, readSessionArtifactV2, produceWorkspaceArtifact, readSessionArtifact } from '../src/artifact-storage';
 import { ShowArtifactTool } from '../src/show-artifact-tool';
 import { CreateDocumentTool } from '../src/create-document-tool';
 import { EditFileTool, WriteFileTool } from '../src/file-tools';
@@ -82,5 +82,51 @@ describe('artifact delivery', () => {
     expect(resolveArtifactReference('r.md', [a, b])).toBeUndefined();
     expect(resolveArtifactReference('r.md', [a])).toEqual(a);
     expect(resolveArtifactReference(b.storage.type === 'workspace' ? b.storage.path : '', [a, b])).toEqual(b);
+  });
+});
+
+describe('V2 content identity', () => {
+  it('hashes raw bytes without changing recorded versions; metadata still reads, hashes and authorizes', async () => {
+    const root = await workspace(); const file = path.join(root, 'report.md');
+    await writeFile(file, '中文\r\nA');
+    const artifact = await produceWorkspaceArtifact(root, file, 'write_file');
+    const history = messages([artifact]);
+    const first = await readSessionArtifactV2(history, root, 's', artifact.id);
+    await utimes(file, new Date(0), new Date(0));
+    const unchanged = await readSessionArtifactV2(history, root, 's', artifact.id);
+    expect(unchanged.info.currentRevision).toBe(first.info.currentRevision);
+    expect(artifactReadValue(unchanged, { schemaVersion: 2, sessionId: 's', artifactId: artifact.id, representation: 'content', knownRevision: first.info.currentRevision }).delivery).toBe('not-modified');
+    await writeFile(file, 'B');
+    const changed = await readSessionArtifactV2(history, root, 's', artifact.id);
+    expect(changed.info).toMatchObject({ recordedVersion: 1, recordedState: 'changed-since-recorded', size: 1, currentRevision: artifactRevision(Buffer.from('B')) });
+    expect(artifactsFromMessages(history)[0]!.version).toBe(1);
+    await expect(readSessionArtifactV2([], root, 'other', artifact.id)).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    await expect(readSessionArtifactV2(history, undefined, 's', artifact.id)).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    const unknown = await readSessionArtifactV2(messages([{ ...artifact, metadata: { revision: 'invalid' } }]), root, 's', artifact.id);
+    expect(unknown.info.recordedState).toBe('recorded-revision-unknown');
+    await rm(file);
+    await expect(readSessionArtifactV2(history, root, 's', artifact.id)).rejects.toMatchObject({ code: 'CONTENT_MISSING' });
+  });
+  it('reads historical conversation UTF-8 bytes without workspace access', async () => {
+    const result = await new CreateDocumentTool().execute({ name: '中文.html', content: '中文\r\n<h1>A</h1>' });
+    const artifact = result.artifacts![0]!;
+    const read = await readSessionArtifactV2(messages([artifact]), undefined, 's', artifact.id);
+    expect(read.bytes.toString()).toBe('中文\r\n<h1>A</h1>');
+    expect(read.info).toMatchObject({ recordedState: 'matches-recorded', recordedRevision: artifactRevision(read.bytes), size: read.bytes.length });
+  });
+  it('handles empty files and the exact 20 MiB boundary', async () => {
+    const root = await workspace(); const file = path.join(root, 'data.pdf');
+    await writeFile(file, '');
+    const artifact = await produceWorkspaceArtifact(root, file, 'show_artifact');
+    const history = messages([artifact]);
+    expect((await readSessionArtifactV2(history, root, 's', artifact.id)).info.size).toBe(0);
+    const concurrent = Array.from({ length: 4 }, () => readSessionArtifactV2(history, root, 's', artifact.id));
+    await expect(readSessionArtifactV2(history, root, 's', artifact.id)).rejects.toMatchObject({ code: 'CONTENT_UNSTABLE' });
+    await Promise.all(concurrent);
+
+    await truncate(file, MAX_ARTIFACT_BYTES);
+    expect((await readSessionArtifactV2(history, root, 's', artifact.id)).info.size).toBe(MAX_ARTIFACT_BYTES);
+    await truncate(file, MAX_ARTIFACT_BYTES + 1);
+    await expect(readSessionArtifactV2(history, root, 's', artifact.id)).rejects.toMatchObject({ code: 'CONTENT_TOO_LARGE' });
   });
 });

@@ -1,5 +1,5 @@
-import { artifactsFromMessages, type Message } from '@desktop-agent/contracts';
-import { readSessionArtifact } from '@desktop-agent/tools-node';
+import { ArtifactTargetV2Schema, artifactsFromMessages, type ArtifactErrorCode, type Message } from '@desktop-agent/contracts';
+import { ArtifactContentError, artifactFailure, assertArtifactRevision, parseArtifactIfMatch, readSessionArtifactV2, readSessionArtifact } from '@desktop-agent/tools-node';
 import { timingSafeEqual } from 'node:crypto';
 import Fastify, {
   type FastifyBaseLogger,
@@ -287,6 +287,24 @@ export async function createJojoHttpServer(
     }
   }));
 
+  for (const representation of ['metadata', 'content'] as const) {
+    app.get(`/api/v2/sessions/:sessionId/artifacts/:artifactId/${representation}`, async (request, reply) => withHttp(request, reply, options.token, async (ctx) => {
+      const input = ArtifactTargetV2Schema.safeParse({ schemaVersion: 2, sessionId: param(request, 'sessionId'), artifactId: param(request, 'artifactId') });
+      if (!input.success) throw new ArtifactContentError('INVALID_REQUEST');
+      const expected = representation === 'content' && request.headers['if-match'] !== undefined ? parseArtifactIfMatch(request.headers['if-match']) : undefined;
+      const { session, messages } = await sessionArtifacts(ctx, input.data.sessionId);
+      const result = await readSessionArtifactV2(messages, session.executionScope.kind === 'workspace' ? session.executionScope.workingDirectory : undefined, input.data.sessionId, input.data.artifactId);
+      if (expected) assertArtifactRevision(result.info.currentRevision, expected);
+      reply.header('Cache-Control', 'private, no-store').header('X-Content-Type-Options', 'nosniff');
+      if (representation === 'metadata') return result.info;
+      reply.header('Content-Type', result.info.mimeType).header('Content-Length', result.info.size)
+        .header('ETag', result.info.etag)
+        .header('Content-Security-Policy', "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'")
+        .header('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(result.info.name)}`);
+      return reply.send(result.bytes);
+    }, true));
+  }
+
   app.get('/api/v1/sessions/:sessionId/transcript', async (request, reply) => withHttp(request, reply, options.token, (ctx) => (
     core.transcript(ctx, param(request, 'sessionId'), parse(TranscriptQuerySchema, request.query))
   )));
@@ -483,7 +501,8 @@ async function withHttp<T>(
   request: FastifyRequest,
   reply: FastifyReply,
   token: string | undefined,
-  work: (ctx: RequestContext) => Promise<T> | T
+  work: (ctx: RequestContext) => Promise<T> | T,
+  artifactV2 = false
 ): Promise<T | FastifyReply> {
   try {
     const principal = authenticateHeader(token, request.headers.authorization);
@@ -496,6 +515,16 @@ async function withHttp<T>(
     return await work(ctx);
   } catch (error) {
     const protocol = asProtocolError(error, request.id);
+    if (artifactV2) {
+      const status = protocolStatus(protocol.code);
+      const code: ArtifactErrorCode = status === 401 ? 'UNAUTHENTICATED' : status === 403 ? 'FORBIDDEN'
+        : status === 404 ? 'NOT_FOUND' : status === 400 ? 'INVALID_REQUEST' : 'IO_ERROR';
+      const failure = artifactFailure(error instanceof ArtifactContentError ? error : new ArtifactContentError(code, undefined, { cause: error }));
+      const statuses: Record<ArtifactErrorCode, number> = { INVALID_REQUEST: 400, UNAUTHENTICATED: 401, FORBIDDEN: 403, NOT_FOUND: 404,
+        CONTENT_MISSING: 410, CONTENT_TOO_LARGE: 413, CONTENT_UNSTABLE: 409, REVISION_MISMATCH: 412,
+        EXPORT_BUSY: 409, EXPORT_TARGET_IS_SOURCE: 400, WRITE_FAILED: 500, IO_ERROR: 500 };
+      return reply.header('Cache-Control', 'private, no-store').code(statuses[failure.error.code]).send(failure);
+    }
     return reply.code(protocolStatus(protocol.code)).send({ error: protocol });
   }
 }

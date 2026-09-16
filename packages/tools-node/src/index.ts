@@ -91,4 +91,4 @@ export function createDefaultToolRuntime(options: Omit<DefaultToolOptions, 'snap
 }
 
 export { ShowArtifactTool } from './show-artifact-tool.js';
-export { readSessionArtifact, produceWorkspaceArtifact } from './artifact-storage.js';
+export * from './artifact-storage.js';

@@ -1451,3 +1451,6 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .team-runtime-group { padding: 12px 20px; margin: 0; background: #f6f7fa; font-size: 13px; }
 .team-task-row small { display: block; margin-top: 6px; color: #777d87; font-size: 10px; }
 @media (max-width: 760px) { .team-settings-layout { grid-template-columns: 1fr; } .team-list { position: static; } .team-template-grid { grid-template-columns: 1fr; } .team-task-row { grid-template-columns: 65px minmax(0, 1fr); } .team-task-row time { grid-column: 2; } }
+
+.artifact-content-info, .artifact-stale-note { padding: 8px 16px; overflow-wrap: anywhere; color: var(--text-muted, #666); }
+.artifact-stale-note { color: #9a5b00; background: #fff5dc; }

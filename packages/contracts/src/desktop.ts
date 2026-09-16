@@ -1,3 +1,4 @@
+import type { ArtifactReadRequestV2, ArtifactReadResponseV2, ArtifactSaveRequestV2, ArtifactSaveResponseV2 } from './artifact-content';
 import { ModelConfigSchema, type ModelConfig } from './model-metadata';
 import { z } from 'zod';
 import type { AgentEvent } from './agent';
@@ -622,6 +623,8 @@ export type DesktopApi = {
   loadMessages(sessionId: string): Promise<Message[]>;
   loadSessionCompactions(sessionId: string): Promise<SessionCompactionRecord[]>;
   exportSessionTrajectory(sessionId: string): Promise<{ canceled: boolean; path?: string }>;
+  readArtifactV2(input: ArtifactReadRequestV2): Promise<ArtifactReadResponseV2>;
+  saveArtifactV2(input: ArtifactSaveRequestV2): Promise<ArtifactSaveResponseV2>;
   readArtifact(input: { sessionId: string; artifactId: string }): Promise<{ data: string; mimeType: string }>;
   saveArtifact(input: { sessionId: string; artifactId: string }): Promise<{ canceled: boolean; path?: string }>;
   saveGeneratedDocument(document: import('./generated-document').GeneratedDocument): Promise<{ canceled: boolean; path?: string }>;
@@ -717,6 +720,8 @@ export const IPC = {
   loadMessages: 'sessions:messages',
   loadSessionCompactions: 'sessions:compactions',
   exportSessionTrajectory: 'sessions:export-trajectory',
+  readArtifactV2: 'artifacts:read:v2',
+  saveArtifactV2: 'artifacts:save:v2',
   readArtifact: 'artifacts:read',
   saveArtifact: 'artifacts:save',
   saveGeneratedDocument: 'documents:save',
