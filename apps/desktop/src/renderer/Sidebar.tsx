@@ -84,7 +84,8 @@ export function Sidebar({
   onCreateSessionForDirectory,
   onRenameSession,
   onDeleteSession,
-  onOpenSettings
+  onOpenSettings,
+  onOpenBrowserRecordings
 }: {
   sessions: SessionMeta[];
   activeId: string | null;
@@ -99,6 +100,7 @@ export function Sidebar({
   onRenameSession: (session: SessionMeta) => void;
   onDeleteSession: (session: SessionMeta) => void;
   onOpenSettings: () => void;
+  onOpenBrowserRecordings?: () => void;
 }) {
   const [groupBy, setGroupBy] = useState<SidebarGroupBy>('workspace');
   const [query, setQuery] = useState('');
@@ -265,6 +267,7 @@ export function Sidebar({
       {!searching && snapshot.groups.length === 0 && <div className="projects-empty">还没有对话</div>}
     </div>
     <div className="sidebar-settings">
+      {onOpenBrowserRecordings && <button className="settings-button" onClick={onOpenBrowserRecordings}>浏览器自动化</button>}
       <button className="settings-button" onClick={onOpenSettings}>⚙ 设置</button>
     </div>
   </aside>;

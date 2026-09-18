@@ -6,7 +6,7 @@ import { attachmentPreviewText } from '@desktop-agent/contracts';
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import type {
-  AgentEvent, AttachmentSelection, ApprovalRequest, BrowserDockState, BrowserRecordingRegistrySnapshot, BrowserRecordingStudioDetail, DesktopApi, ExtensionSettings, ExtensionStatus, HookSettingsSnapshot, FileAttachment, ImageContentBlock, MemoryCandidateReviewEdit, MemorySettings, MemoryStatusSnapshot, Message, PermissionGovernanceSnapshot, PermissionPolicyDocumentContract, ProviderConfig, ProviderSettings, ScheduleContract, ScheduleRunContract, SessionCompactionRecord, SessionMeta, SkillDetail, SkillStatus, TeamSnapshot, TeamStatusSnapshot, WorkflowRunSnapshot, WorkspaceChanges
+  AgentEvent, AttachmentSelection, ApprovalRequest, BrowserDockState, BrowserRecordingRegistrySnapshot, DesktopApi, ExtensionSettings, ExtensionStatus, HookSettingsSnapshot, FileAttachment, ImageContentBlock, MemoryCandidateReviewEdit, MemorySettings, MemoryStatusSnapshot, Message, PermissionGovernanceSnapshot, PermissionPolicyDocumentContract, ProviderConfig, ProviderSettings, ScheduleContract, ScheduleRunContract, SessionCompactionRecord, SessionMeta, SkillDetail, SkillStatus, TeamSnapshot, TeamStatusSnapshot, WorkflowRunSnapshot, WorkspaceChanges
 } from '@desktop-agent/contracts';
 import { DEFAULT_BROWSER_SETTINGS, DEFAULT_MEMORY_SETTINGS, DEFAULT_PROVIDERS, DEFAULT_SESSION_TITLE, MAX_FILE_ATTACHMENTS, MAX_TOTAL_ATTACHMENT_TEXT, projectNameFromDirectory } from '@desktop-agent/contracts';
 import {
@@ -17,7 +17,9 @@ import {
   type ConversationViewMode,
   type LiveStep
 } from './conversation';
-import { browserDomainIssue, parseBrowserDomainList } from './browser-settings';
+import { parseBrowserDomainList } from './browser-settings';
+import { BrowserSettingsPage } from './browser/BrowserSettingsPage';
+import { BrowserRecordingsPage } from './browser/recordings/BrowserRecordingsPage';
 import { HooksSettingsPage, hookStatusErrorMessage } from './HooksSettings';
 import { MemorySettingsPage } from './MemorySettings';
 import { PermissionsSettingsPage } from './PermissionsSettings';
@@ -33,7 +35,7 @@ import './styles.css';
 
 type DiffLine = { type: 'addition' | 'deletion' | 'context' | 'hunk' | 'meta'; oldLine?: number; newLine?: number; text: string };
 const FOLLOW_THRESHOLD = 24;
-type SettingsSection = 'models' | 'permissions' | 'memory' | 'automations' | 'channels' | 'teams' | 'browser' | 'mcp' | 'skills' | 'hooks';
+type SettingsSection = 'models' | 'permissions' | 'memory' | 'automations' | 'channels' | 'teams' | 'browser' | 'browser-recordings' | 'mcp' | 'skills' | 'hooks';
 
 const defaultSettings: ProviderSettings = {
   activeProviderId: 'openai',
@@ -110,295 +112,6 @@ function approvalQuestion(request: ApprovalRequest): string {
   if (request.call.name === 'read_file') return '是否允许读取工作区外的文件？';
   if (request.preview) return `是否允许${approvalTitle(request)}？`;
   return `是否允许${approvalTitle(request)}？`;
-}
-
-function BrowserSettingsPage({
-  enabled,
-  mode,
-  domains,
-  recordings,
-  recordingsBusy,
-  workingDirectory,
-  error,
-  onEnabledChange,
-  onModeChange,
-  onDomainsChange,
-  onRefreshRecordings,
-  onTrustRecording,
-  onRevokeRecording,
-  onDeleteRecording,
-  onSubmit
-}: {
-  enabled: boolean;
-  mode: 'sandbox' | 'chrome';
-  domains: string;
-  recordings: BrowserRecordingRegistrySnapshot | null;
-  recordingsBusy: boolean;
-  workingDirectory?: string;
-  error: string;
-  onEnabledChange: (enabled: boolean) => void;
-  onModeChange: (mode: 'sandbox' | 'chrome') => void;
-  onDomainsChange: (domains: string) => void;
-  onRefreshRecordings: () => void;
-  onTrustRecording: (recordingId: string) => void;
-  onRevokeRecording: (recordingId: string) => void;
-  onDeleteRecording: (recordingId: string) => void;
-  onSubmit: () => Promise<void>;
-}) {
-  const [draft, setDraft] = useState('');
-  const [draftError, setDraftError] = useState('');
-  const [studio, setStudio] = useState<BrowserRecordingStudioDetail | null>(null);
-  const [studioJson, setStudioJson] = useState('');
-  const [studioTab, setStudioTab] = useState<'editor' | 'timeline' | 'debugger' | 'heals' | 'history'>('editor');
-  const [studioBusy, setStudioBusy] = useState(false);
-  const [studioError, setStudioError] = useState('');
-  const list = parseBrowserDomainList(domains);
-
-  const studioInput = (recordingId: string) => ({ recordingId, ...(workingDirectory ? { workingDirectory } : {}) });
-  const openStudio = async (recordingId: string) => {
-    setStudioBusy(true); setStudioError('');
-    try {
-      const detail = await window.desktopAgent.getBrowserRecordingStudio(studioInput(recordingId));
-      setStudio(detail);
-      setStudioJson(JSON.stringify(detail.document, null, 2));
-      setStudioTab('editor');
-    } catch (cause) {
-      setStudioError(cause instanceof Error ? cause.message : String(cause));
-    } finally { setStudioBusy(false); }
-  };
-
-  const saveStudio = async () => {
-    if (!studio) return;
-    setStudioBusy(true); setStudioError('');
-    try {
-      const document = JSON.parse(studioJson) as BrowserRecordingStudioDetail['document'];
-      const detail = await window.desktopAgent.saveBrowserRecording({
-        ...studioInput(studio.document.id),
-        expectedRevision: studio.document.revision,
-        expectedHash: studio.document.contentHash,
-        document
-      });
-      setStudio(detail);
-      setStudioJson(JSON.stringify(detail.document, null, 2));
-      onRefreshRecordings();
-    } catch (cause) {
-      setStudioError(cause instanceof Error ? cause.message : String(cause));
-    } finally { setStudioBusy(false); }
-  };
-
-  const duplicateStudio = async (recordingId: string) => {
-    const name = window.prompt('新 Recording 名称（留空自动添加 Copy）') ?? undefined;
-    if (name === undefined) return;
-    setStudioBusy(true); setStudioError('');
-    try {
-      const detail = await window.desktopAgent.duplicateBrowserRecording({ ...studioInput(recordingId), ...(name.trim() ? { name: name.trim() } : {}) });
-      setStudio(detail);
-      setStudioJson(JSON.stringify(detail.document, null, 2));
-      setStudioTab('editor');
-      onRefreshRecordings();
-    } catch (cause) {
-      setStudioError(cause instanceof Error ? cause.message : String(cause));
-    } finally { setStudioBusy(false); }
-  };
-
-  const commitDomains = (next: string[]) => {
-    onDomainsChange(next.join('\n'));
-  };
-
-  const addDraft = (raw = draft): boolean => {
-    const pieces = parseBrowserDomainList(raw);
-    if (!pieces.length) {
-      setDraftError(raw.trim() ? browserDomainIssue(raw) ?? '域名格式无效。' : '');
-      return !raw.trim();
-    }
-    const next = [...list];
-    const existing = new Set(next);
-    let added = 0;
-    for (const domain of pieces) {
-      const issue = browserDomainIssue(domain);
-      if (issue) {
-        setDraftError(issue);
-        setDraft(domain);
-        return false;
-      }
-      if (existing.has(domain)) continue;
-      existing.add(domain);
-      next.push(domain);
-      added += 1;
-    }
-    commitDomains(next);
-    setDraft('');
-    setDraftError(added === 0 ? '该域名已在列表中。' : '');
-    return true;
-  };
-
-  return <form className={`settings-content model-settings-page browser-settings-page ${enabled ? '' : 'is-disabled'}`} aria-labelledby="browser-settings-title" onSubmit={(event) => {
-    event.preventDefault();
-    if (draft.trim() && !addDraft()) return;
-    void onSubmit();
-  }}>
-    <div className="settings-heading">
-      <div>
-        <h1 id="browser-settings-title">受控浏览器</h1>
-        <p>沙箱模式在右侧栏打开隔离页面。本机浏览器会自动打开 Chrome，适合需要登录的网站。</p>
-      </div>
-      <span className={`browser-status-pill ${enabled ? 'on' : ''}`}>{enabled ? '已启用' : '已关闭'}</span>
-    </div>
-    <section className="settings-section-card">
-      <div className="browser-toggle-row">
-        <div className="browser-toggle-copy">
-          <strong id="browser-enabled-label">启用浏览器工具</strong>
-          <span>关闭后智能体不能打开或操作网页。查公开资料仍可使用网页搜索和抓取。</span>
-        </div>
-        <button type="button" role="switch" aria-checked={enabled} aria-labelledby="browser-enabled-label" className={`extension-switch ${enabled ? 'on' : ''}`} onClick={() => onEnabledChange(!enabled)}><span /></button>
-      </div>
-      <div className="browser-policy-grid">
-        <article><span className="browser-policy-tag allow">自动允许</span><p>白名单导航、读取页面、等待、滚动、后退、刷新、页面诊断、Cookie 元数据、录制取消与查看</p></article>
-        <article><span className="browser-policy-tag ask">每次批准</span><p>点击、悬停、脚本、输入、按键、选择、上传、下载、关闭页面、Cookie 值、录制开始/删除/回放；本机浏览器下切换已有标签</p></article>
-        <article><span className="browser-policy-tag info">不走浏览器</span><p>普通搜索和已知公开网址使用网页搜索 / 抓取</p></article>
-      </div>
-    </section>
-    <section className="settings-section-card">
-      <div className="settings-section-title">
-        <h2>浏览器模式</h2>
-        <p>沙箱适合编码和不可信站点。需要登录时选择本机浏览器。</p>
-      </div>
-      <div className="browser-mode-grid" role="radiogroup" aria-label="浏览器模式">
-        <label className={`browser-mode-option ${mode === 'sandbox' ? 'selected' : ''}`}>
-          <input type="radio" name="browser-mode" checked={mode === 'sandbox'} disabled={!enabled} onChange={() => onModeChange('sandbox')} />
-          <span className="browser-mode-copy">
-            <strong>沙箱浏览器</strong>
-            <span>嵌在主窗口右侧栏，Cookie 不与本机浏览器共享。</span>
-          </span>
-        </label>
-        <label className={`browser-mode-option ${mode === 'chrome' ? 'selected' : ''}`}>
-          <input type="radio" name="browser-mode" checked={mode === 'chrome'} disabled={!enabled} onChange={() => onModeChange('chrome')} />
-          <span className="browser-mode-copy">
-            <strong>本机浏览器</strong>
-            <span>自动打开 Chrome 窗口，登录一次后可继续使用。</span>
-          </span>
-        </label>
-      </div>
-    </section>
-    <section className="settings-section-card browser-domain-card">
-      <div className="settings-section-title with-meta">
-        <div>
-          <h2>始终允许的域名</h2>
-          <p>列出的主机首次打开或新建页面时自动允许。未列出的站点会先请求一次批准；点击、悬停、脚本、输入、下载和 Cookie 值仍逐次批准。</p>
-        </div>
-        <span className="browser-domain-count">{list.length}</span>
-      </div>
-      <div className="browser-domain-body">
-        <div className={`browser-domain-editor ${enabled ? '' : 'is-disabled'}`}>
-          {list.map((domain) => <span className={`browser-domain-chip ${browserDomainIssue(domain) ? 'invalid' : ''}`} key={domain}>
-            {domain}
-            <button type="button" aria-label={`移除 ${domain}`} disabled={!enabled} onClick={() => commitDomains(list.filter((item) => item !== domain))}>×</button>
-          </span>)}
-          <input
-            value={draft}
-            disabled={!enabled}
-            placeholder={list.length ? '添加域名' : 'example.com 或 *.example.com'}
-            aria-label="添加始终允许的域名"
-            onChange={(event) => { setDraft(event.target.value); setDraftError(''); }}
-            onKeyDown={(event) => {
-              if (event.nativeEvent.isComposing) return;
-              if (event.key === 'Enter' || event.key === ',') {
-                event.preventDefault();
-                addDraft();
-              } else if (event.key === 'Backspace' && !draft && list.length) {
-                commitDomains(list.slice(0, -1));
-              }
-            }}
-            onPaste={(event) => {
-              const text = event.clipboardData.getData('text');
-              if (!/[\s,;]/u.test(text)) return;
-              event.preventDefault();
-              addDraft(`${draft} ${text}`);
-            }}
-            onBlur={() => { if (draft.trim()) addDraft(); }}
-          />
-        </div>
-        <p className="browser-domain-hint">只需主机名，不要带 https://。*.example.com 只匹配子域，不匹配 example.com 本身。</p>
-        {(draftError || error) && <div className="settings-error" role="alert">{draftError || error}</div>}
-        {!enabled && <p className="browser-domain-hint">启用浏览器工具后可编辑白名单。</p>}
-      </div>
-      <div className="settings-actions"><button className="primary" type="submit">保存浏览器设置</button></div>
-    </section>
-    <section className="settings-section-card browser-recording-card">
-      <div className="settings-section-title with-meta">
-        <div>
-          <h2>Recording Registry</h2>
-          <p>用户级 Recording 位于 ~/.jojo/browser-recordings。项目级 Recording 可覆盖同名用户资源，高风险内容需按精确版本信任。</p>
-        </div>
-        <button type="button" className="secondary" disabled={recordingsBusy} onClick={onRefreshRecordings}>刷新</button>
-      </div>
-      <div className="browser-recording-paths">
-        <span title={recordings?.userDirectory}>User · {recordings?.userDirectory ?? '~/.jojo/browser-recordings'}</span>
-        <span title={recordings?.projectDirectory}>Project · {recordings?.projectDirectory ?? (workingDirectory ? `${workingDirectory}/.jojo/browser-recordings` : '选择项目后显示')}</span>
-      </div>
-      <div className="browser-recording-list">
-        {recordingsBusy && !recordings && <p className="browser-domain-hint">正在读取 Recording Registry…</p>}
-        {!recordingsBusy && recordings?.recordings.length === 0 && <p className="browser-domain-hint">尚无可用 Recording。</p>}
-        {recordings?.recordings.map((recording) => <article className="browser-recording-item" key={recording.id}>
-          <div className="browser-recording-main">
-            <div className="browser-recording-title">
-              <strong>{recording.name}</strong>
-              <code>{recording.id}</code>
-              <span className={`browser-policy-tag ${recording.source === 'project' ? 'info' : 'allow'}`}>{recording.source}</span>
-              {recording.source === 'project' && <span className={`browser-policy-tag ${recording.trust === 'trusted' ? 'allow' : 'ask'}`}>{recording.trust === 'trusted' ? '已信任' : '未信任'}</span>}
-            </div>
-            {recording.description && <p>{recording.description}</p>}
-            <p>{recording.stepCount} steps · revision {recording.revision} · {recording.highRisk ? '含高风险操作' : '只读/等待操作'}</p>
-            <p>Domains: {recording.domains.join(', ') || 'none'} · Effects: {recording.effects.join(', ') || 'none'}</p>
-            {recording.overriddenSources.length > 0 && <p>覆盖：{recording.overriddenSources.join(', ')}</p>}
-          </div>
-          <div className="browser-recording-actions">
-            <button type="button" disabled={recordingsBusy || studioBusy} onClick={() => { void openStudio(recording.id); }}>查看 / 编辑</button>
-            <button type="button" disabled={recordingsBusy || studioBusy} onClick={() => { void duplicateStudio(recording.id); }}>复制</button>
-            {recording.source === 'project' && recording.trust !== 'trusted' && <button type="button" disabled={recordingsBusy} onClick={() => onTrustRecording(recording.id)}>信任此版本</button>}
-            {recording.source === 'project' && recording.trust === 'trusted' && <button type="button" disabled={recordingsBusy} onClick={() => onRevokeRecording(recording.id)}>撤销信任</button>}
-            {recording.source !== 'builtin' && <button type="button" className="danger" disabled={recordingsBusy} onClick={() => onDeleteRecording(recording.id)}>删除</button>}
-          </div>
-        </article>)}
-      </div>
-      {studio && <section className="browser-studio" aria-label="Browser Recording Studio">
-        <header>
-          <div><strong>{studio.document.name}</strong><span>{studio.document.id} · r{studio.document.revision} · {studio.source}</span></div>
-          <button type="button" onClick={() => { setStudio(null); setStudioError(''); }}>关闭</button>
-        </header>
-        <nav aria-label="Recording Studio sections">
-          {([
-            ['editor', 'Recording editor'], ['timeline', 'Step Timeline'], ['debugger', 'Replay debugger'],
-            ['heals', 'Heal diff'], ['history', 'Revision history']
-          ] as const).map(([id, label]) => <button type="button" className={studioTab === id ? 'active' : ''} key={id} onClick={() => setStudioTab(id)}>{label}</button>)}
-        </nav>
-        {studioTab === 'editor' && <div className="browser-studio-editor">
-          <textarea aria-label="Recording JSON editor" value={studioJson} readOnly={!studio.editable} spellCheck={false} onChange={(event) => setStudioJson(event.target.value)} />
-          <div className="browser-studio-actions">
-            <span>{studio.editable ? '保存时校验 schema，并以 revision + content hash 防止覆盖并发修改。' : '此 Recording 当前只读。项目 Recording 需先信任。'}</span>
-            {studio.editable && <button type="button" disabled={studioBusy} onClick={() => { void saveStudio(); }}>保存新 revision</button>}
-          </div>
-        </div>}
-        {studioTab === 'timeline' && <ol className="browser-studio-timeline">
-          {studio.timeline.map((step) => <li key={step.stepId}><b>{step.index}</b><div><strong>{step.label || step.action}</strong><code>{step.action} · {step.stepId}</code>{step.target && <span>{step.target}</span>}{step.frame && <small>frame: {step.frame.join(' → ')}</small>}</div></li>)}
-          {studio.timeline.length === 0 && <li className="empty">没有步骤。</li>}
-        </ol>}
-        {studioTab === 'debugger' && <div className="browser-studio-debugger">
-          {studio.replay.map((entry, index) => <article key={`${entry.runId}-${index}`}><time>{new Date(entry.timestamp).toLocaleString()}</time><code>{entry.runId}</code><strong>{entry.stepIndex}. {entry.action}</strong><span className={`state ${entry.state.includes('failed') ? 'failed' : entry.state.includes('verified') || entry.state === 'run_completed' ? 'ok' : ''}`}>{entry.state}</span>{entry.attempt && <small>attempt {entry.attempt}</small>}</article>)}
-          {studio.replay.length === 0 && <p>还没有 Replay Journal。</p>}
-        </div>}
-        {studioTab === 'heals' && <div className="browser-studio-heals">
-          {studio.heals.map((heal, index) => <article key={`${heal.runId}-${heal.stepId}-${index}`}><header><strong>{heal.stepId}</strong><span>{heal.verified ? '已验证' : '仅提议'}{heal.confidence !== undefined ? ` · ${(heal.confidence * 100).toFixed(0)}%` : ''}</span></header><div><del>{heal.before || '原 selector 不可用'}</del><ins>{heal.after}</ins></div><small>{heal.runId} · {new Date(heal.timestamp).toLocaleString()}</small></article>)}
-          {studio.heals.length === 0 && <p>还没有 selector heal 记录。</p>}
-        </div>}
-        {studioTab === 'history' && <div className="browser-studio-history">
-          {studio.revisions.map((revision) => <article className={revision.current ? 'current' : ''} key={`${revision.revision}-${revision.contentHash}`}><strong>revision {revision.revision}</strong><code>{revision.contentHash.slice(0, 23)}…</code><time>{new Date(revision.updatedAt).toLocaleString()}</time>{revision.current && <span>当前</span>}</article>)}
-        </div>}
-        {studioError && <div className="settings-error" role="alert">{studioError}</div>}
-      </section>}
-      {!studio && studioError && <div className="settings-error" role="alert">{studioError}</div>}
-    </section>
-  </form>;
 }
 
 function approvalSummary(request: ApprovalRequest): string {
@@ -1750,7 +1463,7 @@ function App() {
       void refreshSchedules();
     }
     if (section === 'teams') void refreshTeams();
-    if (section === 'browser') void refreshBrowserRecordings(active?.workingDirectory);
+    if (section === 'browser' || section === 'browser-recordings') void refreshBrowserRecordings(active?.workingDirectory);
     setSettingsSection(section);
     setSettingsOpen(true);
   };
@@ -1819,6 +1532,7 @@ function App() {
       onRenameSession={(session) => void renameSession(session)}
       onDeleteSession={(session) => void deleteSession(session)}
       onOpenSettings={() => openSettings()}
+      onOpenBrowserRecordings={() => openSettings('browser-recordings')}
     />
     <main className="main-panel">
       {active ? <>
@@ -2069,8 +1783,8 @@ function App() {
         <button className="primary" type="submit" disabled={terminalSecretBusy || !terminalSecretValue}>注入并继续</button>
       </div>
     </form></div>}
-    {settingsOpen && <section className="settings-screen" aria-label="设置">
-      <aside className="settings-navigation">
+    {settingsOpen && <section className={`settings-screen ${settingsSection === 'browser-recordings' ? 'browser-automation-screen' : ''}`} aria-label={settingsSection === 'browser-recordings' ? '浏览器自动化管理' : '设置'}>
+      {settingsSection !== 'browser-recordings' && <aside className="settings-navigation">
         <button className="settings-back" type="button" onClick={() => setSettingsOpen(false)}><span aria-hidden="true">←</span> 返回</button>
         <nav aria-label="设置分类">
           <button type="button" className={settingsSection === 'models' ? 'active' : ''} onClick={() => { setSettingsSection('models'); setExtensionEditorOpen(false); }}><span aria-hidden="true">◇</span> 模型</button>
@@ -2084,9 +1798,9 @@ function App() {
           <button type="button" className={settingsSection === 'mcp' ? 'active' : ''} onClick={() => { setSettingsSection('mcp'); setExtensionSearch(''); setExtensionEditorOpen(false); }}><span aria-hidden="true">⌘</span> MCP 服务</button>
           <button type="button" className={settingsSection === 'hooks' ? 'active' : ''} onClick={() => { setSettingsSection('hooks'); setExtensionEditorOpen(false); }}><span aria-hidden="true">⌥</span> Hooks</button>
         </nav>
-      </aside>
+      </aside>}
       <main className={`settings-main ${settingsSection === 'automations' ? 'automations-settings-main' : ''}`}>
-        <header className="settings-topbar"><strong>{settingsSection === 'models' ? '模型' : settingsSection === 'permissions' ? '权限' : settingsSection === 'memory' ? 'Memory' : settingsSection === 'automations' ? 'Automations' : settingsSection === 'channels' ? 'Channels' : settingsSection === 'teams' ? '团队' : settingsSection === 'browser' ? '浏览器' : settingsSection === 'skills' ? '技能' : settingsSection === 'hooks' ? 'Hooks' : 'MCP 服务'}</strong></header>
+        <header className="settings-topbar"><strong>{settingsSection === 'models' ? '模型' : settingsSection === 'permissions' ? '权限' : settingsSection === 'memory' ? 'Memory' : settingsSection === 'automations' ? 'Automations' : settingsSection === 'channels' ? 'Channels' : settingsSection === 'teams' ? '团队' : settingsSection === 'browser-recordings' ? '浏览器自动化' : settingsSection === 'browser' ? '浏览器' : settingsSection === 'skills' ? '技能' : settingsSection === 'hooks' ? 'Hooks' : 'MCP 服务'}</strong></header>
         <div className="settings-page-body">
     {settingsSection === 'models' && <form className="settings-content model-settings-page" aria-labelledby="settings-title" onSubmit={async (event) => {
       event.preventDefault();
@@ -2214,42 +1928,57 @@ function App() {
       enabled={extensionDraft.browser.enabled}
       mode={extensionDraft.browser.mode}
       domains={browserDomains}
+      saved={settings.extensions.browser}
       recordings={browserRecordings}
       recordingsBusy={browserRecordingsBusy}
-      {...(active?.workingDirectory ? { workingDirectory: active.workingDirectory } : {})}
       error={extensionError}
       onEnabledChange={(enabled) => setExtensionDraft((current) => ({ ...current, browser: { ...current.browser, enabled } }))}
       onModeChange={(mode) => setExtensionDraft((current) => ({ ...current, browser: { ...current.browser, mode } }))}
       onDomainsChange={setBrowserDomains}
-      onRefreshRecordings={() => { void refreshBrowserRecordings(active?.workingDirectory); }}
-      onTrustRecording={(recordingId) => {
-        if (!active?.workingDirectory) return;
-        setBrowserRecordingsBusy(true); setExtensionError('');
-        void window.desktopAgent.trustProjectBrowserRecording({ recordingId, workingDirectory: active.workingDirectory })
-          .then(setBrowserRecordings)
-          .catch((cause) => setExtensionError(cause instanceof Error ? cause.message : String(cause)))
-          .finally(() => setBrowserRecordingsBusy(false));
+      onDiscard={() => {
+        setExtensionDraft((current) => ({ ...current, browser: structuredClone(settings.extensions.browser) }));
+        setBrowserDomains(settings.extensions.browser.allowedDomains.join('\n'));
+        setExtensionError('');
       }}
-      onRevokeRecording={(recordingId) => {
-        if (!active?.workingDirectory) return;
-        setBrowserRecordingsBusy(true); setExtensionError('');
-        void window.desktopAgent.revokeProjectBrowserRecordingTrust({ recordingId, workingDirectory: active.workingDirectory })
-          .then(setBrowserRecordings)
-          .catch((cause) => setExtensionError(cause instanceof Error ? cause.message : String(cause)))
-          .finally(() => setBrowserRecordingsBusy(false));
-      }}
-      onDeleteRecording={(recordingId) => {
-        if (!active?.workingDirectory || !window.confirm(`删除 Recording ${recordingId}？此操作会删除当前生效的 user/project YAML。`)) return;
-        setBrowserRecordingsBusy(true); setExtensionError('');
-        void window.desktopAgent.deleteBrowserRecording({ recordingId, workingDirectory: active.workingDirectory })
-          .then(setBrowserRecordings)
-          .catch((cause) => setExtensionError(cause instanceof Error ? cause.message : String(cause)))
-          .finally(() => setBrowserRecordingsBusy(false));
-      }}
+      onPermissions={() => { setSettingsSection('permissions'); void refreshPermissionGovernance(); }}
+      onRecordings={() => setSettingsSection('browser-recordings')}
       onSubmit={async () => {
         setExtensionError('');
         try { await saveExtensionDraft(); }
         catch (cause) { setExtensionError(cause instanceof Error ? cause.message : String(cause)); }
+      }}
+    />}
+    {settingsSection === 'browser-recordings' && <BrowserRecordingsPage
+      key={active?.workingDirectory ?? ''}
+      recordings={browserRecordings}
+      recordingsBusy={browserRecordingsBusy}
+      {...(active?.workingDirectory ? { workingDirectory: active.workingDirectory } : {})}
+      error={extensionError}
+      onBack={() => setSettingsSection('browser')}
+      onRefreshRecordings={() => { void refreshBrowserRecordings(active?.workingDirectory); }}
+      onTrustRecording={async (recordingId) => {
+        if (!active?.workingDirectory) return;
+        setBrowserRecordingsBusy(true); setExtensionError('');
+        await window.desktopAgent.trustProjectBrowserRecording({ recordingId, workingDirectory: active.workingDirectory })
+          .then(setBrowserRecordings)
+          .catch((cause) => setExtensionError(cause instanceof Error ? cause.message : String(cause)))
+          .finally(() => setBrowserRecordingsBusy(false));
+      }}
+      onRevokeRecording={async (recordingId) => {
+        if (!active?.workingDirectory) return;
+        setBrowserRecordingsBusy(true); setExtensionError('');
+        await window.desktopAgent.revokeProjectBrowserRecordingTrust({ recordingId, workingDirectory: active.workingDirectory })
+          .then(setBrowserRecordings)
+          .catch((cause) => setExtensionError(cause instanceof Error ? cause.message : String(cause)))
+          .finally(() => setBrowserRecordingsBusy(false));
+      }}
+      onDeleteRecording={async (recordingId) => {
+        if (!active?.workingDirectory || !window.confirm(`删除录制任务 ${recordingId}？此操作会删除当前生效的个人或项目录制文件。`)) return false;
+        setBrowserRecordingsBusy(true); setExtensionError('');
+        return await window.desktopAgent.deleteBrowserRecording({ recordingId, workingDirectory: active.workingDirectory })
+          .then((snapshot) => { setBrowserRecordings(snapshot); return true; })
+          .catch((cause) => { setExtensionError(cause instanceof Error ? cause.message : String(cause)); return false; })
+          .finally(() => setBrowserRecordingsBusy(false));
       }}
     />}
     {settingsSection === 'hooks' && <HooksSettingsPage

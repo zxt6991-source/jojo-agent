@@ -1509,3 +1509,33 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   .memory-saved-filters, .memory-candidate-card > footer { flex-wrap: wrap; }
   .memory-save-actions > div { flex-wrap: wrap; }
 }
+
+/* Browser settings, automation assets and developer tools are separate views. */
+.browser-settings-fields { display: flex; flex-direction: column; gap: 16px; min-width: 0; margin: 0; padding: 0; border: 0; }
+.browser-settings-fields .settings-section-card { margin: 0; }
+.browser-summary-row { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 18px 24px; }
+.browser-summary-row h2 { margin: 0 0 7px; font-size: 14px; }
+.browser-summary-row p, .browser-summary-row span { margin: 0; color: #777b82; font-size: 12px; line-height: 1.6; }
+.browser-summary-row button { flex-shrink: 0; }
+.browser-save-actions { align-items: center; }
+.browser-save-actions > span { margin-right: auto; color: #777b82; font-size: 12px; }
+.browser-site-dialog { box-sizing: border-box; width: min(560px, calc(100vw - 40px)); max-height: calc(100vh - 48px); padding: 24px; border: 1px solid #dddfe5; border-radius: 16px; box-shadow: 0 20px 60px #0003; color: #303238; }
+.browser-site-dialog::backdrop { background: #161d3055; }
+.browser-site-dialog h2 { margin-top: 0; font-size: 18px; }
+.browser-site-dialog p { font-size: 12px; line-height: 1.7; color: #777b82; }
+.browser-site-dialog .browser-domain-editor { margin: 16px 0; }
+.browser-recording-toolbar { display: flex; gap: 12px; align-items: center; }
+.browser-recording-toolbar input { flex: 1; min-width: 0; }
+.browser-recordings-page .browser-studio { margin: 0; }
+.browser-detail-overview { padding: 16px 24px; font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; }
+.browser-trust-summary { padding: 16px; border-radius: 10px; background: #fff8e9; }
+.browser-recording-more { padding: 12px 0; }
+.browser-recording-more summary { cursor: pointer; font-size: 13px; }
+.browser-recording-more .browser-recording-actions { justify-content: flex-start; padding-top: 12px; }
+.browser-recordings-page .secondary, .browser-settings-page .secondary { padding: 8px 12px; border: 1px solid #d7d8dc; border-radius: 8px; background: #fff; color: #555960; }
+@media (max-width: 780px) {
+  .browser-settings-page .browser-mode-grid { grid-template-columns: 1fr; }
+  .browser-summary-row { align-items: flex-start; padding: 16px; }
+  .browser-recording-toolbar { flex-wrap: wrap; }
+}
+.browser-automation-screen { grid-template-columns: minmax(0, 1fr); }
