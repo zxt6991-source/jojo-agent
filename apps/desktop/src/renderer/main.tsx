@@ -23,6 +23,7 @@ import { BrowserRecordingsPage } from './browser/recordings/BrowserRecordingsPag
 import { HooksSettingsPage, hookStatusErrorMessage } from './HooksSettings';
 import { MemorySettingsPage } from './MemorySettings';
 import { PermissionsSettingsPage } from './PermissionsSettings';
+import { permissionModes } from './permissions/permission-copy';
 import { SchedulerSettingsPage } from './SchedulerSettings';
 import { TeamSettingsPage } from './TeamSettings';
 import { ChannelsSettingsPage } from './ChannelsSettings';
@@ -348,6 +349,7 @@ function App() {
   const [runningSessionId, setRunningSessionId] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [permissionDirty, setPermissionDirty] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('models');
   const [settings, setSettings] = useState<ProviderSettings>(defaultSettings);
   const [settingsDraft, setSettingsDraft] = useState<ProviderSettings>(defaultSettings);
@@ -725,8 +727,12 @@ function App() {
     setPermissionBusy(true);
     setPermissionError('');
     try {
-      const next = await window.desktopAgent.savePermissionPolicy(input);
-      setPermissionSnapshot(next);
+      await window.desktopAgent.savePermissionPolicy(input);
+      const sessionId = activeIdRef.current ?? undefined;
+      const workingDirectory = sessionId ? sessionDirectoriesRef.current.get(sessionId) : undefined;
+      setPermissionSnapshot(await window.desktopAgent.getPermissionGovernance({
+        ...(sessionId ? { sessionId } : {}), ...(workingDirectory ? { workingDirectory } : {})
+      }));
       if (input.scope === 'global') {
         setSettings((current) => ({ ...current, permissions: { mode: input.mode } }));
         setSettingsDraft((current) => ({ ...current, permissions: { mode: input.mode } }));
@@ -737,6 +743,18 @@ function App() {
     } finally {
       setPermissionBusy(false);
     }
+  };
+
+  const resetWorkspacePermissionPolicy = async (workingDirectory: string): Promise<void> => {
+    setPermissionBusy(true); setPermissionError('');
+    try {
+      await window.desktopAgent.resetWorkspacePermissionPolicy({ workingDirectory });
+      const sessionId = activeIdRef.current ?? undefined;
+      setPermissionSnapshot(await window.desktopAgent.getPermissionGovernance({ workingDirectory, ...(sessionId ? { sessionId } : {}) }));
+    } catch (cause) {
+      setPermissionError(cause instanceof Error ? cause.message : String(cause));
+      throw cause;
+    } finally { setPermissionBusy(false); }
   };
 
   const rebuildMemoryIndex = async (scope: 'global' | 'project'): Promise<void> => {
@@ -1532,7 +1550,6 @@ function App() {
       onRenameSession={(session) => void renameSession(session)}
       onDeleteSession={(session) => void deleteSession(session)}
       onOpenSettings={() => openSettings()}
-      onOpenBrowserRecordings={() => openSettings('browser-recordings')}
     />
     <main className="main-panel">
       {active ? <>
@@ -1661,7 +1678,7 @@ function App() {
           <textarea value={draft} onPaste={pasteAttachments} onChange={(event) => setDraft(event.target.value)} placeholder="随心输入" rows={2}
             onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void send(); } }} />
           <div className="composer-toolbar">
-            <div className="composer-context"><span className="approval-status">⌁ 权限 {settings.permissions.mode.toUpperCase()}</span>{contextUsage && <span className={`context-status ${contextUsage.overCapacity ? 'over-capacity' : ''}`} title={contextUsage.overCapacity ? `固定指令与工具定义约 ${contextUsage.fixed} tokens，已超过可用目标 ${contextUsage.target} tokens。请提高上下文窗口或减少工具。` : contextUsage.compacted ? `已压缩 ${contextUsage.compacted} 条历史消息；消息预算 ${contextUsage.messageBudget} tokens` : `上下文估算；消息预算 ${contextUsage.messageBudget} tokens`}>{contextUsage.overCapacity ? '容量不足 · ' : ''}{Math.round(contextUsage.estimated / 1000)}k / {Math.round(contextUsage.window / 1000)}k{contextUsage.maxIterations > 0 ? ` · Loop ${contextUsage.iteration}/${contextUsage.maxIterations}${contextUsage.finalResponseOnly ? ' 收尾' : ''}` : ''}</span>}{(usage.input > 0 || usage.output > 0) && <span className="context-status" title={`缓存读取 ${usage.cacheRead} · 缓存写入 ${usage.cacheWrite}`}>↑{usage.input} ↓{usage.output}</span>}</div>
+            <div className="composer-context"><span className="approval-status">⌁ 权限 {permissionModes[settings.permissions.mode].title}</span>{contextUsage && <span className={`context-status ${contextUsage.overCapacity ? 'over-capacity' : ''}`} title={contextUsage.overCapacity ? `固定指令与工具定义约 ${contextUsage.fixed} tokens，已超过可用目标 ${contextUsage.target} tokens。请提高上下文窗口或减少工具。` : contextUsage.compacted ? `已压缩 ${contextUsage.compacted} 条历史消息；消息预算 ${contextUsage.messageBudget} tokens` : `上下文估算；消息预算 ${contextUsage.messageBudget} tokens`}>{contextUsage.overCapacity ? '容量不足 · ' : ''}{Math.round(contextUsage.estimated / 1000)}k / {Math.round(contextUsage.window / 1000)}k{contextUsage.maxIterations > 0 ? ` · Loop ${contextUsage.iteration}/${contextUsage.maxIterations}${contextUsage.finalResponseOnly ? ' 收尾' : ''}` : ''}</span>}{(usage.input > 0 || usage.output > 0) && <span className="context-status" title={`缓存读取 ${usage.cacheRead} · 缓存写入 ${usage.cacheWrite}`}>↑{usage.input} ↓{usage.output}</span>}</div>
             <div className="composer-actions">
               <div className="attachment-picker">
                 <button className="attach" type="button" aria-label="添加附件" aria-expanded={attachmentMenuOpen} aria-haspopup="menu" title="添加文件、文件夹或图片" disabled={sessionBusy || importingFiles} onClick={() => setAttachmentMenuOpen((open) => !open)}>＋</button>
@@ -1784,7 +1801,11 @@ function App() {
       </div>
     </form></div>}
     {settingsOpen && <section className={`settings-screen ${settingsSection === 'browser-recordings' ? 'browser-automation-screen' : ''}`} aria-label={settingsSection === 'browser-recordings' ? '浏览器自动化管理' : '设置'}>
-      {settingsSection !== 'browser-recordings' && <aside className="settings-navigation">
+      {settingsSection !== 'browser-recordings' && <aside className="settings-navigation" onClickCapture={(event) => {
+        if (settingsSection !== 'permissions' || !(event.target instanceof Element) || !event.target.closest('button')) return;
+        if (event.target.closest('button.active')) { event.preventDefault(); event.stopPropagation(); return; }
+        if (permissionBusy || (permissionDirty && !window.confirm('有未保存的权限更改，确定放弃吗？'))) { event.preventDefault(); event.stopPropagation(); }
+      }}>
         <button className="settings-back" type="button" onClick={() => setSettingsOpen(false)}><span aria-hidden="true">←</span> 返回</button>
         <nav aria-label="设置分类">
           <button type="button" className={settingsSection === 'models' ? 'active' : ''} onClick={() => { setSettingsSection('models'); setExtensionEditorOpen(false); }}><span aria-hidden="true">◇</span> 模型</button>
@@ -1855,9 +1876,12 @@ function App() {
       snapshot={permissionSnapshot}
       busy={permissionBusy}
       error={permissionError}
-      {...(active?.workingDirectory ? { workingDirectory: active.workingDirectory } : {})}
+      sessionScoped={Boolean(active)}
+      {...(active?.workingDirectory && active.projectBound !== false ? { workingDirectory: active.workingDirectory } : {})}
       onRefresh={() => { void refreshPermissionGovernance(); }}
       onSave={savePermissionPolicy}
+      onReset={resetWorkspacePermissionPolicy}
+      onDirtyChange={setPermissionDirty}
     />}
     {settingsSection === 'memory' && <MemorySettingsPage
       draft={memoryDraft}

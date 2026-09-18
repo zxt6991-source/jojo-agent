@@ -82,7 +82,6 @@ test('browser settings, site access and recording developer hierarchy', async ()
     await expect(assets.getByText('新的报表任务', { exact: true })).toBeVisible();
     await assets.getByRole('button', { name: '返回浏览器设置' }).click();
     await page.getByRole('button', { name: '返回', exact: true }).click();
-    await page.getByRole('button', { name: '浏览器自动化', exact: true }).click();
-    await expect(assets.getByRole('heading', { name: '浏览器自动化', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: '浏览器自动化', exact: true })).toHaveCount(0);
   } finally { await app.close(); }
 });

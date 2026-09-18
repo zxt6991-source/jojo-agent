@@ -12,7 +12,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  AcceptMemoryCandidateInputSchema, ApprovalInputSchema, BindSessionProjectInputSchema, BrowserDockActionSchema, BrowserDockLayoutSchema, BrowserRecordingRegistryActionInputSchema, BrowserRecordingRegistryInputSchema, BrowserRecordingStudioInputSchema, CreateSessionInputSchema, CreateSkillInputSchema, DeleteMemoryEntryInputSchema, DeleteTeamInputSchema, DesktopChannelMutationSchema, DuplicateBrowserRecordingInputSchema, GetExtensionStatusInputSchema, GetHookStatusInputSchema, GetMemoryStatusInputSchema, GetPermissionGovernanceInputSchema, HookProjectActionInputSchema, ImportSkillInputSchema, IPC, ListModelsInputSchema, ListTeamsInputSchema, MAX_FILE_BYTES, MAX_IMAGE_ATTACHMENTS, MAX_IMAGE_BYTES, McpServerIdInputSchema, OpenHookConfigInputSchema, PermissionGovernanceSnapshotSchema, RebuildMemoryIndexInputSchema, RebuildSemanticMemoryIndexInputSchema, RejectMemoryCandidateInputSchema, RenameSessionInputSchema, ResolveTerminalSecretInputSchema, SaveBrowserRecordingInputSchema, SaveExtensionSettingsInputSchema, SaveMemorySettingsInputSchema, SavePermissionPolicyInputSchema, SaveSettingsInputSchema, SaveTeamInputSchema, SetTeamMemberEnabledInputSchema,
+  AcceptMemoryCandidateInputSchema, ApprovalInputSchema, BindSessionProjectInputSchema, BrowserDockActionSchema, BrowserDockLayoutSchema, BrowserRecordingRegistryActionInputSchema, BrowserRecordingRegistryInputSchema, BrowserRecordingStudioInputSchema, CreateSessionInputSchema, CreateSkillInputSchema, DeleteMemoryEntryInputSchema, DeleteTeamInputSchema, DesktopChannelMutationSchema, DuplicateBrowserRecordingInputSchema, GetExtensionStatusInputSchema, GetHookStatusInputSchema, GetMemoryStatusInputSchema, GetPermissionGovernanceInputSchema, HookProjectActionInputSchema, ImportSkillInputSchema, IPC, ListModelsInputSchema, ListTeamsInputSchema, MAX_FILE_BYTES, MAX_IMAGE_ATTACHMENTS, MAX_IMAGE_BYTES, McpServerIdInputSchema, OpenHookConfigInputSchema, PermissionGovernanceSnapshotSchema, RebuildMemoryIndexInputSchema, RebuildSemanticMemoryIndexInputSchema, RejectMemoryCandidateInputSchema, RenameSessionInputSchema, ResolveTerminalSecretInputSchema, SaveBrowserRecordingInputSchema, SaveExtensionSettingsInputSchema, SaveMemorySettingsInputSchema, ResetWorkspacePermissionPolicyInputSchema, SavePermissionPolicyInputSchema, SaveSettingsInputSchema, SaveTeamInputSchema, SetTeamMemberEnabledInputSchema,
   SaveChannelSecretsInputSchema, SaveScheduleInputSchema, ScheduleIdInputSchema, ScheduleRunIdInputSchema, SetScheduleEnabledInputSchema,
   SessionIdInputSchema, SkillPathInputSchema, StartTurnInputSchema, UpdateSkillInputSchema, WorkflowRunActionInputSchema,
   WorkerCommandSchema, WorkerMessageSchema, serializedIpcBytes,
@@ -186,6 +186,7 @@ function permissionGovernanceSnapshot(input: {
     ...(input.workingDirectory
       ? { workspace: permissionGovernanceStore.getProfile('workspace', input.workingDirectory) }
       : {}),
+    effective: permissionGovernanceStore.effectivePolicy(input.workingDirectory),
     recentDecisions: permissionGovernanceStore.listAudit({
       ...(input.sessionId ? { sessionId: input.sessionId } : {}),
       ...(input.limit !== undefined ? { limit: input.limit } : {})
@@ -1204,6 +1205,12 @@ function registerIpc(): void {
       ...(input.sessionId ? { sessionId: input.sessionId } : {}),
       limit: input.limit
     });
+  });
+  ipcMain.handle(IPC.resetWorkspacePermissionPolicy, (event, raw) => {
+    assertTrusted(event);
+    const input = ResetWorkspacePermissionPolicyInputSchema.parse(raw);
+    permissionGovernanceStore.deleteWorkspaceProfile(input.workingDirectory);
+    return permissionGovernanceSnapshot(input);
   });
   ipcMain.handle(IPC.savePermissionPolicy, async (event, raw) => {
     assertTrusted(event);

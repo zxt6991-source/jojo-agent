@@ -274,6 +274,10 @@ export const SavePermissionPolicyInputSchema = z.object({
   }
 });
 
+export const ResetWorkspacePermissionPolicyInputSchema = z.object({
+  workingDirectory: z.string().trim().min(1).max(4_096)
+}).strict();
+
 export const PermissionPolicyProfileSnapshotSchema = z.object({
   scope: z.enum(['global', 'workspace']),
   mode: z.enum(['ask', 'auto', 'yolo']),
@@ -308,6 +312,13 @@ export type PermissionDecisionAuditItem = z.infer<typeof PermissionDecisionAudit
 export const PermissionGovernanceSnapshotSchema = z.object({
   global: PermissionPolicyProfileSnapshotSchema,
   workspace: PermissionPolicyProfileSnapshotSchema.optional(),
+  effective: z.object({
+    mode: z.enum(['ask', 'auto', 'yolo']),
+    modeSource: z.enum(['global', 'workspace']),
+    globalRuleCount: z.number().int().nonnegative(),
+    workspaceRuleCount: z.number().int().nonnegative(),
+    workspaceOverridesGlobal: z.boolean()
+  }).strict().optional(),
   recentDecisions: z.array(PermissionDecisionAuditItemSchema).max(200)
 }).strict();
 export type PermissionGovernanceSnapshot = z.infer<typeof PermissionGovernanceSnapshotSchema>;
@@ -662,6 +673,7 @@ export type DesktopApi = {
   listModels(input: z.input<typeof ListModelsInputSchema>): Promise<ModelConfig[]>;
   saveSettings(input: z.input<typeof SaveSettingsInputSchema>): Promise<ProviderSettings>;
   getPermissionGovernance(input?: z.input<typeof GetPermissionGovernanceInputSchema>): Promise<PermissionGovernanceSnapshot>;
+  resetWorkspacePermissionPolicy(input: z.input<typeof ResetWorkspacePermissionPolicyInputSchema>): Promise<PermissionGovernanceSnapshot>;
   savePermissionPolicy(input: z.input<typeof SavePermissionPolicyInputSchema>): Promise<PermissionGovernanceSnapshot>;
   getExtensionStatus(input?: z.input<typeof GetExtensionStatusInputSchema>): Promise<ExtensionStatus>;
   getSkillDetail(input: z.input<typeof SkillPathInputSchema>): Promise<SkillDetail>;
@@ -762,6 +774,7 @@ export const IPC = {
   saveSettings: 'settings:save',
   getPermissionGovernance: 'permissions:get',
   savePermissionPolicy: 'permissions:save',
+  resetWorkspacePermissionPolicy: 'permissions:reset-workspace',
   getExtensionStatus: 'extensions:status',
   getSkillDetail: 'extensions:skill-detail',
   createSkill: 'extensions:skill-create',

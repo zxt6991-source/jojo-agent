@@ -33,6 +33,28 @@ describe('SqlitePermissionGovernanceStore', () => {
     expect(store.getProfile('workspace', '/other')).toBeUndefined();
   });
 
+  it('resets only the selected workspace and follows later global changes', async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), 'jojo-permission-reset-'));
+    const filename = path.join(directory, 'permissions.sqlite');
+    const store = new SqlitePermissionGovernanceStore(filename);
+    stores.push(store);
+    const document = { version: 1 as const, rules: [{ id: 'deny', effect: 'deny' as const, match: { hasSecrets: true } }] };
+    store.saveProfile({ scope: 'global', mode: 'auto', document });
+    for (const scopeKey of ['/workspace', '/other']) store.saveProfile({ scope: 'workspace', scopeKey, mode: 'yolo', document });
+    expect(store.effectivePolicy('/workspace')).toEqual({ mode: 'yolo', modeSource: 'workspace', globalRuleCount: 1, workspaceRuleCount: 1, workspaceOverridesGlobal: true });
+    expect(() => store.deleteWorkspaceProfile(' ')).toThrow();
+    store.deleteWorkspaceProfile('/workspace/../workspace');
+    store.deleteWorkspaceProfile('/workspace');
+    expect(store.getProfile('workspace', '/workspace')).toBeUndefined();
+    expect(store.getProfile('workspace', '/other')?.mode).toBe('yolo');
+    expect(store.effectivePolicy('/workspace')).toEqual({ mode: 'auto', modeSource: 'global', globalRuleCount: 1, workspaceRuleCount: 0, workspaceOverridesGlobal: false });
+    store.setGlobalMode('ask');
+    store.close(); stores.pop();
+    const reopened = new SqlitePermissionGovernanceStore(filename); stores.push(reopened);
+    expect(reopened.effectivePolicy('/workspace').mode).toBe('ask');
+    expect(reopened.getProfile('global')?.document).toEqual(document);
+  });
+
   it('persists only redacted audit metadata', async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), 'jojo-permission-'));
     const filename = path.join(directory, 'permissions.sqlite');

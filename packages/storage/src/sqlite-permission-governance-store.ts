@@ -179,6 +179,24 @@ export class SqlitePermissionGovernanceStore implements PermissionPolicyStore, P
     });
   }
 
+  deleteWorkspaceProfile(workingDirectory: string): void {
+    if (!workingDirectory.trim()) throw new Error('workspace policy requires a working directory');
+    this.database.prepare("DELETE FROM permission_policy_profiles WHERE scope = 'workspace' AND scope_key = ?")
+      .run(workspaceKey(workingDirectory));
+  }
+
+  effectivePolicy(workingDirectory?: string): NonNullable<import('@desktop-agent/contracts').PermissionGovernanceSnapshot['effective']> {
+    const global = this.getProfile('global')!;
+    const workspace = workingDirectory ? this.getProfile('workspace', workingDirectory) : undefined;
+    return {
+      mode: (workspace ?? global).mode,
+      modeSource: workspace ? 'workspace' : 'global',
+      globalRuleCount: global.document.rules.length,
+      workspaceRuleCount: workspace?.document.rules.length ?? 0,
+      workspaceOverridesGlobal: Boolean(workspace)
+    };
+  }
+
   saveProfile(input: PermissionPolicyProfileInput): number {
     const document = PermissionPolicyDocumentSchema.parse(input.document);
     const scopeKey = input.scope === 'workspace'

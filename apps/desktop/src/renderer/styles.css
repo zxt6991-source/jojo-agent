@@ -52,7 +52,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .sidebar-view-pop { position: absolute; top: 30px; right: 0; z-index: 8; display: grid; min-width: 132px; padding: 6px; border: 1px solid #e1e2e4; border-radius: 10px; background: #ffffff; box-shadow: 0 10px 28px rgba(28, 30, 35, .12); }
 .sidebar-view-pop button { height: 30px; padding: 0 10px; border: 0; border-radius: 7px; background: transparent; color: #4b4f56; font-size: 12px; text-align: left; }
 .sidebar-view-pop button:hover, .sidebar-view-pop button.active { background: #f3f3f4; color: #24262a; }
-.project-list { flex: 1; min-height: 0; overflow-y: auto; padding: 3px 0 8px; }
+.project-list { flex: 1; min-height: 0; overflow-y: auto; padding: 3px 0 8px; scrollbar-width: none; }
+.project-list::-webkit-scrollbar { display: none; }
 .project-group { margin: 2px 0 8px; }
 .project-row { min-width: 0; display: flex; align-items: center; gap: 3px; }
 .project-toggle { min-width: 0; height: 34px; display: grid; flex: 1; grid-template-columns: 20px minmax(0, 1fr); align-items: center; gap: 6px; padding: 0 4px 0 8px; border: 0; border-radius: 8px; background: transparent; color: #3e4147; text-align: left; }
@@ -1539,3 +1540,63 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   .browser-recording-toolbar { flex-wrap: wrap; }
 }
 .browser-automation-screen { grid-template-columns: minmax(0, 1fr); }
+
+/* Permission preferences: progressive disclosure over the canonical policy. */
+.permission-page-tabs { display: flex; gap: 8px; margin: 16px 0; border-bottom: 1px solid #e5e7eb; }
+.permission-page-tabs button { border: 0; border-bottom: 2px solid transparent; background: transparent; padding: 12px 16px; color: #686c73; }
+.permission-page-tabs button[aria-selected="true"] { border-bottom-color: #4054ae; color: #4054ae; font-weight: 650; }
+.permission-block, .permission-inheritance { padding: 20px 24px; border-top: 1px solid #ececee; }
+.permission-block h3, .permission-rule-form h3 { margin: 0 0 10px; font-size: 14px; }
+.permission-block p, .permission-inheritance p, .permission-block li { font-size: 12px; line-height: 1.7; color: #686c73; }
+.permission-block summary, .permission-audit-main summary { cursor: pointer; font-size: 12px; line-height: 1.7; }
+.permission-editable { border: 0; padding: 0; margin: 0; min-width: 0; }
+.permission-editable > legend { padding: 20px 24px 0; font-weight: 650; font-size: 14px; }
+.permission-editable:disabled { opacity: .65; }
+.permission-inheritance { background: #f5f7ff; }
+.permission-behavior { display: grid; gap: 10px; font-size: 12px; }
+.permission-behavior > div { display: flex; justify-content: space-between; gap: 16px; }
+.permission-behavior dd { color: #4054ae; text-align: right; }
+.permission-rule-card { padding: 16px; margin: 12px 0; border: 1px solid #e4e6eb; border-radius: 10px; }
+.permission-rule-card > div:first-child { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.permission-rule-card strong { font-size: 12px; line-height: 1.8; overflow-wrap: anywhere; }
+.permission-rule-card .permission-effect { flex-shrink: 0; }
+.permission-row-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.permission-block button, .permission-inheritance button { border: 1px solid #d8d9dd; border-radius: 7px; padding: 7px 11px; background: #fff; color: #454950; font-size: 12px; }
+.permission-settings-page button:disabled { opacity: .45; cursor: not-allowed; }
+.permission-settings-page button:focus-visible, .permission-settings-page summary:focus-visible { outline: 2px solid #7182cf; outline-offset: 3px; }
+.permission-rule-form { padding: 18px; margin-top: 14px; border: 1px solid #bec9ef; border-radius: 10px; background: #f8faff; }
+.permission-rule-form label, .permission-activity-filters label { display: grid; gap: 8px; margin: 12px 0; font-size: 12px; }
+.permission-rule-form select, .permission-activity-filters select, .permission-activity-filters input { border: 1px solid #d8d9dd; border-radius: 7px; padding: 8px; background: #fff; min-width: 0; }
+.model-settings-page.permission-settings-page select {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 100%;
+  height: auto;
+  min-height: 36px;
+  appearance: none;
+  padding: 8px 38px 8px 12px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 14 14' fill='none'%3E%3Cpath d='m3 5 4 4 4-4' stroke='%23666b73' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  background-size: 14px 14px;
+}
+.permission-activity-filters label { min-width: 0; max-width: 100%; }
+.permission-activity-filters label:first-child { flex: 0 0 144px; }
+.permission-activity-filters label:last-child { flex: 1 1 220px; }
+.permission-activity-filters input { box-sizing: border-box; width: 100%; min-height: 36px; }
+.permission-rule-form textarea { width: 100%; box-sizing: border-box; min-height: 170px; padding: 12px; resize: vertical; }
+.permission-block .permission-rule-warning { color: #8b6419; }
+.permission-advanced > p { overflow-wrap: anywhere; }
+.permission-advanced .permission-rule-editor { padding: 12px 0; background: transparent; }
+.permission-save-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.permission-save-row > span { font-size: 12px; color: #686c73; }
+.permission-activity-summary, .permission-activity-filters { display: flex; flex-wrap: wrap; gap: 20px; padding: 12px 24px; font-size: 12px; }
+.permission-activity-summary strong { color: #4054ae; margin-left: 5px; }
+.permission-audit-main > span { white-space: normal; font: inherit; font-size: 12px; line-height: 1.7; }
+.permission-audit-main pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; max-height: 360px; overflow: auto; }
+@media (max-width: 780px) {
+  .permission-mode-grid { grid-template-columns: 1fr; }
+  .permission-scope-tabs, .permission-save-row { flex-wrap: wrap; }
+  .permission-audit-list article { grid-template-columns: 64px minmax(0, 1fr); }
+  .permission-audit-meta { grid-column: 2; align-items: flex-start; }
+}
