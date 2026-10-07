@@ -1,3 +1,4 @@
+import { BUILD_COMPATIBILITY } from '@desktop-agent/contracts/build-compatibility';
 import { appendFile, copyFile, mkdir, readFile, readdir, rename, rmdir, stat, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
@@ -63,7 +64,7 @@ const StoredConfigV3Schema = z.object({
 });
 
 const StoredConfigV4Schema = StoredConfigV3Schema.extend({
-  schemaVersion: z.literal(4), providers: z.array(ProviderConfigSchema).min(1)
+  schemaVersion: z.literal(BUILD_COMPATIBILITY.configSchema), providers: z.array(ProviderConfigSchema).min(1)
 });
 const StoredConfigSchema = z.union([StoredConfigV1Schema, StoredConfigV2Schema, StoredConfigV3Schema, StoredConfigV4Schema]);
 
@@ -77,6 +78,11 @@ export class JsonlSessionStore {
     return path.join(this.directory, `${sessionId}.jsonl`);
   }
   private tombstone(sessionId: string): string { return path.join(this.directory, '.tombstones', sessionId); }
+
+  async isDeleted(sessionId: string): Promise<boolean> {
+    this.file(sessionId);
+    return this.exists(this.tombstone(sessionId));
+  }
   private mutationLock(sessionId: string): string { return path.join(this.directory, '.locks', sessionId); }
   private async exists(filePath: string): Promise<boolean> {
     try { await stat(filePath); return true; }
@@ -128,7 +134,7 @@ export class JsonlSessionStore {
       ...(projectIdentity ? { projectIdentity } : {}),
       createdAt: time, updatedAt: time
     });
-    await this.append(meta.id, { schemaVersion: 1, type: 'meta', session: meta });
+    await this.append(meta.id, { schemaVersion: BUILD_COMPATIBILITY.sessionJsonlSchema, type: 'meta', session: meta });
     return meta;
   }
   async list(): Promise<SessionMeta[]> {
@@ -153,6 +159,8 @@ export class JsonlSessionStore {
     return sessions.filter((item): item is SessionMeta => item !== null).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   }
   async load(sessionId: string): Promise<{ meta: SessionMeta | null; messages: Message[]; warnings: string[] }> {
+    this.file(sessionId); // Validate before consulting the tombstone path.
+    if (await this.exists(this.tombstone(sessionId))) return { meta: null, messages: [], warnings: [] };
     let content: string;
     try { content = await readFile(this.file(sessionId), 'utf8'); }
     catch (error: any) {
@@ -195,13 +203,20 @@ export class JsonlSessionStore {
     }
     return { meta, messages, warnings };
   }
+  async loadForMigration(sessionId: string): Promise<{ meta: SessionMeta; messages: Message[] }> {
+    const snapshot = await this.load(sessionId);
+    if (!snapshot.meta) throw new Error(`legacy_session_unavailable: ${sessionId}`);
+    if (snapshot.meta.id !== sessionId) throw new Error(`legacy_session_id_mismatch: ${sessionId}`);
+    if (snapshot.warnings.length) throw new Error(`legacy_transcript_invalid: ${snapshot.warnings.join(' ')}`);
+    return { meta: snapshot.meta, messages: snapshot.messages };
+  }
   async messages(sessionId: string): Promise<Message[]> { return (await this.load(sessionId)).messages; }
   async get(sessionId: string): Promise<SessionMeta | null> { return (await this.load(sessionId)).meta; }
   async appendMessage(sessionId: string, message: Message): Promise<void> {
-    await this.append(sessionId, { schemaVersion: 1, type: 'message', message: MessageSchema.parse(message) });
+    await this.append(sessionId, { schemaVersion: BUILD_COMPATIBILITY.sessionJsonlSchema, type: 'message', message: MessageSchema.parse(message) });
   }
   async rename(sessionId: string, title: string): Promise<void> {
-    await this.append(sessionId, { schemaVersion: 1, type: 'title', title });
+    await this.append(sessionId, { schemaVersion: BUILD_COMPATIBILITY.sessionJsonlSchema, type: 'title', title });
   }
   async bindProject(
     sessionId: string,
@@ -210,7 +225,7 @@ export class JsonlSessionStore {
   ): Promise<SessionMeta> {
     if (!await this.get(sessionId)) throw new Error('Session not found.');
     await this.append(sessionId, {
-      schemaVersion: 1,
+      schemaVersion: BUILD_COMPATIBILITY.sessionJsonlSchema,
       type: 'project',
       workingDirectory,
       projectIdentity
@@ -299,7 +314,7 @@ export class JsonConfigStore {
     try { await copyFile(this.filePath, `${this.filePath}.bak`); } catch { /* first save */ }
     const temporary = `${this.filePath}.tmp`;
     const stored = {
-      schemaVersion: 4,
+      schemaVersion: BUILD_COMPATIBILITY.configSchema,
       activeProviderId: validSettings.activeProviderId,
       providers: validSettings.providers.map(({ hasApiKey: _hasApiKey, ...provider }) => provider),
       utilityModel: validSettings.utilityModel,

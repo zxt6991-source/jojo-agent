@@ -1,5 +1,5 @@
 import type { RunResult } from '@desktop-agent/agent-runtime';
-import type { ApprovalDecision, ProtocolError } from '@desktop-agent/server-protocol';
+import type { ApprovalDecision, ApplicationError } from '@desktop-agent/contracts/application';
 
 export type SessionMetadataRecord = {
   sessionId: string;
@@ -44,7 +44,7 @@ export type RunRequestMeta = {
     allowPartialOnLimit?: boolean;
   };
   origin?: {
-    kind: 'user' | 'api' | 'scheduler' | 'channel';
+    kind: 'user' | 'api' | 'scheduler' | 'channel' | 'workflow' | 'subagent' | 'team_member';
     scheduleId?: string;
     scheduleRunId?: string;
     channel?: {
@@ -77,7 +77,7 @@ export type PersistedRunRecord = {
   inputHash: string;
   requestMeta?: RunRequestMeta;
   result?: RunResult;
-  error?: ProtocolError;
+  error?: ApplicationError;
   createdAt: string;
   startedAt?: string;
   completedAt?: string;
@@ -105,11 +105,13 @@ export type PersistedApprovalPreview = {
   truncated?: boolean;
 };
 
-export type PersistedApprovalRecord = {
+export type ApprovalOwnership =
+  | { scope?: 'run'; laneId: string; runId: string }
+  | { scope: 'session'; laneId?: never; runId?: never };
+
+export type PersistedApprovalRecord = ApprovalOwnership & {
   id: string;
   sessionId: string;
-  laneId: string;
-  runId: string;
   status: PersistedApprovalStatus;
   toolCallId: string;
   toolName: string;
@@ -124,11 +126,9 @@ export type PersistedApprovalRecord = {
   version: number;
 };
 
-export type CreateApprovalRecord = {
+export type CreateApprovalRecord = ApprovalOwnership & {
   id: string;
   sessionId: string;
-  laneId: string;
-  runId: string;
   toolCallId: string;
   toolName: string;
   reason: string;
@@ -175,12 +175,12 @@ export interface RunStore {
   markCompleted(runId: string, result: RunResult, expectedVersion?: number): Promise<PersistedRunRecord>;
   markFailed(
     runId: string,
-    error: ProtocolError,
+    error: ApplicationError,
     result?: RunResult,
     expectedVersion?: number
   ): Promise<PersistedRunRecord>;
   markCancelled(runId: string, result: RunResult, expectedVersion?: number): Promise<PersistedRunRecord>;
-  markInterrupted(runId: string, error: ProtocolError, expectedVersion?: number): Promise<PersistedRunRecord>;
+  markInterrupted(runId: string, error: ApplicationError, expectedVersion?: number): Promise<PersistedRunRecord>;
 }
 
 export interface ApprovalStore {
@@ -414,11 +414,16 @@ export class MemoryServerStateStore implements ServerStateStore {
   private createPending(input: CreateApprovalRecord): PersistedApprovalRecord {
     const existing = this.approvalRecords.get(input.id);
     if (existing) {
-      if (existing.requestHash === input.requestHash) return clone(existing);
+      if (existing.requestHash === input.requestHash && existing.sessionId === input.sessionId
+        && existing.runId === input.runId && existing.laneId === input.laneId
+        && (existing.scope ?? 'run') === (input.scope ?? 'run')) return clone(existing);
       throw new Error(`approval_conflict: ${input.id}`);
     }
-    const run = this.runRecords.get(input.runId);
-    if (!run || run.sessionId !== input.sessionId) throw new Error(`run_not_found: ${input.runId}`);
+    this.requireSession(input.sessionId);
+    if (input.scope !== 'session') {
+      const run = this.runRecords.get(input.runId);
+      if (!run || run.sessionId !== input.sessionId || run.laneId !== input.laneId) throw new Error(`run_not_found: ${input.runId}`);
+    }
     const record: PersistedApprovalRecord = {
       ...clone(input),
       status: 'pending',

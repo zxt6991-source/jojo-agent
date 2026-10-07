@@ -77,6 +77,9 @@ importers:
 
   apps/desktop:
     dependencies:
+      '@desktop-agent/app-service':
+        specifier: workspace:*
+        version: link:../../packages/app-service
       '@desktop-agent/agent':
         specifier: workspace:*
         version: link:../../packages/agent
@@ -292,9 +295,6 @@ importers:
       '@desktop-agent/contracts':
         specifier: workspace:*
         version: link:../contracts
-      '@desktop-agent/server-protocol':
-        specifier: workspace:*
-        version: link:../server-protocol
 
   packages/attachment-access:
     dependencies:
@@ -502,6 +502,9 @@ importers:
 
   packages/runtime-composition:
     dependencies:
+      '@desktop-agent/app-service':
+        specifier: workspace:*
+        version: link:../app-service
       '@desktop-agent/agent-runtime':
         specifier: workspace:*
         version: link:../agent-runtime

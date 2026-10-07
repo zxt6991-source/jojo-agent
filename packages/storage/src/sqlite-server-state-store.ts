@@ -1,3 +1,4 @@
+import { DEFAULT_SESSION_TITLE, SessionMetaSchema, type SessionMeta, type ProjectIdentity } from '@desktop-agent/contracts';
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
@@ -26,6 +27,9 @@ import type {
 import type { RunResult } from '@desktop-agent/agent-runtime';
 import type { ApprovalDecision, ProtocolError } from '@desktop-agent/server-protocol';
 import { SERVER_STATE_SCHEMA_SQL, SERVER_STATE_SCHEMA_VERSION } from './server-state-schema.js';
+
+const sessionProjectSchema = SessionMetaSchema.pick({ workingDirectory: true, projectBound: true, projectIdentity: true });
+type SessionProject = Pick<SessionMeta, 'workingDirectory' | 'projectBound' | 'projectIdentity'>;
 
 type Row = Record<string, unknown>;
 type Clock = { now(): number };
@@ -121,8 +125,10 @@ function approvalFromRow(row: Row): PersistedApprovalRecord {
   return {
     id: stringValue(row.id, 'approval id'),
     sessionId: stringValue(row.session_id, 'approval session'),
-    laneId: stringValue(row.lane_id, 'approval lane'),
-    runId: stringValue(row.run_id, 'approval run'),
+    ...(row.scope === 'session' ? { scope: 'session' as const } : {
+      laneId: stringValue(row.lane_id, 'approval lane'),
+      runId: stringValue(row.run_id, 'approval run')
+    }),
     status: stringValue(row.status, 'approval status') as PersistedApprovalRecord['status'],
     toolCallId: stringValue(row.tool_call_id, 'approval tool call'),
     toolName: stringValue(row.tool_name, 'approval tool name'),
@@ -158,8 +164,33 @@ export class SqliteServerStateStore implements ServerStateStore {
       this.database.close();
       throw new Error(`server_state_version_unsupported: ${version}`);
     }
-    this.database.exec(SERVER_STATE_SCHEMA_SQL);
-    this.database.exec(`PRAGMA user_version = ${SERVER_STATE_SCHEMA_VERSION};`);
+    try {
+      this.database.exec('BEGIN IMMEDIATE');
+      const oldApprovals = this.database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'server_approvals'").get();
+      const migrateApprovals = oldApprovals && !(this.database.prepare('PRAGMA table_info(server_approvals)').all() as Row[]).some(column => column.name === 'scope');
+      if (migrateApprovals) {
+        this.database.exec(`ALTER TABLE server_approvals RENAME TO legacy_server_approvals;
+          DROP INDEX IF EXISTS server_approvals_session_status;
+          DROP INDEX IF EXISTS server_approvals_run;
+          DROP INDEX IF EXISTS server_approvals_recovery;`);
+      }
+      this.database.exec(SERVER_STATE_SCHEMA_SQL);
+      if (migrateApprovals) {
+        this.database.exec(`INSERT INTO server_approvals (
+          id, session_id, run_id, lane_id, status, tool_call_id, tool_name, reason,
+          request_hash, preview_json, decision, resolved_by, interrupted_reason,
+          created_at, resolved_at, updated_at, version
+        ) SELECT id, session_id, run_id, lane_id, status, tool_call_id, tool_name, reason,
+          request_hash, preview_json, decision, resolved_by, interrupted_reason,
+          created_at, resolved_at, updated_at, version FROM legacy_server_approvals;
+          DROP TABLE legacy_server_approvals;`);
+      }
+      this.database.exec(`PRAGMA user_version = ${SERVER_STATE_SCHEMA_VERSION}; COMMIT;`);
+    } catch (error) {
+      if (this.database.isTransaction) this.database.exec('ROLLBACK');
+      this.database.close();
+      throw error;
+    }
 
     this.sessions = {
       createCreating: async (input) => this.createCreating(input),
@@ -217,6 +248,76 @@ export class SqliteServerStateStore implements ServerStateStore {
 
   async close(): Promise<void> {
     this.database.close();
+  }
+
+  /** One-time legacy title seed; never overwrites an application title or reimports a cleared title. */
+  importLegacySessionTitle(sessionId: string, title: string, legacy?: { createdAt: string; updatedAt: string }): SessionMetadataRecord {
+    return this.transaction(() => {
+      const existing = this.session(sessionId);
+      this.ensureActive({ sessionId });
+      if (!existing && legacy) {
+        this.database.prepare('UPDATE server_sessions SET created_at = ?, updated_at = ? WHERE session_id = ?')
+          .run(Date.parse(legacy.createdAt), Date.parse(legacy.updatedAt), sessionId);
+      }
+      const marker = this.database.prepare(
+        "INSERT OR IGNORE INTO application_metadata_imports(session_id, source) VALUES (?, 'desktop-jsonl-title-v1')"
+      ).run(sessionId);
+      if (marker.changes) {
+        this.database.prepare('UPDATE server_sessions SET title = ?, revision = revision + 1 WHERE session_id = ? AND title IS NULL')
+          .run(title, sessionId);
+      }
+      return this.requireSession(sessionId);
+    });
+  }
+
+  importLegacySessionProject(meta: SessionMeta): SessionProject {
+    const project = sessionProjectSchema.parse(meta);
+    return this.transaction(() => {
+      this.requireSession(meta.id);
+      this.database.prepare('INSERT OR IGNORE INTO application_session_projects(session_id, metadata_json) VALUES (?, ?)')
+        .run(meta.id, JSON.stringify(project));
+      return this.requireSessionProject(meta.id);
+    });
+  }
+
+  bindSessionProject(sessionId: string, workingDirectory: string, projectIdentity: ProjectIdentity): SessionProject {
+    const project = sessionProjectSchema.parse({ workingDirectory, projectIdentity, projectBound: true });
+    return this.transaction(() => {
+      this.requireSession(sessionId);
+      this.database.prepare(`INSERT INTO application_session_projects(session_id, metadata_json) VALUES (?, ?)
+        ON CONFLICT(session_id) DO UPDATE SET metadata_json = excluded.metadata_json`).run(sessionId, JSON.stringify(project));
+      this.bump(sessionId, this.clock.now());
+      return this.requireSessionProject(sessionId);
+    });
+  }
+
+  private requireSessionProject(sessionId: string): SessionProject {
+    const row = this.database.prepare('SELECT metadata_json FROM application_session_projects WHERE session_id = ?').get(sessionId) as Row | undefined;
+    if (!row) throw new Error(`session_project_not_found: ${sessionId}`);
+    return sessionProjectSchema.parse(JSON.parse(stringValue(row.metadata_json, 'session project')));
+  }
+
+  getDesktopSessionMetadata(sessionId: string): SessionMeta | null {
+    const session = this.session(sessionId);
+    if (!session || !this.database.prepare('SELECT 1 FROM application_session_projects WHERE session_id = ?').get(sessionId)) return null;
+    return {
+      id: sessionId, title: session.title ?? DEFAULT_SESSION_TITLE,
+      ...this.requireSessionProject(sessionId), createdAt: session.createdAt, updatedAt: session.updatedAt
+    };
+  }
+
+  listDesktopSessionMetadata(): SessionMeta[] {
+    const ids = this.database.prepare(`SELECT session_id FROM application_session_projects
+      JOIN server_sessions USING (session_id) ORDER BY updated_at DESC, session_id`).all() as Row[];
+    return ids.map(row => this.getDesktopSessionMetadata(stringValue(row.session_id, 'session id'))!);
+  }
+
+  deleteSessionPermanently(sessionId: string): void {
+    this.transaction(() => {
+      this.database.prepare('INSERT OR IGNORE INTO application_deleted_sessions(session_id, deleted_at) VALUES (?, ?)')
+        .run(sessionId, this.clock.now());
+      this.database.prepare('DELETE FROM server_sessions WHERE session_id = ?').run(sessionId);
+    });
   }
 
   private createCreating(input: CreateSessionMetadataRecord): SessionMetadataRecord {
@@ -342,17 +443,23 @@ export class SqliteServerStateStore implements ServerStateStore {
     return this.transaction(() => {
       const existing = this.approval(input.id);
       if (existing) {
-        if (existing.requestHash === input.requestHash) return existing;
+        if (existing.requestHash === input.requestHash && existing.sessionId === input.sessionId
+          && existing.runId === input.runId && existing.laneId === input.laneId
+          && (existing.scope ?? 'run') === (input.scope ?? 'run')) return existing;
         throw new Error(`approval_conflict: ${input.id}`);
+      }
+      if (input.scope !== 'session') {
+        const run = this.run(input.runId);
+        if (!run || run.sessionId !== input.sessionId || run.laneId !== input.laneId) throw new Error(`run_not_found: ${input.runId}`);
       }
       const now = this.clock.now();
       this.database.prepare(`
         INSERT INTO server_approvals(
-          id, session_id, run_id, lane_id, status, tool_call_id, tool_name, reason,
+          id, session_id, run_id, lane_id, scope, status, tool_call_id, tool_name, reason,
           request_hash, preview_json, created_at, updated_at, version
-        ) VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, 1)
+        ) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, 1)
       `).run(
-        input.id, input.sessionId, input.runId, input.laneId, input.toolCallId, input.toolName,
+        input.id, input.sessionId, input.runId ?? null, input.laneId ?? null, input.scope ?? 'run', input.toolCallId, input.toolName,
         input.reason, input.requestHash, input.preview ? JSON.stringify(input.preview) : null, now, now
       );
       this.bump(input.sessionId, now);

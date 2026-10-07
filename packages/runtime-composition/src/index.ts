@@ -1,4 +1,6 @@
 export { createJojoRuntime, RuntimeEnvironmentBuilder } from './runtime.js';
+export { createProductRuntime } from './product.js';
+export type { ProductRuntimeOptions, ProductRuntime } from './product.js';
 export { RuntimeEnvironmentRegistry } from './environment-registry.js';
 export type {
   JojoRuntimeCompositionOptions,

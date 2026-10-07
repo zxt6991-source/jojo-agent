@@ -1,7 +1,8 @@
+import type { JojoAppService } from '@desktop-agent/app-service';
 import { executionFingerprint } from '@desktop-agent/agent-runtime';
 import { resolveModelForRun } from '@desktop-agent/contracts';
 import { LocalAttachmentAccessResolver } from '@desktop-agent/attachment-access/local';
-import type { AgentRuntime, RuntimePermissionGate } from '@desktop-agent/agent-runtime';
+import type { AgentRuntime, RunRequest, RuntimePermissionGate } from '@desktop-agent/agent-runtime';
 import { MemoryAgentRuntimeStore, type AgentRuntimeStore } from '@desktop-agent/agent-runtime/spi';
 import type { MemoryRuntime } from '@desktop-agent/agent-runtime';
 import {
@@ -48,6 +49,7 @@ export type DesktopLeafAgentRunnerOptions = {
   runtimeStore?: AgentRuntimeStore;
   memoryRuntime?: MemoryRuntime;
   runtimeService?: SharedRuntimeService;
+  application?: JojoAppService | Promise<JojoAppService>;
   governance?: {
     engine: PermissionGovernanceEngine;
     audit: PermissionAuditSink;
@@ -239,7 +241,7 @@ export function createDesktopOrchestratedAgentRunner(options: DesktopLeafAgentRu
               id: laneId,
               parentLaneId: request.parentLaneId ?? 'main'
             });
-        const handle = await lane.run({
+        const runRequest: RunRequest = {
           input: request.task,
           model,
           providerId: request.providerId,
@@ -273,7 +275,26 @@ export function createDesktopOrchestratedAgentRunner(options: DesktopLeafAgentRu
             contextWindowTokens: resolveModelForRun(providerRuntime.config, model).contextWindowTokens,
             maxOutputTokens: resolveModelForRun(providerRuntime.config, model, { maxOutputTokens: 4_096 }).requestMaxOutputTokens
           }
-        });
+        };
+        const handle = options.application
+          ? await (await options.application).startRunHandle({
+              requestId: request.id,
+              principal: { id: 'desktop-orchestration', type: 'local', scopes: [] }
+            }, request.sessionId, {
+              laneId,
+              input: { content: [{ type: 'text', text: request.task }] },
+              providerId: runRequest.providerId,
+              model: runRequest.model,
+              instructions: runRequest.instructions,
+              budget: runRequest.budget
+            }, {
+              signal,
+              ...(runRequest.actor ? { actor: runRequest.actor } : {}),
+              trigger: { kind: request.actor.kind, id: request.id },
+              ...(runRequest.workflow ? { workflow: runRequest.workflow } : {}),
+              ...(runRequest.team ? { team: runRequest.team } : {})
+            })
+          : await lane.run(runRequest);
         const result = await handle.result;
         if (result.status === 'failed') {
           const code = result.error?.code ?? 'provider_error';

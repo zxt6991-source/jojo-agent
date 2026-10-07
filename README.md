@@ -73,11 +73,11 @@ flowchart LR
   ChannelRuntime -.回复 / 主动投递.-> Channel
 ```
 
-桌面端与 Headless Server 复用同一个 Runtime / App Service 边界：请求进入 Session 与 Lane 后，由模型决定是否调用工具；工具调用先经过 Domain Security Gate 和 Permission Governance，再进入文件、终端、浏览器、扩展或编排能力。执行事件和结果会持久化并返回原入口。Scheduler 使用独立 SQLite、租约和运行记录保证重启后可恢复；桌面端支持 Agent、Team Member、Workflow 三类 Target，Headless Server 当前只支持 Agent Target。Channel Runtime 负责外部会话的绑定、配对、审批和可靠投递，不绕过 Runtime 权限边界。
+桌面端与 Headless Server 复用同一个 Runtime。Server 使用 App Service，Desktop 会话准备与新运行已接入共享 App Service，恢复与审批入口仍在收口：请求进入 Session 与 Lane 后，由模型决定是否调用工具；工具调用先经过 Domain Security Gate 和 Permission Governance，再进入文件、终端、浏览器、扩展或编排能力。执行事件和结果会持久化并返回原入口。Scheduler 使用独立 SQLite、租约和运行记录保证重启后可恢复；桌面端支持 Agent、Team Member、Workflow 三类 Target，Headless Server 当前只支持 Agent Target。Channel Runtime 负责外部会话的绑定、配对、审批和可靠投递，不绕过 Runtime 权限边界。
 
 ## 已实现
 
-- Electron Main / sandboxed Preload / React Renderer / Utility Process；Desktop Worker 通过 `createJojoRuntime()` 装配 Runtime，而不是在进程内直接驱动旧循环；
+- Electron Main / sandboxed Preload / React Renderer / Utility Process；Desktop 与 Server 通过 `createProductRuntime()` 统一创建 Runtime、执行恢复对账并装配 App Service，Host 继续提供各自适配器；
 - OpenAI Chat Completions 兼容 Provider：自定义 Base URL、模型发现、逐轮选模型、流式输出；另有 OpenAI 兼容 Embedding，供记忆语义检索使用；
 - Agent Core：多轮工具循环、上下文估算、大结果回收、历史压缩、拒绝回填、重复调用保护；
 - Runtime 公共边界：`AgentRuntime`、`RuntimeSession`、`RuntimeLane`、`RunHandle`、版本化 Contract，以及统一的 Provider / Tool / Permission / Approval / Memory / Hook 注入；
@@ -88,7 +88,8 @@ flowchart LR
 - 十个主 Agent 文件 / 网页 / 终端工具：`read_file`、`list_files`、`grep`、`glob`、`web_search`、`web_fetch`、`write_file`、`edit_file`、`delete_file`、`terminal`；另有 Spawn、Team、Workflow、Scheduler、Channel、Memory、Browser、MCP / Skills 编排工具；
 - 工作目录边界、真实路径 / 符号链接检查、写前冲突检测、精确编辑与回收站；Terminal 不经过 Shell，使用参数数组、环境变量 allowlist、假 HOME / 独立临时目录、流式脱敏、超时与进程树回收；
 - 共享 `@desktop-agent/process-sandbox`：Linux Bubblewrap、macOS Seatbelt 和 Soft fallback；Terminal 网络默认为 `none`，需要联网的命令可申请 `host` 全局网络并由用户在审批中决定，strict 模式在强后端不可用时 fail closed，fallback 的宿主能力会进入审批风险预览。macOS Seatbelt 是敏感目录与网络强化，不等同于 Linux mount namespace 的最小 Host 可见性；
-- 会话删除通过 Main 生命周期门禁与 Storage tombstone / 跨实例串行化阻止晚到写入复活 JSONL；
+- Desktop 会话正文统一存入 Runtime SQLite；旧 JSONL 正文一次性导入，元数据继续兼容文件存储。Scheduler 投递支持持久排队，历史、Artifact 与导出均读取 Runtime；
+- 会话删除通过 Main 生命周期门禁、文件 tombstone 和 Runtime 永久删除记录阻止晚到写入或旧文件复活会话；
 - Desktop IPC 边界使用严格 Zod Schema 和负载大小限制，覆盖 Main ↔ Worker 命令与事件，以及 Preload 推送到 Renderer 的消息；非法消息会被拒绝并记录协议违规；
 - 统一 Permission Governance：先执行既有 Domain Security Gate，再依次处理 baseline deny / Hard Floor、用户 DENY、Mandatory Approval、用户 ASK、Session Grant、用户 ALLOW 与 Mode；Workspace 规则对 ALLOW / ASK 比 Global 更具体，任意作用域的 DENY 始终优先。底层 `deny`、工作区外写入等安全边界不能被 Policy、Grant、AUTO 或 YOLO 覆盖；
 - Permissions 设置页支持 Global / Workspace Policy、严格 JSON Rules、revision 与 Recent Decisions。规则可匹配 actor、trigger、source、tool、operation、risk、network、是否使用密钥及 resource scope；策略和脱敏后的决策审计保存在 `runtime/permissions.sqlite`，项目文件不能通过提交 `.jojo` 配置给自己授权；
@@ -174,7 +175,11 @@ pnpm test:e2e:electron
 
 ### Headless Server 与 Client SDK
 
-`apps/server` 导出 `createHeadlessServer()` 和 `createNetworkServer()`。网络层默认只允许监听 `127.0.0.1:7788`；非回环地址必须同时显式启用 `allowRemote` 并配置 token。协议版本为 `1`，提供 `/healthz`、`/readyz`、`/api/v1` REST 资源与 `/api/v1/events` WebSocket。REST API 除 Session / Run / Approval 外，还覆盖 Schedule 和 Channel Instance / Binding / Pairing / Delivery / Health；内置 Headless Scheduler 目前只接受 Agent Target。Channel 内置 Telegram 与飞书 Adapter，Webhook 入口为 `/api/v1/channels/webhook/:instanceId`。
+<!-- generated:compatibility:start -->
+当前应用版本：`0.1.0`；Server 协议版本：`3`。完整格式版本与内置能力见 [自动生成的能力清单](docs/current-features.generated.md)。
+<!-- generated:compatibility:end -->
+
+`apps/server` 导出 `createHeadlessServer()` 和 `createNetworkServer()`。网络层默认只允许监听 `127.0.0.1:7788`；非回环地址必须同时显式启用 `allowRemote` 并配置 token。协议版本见下方自动生成摘要，提供 `/healthz`、`/readyz`、`/api/v1` REST 资源与 `/api/v1/events` WebSocket。REST API 除 Session / Run / Approval 外，还覆盖 Schedule 和 Channel Instance / Binding / Pairing / Delivery / Health；内置 Headless Scheduler 目前只接受 Agent Target。Channel 内置 Telegram 与飞书 Adapter，Webhook 入口为 `/api/v1/channels/webhook/:instanceId`。
 
 Client SDK 示例：
 

@@ -7,7 +7,7 @@
 
 Contracts 是 monorepo 的协议内核，统一定义消息、工具、模型、权限、Agent 事件、会话、配置、工作区变更、IPC 和 Worker 通信。它不包含业务执行逻辑，只提供 TypeScript 类型、Zod Schema 与稳定常量。
 
-核心原则是：从磁盘读取的数据和 Renderer→Main 的 IPC 输入使用 Schema 做运行时校验；含 `AbortSignal`、函数或位于可信内部通道的数据使用 TypeScript 接口。Main↔Worker 消息目前只有静态类型约束，后续需要补运行时校验。
+核心原则是：从磁盘读取的数据和 Renderer→Main 的 IPC 输入使用 Schema 做运行时校验；含 `AbortSignal`、函数或位于可信内部通道的数据使用 TypeScript 接口。Main↔Worker 消息已通过 `WorkerCommandSchema` / `WorkerMessageSchema` 进行运行时校验并限制负载大小；协议握手与版本协商尚待实现。
 
 对外只暴露包根入口 `@desktop-agent/contracts`。`src/index.ts` 是无逻辑的聚合入口，内部实现按领域拆分，调用方不依赖内部文件路径，因此可以在不迁移业务包 import 的前提下调整内部结构。
 
@@ -96,3 +96,7 @@ turn.started
 - 为 Worker 消息增加协议版本和 request/correlation ID。
 - 引入新的持久化版本时提供纯函数迁移器，并保留真实历史样本回归测试。
 - 当支持多个 Provider 时，增加可判别的 Provider 配置，而不是继续向单一设置对象平铺字段。
+
+应用服务的 Session / Run / Transcript / Approval Schema 位于 `@desktop-agent/contracts/application`；Server Protocol 复用这些 Schema，并仅为网络传输补充 lease、connectionId 与上传凭证等字段。格式版本与内置能力见 [生成清单](../current-features.generated.md)，由 `pnpm docs:check` 校验。
+
+`@desktop-agent/contracts/application/operations` 提供应用 Operation Registry，REST 与部分 Desktop IPC 从中获取输入 Schema，Server Core 从中获取相应权限 scope。资源 ID 留在路由/envelope；Desktop 的本地授权范围和 secret 引用限制仍由 Host Schema 校验。见 [应用操作目录](../current-operations.generated.md)。

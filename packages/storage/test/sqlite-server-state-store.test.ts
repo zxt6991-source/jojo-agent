@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
+import { SERVER_STATE_SCHEMA_SQL } from '../src/server-state-schema.js';
 import { SqliteServerStateStore } from '../src/sqlite-server-state-store.js';
 
 async function databaseFile(): Promise<string> {
@@ -10,6 +11,31 @@ async function databaseFile(): Promise<string> {
 }
 
 describe('SqliteServerStateStore', () => {
+  it('upgrades v2 without losing runs, then permanently removes their result copies', async () => {
+    const filename = await databaseFile();
+    const original = new SqliteServerStateStore(filename);
+    await original.sessions.ensureActive({ sessionId: 's', title: 'kept' });
+    await original.runs.createAccepted({ id: 'r', sessionId: 's', laneId: 'main', providerId: 'p', model: 'm', inputHash: 'hash' });
+    await original.approvals.createPending({ id: 'a', sessionId: 's', laneId: 'main', runId: 'r', toolCallId: 'c', toolName: 'write', reason: 'ask', requestHash: 'hash' });
+    await original.close();
+    const old = new DatabaseSync(filename);
+    old.exec('DROP TRIGGER application_session_no_resurrection; DROP TABLE application_deleted_sessions; PRAGMA user_version = 2');
+    old.close();
+    const upgraded = new SqliteServerStateStore(filename);
+    const second = new SqliteServerStateStore(filename);
+    try {
+      expect(await upgraded.sessions.get('s')).toMatchObject({ title: 'kept' });
+      expect(await upgraded.runs.get('r')).toMatchObject({ inputHash: 'hash' });
+      upgraded.deleteSessionPermanently('s');
+      expect(await second.runs.get('r')).toBeUndefined();
+      expect(await second.approvals.get('a')).toBeUndefined();
+      await expect(second.sessions.ensureActive({ sessionId: 's' })).rejects.toThrow('application_session_deleted');
+      await expect(second.sessions.createCreating({ sessionId: 's' })).rejects.toThrow('application_session_deleted');
+    } finally { await upgraded.close(); await second.close(); }
+    const reopened = new SqliteServerStateStore(filename);
+    try { await expect(reopened.sessions.ensureActive({ sessionId: 's' })).rejects.toThrow('application_session_deleted'); }
+    finally { await reopened.close(); }
+  });
   it('migrates an existing v1 database to the idempotency schema', async () => {
     const filename = await databaseFile();
     const legacy = new DatabaseSync(filename);
@@ -24,7 +50,7 @@ describe('SqliteServerStateStore', () => {
     await migrated.close();
 
     const verified = new DatabaseSync(filename);
-    expect(verified.prepare('PRAGMA user_version').get()).toEqual({ user_version: 2 });
+    expect(verified.prepare('PRAGMA user_version').get()).toEqual({ user_version: 6 });
     expect(verified.prepare(`
       SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'server_idempotency'
     `).get()).toEqual({ name: 'server_idempotency' });
@@ -110,7 +136,7 @@ describe('SqliteServerStateStore', () => {
     };
     expect(row.preview_json).toContain('/safe/path');
     expect(row.preview_json).not.toContain('patch');
-    expect(database.prepare('PRAGMA user_version').get()).toEqual({ user_version: 2 });
+    expect(database.prepare('PRAGMA user_version').get()).toEqual({ user_version: 6 });
     database.close();
   });
 
@@ -146,4 +172,58 @@ describe('SqliteServerStateStore', () => {
     })).resolves.toEqual({ status: 'claimed' });
     await reopened.close();
   });
+});
+
+
+it.each([false, true])('migrates v3 approval audit atomically (corrupt foreign key: %s)', async corrupt => {
+  const filename = await databaseFile();
+  const legacy = new DatabaseSync(filename);
+  const v3 = SERVER_STATE_SCHEMA_SQL
+    .replace("    scope TEXT NOT NULL DEFAULT 'run' CHECK(scope IN ('run', 'session')),\n", '')
+    .replace('    run_id TEXT REFERENCES server_runs(id)', '    run_id TEXT NOT NULL REFERENCES server_runs(id)')
+    .replace('    lane_id TEXT,', '    lane_id TEXT NOT NULL,')
+    .replace(",\n    CHECK((scope = 'run' AND run_id IS NOT NULL AND lane_id IS NOT NULL)\n       OR (scope = 'session' AND run_id IS NULL AND lane_id IS NULL))", '');
+  legacy.exec(v3);
+  legacy.exec(`PRAGMA user_version = 3;
+    INSERT INTO server_sessions(session_id,state,created_at,updated_at) VALUES ('s','active',1000,1000);
+    INSERT INTO server_runs(id,session_id,lane_id,status,provider_id,model,input_hash,created_at,updated_at)
+      VALUES ('r','s','main','running','p','m','h',1000,1000);
+    INSERT INTO server_approvals(id,session_id,run_id,lane_id,status,tool_call_id,tool_name,reason,request_hash,
+      decision,resolved_by,created_at,resolved_at,updated_at,version)
+      VALUES ('old','s','r','main','allowed','c','write','ask','h','allow','owner',1000,2000,2000,2);`);
+  expect(legacy.prepare('PRAGMA table_info(server_approvals)').all().some(column => column.name === 'scope')).toBe(false);
+  if (corrupt) legacy.exec("PRAGMA foreign_keys = OFF; DELETE FROM server_runs WHERE id = 'r';");
+  legacy.close();
+  if (corrupt) {
+    expect(() => new SqliteServerStateStore(filename)).toThrow('FOREIGN KEY');
+    const unchanged = new DatabaseSync(filename);
+    try {
+      expect(unchanged.prepare('PRAGMA user_version').get()).toEqual({ user_version: 3 });
+      expect(unchanged.prepare('SELECT status FROM server_approvals WHERE id = ?').get('old')).toEqual({ status: 'allowed' });
+      expect(unchanged.prepare('PRAGMA table_info(server_approvals)').all().some(column => column.name === 'scope')).toBe(false);
+    } finally { unchanged.close(); }
+    return;
+  }
+  const upgraded = new SqliteServerStateStore(filename);
+  try {
+    expect(await upgraded.approvals.get('old')).toMatchObject({
+      sessionId: 's', runId: 'r', laneId: 'main', status: 'allowed', decision: 'allow',
+      resolvedBy: 'owner', version: 2, resolvedAt: new Date(2000).toISOString()
+    });
+    const preparation = { id: 'preflight', scope: 'session' as const, sessionId: 's', toolCallId: 'hook',
+      toolName: 'hook', reason: 'trust', requestHash: 'session-hash' };
+    await upgraded.approvals.createPending(preparation);
+    await upgraded.approvals.resolve('preflight', 'deny', 'owner');
+    await expect(upgraded.approvals.createPending({ ...preparation, sessionId: 'other' })).rejects.toThrow('approval_conflict');
+    await expect(upgraded.approvals.createPending({ ...preparation, id: 'bad-run', scope: 'run', runId: 'missing', laneId: 'main' }))
+      .rejects.toThrow('run_not_found');
+  } finally { await upgraded.close(); }
+  const reopened = new SqliteServerStateStore(filename);
+  try {
+    expect(await reopened.approvals.get('preflight')).toMatchObject({ scope: 'session', status: 'denied', resolvedBy: 'owner' });
+    expect(await reopened.approvals.get('preflight')).not.toHaveProperty('runId');
+    reopened.deleteSessionPermanently('s');
+    expect(await reopened.approvals.get('preflight')).toBeUndefined();
+    expect(await reopened.approvals.get('old')).toBeUndefined();
+  } finally { await reopened.close(); }
 });

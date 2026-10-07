@@ -1,3 +1,4 @@
+import type { JojoAppService } from '@desktop-agent/app-service';
 import type { AgentRuntime } from '@desktop-agent/agent-runtime';
 import type { OrchestrationEvent } from '@desktop-agent/contracts';
 import type { TeamManager, WorkflowManager } from '@desktop-agent/orchestration';
@@ -28,8 +29,9 @@ export type DesktopSchedulerRuntime = {
 export type DesktopSchedulerRuntimeOptions = {
   dataDirectory: string;
   runtime: AgentRuntime;
-  teamManager: TeamManager;
-  workflowManager: WorkflowManager;
+  application: JojoAppService;
+  teamManager: Pick<TeamManager, 'getTask' | 'delegate' | 'cancel'>;
+  workflowManager: Pick<WorkflowManager, 'get' | 'start' | 'cancel'>;
   subscribeOrchestration(listener: (event: OrchestrationEvent) => void): () => void;
   prepareAgent(
     input: ScheduleDispatchRequest<AgentScheduleTarget>,
@@ -52,7 +54,21 @@ export async function createDesktopSchedulerRuntime(
   const store = new SqliteScheduleStore(path.join(options.dataDirectory, 'runtime', 'scheduler.sqlite'));
   const calculator = new DefaultScheduleCalculator();
   const registry = new ScheduleDispatcherRegistry();
-  const agentDispatcher = new AgentScheduleDispatcher(options.runtime, { prepare: options.prepareAgent });
+  const agentDispatcher = new AgentScheduleDispatcher(options.runtime, {
+    prepare: options.prepareAgent,
+    startRun: (input, laneId) => options.application.startRunHandle({
+      requestId: input.run.id,
+      principal: { id: 'scheduler', type: 'service', scopes: [] }
+    }, input.target.sessionId, {
+      laneId, input: input.target.input, providerId: input.target.providerId, model: input.target.model,
+      ...(input.target.instructions ? { instructions: input.target.instructions } : {}),
+      ...(input.target.budget ? { budget: input.target.budget } : {})
+    }, {
+      runId: input.executionId, actor: { kind: 'main' },
+      trigger: { kind: 'scheduler', id: input.run.id },
+      metadata: { scheduleId: input.schedule.id, scheduleRunId: input.run.id }
+    })
+  });
   const teamDispatcher = new TeamMemberScheduleDispatcher(options.teamManager, options.subscribeOrchestration);
   const workflowDispatcher = new WorkflowScheduleDispatcher(options.workflowManager, options.subscribeOrchestration);
   registry.register(agentDispatcher);

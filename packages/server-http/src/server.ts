@@ -1,3 +1,4 @@
+import { APPLICATION_OPERATIONS } from '@desktop-agent/contracts/application/operations';
 import { ArtifactTargetV2Schema, artifactsFromMessages, type ArtifactErrorCode, type Message } from '@desktop-agent/contracts';
 import { ArtifactContentError, artifactFailure, assertArtifactRevision, parseArtifactIfMatch, readSessionArtifactV2, readSessionArtifact } from '@desktop-agent/tools-node';
 import { timingSafeEqual } from 'node:crypto';
@@ -15,24 +16,11 @@ import { asProtocolError, ProtocolFailure, protocolStatus, type JojoServerCore }
 import {
   ClientCommandSchema,
   ClientHelloSchema,
-  ApproveChannelPairingInputSchema,
   ChannelDeliveryListQuerySchema,
   ChannelPairingListQuerySchema,
-  CreateChannelBindingInputSchema,
-  CreateChannelInstanceInputSchema,
-  CreateScheduleInputSchema,
-  CreateSessionInputSchema,
   JOJO_SERVER_PROTOCOL_VERSION,
-  PatchSessionMetadataInputSchema,
-  ResolveApprovalInputSchema,
-  RunScheduleNowInputSchema,
   ScheduleRunListQuerySchema,
   StartRunInputSchema,
-  TestChannelInputSchema,
-  TranscriptQuerySchema,
-  UpdateScheduleInputSchema,
-  UpdateChannelBindingInputSchema,
-  UpdateChannelInstanceInputSchema,
   type Principal,
   type RequestContext,
   type ServerWireMessage
@@ -162,7 +150,7 @@ export async function createJojoHttpServer(
   )));
   app.post('/api/v1/channels', async (request, reply) => withHttp(request, reply, options.token, async (ctx) => {
     const result = await core.createChannelInstance(
-      ctx, parse(CreateChannelInstanceInputSchema, request.body), header(request, 'idempotency-key')
+      ctx, parse(APPLICATION_OPERATIONS['channel.instance.create'].input, request.body), header(request, 'idempotency-key')
     );
     return reply.code(201).send(result);
   }));
@@ -170,7 +158,7 @@ export async function createJojoHttpServer(
     core.updateChannelInstance(
       ctx,
       param(request, 'instanceId'),
-      parse(UpdateChannelInstanceInputSchema, request.body),
+      parse(APPLICATION_OPERATIONS['channel.instance.update'].input, request.body),
       header(request, 'idempotency-key')
     )
   )));
@@ -183,7 +171,7 @@ export async function createJojoHttpServer(
   }));
   app.post('/api/v1/channels/:instanceId/test', async (request, reply) => withHttp(request, reply, options.token, async (ctx) => {
     const result = await core.testChannel(
-      ctx, param(request, 'instanceId'), parse(TestChannelInputSchema, request.body), header(request, 'idempotency-key')
+      ctx, param(request, 'instanceId'), parse(APPLICATION_OPERATIONS['channel.test'].input, request.body), header(request, 'idempotency-key')
     );
     return reply.code(202).send(result);
   }));
@@ -192,7 +180,7 @@ export async function createJojoHttpServer(
   )));
   app.post('/api/v1/channel-bindings', async (request, reply) => withHttp(request, reply, options.token, async (ctx) => {
     const result = await core.createChannelBinding(
-      ctx, parse(CreateChannelBindingInputSchema, request.body), header(request, 'idempotency-key')
+      ctx, parse(APPLICATION_OPERATIONS['channel.binding.create'].input, request.body), header(request, 'idempotency-key')
     );
     return reply.code(201).send(result);
   }));
@@ -200,7 +188,7 @@ export async function createJojoHttpServer(
     core.updateChannelBinding(
       ctx,
       param(request, 'bindingId'),
-      parse(UpdateChannelBindingInputSchema, request.body),
+      parse(APPLICATION_OPERATIONS['channel.binding.update'].input, request.body),
       header(request, 'idempotency-key')
     )
   )));
@@ -219,7 +207,7 @@ export async function createJojoHttpServer(
     core.approveChannelPairing(
       ctx,
       param(request, 'pairingId'),
-      parse(ApproveChannelPairingInputSchema, request.body),
+      parse(APPLICATION_OPERATIONS['channel.pairing.approve'].input, request.body),
       header(request, 'idempotency-key')
     )
   )));
@@ -238,7 +226,7 @@ export async function createJojoHttpServer(
   )));
   app.get('/api/v1/sessions', async (request, reply) => withHttp(request, reply, options.token, (ctx) => core.listSessions(ctx)));
   app.post('/api/v1/sessions', async (request, reply) => withHttp(request, reply, options.token, async (ctx) => {
-    const input = parse(CreateSessionInputSchema, request.body);
+    const input = parse(APPLICATION_OPERATIONS['session.create'].input, request.body);
     const result = await core.createSession(ctx, input, header(request, 'idempotency-key'));
     return reply.code(201).send(result);
   }));
@@ -249,7 +237,7 @@ export async function createJojoHttpServer(
     core.patchSession(
       ctx,
       param(request, 'sessionId'),
-      parse(PatchSessionMetadataInputSchema, request.body),
+      parse(APPLICATION_OPERATIONS['session.patch'].input, request.body),
       header(request, 'idempotency-key')
     )
   )));
@@ -306,7 +294,7 @@ export async function createJojoHttpServer(
   }
 
   app.get('/api/v1/sessions/:sessionId/transcript', async (request, reply) => withHttp(request, reply, options.token, (ctx) => (
-    core.transcript(ctx, param(request, 'sessionId'), parse(TranscriptQuerySchema, request.query))
+    core.transcript(ctx, param(request, 'sessionId'), parse(APPLICATION_OPERATIONS['transcript.get'].input, request.query))
   )));
   app.post('/api/v1/sessions/:sessionId/runs', async (request, reply) => withHttp(request, reply, options.token, async (ctx) => {
     const result = await core.startRun(
@@ -331,7 +319,7 @@ export async function createJojoHttpServer(
     return snapshot.pendingApprovals;
   }));
   app.post('/api/v1/approvals/:approvalId/resolve', async (request, reply) => withHttp(request, reply, options.token, async (ctx) => {
-    const input = parse(ResolveApprovalInputSchema, request.body);
+    const input = parse(APPLICATION_OPERATIONS['approval.resolve'].input, request.body);
     await core.resolveApproval(ctx, param(request, 'approvalId'), input.decision, header(request, 'idempotency-key'));
     return reply.code(204).send();
   }));
@@ -341,7 +329,7 @@ export async function createJojoHttpServer(
   app.post('/api/v1/schedules', async (request, reply) => withHttp(request, reply, options.token, async (ctx) => {
     const result = await core.createSchedule(
       ctx,
-      parse(CreateScheduleInputSchema, request.body),
+      parse(APPLICATION_OPERATIONS['schedule.create'].input, request.body),
       header(request, 'idempotency-key')
     );
     return reply.code(201).send(result);
@@ -353,7 +341,7 @@ export async function createJojoHttpServer(
     core.updateSchedule(
       ctx,
       param(request, 'scheduleId'),
-      parse(UpdateScheduleInputSchema, request.body),
+      parse(APPLICATION_OPERATIONS['schedule.update'].input, request.body),
       header(request, 'idempotency-key')
     )
   )));
@@ -365,7 +353,7 @@ export async function createJojoHttpServer(
     const result = await core.runScheduleNow(
       ctx,
       param(request, 'scheduleId'),
-      parse(RunScheduleNowInputSchema, request.body ?? {}),
+      parse(APPLICATION_OPERATIONS['schedule.run-now'].input, request.body ?? {}),
       header(request, 'idempotency-key')
     );
     return reply.code(202).send(result);

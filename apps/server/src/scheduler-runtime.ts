@@ -1,3 +1,4 @@
+import type { JojoAppService } from '@desktop-agent/app-service';
 import path from 'node:path';
 import type { AgentRuntime } from '@desktop-agent/agent-runtime';
 import {
@@ -24,6 +25,7 @@ import { SqliteScheduleStore } from '@desktop-agent/storage';
 
 export type HeadlessSchedulerRuntimeOptions = {
   runtime: AgentRuntime;
+  application: JojoAppService;
   dataDir?: string;
   instanceId?: string;
   now?: () => Date;
@@ -93,7 +95,20 @@ export async function createHeadlessSchedulerRuntime(
     : new MemoryScheduleStore();
   const calculator = new DefaultScheduleCalculator();
   const registry = new ScheduleDispatcherRegistry();
-  const dispatcher = new AgentScheduleDispatcher(options.runtime);
+  const dispatcher = new AgentScheduleDispatcher(options.runtime, {
+    startRun: (input, laneId) => options.application.startRunHandle({
+      requestId: input.run.id,
+      principal: { id: 'scheduler', type: 'service', scopes: [] }
+    }, input.target.sessionId, {
+      laneId, input: input.target.input, providerId: input.target.providerId, model: input.target.model,
+      ...(input.target.instructions ? { instructions: input.target.instructions } : {}),
+      ...(input.target.budget ? { budget: input.target.budget } : {})
+    }, {
+      runId: input.executionId, actor: { kind: 'main' },
+      trigger: { kind: 'scheduler', id: input.run.id },
+      metadata: { scheduleId: input.schedule.id, scheduleRunId: input.run.id }
+    })
+  });
   registry.register(dispatcher);
   const engine = new DurableScheduleEngine(
     store,

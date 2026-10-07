@@ -1,3 +1,4 @@
+import { BUILD_COMPATIBILITY } from './build-compatibility.js';
 import { z } from 'zod';
 import { ApprovalRequestSchema } from './agent.js';
 import { ExecutionScopeSchema, JsonValueSchema } from './execution-scope.js';
@@ -5,7 +6,7 @@ import { FileContentBlockSchema, ImageContentBlockSchema, MessageSchema, TextCon
 export { ExecutionScopeSchema, JsonValueSchema } from './execution-scope.js';
 export type { ExecutionScope, JsonValue } from './execution-scope.js';
 
-export const RUNTIME_CONTRACT_VERSION = 1 as const;
+export const RUNTIME_CONTRACT_VERSION = BUILD_COMPATIBILITY.runtimeContract;
 
 export const RuntimeInputBlockSchema = z.discriminatedUnion('type', [
   TextContentBlockSchema.strict(),

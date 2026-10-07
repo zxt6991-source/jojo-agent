@@ -1,0 +1,4 @@
+{"schemaVersion":1,"type":"meta","session":{"id":"session","title":"Legacy fixture","workingDirectory":"/tmp/project","createdAt":"2026-09-01T00:00:00.000Z","updatedAt":"2026-09-01T00:00:00.000Z"}}
+{"schemaVersion":1,"type":"message","message":{"id":"user-1","role":"user","content":[{"type":"text","text":"hello"}],"createdAt":"2026-09-01T00:00:00.000Z"}}
+{"schemaVersion":1,"type":"message","message":{"id":"assistant-1","role":"assistant","content":[{"type":"text","text":"hello back"}],"createdAt":"2026-09-01T00:00:01.000Z"}}
+{"schemaVersion":1,"type":"message","message":{"id":"assistant-1","role":"assistant","content":[{"type":"text","text":"hello back"}],"createdAt":"2026-09-01T00:00:01.000Z"}}

@@ -43,6 +43,76 @@ test('restores the captured execution after killing Electron in model_pending', 
     const after = JSON.parse(await readFile(path.join(directory, 'e2e-request-after.json'), 'utf8'));
     expect(after).toEqual(before);
     expect(readOperation()).toMatchObject({ id: original.id, meta: { execution: original.meta.execution }, state: { phase: 'completed' } });
+    await expect.poll(() => {
+      const db = new DatabaseSync(path.join(directory, 'runtime', 'application.sqlite'));
+      try { return db.prepare('SELECT status FROM server_runs WHERE id = ?').get(original.id)?.status; }
+      finally { db.close(); }
+    }).toBe('completed');
     await expect(launched.page.getByText('hello from offline e2e')).toBeVisible();
   } finally { await launched.app.close(); }
 });
+
+for (const decision of ['allow', 'deny'] as const) {
+  test(`requires approval again after a hard crash, then respects ${decision}`, async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), 'jojo-approval-recovery-'));
+    const target = path.join(directory, 'workspaces', 'general', 'e2e-approved.txt');
+    let launched = await launchElectron(directory);
+    const readOperation = () => {
+      const db = new DatabaseSync(path.join(directory, 'runtime', 'agent-runtime.sqlite'));
+      try {
+        const row = db.prepare('SELECT id, state_json FROM operations ORDER BY updated_at LIMIT 1').get();
+        return row ? { id: String(row.id), state: JSON.parse(String(row.state_json)) } : undefined;
+      } finally { db.close(); }
+    };
+    try {
+      await launched.page.getByRole('button', { name: '新建对话' }).click();
+      await launched.page.getByPlaceholder('随心输入').fill('E2E: approval allow');
+      await launched.page.getByRole('button', { name: '发送消息' }).click();
+      await expect(launched.page.getByRole('dialog')).toBeVisible();
+      const original = readOperation()!;
+      const pending = original.state.calls.find((call: { permission: string }) => call.permission === 'pending');
+      expect(pending.approvalRequest.requestId).toBeTruthy();
+      await expect(readFile(target, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+      const exited = new Promise<void>(resolve => launched.app.process().once('exit', () => resolve()));
+      launched.app.process().kill('SIGKILL');
+      await exited;
+      launched = await launchElectron(directory);
+      const sessions = await launched.page.evaluate(() => window.desktopAgent.listSessions());
+      await launched.page.getByText(sessions[0]!.title, { exact: true }).first().click();
+      await launched.page.getByPlaceholder('随心输入').fill('E2E: text');
+      await launched.page.getByRole('button', { name: '发送消息' }).click();
+      await expect(launched.page.getByRole('dialog')).toBeVisible();
+      expect(readOperation()).toMatchObject({ id: original.id });
+      expect(readOperation()!.state.calls.find((call: { permission: string }) => call.permission === 'pending').approvalRequest.requestId)
+        .not.toBe(pending.approvalRequest.requestId);
+      const renewedId = readOperation()!.state.calls.find((call: { permission: string }) => call.permission === 'pending').approvalRequest.requestId;
+      const readApproval = (id: string) => {
+        const db = new DatabaseSync(path.join(directory, 'runtime', 'application.sqlite'));
+        try { return db.prepare('SELECT status, decision, resolved_by, run_id FROM server_approvals WHERE id = ?').get(id); }
+        finally { db.close(); }
+      };
+      await expect.poll(() => readApproval(pending.approvalRequest.requestId)?.status).toBe('interrupted');
+      await expect.poll(() => readApproval(renewedId)?.status).toBe('pending');
+      expect(readApproval(renewedId)?.run_id).toBe(original.id);
+      expect(readOperation()!.state.calls.find((call: { permission: string }) => call.permission === 'pending'))
+        .toMatchObject({ callId: pending.callId, toolName: pending.toolName, input: pending.input });
+      await launched.page.evaluate(requestId => window.desktopAgent.resolveApproval({ requestId, allow: true }), pending.approvalRequest.requestId);
+      await expect(launched.page.getByRole('dialog')).toBeVisible();
+      await expect(readFile(target, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+      await launched.page.getByRole('button', { name: decision === 'allow' ? /允许一次/ : /拒绝/ }).click();
+      await expect(launched.page.getByText('approval handled')).toBeVisible();
+      await expect.poll(() => readApproval(renewedId)?.status).toBe(decision === 'allow' ? 'allowed' : 'denied');
+      expect(readApproval(renewedId)?.decision).toBe(decision);
+      expect(readApproval(renewedId)?.resolved_by).toBeTruthy();
+      expect(readApproval(pending.approvalRequest.requestId)?.status).toBe('interrupted');
+      await expect(launched.page.getByText('hello from offline e2e')).toBeVisible();
+      if (decision === 'allow') expect(await readFile(target, 'utf8')).toBe('approved');
+      else await expect(readFile(target, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+      await expect.poll(() => {
+        const db = new DatabaseSync(path.join(directory, 'runtime', 'application.sqlite'));
+        try { return db.prepare('SELECT status FROM server_runs WHERE id = ?').get(original.id)?.status; }
+        finally { db.close(); }
+      }).toBe('completed');
+    } finally { await launched.app.close(); }
+  });
+}

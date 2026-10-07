@@ -6,12 +6,29 @@ import { VitePlugin } from '@electron-forge/plugin-vite';
 import { FusesPlugin } from '@electron-forge/plugin-fuses';
 import { FuseV1Options, FuseVersion } from '@electron/fuses';
 
+const signedRelease = process.env.JOJO_SIGN_RELEASE === '1';
+function required(name: string): string {
+  const value = process.env[name];
+  if (!value) throw new Error(`Signed release requires ${name}`);
+  return value;
+}
+const windowsSign = signedRelease && process.platform === 'win32' ? {
+  certificateFile: required('WINDOWS_CERTIFICATE_FILE'),
+  certificatePassword: required('WINDOWS_CERTIFICATE_PASSWORD')
+} : undefined;
+const macSign = signedRelease && process.platform === 'darwin' ? {
+  osxSign: { identity: required('APPLE_SIGN_IDENTITY') },
+  osxNotarize: {
+    appleId: required('APPLE_ID'), appleIdPassword: required('APPLE_APP_PASSWORD'), teamId: required('APPLE_TEAM_ID')
+  }
+} : {};
+
 const config: ForgeConfig = {
-  packagerConfig: { asar: true, executableName: 'DesktopAgent' },
+  packagerConfig: { asar: true, executableName: 'DesktopAgent', ...macSign, ...(windowsSign ? { windowsSign } : {}) },
   rebuildConfig: {},
   makers: [
-    new MakerSquirrel({}), new MakerZIP({}, ['darwin', 'win32']),
-    new MakerDeb({ options: { maintainer: 'Desktop Agent' } })
+    new MakerSquirrel({ name: 'DesktopAgent', authors: 'Desktop Agent', description: 'Desktop AI agent', ...windowsSign }), new MakerZIP({}, ['darwin', 'win32']),
+    new MakerDeb({ options: { name: 'desktop-agent', productName: 'Desktop Agent', bin: 'DesktopAgent', description: 'Desktop AI agent', maintainer: 'Desktop Agent' } })
   ],
   plugins: [
     new VitePlugin({

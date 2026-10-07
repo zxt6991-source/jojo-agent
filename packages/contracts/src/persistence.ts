@@ -1,3 +1,4 @@
+import { BUILD_COMPATIBILITY } from './build-compatibility.js';
 import { DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS, DEFAULT_MODEL_MAX_OUTPUT_TOKENS, ModelConfigSchema, legacyModelConfig } from './model-metadata';
 import { z } from 'zod';
 import { MessageSchema } from './messages';
@@ -72,11 +73,11 @@ export function sessionHasProject(session: Pick<SessionMeta, 'projectBound'>): b
 }
 
 export const SessionRecordSchema = z.discriminatedUnion('type', [
-  z.object({ schemaVersion: z.literal(1), type: z.literal('meta'), session: SessionMetaSchema }),
-  z.object({ schemaVersion: z.literal(1), type: z.literal('message'), message: MessageSchema }),
-  z.object({ schemaVersion: z.literal(1), type: z.literal('title'), title: z.string() }),
+  z.object({ schemaVersion: z.literal(BUILD_COMPATIBILITY.sessionJsonlSchema), type: z.literal('meta'), session: SessionMetaSchema }),
+  z.object({ schemaVersion: z.literal(BUILD_COMPATIBILITY.sessionJsonlSchema), type: z.literal('message'), message: MessageSchema }),
+  z.object({ schemaVersion: z.literal(BUILD_COMPATIBILITY.sessionJsonlSchema), type: z.literal('title'), title: z.string() }),
   z.object({
-    schemaVersion: z.literal(1),
+    schemaVersion: z.literal(BUILD_COMPATIBILITY.sessionJsonlSchema),
     type: z.literal('project'),
     workingDirectory: z.string().min(1),
     projectIdentity: ProjectIdentitySchema

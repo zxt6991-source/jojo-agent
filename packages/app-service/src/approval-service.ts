@@ -1,12 +1,12 @@
 import { createHash } from 'node:crypto';
 import type { ApprovalRequest } from '@desktop-agent/contracts';
 import type { ApprovalBroker, RuntimeResolutionContext } from '@desktop-agent/agent-runtime';
-import type { ApprovalDecision, PendingApprovalSnapshot } from '@desktop-agent/server-protocol';
-import type { ApprovalStore, PersistedApprovalPreview } from './persistence.js';
+import type { ApprovalDecision, PendingApprovalSnapshot } from '@desktop-agent/contracts/application';
+import type { ApprovalStore, ApprovalOwnership, PersistedApprovalPreview } from './persistence.js';
+import { PendingApprovals } from './pending-approvals.js';
 
 type PendingApproval = {
   snapshot: PendingApprovalSnapshot;
-  settle(decision: boolean): void;
 };
 
 export type ApprovalEvent =
@@ -18,8 +18,20 @@ export type ServerApprovalBrokerOptions = {
   now?: () => Date;
 };
 
-export class ServerApprovalBroker implements ApprovalBroker {
-  private readonly pending = new Map<string, PendingApproval>();
+/** Application-facing lifecycle shared by Host approval adapters. */
+export interface ApplicationApprovalBroker extends ApprovalBroker {
+  /** Durable adapters may bind the application's store before accepting requests. */
+  bindStore?(store: ApprovalStore): void;
+  list(sessionId?: string): PendingApprovalSnapshot[];
+  getSessionId(id: string): Promise<string>;
+  resolve(id: string, decision: ApprovalDecision, principalId?: string): Promise<void>;
+  interruptAll(reason: string): Promise<void>;
+  subscribe(listener: (event: ApprovalEvent) => void): () => void;
+}
+
+export class ServerApprovalBroker implements ApplicationApprovalBroker {
+  private readonly pending = new PendingApprovals<PendingApproval>();
+  private readonly requesting = new Set<string>();
   private readonly listeners = new Set<(event: ApprovalEvent) => void>();
   private store: ApprovalStore | undefined;
   private readonly now: () => Date;
@@ -34,58 +46,76 @@ export class ServerApprovalBroker implements ApprovalBroker {
   }
 
   bindStore(store: ApprovalStore): void {
-    if (this.pending.size > 0) throw new Error('approval_store_bind_after_use');
+    if (this.requesting.size > 0) throw new Error('approval_store_bind_after_use');
     this.store = store;
   }
 
-  async requestApproval(
-    request: ApprovalRequest,
-    context: RuntimeResolutionContext,
-    signal: AbortSignal
-  ): Promise<boolean> {
+  requestApproval(request: ApprovalRequest, context: RuntimeResolutionContext, signal: AbortSignal): Promise<boolean> {
+    if (request.sessionId !== context.sessionId) return Promise.reject(new Error('approval_session_mismatch'));
+    return this.requestScoped(request, { runId: context.runId, laneId: context.laneId }, signal);
+  }
+
+  requestSessionApproval(request: ApprovalRequest, signal: AbortSignal): Promise<boolean> {
+    return this.requestScoped(request, { scope: 'session' }, signal);
+  }
+
+  private async requestScoped(request: ApprovalRequest, ownership: ApprovalOwnership, signal: AbortSignal): Promise<boolean> {
     if (signal.aborted) return false;
+    const id = request.requestId;
+    if (this.requesting.has(id)) throw new Error(`approval_exists: ${id}`);
+    this.requesting.add(id);
+    try {
+      return await this.persistAndWait(request, ownership, signal);
+    } finally {
+      this.requesting.delete(id);
+    }
+  }
+
+  private async persistAndWait(request: ApprovalRequest, ownership: ApprovalOwnership, signal: AbortSignal): Promise<boolean> {
     const store = this.requireStore();
     const id = request.requestId;
     if (this.pending.has(id)) throw new Error(`approval_exists: ${id}`);
     const snapshot: PendingApprovalSnapshot = {
       id,
-      sessionId: context.sessionId,
-      laneId: context.laneId,
-      runId: context.runId,
+      sessionId: request.sessionId,
+      ...(ownership.scope === 'session' ? { scope: 'session' as const } : { laneId: ownership.laneId, runId: ownership.runId }),
       createdAt: this.now().toISOString(),
       request
     };
     const preview = persistablePreview(request);
-    await store.createPending({
+    const record = await store.createPending({
       id,
-      sessionId: context.sessionId,
-      laneId: context.laneId,
-      runId: context.runId,
+      sessionId: request.sessionId,
+      ...(ownership.scope === 'session' ? { scope: 'session' as const } : { laneId: ownership.laneId, runId: ownership.runId }),
       toolCallId: request.call.id,
       toolName: request.call.name,
       reason: request.reason,
       requestHash: approvalHash(request, preview),
       ...(preview ? { preview } : {})
     });
+    if (record.sessionId !== request.sessionId || record.runId !== ownership.runId || record.laneId !== ownership.laneId || (record.scope ?? 'run') !== (ownership.scope ?? 'run')) {
+      throw new Error(`approval_conflict: ${id}`);
+    }
+    if (record.status !== 'pending') throw new Error(`approval_already_resolved: ${id}`);
     if (signal.aborted) {
       await store.interrupt(id, 'runtime_aborted');
       return false;
     }
-    return new Promise<boolean>((resolve) => {
-      let settled = false;
-      const settle = (decision: boolean) => {
-        if (settled) return;
-        settled = true;
-        signal.removeEventListener('abort', onAbort);
-        this.pending.delete(id);
-        resolve(decision);
-      };
-      const onAbort = () => { void this.abort(id, settle); };
-      signal.addEventListener('abort', onAbort, { once: true });
-      this.pending.set(id, { snapshot, settle });
-      this.emit({ type: 'approval.required', approval: structuredClone(snapshot) });
-      if (signal.aborted) onAbort();
+    return this.pending.wait(id, { snapshot }, signal, {
+      abort: async () => {
+        const interrupted = await store.interrupt(id, 'runtime_aborted');
+        const allowed = interrupted.status === 'allowed';
+        const active = this.pending.get(id);
+        if (active) this.finish(id, active, allowed ? 'allow' : 'deny');
+        return allowed;
+      },
+      registered: () => this.emit({ type: 'approval.required', approval: structuredClone(snapshot) })
     });
+  }
+
+  get(id: string): PendingApprovalSnapshot | undefined {
+    const snapshot = this.pending.get(id)?.snapshot;
+    return snapshot ? structuredClone(snapshot) : undefined;
   }
 
   list(sessionId?: string): PendingApprovalSnapshot[] {
@@ -94,6 +124,12 @@ export class ServerApprovalBroker implements ApprovalBroker {
       .filter((item) => !sessionId || item.sessionId === sessionId)
       .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
       .map((item) => structuredClone(item));
+  }
+
+  async getSessionId(id: string): Promise<string> {
+    const approval = await this.requireStore().get(id);
+    if (!approval) throw new Error(`approval_not_found: ${id}`);
+    return approval.sessionId;
   }
 
   async resolve(id: string, decision: ApprovalDecision, principalId?: string): Promise<void> {
@@ -107,34 +143,34 @@ export class ServerApprovalBroker implements ApprovalBroker {
       throw new Error(`approval_already_resolved: ${id}`);
     }
     await store.resolve(id, decision, principalId);
-    pending.settle(decision === 'allow');
-    this.emit({
-      type: 'approval.resolved',
-      approval: structuredClone(pending.snapshot),
-      decision
-    });
+    this.finish(id, pending, decision);
+  }
+
+  async interruptSession(sessionId: string, reason = 'session_cancelled'): Promise<void> {
+    await this.interruptPending(reason, sessionId);
   }
 
   async interruptAll(reason: string): Promise<void> {
+    await this.interruptPending(reason);
+  }
+
+  private async interruptPending(reason: string, sessionId?: string): Promise<void> {
     for (const [id, pending] of [...this.pending]) {
-      await this.requireStore().interrupt(id, reason);
-      pending.settle(false);
+      if (sessionId && pending.snapshot.sessionId !== sessionId) continue;
+      const record = await this.requireStore().interrupt(id, reason);
+      this.finish(id, pending, record.status === 'allowed' ? 'allow' : 'deny');
     }
+  }
+
+  private finish(id: string, pending: PendingApproval & { settle(allowed: boolean): void }, decision: ApprovalDecision): void {
+    if (this.pending.get(id) !== pending) return;
+    pending.settle(decision === 'allow');
+    this.emit({ type: 'approval.resolved', approval: structuredClone(pending.snapshot), decision });
   }
 
   subscribe(listener: (event: ApprovalEvent) => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
-  }
-
-  private async abort(id: string, settle: (decision: boolean) => void): Promise<void> {
-    let decision = false;
-    try {
-      const record = await this.requireStore().interrupt(id, 'runtime_aborted');
-      decision = record.status === 'allowed';
-    } finally {
-      settle(decision);
-    }
   }
 
   private requireStore(): ApprovalStore {
@@ -144,7 +180,7 @@ export class ServerApprovalBroker implements ApprovalBroker {
 
   private emit(event: ApprovalEvent): void {
     for (const listener of this.listeners) {
-      try { listener(event); } catch { /* Approval observers are isolated. */ }
+      try { listener(structuredClone(event)); } catch { /* Approval observers are isolated. */ }
     }
   }
 }

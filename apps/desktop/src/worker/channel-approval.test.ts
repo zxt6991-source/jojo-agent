@@ -25,7 +25,7 @@ function interaction(senderId: string, raw: string): ChannelInboundEvent {
 }
 
 describe('DesktopChannelApprovalBridge', () => {
-  it('publishes opaque buttons and resolves once for the initiating sender', async () => {
+  it.each([true, false])('awaits the application decision (%s) for the initiating sender', async pending => {
     const store = new MemoryChannelStore();
     const deliveries: ChannelDeliveryInput[] = [];
     const resolutions: Array<{ id: string; allowed: boolean }> = [];
@@ -40,7 +40,7 @@ describe('DesktopChannelApprovalBridge', () => {
     const bridge = new DesktopChannelApprovalBridge({
       channels, store,
       activeRun: () => ({ runId: 'run', bindingId: 'binding', senderId: 'owner' }),
-      resolve: (id, allowed) => { resolutions.push({ id, allowed }); return true; },
+      resolve: async (id, allowed) => { await Promise.resolve(); resolutions.push({ id, allowed }); return pending; },
       now: () => new Date(now), tokenGenerator: () => generated.shift()!
     });
 
@@ -50,7 +50,8 @@ describe('DesktopChannelApprovalBridge', () => {
     const allow = actions.buttons[0]!.actionToken;
     expect(JSON.stringify(deliveries[0])).not.toContain('approval:allow');
     await expect(bridge.handle(interaction('attacker', allow))).rejects.toThrow('channel_action_token_sender_mismatch');
-    await expect(bridge.handle(interaction('owner', allow))).resolves.toBe(true);
+    if (pending) await expect(bridge.handle(interaction('owner', allow))).resolves.toBe(true);
+    else await expect(bridge.handle(interaction('owner', allow))).rejects.toThrow('channel_approval_not_pending');
     expect(resolutions).toEqual([{ id: 'approval', allowed: true }]);
     await expect(bridge.handle(interaction('owner', allow))).rejects.toThrow('channel_action_token_used');
   });

@@ -1,6 +1,6 @@
 import { DatabaseSync } from 'node:sqlite';
 import { deck, officeZip, paragraph, word } from '../../../packages/attachment-extractors/test/fixtures/office';
-import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import * as XLSX from 'xlsx';
@@ -53,7 +53,7 @@ test('imports files and folders, removes attachments, sends file-only input and 
     await launched.page.locator('.message-files summary').filter({ hasText: 'report.xlsx' }).click();
     await expect(launched.page.locator('.message-files pre').filter({ hasText: '收入,1234' })).toBeVisible();
     const sessions = await launched.page.evaluate(() => window.desktopAgent.listSessions());
-    const journal = await readFile(path.join(dataDirectory, 'sessions', `${sessions[0]!.id}.jsonl`), 'utf8');
+    const journal = JSON.stringify(await launched.page.evaluate((id) => window.desktopAgent.loadMessages(id), sessions[0]!.id));
     expect(journal).toContain('reference/note.md');
     expect(journal).toContain('本月收入 1234 元');
     expect(journal).toContain('收入,1234');

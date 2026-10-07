@@ -1,18 +1,22 @@
 import type { AgentRuntime } from '@desktop-agent/agent-runtime';
 import type { PersistedRunRecord, ServerStateStore } from './persistence.js';
 
-export class ServerRecoveryCoordinator {
+export class ApplicationRecoveryCoordinator {
   constructor(
     private readonly runtime: AgentRuntime,
-    private readonly store: ServerStateStore
+    private readonly store: ServerStateStore,
+    private readonly options: { preservePendingOperations?: boolean } = {}
   ) {}
 
   async reconcile(): Promise<void> {
     await this.reconcileSessions();
     await this.reconcileApprovals();
-    const recovery = await this.runtime.recoverInterruptedOperations({ reason: 'host_restart' });
-    if (!recovery.ready) throw new Error(`runtime_recovery_conflict: ${JSON.stringify(recovery.outcomes)}`);
+    if (!this.options.preservePendingOperations) {
+      const recovery = await this.runtime.recoverInterruptedOperations({ reason: 'host_restart' });
+      if (!recovery.ready) throw new Error(`runtime_recovery_conflict: ${JSON.stringify(recovery.outcomes)}`);
+    }
     await this.reconcileRuns();
+    if (this.options.preservePendingOperations) return;
     if ((await this.store.runs.listRecoverable()).length || (await this.store.approvals.listRecoverable()).length) throw new Error('server_recovery_incomplete');
     for (const session of await this.runtime.listSessions()) {
       const runtimeSession = await this.runtime.getSession(session.id);
@@ -59,7 +63,10 @@ export class ServerRecoveryCoordinator {
     if (runtime && (runtime.sessionId !== run.sessionId || runtime.laneId !== run.laneId)) {
       throw new Error('runtime_run_identity_conflict');
     }
-    if (runtime && !runtime.result) throw new Error('runtime_recovery_nonterminal');
+    if (runtime && !runtime.result) {
+      if (this.options.preservePendingOperations) return;
+      throw new Error('runtime_recovery_nonterminal');
+    }
     const result = runtime?.result;
     if (!result) {
       await this.store.runs.markInterrupted(run.id, {
@@ -90,3 +97,6 @@ export class ServerRecoveryCoordinator {
     }
   }
 }
+
+/** Compatibility name for the default interrupt-on-restart policy. */
+export { ApplicationRecoveryCoordinator as ServerRecoveryCoordinator };

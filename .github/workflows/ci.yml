@@ -25,6 +25,9 @@ jobs:
           key: electron-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
+      - run: pnpm test:release
+      - run: pnpm test:architecture
+      - run: pnpm docs:check
       - run: pnpm typecheck
       - run: pnpm test
       - name: Electron E2E smoke

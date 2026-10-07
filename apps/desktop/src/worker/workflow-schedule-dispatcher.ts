@@ -34,7 +34,7 @@ export class WorkflowScheduleDispatcher implements TypedScheduleTargetDispatcher
   private readonly unsubscribeOrchestration: () => void;
 
   constructor(
-    private readonly manager: WorkflowManager,
+    private readonly manager: Pick<WorkflowManager, 'get' | 'start' | 'cancel'>,
     subscribeOrchestration: (listener: (event: OrchestrationEvent) => void) => () => void
   ) {
     this.unsubscribeOrchestration = subscribeOrchestration((event) => {

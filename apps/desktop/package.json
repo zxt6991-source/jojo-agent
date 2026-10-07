@@ -40,7 +40,8 @@
     "zustand": "^5.0.9",
     "@desktop-agent/attachments": "workspace:*",
     "@desktop-agent/attachment-extractors": "workspace:*",
-    "@desktop-agent/attachment-access": "workspace:*"
+    "@desktop-agent/attachment-access": "workspace:*",
+    "@desktop-agent/app-service": "workspace:*"
   },
   "devDependencies": {
     "@electron-forge/cli": "^7.10.2",

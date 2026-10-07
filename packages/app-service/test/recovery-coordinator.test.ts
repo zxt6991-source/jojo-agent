@@ -9,6 +9,26 @@ import { MemoryServerStateStore, ServerRecoveryCoordinator } from '../src/index.
 const allow: PermissionGate = { check: async () => ({ decision: 'allow' }) };
 
 describe('ServerRecoveryCoordinator', () => {
+  it('preserves captured ownership for Desktop while interrupting an uncommitted application run', async () => {
+    const runtimeStore = new MemoryAgentRuntimeStore();
+    const runtime = await createJojoRuntime({ store: runtimeStore, host: { kind: 'desktop' }, providers: { describe: describeTestProvider, resolve: () => new ScriptedProvider([]) }, permissions: allow });
+    const store = new MemoryServerStateStore();
+    try {
+      await runtime.openSession({ id: 's' });
+      await runtimeStore.startOperation({ id: 'old', sessionId: 's', lane: 'main', kind: 'run', createdAt: 0, providerId: 'p', model: 'm', maxIterations: 1 }, {
+        phase: 'ready', operationId: 'old', lane: 'main', iteration: 0, outputContinuations: 0,
+        progress: { toolCallCounts: {}, observationFingerprints: [], recoveryStepsRemaining: null }
+      });
+      await store.sessions.ensureActive({ sessionId: 's' });
+      for (const id of ['old', 'not-started']) await store.runs.createAccepted({ id, sessionId: 's', laneId: 'main', providerId: 'p', model: 'm', inputHash: 'hash' });
+      const before = await runtimeStore.loadOperation('old');
+      await new ServerRecoveryCoordinator(runtime, store, { preservePendingOperations: true }).reconcile();
+      expect(await runtimeStore.loadOperation('old')).toEqual(before);
+      expect(await runtimeStore.getLane('s', 'main')).toMatchObject({ currentOperationId: 'old' });
+      expect(await store.runs.get('old')).toMatchObject({ status: 'accepted' });
+      expect(await store.runs.get('not-started')).toMatchObject({ status: 'interrupted' });
+    } finally { await runtime.close(); }
+  });
   it.each(['orphan', 'interrupted'] as const)('clears %s legacy runtime ownership without inventing or overwriting business history', async scenario => {
     const runtimeStore = new MemoryAgentRuntimeStore();
     const runtime = await createJojoRuntime({ store: runtimeStore, host: { kind: 'server' }, providers: { describe: describeTestProvider, resolve: () => new ScriptedProvider([]) }, permissions: allow });

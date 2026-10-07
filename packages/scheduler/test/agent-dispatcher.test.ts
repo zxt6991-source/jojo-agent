@@ -1,3 +1,4 @@
+import { createJojoAppService, MemoryServerStateStore } from '@desktop-agent/app-service';
 import { describeTestProvider } from '@desktop-agent/agent-runtime/testing';
 import { ScriptedProvider } from '@desktop-agent/agent';
 import { createAgentRuntime } from '@desktop-agent/agent-runtime';
@@ -5,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 import { AgentScheduleDispatcher, type AgentScheduleTarget, type Schedule, type ScheduleRun } from '../src/index.js';
 
 describe('AgentScheduleDispatcher', () => {
-  it('uses a stable runtime run id, a dedicated persistent lane, and scheduler trigger', async () => {
+  it.each(['runtime', 'application'] as const)('uses stable identity, lane and origin through %s', async (mode) => {
     const contexts: Array<import('@desktop-agent/agent-runtime').RuntimeResolutionContext> = [];
     const runtime = createAgentRuntime({
       environment: {
@@ -22,9 +23,17 @@ describe('AgentScheduleDispatcher', () => {
       }
     });
     await runtime.openSession({ id: 'session-1', executionScope: { kind: 'none' } });
+    const stateStore = new MemoryServerStateStore();
+    const application = createJojoAppService(runtime, { stateStore });
     const preparedLanes: string[] = [];
     let disposed = 0;
     const dispatcher = new AgentScheduleDispatcher(runtime, {
+      ...(mode === 'application' ? { startRun: (input: import('../src/index.js').ScheduleDispatchRequest<AgentScheduleTarget>, laneId: string) => application.startRunHandle({
+        requestId: input.run.id, principal: { id: 'scheduler', type: 'service', scopes: [] }
+      }, input.target.sessionId, { ...input.target, laneId }, {
+        runId: input.executionId, trigger: { kind: 'scheduler', id: input.run.id },
+        metadata: { scheduleId: input.schedule.id, scheduleRunId: input.run.id }
+      }) } : {}),
       prepare: async (_input, laneId) => {
         preparedLanes.push(laneId);
         return { dispose: () => { disposed += 1; } };
@@ -63,8 +72,15 @@ describe('AgentScheduleDispatcher', () => {
     expect((await runtime.getSession('session-1'))?.listLanes()).resolves.toEqual(expect.arrayContaining([
       expect.objectContaining({ id: 'schedule:sch_1' })
     ]));
+    if (mode === 'application') {
+      expect(await stateStore.runs.get('schedrun:sr_1')).toMatchObject({
+        status: 'completed', requestMeta: { origin: { kind: 'scheduler', scheduleId: 'sch_1', scheduleRunId: 'sr_1' } }
+      });
+    }
+    expect(await dispatcher.dispatch({ schedule, run, target, executionId: 'schedrun:sr_1' })).toMatchObject({ state: 'completed' });
+    expect(contexts).toHaveLength(1);
     dispatcher.close();
-    await runtime.close();
+    await application.close();
   });
 });
 

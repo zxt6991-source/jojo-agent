@@ -1,3 +1,6 @@
+import { LEGACY_TRANSCRIPT_CUTOVER, LEGACY_TRANSCRIPT_MIGRATION, transcriptHash, validateLegacyTranscript, type LegacyTranscriptMigration, type LegacyTranscriptImportResult } from './legacy-transcript-migration.js';
+import { MessageSchema, type Message } from '@desktop-agent/contracts';
+import { BUILD_COMPATIBILITY } from '@desktop-agent/contracts/build-compatibility';
 import { validateOperationExecution, MAX_OPERATION_META_BYTES } from '@desktop-agent/agent-runtime/spi';
 import { isDeepStrictEqual } from 'node:util';
 import { mkdirSync } from 'node:fs';
@@ -80,7 +83,7 @@ export class SqliteAgentRuntimeStore implements AgentRuntimeStore {
     this.database.exec('PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;');
     const version = this.database.prepare('PRAGMA user_version').get() as Row | undefined;
     const userVersion = version ? Number(Object.values(version)[0]) : 0;
-    if (userVersion > 1) {
+    if (userVersion > BUILD_COMPATIBILITY.runtimeSqliteSchema) {
       this.database.close();
       throw new Error(`runtime_sqlite_version_unsupported: ${userVersion}`);
     }
@@ -126,7 +129,28 @@ export class SqliteAgentRuntimeStore implements AgentRuntimeStore {
         created_at INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS usage_session_created ON usage(session_id, created_at);
-      PRAGMA user_version = 1;
+      CREATE TABLE IF NOT EXISTS runtime_migrations (
+        migration_id TEXT NOT NULL,
+        session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        source_hash TEXT NOT NULL,
+        imported_hash TEXT NOT NULL,
+        source_count INTEGER NOT NULL,
+        imported_count INTEGER NOT NULL,
+        retained_count INTEGER NOT NULL,
+        completed_at INTEGER NOT NULL,
+        PRIMARY KEY(migration_id, session_id)
+      );
+      CREATE TABLE IF NOT EXISTS runtime_deleted_sessions (
+        session_id TEXT PRIMARY KEY,
+        deleted_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS runtime_pending_messages (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        message_json TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+      );
+      PRAGMA user_version = ${BUILD_COMPATIBILITY.runtimeSqliteSchema};
     `);
   }
 
@@ -135,12 +159,22 @@ export class SqliteAgentRuntimeStore implements AgentRuntimeStore {
   }
 
   async createSession(session: Session): Promise<void> {
-    if (await this.getSession(session.id)) throw new Error(`runtime_session_exists: ${session.id}`);
-    this.database.prepare('INSERT INTO sessions(id, metadata_json, created_at) VALUES (?, ?, ?)').run(
-      session.id,
-      session.metadata ? JSON.stringify(session.metadata) : null,
-      session.createdAt
-    );
+    this.transaction(() => {
+      if (this.database.prepare('SELECT session_id FROM runtime_deleted_sessions WHERE session_id = ?').get(session.id)) {
+        throw new Error(`runtime_session_deleted: ${session.id}`);
+      }
+      if (this.database.prepare('SELECT id FROM sessions WHERE id = ?').get(session.id)) throw new Error(`runtime_session_exists: ${session.id}`);
+      this.database.prepare('INSERT INTO sessions(id, metadata_json, created_at) VALUES (?, ?, ?)').run(
+        session.id, session.metadata ? JSON.stringify(session.metadata) : null, session.createdAt
+      );
+    });
+  }
+
+  deleteSessionPermanently(sessionId: string): void {
+    this.transaction(() => {
+      this.database.prepare('INSERT OR IGNORE INTO runtime_deleted_sessions(session_id, deleted_at) VALUES (?, ?)').run(sessionId, this.clock.now());
+      this.database.prepare('DELETE FROM sessions WHERE id = ?').run(sessionId);
+    });
   }
 
   async getSession(sessionId: string): Promise<Session | null> {
@@ -174,6 +208,161 @@ export class SqliteAgentRuntimeStore implements AgentRuntimeStore {
 
   async deleteSession(sessionId: string): Promise<void> {
     this.database.prepare('DELETE FROM sessions WHERE id = ?').run(sessionId);
+  }
+
+  /** Atomic transition adapter: runtime messages win when a legacy projection differs. */
+  importLegacyTranscript(sessionId: string, source: readonly Message[], options: { once?: boolean } = {}): LegacyTranscriptImportResult {
+    const migrationId = options.once ? LEGACY_TRANSCRIPT_CUTOVER : LEGACY_TRANSCRIPT_MIGRATION;
+    const messages = validateLegacyTranscript(source);
+    const sourceHash = transcriptHash(messages);
+    return this.transaction(() => {
+      this.requireSession(sessionId);
+      const row = this.database.prepare('SELECT * FROM lanes WHERE session_id = ? AND name = ?').get(sessionId, 'main') as Row | undefined;
+      if (!row) throw new Error('runtime_lane_not_found: main');
+      const lane = this.laneFromRow(row);
+      if (lane.currentOperationId) return { status: 'busy', importedCount: 0, retainedCount: 0, sourceHash };
+      const previous = this.getLegacyTranscriptMigration(sessionId, migrationId);
+      if (previous && (options.once || previous.sourceHash === sourceHash)) return { status: 'unchanged', importedCount: 0, retainedCount: previous.retainedCount, sourceHash };
+      const pathIds = new Set<string>();
+      let cursor = lane.leafId;
+      while (cursor) {
+        if (pathIds.has(cursor)) throw new Error('runtime_path_cycle');
+        pathIds.add(cursor);
+        const entry = this.entryRow(cursor);
+        if (!entry || entry.session_id !== sessionId) throw new Error(`runtime_parent_not_found: ${cursor}`);
+        cursor = nullableText(entry.parent_id, 'entry parent');
+      }
+      const next = this.database.prepare('SELECT COALESCE(MAX(seq), 0) + 1 AS seq FROM entries WHERE session_id = ?').get(sessionId) as Row;
+      let sequence = integer(next.seq, 'next entry sequence');
+      let leaf = lane.leafId;
+      let retainedCount = 0;
+      const imported: Message[] = [];
+      for (const message of messages) {
+        const existing = this.entryRow(message.id);
+        if (existing) {
+          if (existing.session_id !== sessionId || existing.type !== 'message') throw new Error(`legacy_entry_collision: ${message.id}`);
+          if (pathIds.has(message.id)) {
+            retainedCount += 1;
+            continue;
+          }
+          // Recover an entry left behind by the old appendEntry -> saveLane sequence.
+          const value = entryFromRow(existing);
+          if (existing.parent_id !== leaf || value.type !== 'message' || transcriptHash([value.message]) !== transcriptHash([message])) {
+            throw new Error(`legacy_detached_entry_conflict: ${message.id}`);
+          }
+        } else {
+          this.database.prepare('INSERT INTO entries(id, session_id, seq, parent_id, type, payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+            .run(message.id, sessionId, sequence++, leaf, 'message', JSON.stringify({ message }), this.clock.now());
+        }
+        imported.push(message);
+        pathIds.add(message.id);
+        leaf = message.id;
+      }
+      this.database.prepare('UPDATE lanes SET leaf_id = ? WHERE session_id = ? AND name = ?').run(leaf, sessionId, 'main');
+      const importedHash = transcriptHash(imported);
+      const persisted = imported.map((message) => {
+        const entry = entryFromRow(this.entryRow(message.id)!);
+        if (entry.type !== 'message') throw new Error('legacy_transcript_verification_failed');
+        return entry.message;
+      });
+      if (transcriptHash(persisted) !== importedHash) throw new Error('legacy_transcript_verification_failed');
+      this.database.prepare(`INSERT INTO runtime_migrations(migration_id, session_id, source_hash, imported_hash, source_count, imported_count, retained_count, completed_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(migration_id, session_id) DO UPDATE SET source_hash = excluded.source_hash,
+        imported_hash = excluded.imported_hash, source_count = excluded.source_count,
+        imported_count = excluded.imported_count, retained_count = excluded.retained_count, completed_at = excluded.completed_at`)
+        .run(migrationId, sessionId, sourceHash, importedHash, messages.length, imported.length, retainedCount, this.clock.now());
+      return { status: 'imported', importedCount: imported.length, retainedCount, sourceHash };
+    });
+  }
+
+  getLegacyTranscriptMigration(sessionId: string, migrationId: string = LEGACY_TRANSCRIPT_MIGRATION): LegacyTranscriptMigration | null {
+    const row = this.database.prepare('SELECT * FROM runtime_migrations WHERE migration_id = ? AND session_id = ?')
+      .get(migrationId, sessionId) as Row | undefined;
+    if (!row) return null;
+    return {
+      migrationId: text(row.migration_id, 'migration id'), sessionId: text(row.session_id, 'migration session'),
+      sourceHash: text(row.source_hash, 'migration source hash'), importedHash: text(row.imported_hash, 'migration imported hash'),
+      sourceCount: integer(row.source_count, 'migration source count'), importedCount: integer(row.imported_count, 'migration imported count'),
+      retainedCount: integer(row.retained_count, 'migration retained count'), completedAt: integer(row.completed_at, 'migration completion')
+    };
+  }
+
+  hasLegacyTranscriptCutover(sessionId: string): boolean {
+    return this.getLegacyTranscriptMigration(sessionId, LEGACY_TRANSCRIPT_CUTOVER) !== null;
+  }
+
+  /** Durable external delivery; an active operation never loses its lane ownership. */
+  appendConversationMessage(sessionId: string, input: Message): void {
+    const message = MessageSchema.parse(input);
+    this.transaction(() => {
+      this.requireSession(sessionId);
+      const existing = this.entryRow(message.id);
+      if (existing) {
+        const entry = entryFromRow(existing);
+        if (entry.sessionId !== sessionId || entry.type !== 'message' || transcriptHash([entry.message]) !== transcriptHash([message])) {
+          throw new Error(`runtime_message_conflict: ${message.id}`);
+        }
+        return;
+      }
+      const pending = this.database.prepare('SELECT * FROM runtime_pending_messages WHERE id = ?').get(message.id) as Row | undefined;
+      if (pending) {
+        if (pending.session_id !== sessionId || transcriptHash([json<Message>(pending.message_json, 'pending message')]) !== transcriptHash([message])) {
+          throw new Error(`runtime_message_conflict: ${message.id}`);
+        }
+      } else {
+        this.database.prepare('INSERT INTO runtime_pending_messages(id, session_id, message_json, created_at) VALUES (?, ?, ?, ?)')
+          .run(message.id, sessionId, JSON.stringify(message), this.clock.now());
+      }
+      this.drainConversationMessages(sessionId);
+    });
+  }
+
+  flushConversationMessages(sessionId: string): void {
+    this.transaction(() => { this.drainConversationMessages(sessionId); });
+  }
+
+  private drainConversationMessages(sessionId: string): void {
+    const row = this.database.prepare('SELECT * FROM lanes WHERE session_id = ? AND name = ?').get(sessionId, 'main') as Row | undefined;
+    if (!row) throw new Error('runtime_lane_not_found: main');
+    const lane = this.laneFromRow(row);
+    if (lane.currentOperationId) return;
+    const pending = this.database.prepare('SELECT * FROM runtime_pending_messages WHERE session_id = ? ORDER BY rowid').all(sessionId) as Row[];
+    if (!pending.length) return;
+    const next = this.database.prepare('SELECT COALESCE(MAX(seq), 0) + 1 AS seq FROM entries WHERE session_id = ?').get(sessionId) as Row;
+    let sequence = integer(next.seq, 'next entry sequence');
+    let leaf = lane.leafId;
+    for (const item of pending) {
+      const message = json<Message>(item.message_json, 'pending message');
+      this.database.prepare('INSERT INTO entries(id, session_id, seq, parent_id, type, payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+        .run(message.id, sessionId, sequence++, leaf, 'message', JSON.stringify({ message }), integer(item.created_at, 'pending timestamp'));
+      leaf = message.id;
+    }
+    this.database.prepare('UPDATE lanes SET leaf_id = ? WHERE session_id = ? AND name = ?').run(leaf, sessionId, 'main');
+    this.database.prepare('DELETE FROM runtime_pending_messages WHERE session_id = ?').run(sessionId);
+  }
+
+  /** One database snapshot prevents a concurrent inbox drain from duplicating or hiding messages. */
+  readConversationMessages(sessionId: string): Message[] {
+    return this.transaction(() => {
+      const lane = this.database.prepare('SELECT leaf_id FROM lanes WHERE session_id = ? AND name = ?').get(sessionId, 'main') as Row | undefined;
+      if (!lane) return [];
+      let cursor = nullableText(lane.leaf_id, 'lane leaf');
+      const messages: Message[] = [];
+      const visited = new Set<string>();
+      while (cursor) {
+        if (visited.has(cursor)) throw new Error('runtime_path_cycle');
+        visited.add(cursor);
+        const row = this.entryRow(cursor);
+        if (!row || row.session_id !== sessionId) throw new Error(`runtime_parent_not_found: ${cursor}`);
+        const entry = entryFromRow(row);
+        if (entry.type === 'message') messages.push(entry.message);
+        cursor = entry.parentId;
+      }
+      messages.reverse();
+      const pending = this.database.prepare('SELECT message_json FROM runtime_pending_messages WHERE session_id = ? ORDER BY rowid').all(sessionId) as Row[];
+      return [...messages, ...pending.map((row) => json<Message>(row.message_json, 'pending message'))];
+    });
   }
 
   async appendEntry(input: AppendEntryInput): Promise<SessionEntry> {

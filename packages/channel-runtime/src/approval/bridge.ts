@@ -65,6 +65,7 @@ export class ChannelApprovalBridge {
   }
 
   private async publish(approval: Extract<AppServiceEvent, { type: 'approval.required' }>['approval']): Promise<void> {
+    if (!('runId' in approval)) return;
     const active = this.options.activeRuns.getActiveRunTarget(approval.runId);
     if (!active) return;
     const binding = await this.options.channels.getBinding(active.bindingId);

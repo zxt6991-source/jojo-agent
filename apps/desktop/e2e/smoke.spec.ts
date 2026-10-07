@@ -30,8 +30,10 @@ test('boots Main, Preload, Renderer and Worker and completes an offline prompt',
 
     const sessions = await launched.page.evaluate(() => window.desktopAgent.listSessions());
     expect(sessions).toHaveLength(1);
-    const journal = await readFile(path.join(dataDirectory, 'sessions', `${sessions[0]!.id}.jsonl`), 'utf8');
+    const journal = JSON.stringify(await launched.page.evaluate((id) => window.desktopAgent.loadMessages(id), sessions[0]!.id));
     expect(journal).toContain('hello from offline e2e');
+    const metadata = await readFile(path.join(dataDirectory, 'sessions', `${sessions[0]!.id}.jsonl`), 'utf8');
+    expect(metadata).not.toContain('"type":"message"');
   } finally {
     await launched.app.close();
   }
@@ -46,7 +48,7 @@ test('registers Jojo Channel tools in an ordinary desktop conversation', async (
     await expect(launched.page.getByText('channel tools handled')).toBeVisible();
 
     const sessions = await launched.page.evaluate(() => window.desktopAgent.listSessions());
-    const journal = await readFile(path.join(dataDirectory, 'sessions', `${sessions[0]!.id}.jsonl`), 'utf8');
+    const journal = JSON.stringify(await launched.page.evaluate((id) => window.desktopAgent.loadMessages(id), sessions[0]!.id));
     expect(journal).toContain('channel_list_targets');
     expect(journal).not.toContain('Unknown tool: channel_list_targets');
   } finally {
@@ -134,7 +136,7 @@ test('approves host network and injects a named Terminal secret without persisti
     await expect(launched.page.getByText('terminal secret handled')).toBeVisible();
 
     const sessions = await launched.page.evaluate(() => window.desktopAgent.listSessions());
-    const journal = await readFile(path.join(dataDirectory, 'sessions', `${sessions[0]!.id}.jsonl`), 'utf8');
+    const journal = JSON.stringify(await launched.page.evaluate((id) => window.desktopAgent.loadMessages(id), sessions[0]!.id));
     expect(journal).not.toContain('e2e-secret-value');
   } finally {
     await launched.app.close();

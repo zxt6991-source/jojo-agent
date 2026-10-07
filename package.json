@@ -13,7 +13,14 @@
     "test": "vitest run",
     "test:runtime-smoke": "vitest run packages/runtime-composition/test/headless-runtime.test.ts",
     "test:e2e:electron": "pnpm --filter @desktop-agent/desktop test:e2e",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:architecture": "node --test scripts/check-architecture.test.mjs && node scripts/check-architecture.mjs",
+    "docs:generate": "node --experimental-strip-types scripts/generate-docs.mjs",
+    "docs:check": "node --experimental-strip-types scripts/generate-docs.mjs --check",
+    "test:conformance": "vitest run packages/runtime-composition/test/cross-host-conformance.test.ts packages/server-protocol/test/operation-conformance.test.ts",
+    "test:release": "node --test scripts/release/release.test.mjs",
+    "release:verify": "node scripts/release/artifacts.mjs verify",
+    "release:snapshot": "node scripts/release/snapshot.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",
@@ -25,7 +32,10 @@
     "vitest": "^4.0.15"
   },
   "pnpm": {
-    "onlyBuiltDependencies": ["electron", "esbuild"],
+    "onlyBuiltDependencies": [
+      "electron",
+      "esbuild"
+    ],
     "overrides": {
       "@electron/node-gyp": "10.2.0-electron.1"
     }

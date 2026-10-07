@@ -27,6 +27,7 @@ export class AgentScheduleDispatcher implements TypedScheduleTargetDispatcher<Ag
   constructor(
     private readonly runtime: AgentRuntime,
     private readonly options: {
+      startRun?: (input: ScheduleDispatchRequest<AgentScheduleTarget>, laneId: string) => Promise<RunHandle>;
       prepare?: (
         input: ScheduleDispatchRequest<AgentScheduleTarget>,
         laneId: string
@@ -60,7 +61,7 @@ export class AgentScheduleDispatcher implements TypedScheduleTargetDispatcher<Ag
       const lane = lanes.some((item) => item.id === laneId)
         ? await session.getLane(laneId)
         : await session.createLane({ id: laneId, parentLaneId: 'main' });
-      handle = await lane.run({
+      handle = this.options.startRun ? await this.options.startRun(input, laneId) : await lane.run({
         runId: input.executionId,
         input: input.target.input,
         providerId: input.target.providerId,
@@ -89,6 +90,9 @@ export class AgentScheduleDispatcher implements TypedScheduleTargetDispatcher<Ag
               ...(result.error?.message ? { error: result.error.message } : {})
             };
       this.publish(snapshot);
+    }, (error: unknown) => {
+      this.publish({ kind: 'agent', id: handle.id, state: 'failed', errorCode: 'schedule_result_failed',
+        error: error instanceof Error ? error.message : String(error) });
     }).finally(() => {
       this.handles.delete(handle.id);
       prepared?.dispose();

@@ -3,10 +3,8 @@ import { LocalAttachmentAccessResolver } from '@desktop-agent/attachment-access/
 import path from 'node:path';
 import type { AgentRuntime } from '@desktop-agent/agent-runtime';
 import {
-  createJojoAppService,
   createRuntimeAppService,
   MemoryServerStateStore,
-  ServerRecoveryCoordinator,
   ServerApprovalBroker,
   type JojoAppService,
   type RuntimeAppService,
@@ -32,7 +30,7 @@ import {
 import { createJojoServerCore, type JojoServerCore, type JojoServerCoreOptions } from '@desktop-agent/server-core';
 import { createJojoHttpServer, type JojoHttpServer, type JojoHttpServerOptions } from '@desktop-agent/server-http';
 import {
-  createJojoRuntime,
+  createProductRuntime,
   type JojoRuntimeCompositionOptions
 } from '@desktop-agent/runtime-composition';
 import type { ScheduleService } from '@desktop-agent/scheduler';
@@ -120,28 +118,32 @@ export async function createHeadlessServer(options: HeadlessServerOptions): Prom
         ...(options.idGenerator ? { idGenerator: options.idGenerator } : {})
       })
       : undefined;
-    const runtime = await createJojoRuntime({
-      attachmentAccess: new LocalAttachmentAccessResolver(options.server?.attachmentStore),
-      ...options,
-      capabilities: [
-        ...(options.capabilities ?? []),
-        ...(channelManager ? [new ChannelRuntimeCapability(channelManager)] : [])
-      ],
-      approval: approvalBroker,
-      host: {
-        kind: 'server',
-        ...(options.instanceId ? { instanceId: options.instanceId } : {})
+    // From this point the product factory owns stateStore, including initialization failure.
+    cleanup = async () => { await channelStore?.close(); };
+    const product = await createProductRuntime({
+      recovery: 'interrupt',
+      application: {
+        approvalBroker, stateStore,
+        ...(options.idGenerator ? { idGenerator: options.idGenerator } : {}),
+        ...(options.now ? { now: options.now } : {})
+      },
+      runtime: {
+        attachmentAccess: new LocalAttachmentAccessResolver(options.server?.attachmentStore),
+        ...options,
+        capabilities: [
+          ...(options.capabilities ?? []),
+          ...(channelManager ? [new ChannelRuntimeCapability(channelManager)] : [])
+        ],
+        approval: approvalBroker,
+        host: {
+          kind: 'server',
+          ...(options.instanceId ? { instanceId: options.instanceId } : {})
+        }
       }
     });
-    cleanup = async () => { await Promise.allSettled([runtime.close(), stateStore.close(), channelStore?.close()]); };
-    await new ServerRecoveryCoordinator(runtime, stateStore).reconcile();
+    cleanup = async () => { await Promise.allSettled([product.close(), channelStore?.close()]); };
+    const { runtime, application: appService } = product;
     const service = createRuntimeAppService(runtime);
-    const appService = createJojoAppService(runtime, {
-      approvalBroker,
-      stateStore,
-      ...(options.idGenerator ? { idGenerator: options.idGenerator } : {}),
-      ...(options.now ? { now: options.now } : {})
-    });
     let channelApproval: ChannelApprovalBridge | undefined;
     let scheduleService: ScheduleService | undefined;
     cleanup = async () => {
@@ -168,6 +170,7 @@ export async function createHeadlessServer(options: HeadlessServerOptions): Prom
     if (options.scheduler !== false) {
       scheduleService = await createHeadlessSchedulerRuntime({
         runtime,
+        application: appService,
         ...(options.dataDir ? { dataDir: options.dataDir } : {}),
         ...(options.instanceId ? { instanceId: `scheduler:${options.instanceId}` } : {}),
         ...(options.idGenerator ? { idGenerator: options.idGenerator } : {}),

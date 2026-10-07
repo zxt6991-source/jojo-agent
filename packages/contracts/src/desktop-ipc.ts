@@ -1,6 +1,8 @@
+import { SessionMetadataOperationSchema, SessionMetadataResultSchema } from './application/session-metadata.js';
+import { APPLICATION_OPERATIONS } from './application/operations.js';
 import { z } from 'zod';
 import { AgentEventSchema, BoundedJsonValueSchema, serializedIpcBytes } from './agent.js';
-import { BrowserActionSchema, DesktopChannelMutationSchema, StartTurnInputSchema } from './desktop.js';
+import { ApprovalInputSchema, BrowserActionSchema, DesktopChannelMutationSchema, StartTurnInputSchema } from './desktop.js';
 import { BrowserHealProposalSchema, BrowserHealRequestSchema } from './browser-recording.js';
 import { ExtensionStatusSchema } from './integrations.js';
 import { ConversationMessageCreatedEventSchema, ToolResultSchema } from './messages.js';
@@ -11,13 +13,11 @@ import { OrchestrationEventSchema, TeamSnapshotSchema, TeamStatusSnapshotSchema 
 import { SaveTeamInputSchema } from './desktop.js';
 import { ProviderSettingsSchema } from './persistence.js';
 import {
-  SaveScheduleInputSchema,
   ScheduleEventSchema,
   ScheduleIdInputSchema,
   ScheduleRunIdInputSchema,
   ScheduleRunSchema,
   ScheduleSchema,
-  SetScheduleEnabledInputSchema
 } from './scheduler.js';
 
 export const MAX_WORKER_COMMAND_BYTES = 16 * 1024 * 1024;
@@ -56,6 +56,8 @@ export const MemoryStatusSnapshotIpcSchema = z.object({
 const WorkerCommandBaseSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('turn.start'), payload: StartTurnInputSchema }).strict(),
   z.object({ type: z.literal('turn.cancel'), sessionId: IdSchema }).strict(),
+  z.object({ type: z.literal('session.metadata'), requestId: IdSchema, operation: SessionMetadataOperationSchema }).strict(),
+  z.object({ type: z.literal('session.prepare'), requestId: IdSchema, sessionId: IdSchema }).strict(),
   z.object({ type: z.literal('session.stop'), requestId: IdSchema, sessionId: IdSchema }).strict(),
   z.object({ type: z.literal('workflow.cancel'), sessionId: IdSchema, workflowId: IdSchema }).strict(),
   z.object({ type: z.literal('workflow.resume'), requestId: IdSchema, sessionId: IdSchema, workflowId: IdSchema }).strict(),
@@ -69,18 +71,15 @@ const WorkerCommandBaseSchema = z.discriminatedUnion('type', [
   }).strict(),
   z.object({ type: z.literal('scheduler.list'), requestId: IdSchema }).strict(),
   z.object({ type: z.literal('scheduler.get'), requestId: IdSchema }).merge(ScheduleIdInputSchema),
-  z.object({ type: z.literal('scheduler.save'), requestId: IdSchema, input: SaveScheduleInputSchema }).strict(),
+  z.object({ type: z.literal('scheduler.save'), requestId: IdSchema, input: APPLICATION_OPERATIONS['schedule.save'].input }).strict(),
   z.object({ type: z.literal('scheduler.delete'), requestId: IdSchema }).merge(ScheduleIdInputSchema),
-  z.object({ type: z.literal('scheduler.enabled'), requestId: IdSchema, input: SetScheduleEnabledInputSchema }).strict(),
+  z.object({ type: z.literal('scheduler.enabled'), requestId: IdSchema, input: APPLICATION_OPERATIONS['schedule.enabled'].input }).strict(),
   z.object({ type: z.literal('scheduler.run-now'), requestId: IdSchema }).merge(ScheduleIdInputSchema),
   z.object({ type: z.literal('scheduler.runs.list'), requestId: IdSchema }).merge(ScheduleIdInputSchema),
   z.object({ type: z.literal('scheduler.run.cancel'), requestId: IdSchema }).merge(ScheduleRunIdInputSchema),
   z.object({ type: z.literal('channel.snapshot'), requestId: IdSchema }).strict(),
   z.object({ type: z.literal('channel.mutate'), requestId: IdSchema, input: DesktopChannelMutationSchema }).strict(),
-  z.object({
-    type: z.literal('approval.resolve'), requestId: IdSchema, allow: z.boolean(),
-    scope: z.enum(['once', 'session', 'similar', 'conversation']).default('once')
-  }).strict(),
+  ApprovalInputSchema.extend({ type: z.literal('approval.resolve'), requestId: IdSchema }).strict(),
   z.object({
     type: z.literal('config.update'), settings: ProviderSettingsSchema,
     apiKeys: z.record(z.string().min(1).max(256), z.string().max(100_000)),
@@ -130,6 +129,8 @@ const WorkerMessageBaseSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('ready') }).strict(),
   z.object({ type: z.literal('agent.event'), event: AgentEventSchema }).strict(),
   z.object({ type: z.literal('orchestration.event'), event: SizedOrchestrationEventSchema }).strict(),
+  z.object({ type: z.literal('session.metadata.result'), requestId: IdSchema, ok: z.boolean(), result: SessionMetadataResultSchema.optional(), error: ErrorSchema.optional() }).strict(),
+  z.object({ type: z.literal('session.prepared'), requestId: IdSchema, sessionId: IdSchema, ok: z.boolean(), error: ErrorSchema.optional() }).strict(),
   z.object({ type: z.literal('session.stopped'), requestId: IdSchema, sessionId: IdSchema, ok: z.boolean(), error: ErrorSchema.optional() }).strict(),
   z.object({ type: z.literal('workflow.action.result'), requestId: IdSchema, ok: z.boolean(), error: ErrorSchema.optional() }).strict(),
   z.object({

@@ -1,21 +1,21 @@
 import { createHash } from 'node:crypto';
-import type { AgentRuntime, RunHandle, RunRequest, RuntimeActor, RuntimeTriggerContext } from '@desktop-agent/agent-runtime';
-import type { RuntimeEventEnvelope } from '@desktop-agent/contracts/runtime';
+import type { AgentRuntime, OpenSessionRequest, RunHandle, RunRequest, RuntimeActor, RuntimeTriggerContext, RuntimeRunSnapshot } from '@desktop-agent/agent-runtime';
+import type { RunResult, SessionSnapshot, RuntimeEventEnvelope } from '@desktop-agent/contracts/runtime';
 import type {
   ApprovalDecision,
   CreateSessionInput,
   PatchSessionMetadataInput,
   PendingApprovalSnapshot,
-  ProtocolError,
-  RequestContext,
+  ApplicationError,
+  ApplicationContext,
   RunSnapshot,
-  ServerSessionSnapshot,
-  ServerSessionSummary,
+  ApplicationSessionSnapshot,
+  ApplicationSessionSummary,
   StartRunInput,
   TranscriptPage,
   TranscriptQuery
-} from '@desktop-agent/server-protocol';
-import { ServerApprovalBroker, type ApprovalEvent } from './approval-service.js';
+} from '@desktop-agent/contracts/application';
+import { ServerApprovalBroker, type ApprovalEvent, type ApplicationApprovalBroker } from './approval-service.js';
 import { MemoryServerStateStore, type PersistedRunRecord, type ServerStateStore } from './persistence.js';
 import { LiveRunRegistry } from './run-registry.js';
 
@@ -26,16 +26,20 @@ export type AppServiceEvent =
   | ApprovalEvent;
 
 export type JojoAppServiceOptions = {
-  approvalBroker?: ServerApprovalBroker;
+  approvalBroker?: ApplicationApprovalBroker;
   stateStore?: ServerStateStore;
   idGenerator?: () => string;
   now?: () => Date;
 };
 
 export type StartRunOptions = {
+  /** Host cancellation; never serialized into transport input or durable metadata. */
+  signal?: AbortSignal;
   runId?: string;
   actor?: RuntimeActor;
   trigger?: RuntimeTriggerContext;
+  workflow?: RunRequest['workflow'];
+  team?: RunRequest['team'];
   metadata?: {
     scheduleId?: string;
     scheduleRunId?: string;
@@ -51,21 +55,26 @@ export type StartRunOptions = {
 };
 
 export interface JojoAppService {
-  listSessions(ctx: RequestContext): Promise<ServerSessionSummary[]>;
-  createSession(ctx: RequestContext, input: CreateSessionInput): Promise<ServerSessionSnapshot>;
+  /** Prepare an existing host-owned session without recreating its metadata. */
+  openSession(ctx: ApplicationContext, input: OpenSessionRequest): Promise<SessionSnapshot>;
+  executeRun(ctx: ApplicationContext, sessionId: string, input: StartRunInput, options?: StartRunOptions): Promise<RunResult>;
+  startRunHandle(ctx: ApplicationContext, sessionId: string, input: StartRunInput, options?: StartRunOptions): Promise<RunHandle>;
+  resumeRun(ctx: ApplicationContext, sessionId: string, runId: string, options?: { signal?: AbortSignal }): Promise<RunResult>;
+  listSessions(ctx: ApplicationContext): Promise<ApplicationSessionSummary[]>;
+  createSession(ctx: ApplicationContext, input: CreateSessionInput): Promise<ApplicationSessionSnapshot>;
   patchSession(
-    ctx: RequestContext,
+    ctx: ApplicationContext,
     sessionId: string,
     input: PatchSessionMetadataInput
-  ): Promise<ServerSessionSnapshot>;
-  getSession(ctx: RequestContext, sessionId: string): Promise<ServerSessionSnapshot>;
-  getTranscript(ctx: RequestContext, sessionId: string, input?: TranscriptQuery): Promise<TranscriptPage>;
-  startRun(ctx: RequestContext, sessionId: string, input: StartRunInput, options?: StartRunOptions): Promise<RunSnapshot>;
-  getRun(ctx: RequestContext, sessionId: string, runId: string): Promise<RunSnapshot>;
-  cancelRun(ctx: RequestContext, sessionId: string, runId: string, reason?: string): Promise<void>;
-  listApprovals(ctx: RequestContext, sessionId: string): Promise<PendingApprovalSnapshot[]>;
-  getApprovalSessionId(ctx: RequestContext, approvalId: string): Promise<string>;
-  resolveApproval(ctx: RequestContext, approvalId: string, decision: ApprovalDecision): Promise<void>;
+  ): Promise<ApplicationSessionSnapshot>;
+  getSession(ctx: ApplicationContext, sessionId: string): Promise<ApplicationSessionSnapshot>;
+  getTranscript(ctx: ApplicationContext, sessionId: string, input?: TranscriptQuery): Promise<TranscriptPage>;
+  startRun(ctx: ApplicationContext, sessionId: string, input: StartRunInput, options?: StartRunOptions): Promise<RunSnapshot>;
+  getRun(ctx: ApplicationContext, sessionId: string, runId: string): Promise<RunSnapshot>;
+  cancelRun(ctx: ApplicationContext, sessionId: string, runId: string, reason?: string): Promise<void>;
+  listApprovals(ctx: ApplicationContext, sessionId: string): Promise<PendingApprovalSnapshot[]>;
+  getApprovalSessionId(ctx: ApplicationContext, approvalId: string): Promise<string>;
+  resolveApproval(ctx: ApplicationContext, approvalId: string, decision: ApprovalDecision): Promise<void>;
   subscribe(listener: (event: AppServiceEvent) => void): () => void;
   close(): Promise<void>;
 }
@@ -73,8 +82,9 @@ export interface JojoAppService {
 class DefaultJojoAppService implements JojoAppService {
   private readonly listeners = new Set<(event: AppServiceEvent) => void>();
   private readonly liveRuns = new LiveRunRegistry();
-  private readonly observations = new Set<Promise<void>>();
-  private readonly approvalBroker: ServerApprovalBroker;
+  private readonly observations = new Map<string, Promise<void>>();
+  private readonly resumptions = new Map<string, Promise<RunResult>>();
+  private readonly approvalBroker: ApplicationApprovalBroker;
   private readonly stateStore: ServerStateStore;
   private readonly idGenerator: () => string;
   private readonly unsubscribeRuntime: () => void;
@@ -87,7 +97,7 @@ class DefaultJojoAppService implements JojoAppService {
       store: this.stateStore.approvals,
       ...(options.now ? { now: options.now } : {})
     });
-    if (options.approvalBroker) this.approvalBroker.bindStore(this.stateStore.approvals);
+    if (options.approvalBroker) this.approvalBroker.bindStore?.(this.stateStore.approvals);
     this.idGenerator = options.idGenerator ?? (() => crypto.randomUUID());
     this.unsubscribeRuntime = runtime.subscribe((envelope) => {
       this.emit({ type: 'runtime.event', envelope });
@@ -95,7 +105,7 @@ class DefaultJojoAppService implements JojoAppService {
     this.unsubscribeApproval = this.approvalBroker.subscribe((event) => this.emit(event));
   }
 
-  async listSessions(_ctx: RequestContext): Promise<ServerSessionSummary[]> {
+  async listSessions(_ctx: ApplicationContext): Promise<ApplicationSessionSummary[]> {
     return Promise.all((await this.runtime.listSessions()).map(async (session) => {
       const metadata = await this.stateStore.sessions.ensureActive({ sessionId: session.id });
       return {
@@ -112,7 +122,85 @@ class DefaultJojoAppService implements JojoAppService {
     }));
   }
 
-  async createSession(ctx: RequestContext, input: CreateSessionInput): Promise<ServerSessionSnapshot> {
+  async openSession(_ctx: ApplicationContext, input: OpenSessionRequest): Promise<SessionSnapshot> {
+    const session = await this.runtime.openSession(input);
+    await this.stateStore.sessions.ensureActive({ sessionId: session.id });
+    return session.getSnapshot();
+  }
+
+  async executeRun(ctx: ApplicationContext, sessionId: string, input: StartRunInput, options: StartRunOptions = {}): Promise<RunResult> {
+    const run = await this.startRun(ctx, sessionId, input, options);
+    return this.waitForResult(run.id);
+  }
+
+  async startRunHandle(ctx: ApplicationContext, sessionId: string, input: StartRunInput, options: StartRunOptions = {}): Promise<RunHandle> {
+    if (!await this.runtime.getSession(sessionId)) throw new Error(`runtime_session_not_found: ${sessionId}`);
+    await this.stateStore.sessions.ensureActive({ sessionId });
+    const run = await this.startRun(ctx, sessionId, input, options);
+    const result = this.waitForResult(run.id);
+    // The caller attaches its observer after dispatch returns.
+    void result.catch(() => undefined);
+    return { id: run.id, result, cancel: reason => this.cancelRun(ctx, sessionId, run.id, reason) };
+  }
+
+  async resumeRun(_ctx: ApplicationContext, sessionId: string, runId: string, options: { signal?: AbortSignal } = {}): Promise<RunResult> {
+    // Validate ownership before joining an in-flight recovery or returning its result.
+    const snapshot = await this.runtime.inspectRun(runId);
+    if (!snapshot || snapshot.sessionId !== sessionId) throw new Error(`run_not_found: ${runId}`);
+    const pending = this.resumptions.get(runId);
+    if (pending) return pending;
+    if (this.liveRuns.getHandle(runId)) return this.waitForResult(runId);
+    const resumption = this.resumeCapturedRun(snapshot, options).finally(() => this.resumptions.delete(runId));
+    this.resumptions.set(runId, resumption);
+    return resumption;
+  }
+
+  private async resumeCapturedRun(snapshot: RuntimeRunSnapshot, options: { signal?: AbortSignal }): Promise<RunResult> {
+    let record = await this.stateStore.runs.get(snapshot.id);
+    if (record && (record.sessionId !== snapshot.sessionId || record.laneId !== snapshot.laneId)) {
+      throw new Error('runtime_run_identity_conflict');
+    }
+    if (record?.result) return record.result;
+    if (record && !['accepted', 'starting', 'running'].includes(record.status)) throw new Error('runtime_run_state_conflict');
+    if (!record) {
+      if (!snapshot.execution) throw new Error('runtime_resume_context_missing');
+      await this.stateStore.sessions.ensureActive({ sessionId: snapshot.sessionId });
+      record = await this.stateStore.runs.createAccepted({
+        id: snapshot.id, sessionId: snapshot.sessionId, laneId: snapshot.laneId,
+        providerId: snapshot.execution.providerBinding.providerId,
+        model: snapshot.execution.providerBinding.model,
+        // The original request is owned by Runtime; this sentinel is not a request replay hash.
+        inputHash: `recovered:${snapshot.id}`
+      });
+    }
+    if (record.status === 'accepted') record = await this.stateStore.runs.markStarting(record.id, record.version);
+    if (snapshot.result) {
+      await this.recordResult(snapshot.result);
+      return snapshot.result;
+    }
+    // A preparation failure leaves the captured operation retryable, not terminally failed.
+    const handle = await this.runtime.resumeOperation({ operationId: snapshot.id, ...options });
+    this.liveRuns.attach(snapshot.id, handle);
+    try {
+      if (record.status === 'starting') record = await this.stateStore.runs.markRunning(record.id, record.version);
+      this.emit({ type: 'run.updated', run: toRunSnapshot(record) });
+      this.observe(handle);
+    } catch (error) {
+      await handle.cancel('application_resume_tracking_failed');
+      this.liveRuns.detach(handle.id);
+      throw error;
+    }
+    return this.waitForResult(snapshot.id);
+  }
+
+  private async waitForResult(runId: string): Promise<RunResult> {
+    await this.observations.get(runId);
+    const record = await this.stateStore.runs.get(runId);
+    if (!record?.result) throw new Error(`runtime_result_unavailable: ${runId}`);
+    return record.result;
+  }
+
+  async createSession(ctx: ApplicationContext, input: CreateSessionInput): Promise<ApplicationSessionSnapshot> {
     const sessionId = input.id ?? this.idGenerator();
     await this.stateStore.sessions.createCreating({
       sessionId,
@@ -131,10 +219,10 @@ class DefaultJojoAppService implements JojoAppService {
   }
 
   async patchSession(
-    ctx: RequestContext,
+    ctx: ApplicationContext,
     sessionId: string,
     input: PatchSessionMetadataInput
-  ): Promise<ServerSessionSnapshot> {
+  ): Promise<ApplicationSessionSnapshot> {
     if (!await this.runtime.getSession(sessionId)) throw new Error(`runtime_session_not_found: ${sessionId}`);
     const metadata = await this.stateStore.sessions.patch(sessionId, {
       ...(input.title !== undefined ? { title: input.title } : {}),
@@ -148,7 +236,7 @@ class DefaultJojoAppService implements JojoAppService {
     return this.getSession(ctx, sessionId);
   }
 
-  async getSession(ctx: RequestContext, sessionId: string): Promise<ServerSessionSnapshot> {
+  async getSession(ctx: ApplicationContext, sessionId: string): Promise<ApplicationSessionSnapshot> {
     const session = await this.runtime.getSession(sessionId);
     if (!session) throw new Error(`runtime_session_not_found: ${sessionId}`);
     const runtime = await session.getSnapshot();
@@ -167,13 +255,12 @@ class DefaultJojoAppService implements JojoAppService {
       runtime,
       activeRuns: runs.map(toRunSnapshot),
       transcript: transcript.items,
-      pendingApprovals: this.approvalBroker.list(sessionId),
-      lease: null
+      pendingApprovals: this.approvalBroker.list(sessionId)
     };
   }
 
   async getTranscript(
-    _ctx: RequestContext,
+    _ctx: ApplicationContext,
     sessionId: string,
     input: TranscriptQuery = { laneId: 'main', limit: 100 }
   ): Promise<TranscriptPage> {
@@ -196,14 +283,16 @@ class DefaultJojoAppService implements JojoAppService {
     };
   }
 
-  async startRun(_ctx: RequestContext, sessionId: string, input: StartRunInput, options: StartRunOptions = {}): Promise<RunSnapshot> {
+  async startRun(_ctx: ApplicationContext, sessionId: string, input: StartRunInput, options: StartRunOptions = {}): Promise<RunSnapshot> {
     const runId = options.runId ?? this.idGenerator();
     const trigger = options.trigger ?? { kind: 'api' as const };
     const originKind = trigger.kind === 'scheduler'
       ? 'scheduler' as const
       : trigger.kind === 'user'
         ? 'user' as const
-        : trigger.kind === 'channel_message' ? 'channel' as const : 'api' as const;
+        : trigger.kind === 'channel_message' ? 'channel' as const
+          : trigger.kind === 'workflow' || trigger.kind === 'subagent' || trigger.kind === 'team_member'
+            ? trigger.kind : 'api' as const;
     const requestMeta = {
       ...(input.budget ? { budget: compactBudget(input.budget) } : {}),
       origin: {
@@ -243,6 +332,9 @@ class DefaultJojoAppService implements JojoAppService {
         model: input.model,
         actor: options.actor ?? { kind: 'main' },
         trigger,
+        ...(options.workflow ? { workflow: options.workflow } : {}),
+        ...(options.team ? { team: options.team } : {}),
+        ...(options.signal ? { signal: options.signal } : {}),
         ...(input.instructions ? { instructions: input.instructions } : {}),
         ...(budget ? { budget } : {})
       };
@@ -254,20 +346,20 @@ class DefaultJojoAppService implements JojoAppService {
       return toRunSnapshot(running);
     } catch (error) {
       await handle?.cancel('server_run_start_failed');
-      const failed = await this.stateStore.runs.markFailed(runId, protocolError(error));
+      const failed = await this.stateStore.runs.markFailed(runId, applicationError(error));
       this.emit({ type: 'run.updated', run: toRunSnapshot(failed) });
       throw error;
     }
   }
 
-  async getRun(_ctx: RequestContext, sessionId: string, runId: string): Promise<RunSnapshot> {
+  async getRun(_ctx: ApplicationContext, sessionId: string, runId: string): Promise<RunSnapshot> {
     const run = await this.stateStore.runs.get(runId);
     if (!run || run.sessionId !== sessionId) throw new Error(`run_not_found: ${runId}`);
     return toRunSnapshot(run);
   }
 
   async cancelRun(
-    _ctx: RequestContext,
+    _ctx: ApplicationContext,
     sessionId: string,
     runId: string,
     reason?: string
@@ -283,17 +375,15 @@ class DefaultJojoAppService implements JojoAppService {
     throw new Error(`runtime_interrupted: live handle is unavailable for ${runId}`);
   }
 
-  async listApprovals(_ctx: RequestContext, sessionId: string): Promise<PendingApprovalSnapshot[]> {
+  async listApprovals(_ctx: ApplicationContext, sessionId: string): Promise<PendingApprovalSnapshot[]> {
     return this.approvalBroker.list(sessionId);
   }
 
-  async getApprovalSessionId(_ctx: RequestContext, approvalId: string): Promise<string> {
-    const approval = await this.stateStore.approvals.get(approvalId);
-    if (!approval) throw new Error(`approval_not_found: ${approvalId}`);
-    return approval.sessionId;
+  async getApprovalSessionId(_ctx: ApplicationContext, approvalId: string): Promise<string> {
+    return this.approvalBroker.getSessionId(approvalId);
   }
 
-  async resolveApproval(ctx: RequestContext, approvalId: string, decision: ApprovalDecision): Promise<void> {
+  async resolveApproval(ctx: ApplicationContext, approvalId: string, decision: ApprovalDecision): Promise<void> {
     await this.approvalBroker.resolve(approvalId, decision, ctx.principal.id);
   }
 
@@ -306,7 +396,7 @@ class DefaultJojoAppService implements JojoAppService {
     if (this.closed) return;
     this.closed = true;
     for (const handle of this.liveRuns.list()) await handle.cancel('server_shutdown');
-    await Promise.allSettled([...this.observations]);
+    await Promise.allSettled([...this.observations.values()]);
     for (const run of await this.stateStore.runs.listRecoverable()) {
       const interrupted = await this.stateStore.runs.markInterrupted(run.id, {
         code: 'server_shutdown',
@@ -325,19 +415,21 @@ class DefaultJojoAppService implements JojoAppService {
   }
 
   private observe(handle: RunHandle): void {
-    const observation = handle.result.then(async (result) => {
-      const record = result.status === 'completed'
-        ? await this.stateStore.runs.markCompleted(handle.id, result)
-        : result.status === 'cancelled'
-          ? await this.stateStore.runs.markCancelled(handle.id, result)
-          : await this.stateStore.runs.markFailed(handle.id, protocolError(result.error), result);
-      this.emit({ type: 'run.updated', run: toRunSnapshot(record) });
-    }).finally(() => {
+    const observation = handle.result.then(result => this.recordResult(result)).finally(() => {
       this.liveRuns.detach(handle.id);
-      this.observations.delete(observation);
+      this.observations.delete(handle.id);
     });
-    this.observations.add(observation);
+    this.observations.set(handle.id, observation);
     void observation.catch(() => undefined);
+  }
+
+  private async recordResult(result: RunResult): Promise<void> {
+    const record = result.status === 'completed'
+      ? await this.stateStore.runs.markCompleted(result.runId, result)
+      : result.status === 'cancelled'
+        ? await this.stateStore.runs.markCancelled(result.runId, result)
+        : await this.stateStore.runs.markFailed(result.runId, applicationError(result.error), result);
+    this.emit({ type: 'run.updated', run: toRunSnapshot(record) });
   }
 
   private emit(event: AppServiceEvent): void {
@@ -370,7 +462,7 @@ function toRunSnapshot(record: PersistedRunRecord): RunSnapshot {
   };
 }
 
-function protocolError(error: unknown): ProtocolError {
+function applicationError(error: unknown): ApplicationError {
   if (error && typeof error === 'object') {
     const value = error as { code?: unknown; message?: unknown; detail?: unknown; details?: unknown };
     const message = typeof value.message === 'string' ? value.message : String(error);

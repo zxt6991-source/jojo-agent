@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { ApprovalRequest } from '@desktop-agent/contracts';
 import type { RuntimeResolutionContext } from '@desktop-agent/agent-runtime';
 import { MemoryServerStateStore, ServerApprovalBroker, type ApprovalStore } from '../src/index.js';
@@ -33,6 +33,41 @@ function deferred(): { promise: Promise<void>; resolve(): void } {
 }
 
 describe('ServerApprovalBroker durable ordering', () => {
+  it('reserves the request ID while persistence is pending', async () => {
+    const state = await preparedStore();
+    const gate = deferred();
+    const createPending = vi.fn(async (input: Parameters<ApprovalStore['createPending']>[0]) => {
+      await gate.promise;
+      return state.approvals.createPending(input);
+    });
+    const broker = new ServerApprovalBroker({ store: { ...state.approvals, createPending } });
+    const controller = new AbortController();
+    const waiting = broker.requestApproval(request, context, controller.signal);
+    const duplicate = new AbortController();
+    await expect(broker.requestApproval(request, context, duplicate.signal)).rejects.toThrow('approval_exists');
+    duplicate.abort();
+    expect(() => broker.bindStore(state.approvals)).toThrow('approval_store_bind_after_use');
+    gate.resolve();
+    await vi.waitFor(() => expect(broker.list()).toHaveLength(1));
+    expect(createPending).toHaveBeenCalledTimes(1);
+    await broker.resolve(request.requestId, 'allow');
+    expect(await waiting).toBe(true);
+  });
+
+  it('does not republish an already resolved durable request', async () => {
+    const state = await preparedStore();
+    const broker = new ServerApprovalBroker({ store: state.approvals });
+    const waiting = broker.requestApproval(request, context, new AbortController().signal);
+    await vi.waitFor(() => expect(broker.list()).toHaveLength(1));
+    await broker.resolve(request.requestId, 'deny');
+    expect(await waiting).toBe(false);
+    const event = vi.fn();
+    broker.subscribe(event);
+    await expect(broker.requestApproval(request, context, new AbortController().signal)).rejects.toThrow('approval_already_resolved');
+    expect(event).not.toHaveBeenCalled();
+    expect(broker.list()).toEqual([]);
+  });
+
   it('persists a sanitized summary before publishing approval.required', async () => {
     const state = await preparedStore();
     const gate = deferred();
@@ -87,4 +122,42 @@ describe('ServerApprovalBroker durable ordering', () => {
       status: 'allowed', decision: 'allow', resolvedBy: 'principal-1'
     });
   });
+});
+
+
+it('keeps durable approval ownership available after settlement and broker recreation', async () => {
+  const state = await preparedStore();
+  const broker = new ServerApprovalBroker({ store: state.approvals });
+  const waiting = broker.requestApproval(request, context, new AbortController().signal);
+  await vi.waitFor(() => expect(broker.list()).toHaveLength(1));
+  expect(await broker.getSessionId(request.requestId)).toBe(context.sessionId);
+  await broker.resolve(request.requestId, 'deny');
+  expect(await waiting).toBe(false);
+  const reopened = new ServerApprovalBroker({ store: state.approvals });
+  expect(reopened.list()).toEqual([]);
+  expect(await reopened.getSessionId(request.requestId)).toBe(context.sessionId);
+  await expect(reopened.getSessionId('missing')).rejects.toThrow('approval_not_found');
+});
+
+it('persists preparation approval before publication and records its decision without a fabricated run', async () => {
+  const state = new MemoryServerStateStore();
+  await state.sessions.ensureActive({ sessionId: request.sessionId });
+  const broker = new ServerApprovalBroker({ store: state.approvals });
+  const events: unknown[] = [];
+  broker.subscribe(event => events.push(event));
+  const waiting = broker.requestSessionApproval(request, new AbortController().signal);
+  await vi.waitFor(() => expect(broker.list()).toHaveLength(1));
+  expect(broker.list()[0]).toMatchObject({ scope: 'session', sessionId: request.sessionId });
+  expect(broker.list()[0]).not.toHaveProperty('runId');
+  expect(await state.approvals.get(request.requestId)).toMatchObject({ scope: 'session', status: 'pending' });
+  expect(await state.runs.list(request.sessionId)).toEqual([]);
+  await broker.resolve(request.requestId, 'allow', 'local-user');
+  expect(await waiting).toBe(true);
+  const reopened = new ServerApprovalBroker({ store: state.approvals });
+  await expect(reopened.resolve(request.requestId, 'allow', 'local-user')).resolves.toBeUndefined();
+  await expect(reopened.resolve(request.requestId, 'deny')).rejects.toThrow('approval_already_resolved');
+  expect(await reopened.getSessionId(request.requestId)).toBe(request.sessionId);
+  expect(await state.approvals.get(request.requestId)).toMatchObject({ status: 'allowed', resolvedBy: 'local-user' });
+  expect(JSON.stringify(await state.approvals.get(request.requestId))).not.toContain('must-not-persist');
+  expect(events).toHaveLength(2);
 });

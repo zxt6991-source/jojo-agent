@@ -23,3 +23,7 @@ export * from './artifact';
 export * from './model-metadata';
 
 export * from './artifact-content';
+
+export * from './build-compatibility';
+
+export * from './capability-manifest';

@@ -13,7 +13,7 @@ export type DesktopChannelApprovalBridgeOptions = {
   channels: ChannelService;
   store: ChannelStore;
   activeRun(sessionId: string): DesktopActiveChannelRun | undefined;
-  resolve(approvalId: string, allowed: boolean): boolean;
+  resolve(approvalId: string, allowed: boolean): boolean | Promise<boolean>;
   now?: () => Date;
   tokenTtlMs?: number;
   tokenGenerator?: () => string;
@@ -69,7 +69,7 @@ export class DesktopChannelApprovalBridge {
     if (!raw?.startsWith('act_')) return false;
     const token = await this.options.store.consumeActionToken(hash(raw), event.sender.id, this.now().toISOString());
     if (token.actionType !== 'approval') throw new Error('channel_action_token_type_invalid');
-    if (!this.options.resolve(token.payload.approvalId, token.payload.decision === 'allow')) {
+    if (!await this.options.resolve(token.payload.approvalId, token.payload.decision === 'allow')) {
       throw new Error(`channel_approval_not_pending: ${token.payload.approvalId}`);
     }
     await this.invalidate(token.payload.approvalId);

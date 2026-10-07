@@ -10,7 +10,11 @@
     "./runtime": "./src/runtime.ts",
     "./integrations": "./src/integrations.ts",
     "./extension-api": "./src/extension-api.ts",
-    "./extensions": "./src/extensions.ts"
+    "./extensions": "./src/extensions.ts",
+    "./application": "./src/application/index.ts",
+    "./build-compatibility": "./src/build-compatibility.ts",
+    "./capability-manifest": "./src/capability-manifest.ts",
+    "./application/operations": "./src/application/operations.ts"
   },
   "dependencies": {
     "@desktop-agent/channel-core": "workspace:*",

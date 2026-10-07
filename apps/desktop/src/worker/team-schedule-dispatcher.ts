@@ -30,7 +30,7 @@ export class TeamMemberScheduleDispatcher implements TypedScheduleTargetDispatch
   private readonly unsubscribeOrchestration: () => void;
 
   constructor(
-    private readonly manager: TeamManager,
+    private readonly manager: Pick<TeamManager, 'getTask' | 'delegate' | 'cancel'>,
     subscribeOrchestration: (listener: (event: OrchestrationEvent) => void) => () => void
   ) {
     this.unsubscribeOrchestration = subscribeOrchestration((event) => {

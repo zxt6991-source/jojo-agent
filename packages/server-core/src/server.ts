@@ -1,3 +1,7 @@
+import { APPLICATION_OPERATIONS } from '@desktop-agent/contracts/application/operations';
+import { BUILD_COMPATIBILITY } from '@desktop-agent/contracts/build-compatibility';
+import { createServerCapabilityDefaults } from '@desktop-agent/contracts/capability-manifest';
+import type { ApplicationSessionSnapshot } from '@desktop-agent/contracts/application';
 import { AttachmentUploads, type UploadStreamInput } from './attachment-uploads';
 import type { AttachmentStore } from '@desktop-agent/attachments';
 import { StartRunInputSchema, type AttachmentUploadReceipt } from '@desktop-agent/server-protocol';
@@ -179,29 +183,19 @@ class DefaultJojoServerCore implements JojoServerCore {
     this.uploads = new AttachmentUploads(options.attachmentStore);
     this.info = {
       id: options.serverId ?? `srv_${crypto.randomUUID()}`,
-      version: options.serverVersion ?? '0.1.0',
+      version: options.serverVersion ?? BUILD_COMPATIBILITY.appVersion,
       protocolVersion: JOJO_SERVER_PROTOCOL_VERSION
     };
+    const defaults = createServerCapabilityDefaults({
+      scheduler: Boolean(options.scheduler),
+      channels: Boolean(options.channels),
+      channelKinds: options.channelKinds ?? []
+    });
     this.capabilities = {
-      runtime: {
-        lanes: true, resumeOperation: true, transcriptQuery: true, runQuery: true,
-        steer: false, followUp: false, durableSuspend: false
-      },
-      workflow: false,
-      browser: false,
-      memory: false,
-      subagents: true,
-      images: true,
-      approvals: true,
+      ...defaults,
       ...options.capabilities,
-      scheduler: options.scheduler
-        ? options.capabilities?.scheduler ?? { enabled: true, targets: ['agent'] }
-        : { enabled: false, targets: [] },
-      channels: options.channels
-        ? options.capabilities?.channels ?? {
-          enabled: true, kinds: [...(options.channelKinds ?? [])], inbound: true, outbound: true, approvals: true
-        }
-        : { enabled: false, kinds: [], inbound: false, outbound: false, approvals: false }
+      scheduler: options.scheduler ? options.capabilities?.scheduler ?? defaults.scheduler : defaults.scheduler,
+      channels: options.channels ? options.capabilities?.channels ?? defaults.channels : defaults.channels
     };
     this.models = [...(options.models ?? [])];
     this.leases = new LeaseManager(options.idGenerator, options.now);
@@ -226,12 +220,12 @@ class DefaultJojoServerCore implements JojoServerCore {
   }
 
   listSessions(ctx: RequestContext): Promise<ServerSessionSummary[]> {
-    authorize(ctx, 'sessions:read');
+    authorize(ctx, APPLICATION_OPERATIONS['session.list'].permission);
     return this.service.listSessions(ctx);
   }
 
   createSession(ctx: RequestContext, input: CreateSessionInput, key?: string): Promise<ServerSessionSnapshot> {
-    authorize(ctx, 'sessions:write');
+    authorize(ctx, APPLICATION_OPERATIONS['session.create'].permission);
     return this.idempotency.execute(ctx.principal.id, 'session.create', key, input, async () => {
       const authorized = await this.scopePolicy.authorize(input);
       return this.withLease(ctx, await this.service.createSession(ctx, authorized));
@@ -244,20 +238,20 @@ class DefaultJojoServerCore implements JojoServerCore {
     input: PatchSessionMetadataInput,
     key?: string
   ): Promise<ServerSessionSnapshot> {
-    authorize(ctx, 'sessions:write');
+    authorize(ctx, APPLICATION_OPERATIONS['session.patch'].permission);
     this.leases.requireControl(sessionId, ctx.connectionId);
-    return this.idempotency.execute(ctx.principal.id, `session.patch:${sessionId}`, key, input, () => (
-      this.service.patchSession(ctx, sessionId, input)
+    return this.idempotency.execute(ctx.principal.id, `session.patch:${sessionId}`, key, input, async () => (
+      this.withLease(ctx, await this.service.patchSession(ctx, sessionId, input))
     ), { durable: false });
   }
 
   async getSession(ctx: RequestContext, sessionId: string): Promise<ServerSessionSnapshot> {
-    authorize(ctx, 'sessions:read');
+    authorize(ctx, APPLICATION_OPERATIONS['session.get'].permission);
     return this.withLease(ctx, await this.service.getSession(ctx, sessionId));
   }
 
   transcript(ctx: RequestContext, sessionId: string, query?: TranscriptQuery): Promise<TranscriptPage> {
-    authorize(ctx, 'sessions:read');
+    authorize(ctx, APPLICATION_OPERATIONS['transcript.get'].permission);
     return this.service.getTranscript(ctx, sessionId, query);
   }
 
@@ -280,7 +274,7 @@ class DefaultJojoServerCore implements JojoServerCore {
   }
 
   async startRun(ctx: RequestContext, sessionId: string, input: StartRunInput, key?: string): Promise<RunSnapshot> {
-    authorize(ctx, 'runs:start');
+    authorize(ctx, APPLICATION_OPERATIONS['run.start'].permission);
     this.leases.requireControl(sessionId, ctx.connectionId);
     return await this.idempotency.execute(ctx.principal.id, `run.start:${sessionId}`, key, input, async () => {
       const resolved = await this.uploads.resolve(ctx.principal.id, sessionId, input);
@@ -291,7 +285,7 @@ class DefaultJojoServerCore implements JojoServerCore {
   }
 
   getRun(ctx: RequestContext, sessionId: string, runId: string): Promise<RunSnapshot> {
-    authorize(ctx, 'sessions:read');
+    authorize(ctx, APPLICATION_OPERATIONS['run.get'].permission);
     return this.service.getRun(ctx, sessionId, runId);
   }
 
@@ -307,7 +301,7 @@ class DefaultJojoServerCore implements JojoServerCore {
     decision: 'allow' | 'deny',
     key?: string
   ): Promise<void> {
-    authorize(ctx, 'approvals:resolve');
+    authorize(ctx, APPLICATION_OPERATIONS['approval.resolve'].permission);
     const sessionId = await this.service.getApprovalSessionId(ctx, approvalId);
     this.leases.requireControl(sessionId, ctx.connectionId);
     await this.idempotency.execute(ctx.principal.id, `approval.resolve:${approvalId}`, key, { decision }, () => (
@@ -321,7 +315,7 @@ class DefaultJojoServerCore implements JojoServerCore {
   }
 
   createSchedule(ctx: RequestContext, input: CreateScheduleInput, key?: string): Promise<Schedule> {
-    authorize(ctx, 'schedules:write');
+    authorize(ctx, APPLICATION_OPERATIONS['schedule.create'].permission);
     return this.idempotency.execute(ctx.principal.id, 'schedule.create', key, input, () => (
       this.requireScheduler().create(compactSchedulerInput<SchedulerCreateScheduleInput>(input), {
         id: ctx.principal.id,
@@ -341,7 +335,7 @@ class DefaultJojoServerCore implements JojoServerCore {
     input: UpdateScheduleInput,
     key?: string
   ): Promise<Schedule> {
-    authorize(ctx, 'schedules:write');
+    authorize(ctx, APPLICATION_OPERATIONS['schedule.update'].permission);
     return this.idempotency.execute(ctx.principal.id, `schedule.update:${scheduleId}`, key, input, () => (
       this.requireScheduler().update(scheduleId, compactSchedulerInput<SchedulerUpdateScheduleInput>(input))
     ));
@@ -360,7 +354,7 @@ class DefaultJojoServerCore implements JojoServerCore {
     input: RunScheduleNowInput = {},
     key?: string
   ): Promise<ScheduleRun> {
-    authorize(ctx, 'schedules:run');
+    authorize(ctx, APPLICATION_OPERATIONS['schedule.run-now'].permission);
     return this.idempotency.execute(ctx.principal.id, `schedule.run:${scheduleId}`, key, input, () => (
       this.requireScheduler().runNow(
         scheduleId,
@@ -404,7 +398,7 @@ class DefaultJojoServerCore implements JojoServerCore {
   }
 
   createChannelInstance(ctx: RequestContext, input: CreateChannelInstanceInput, key?: string): Promise<ChannelInstanceDto> {
-    authorize(ctx, 'channels:write');
+    authorize(ctx, APPLICATION_OPERATIONS['channel.instance.create'].permission);
     return this.idempotency.execute(ctx.principal.id, 'channel.instance.create', key, input, async () => {
       if (!this.capabilities.channels.kinds.includes(input.kind)) {
         throw new ProtocolFailure({ code: 'invalid_request', message: `Unsupported channel kind: ${input.kind}` });
@@ -432,7 +426,7 @@ class DefaultJojoServerCore implements JojoServerCore {
     input: UpdateChannelInstanceInput,
     key?: string
   ): Promise<ChannelInstanceDto> {
-    authorize(ctx, 'channels:write');
+    authorize(ctx, APPLICATION_OPERATIONS['channel.instance.update'].permission);
     return this.idempotency.execute(ctx.principal.id, `channel.instance.update:${instanceId}`, key, input, async () => {
       const current = await this.requireChannels().getInstance(instanceId);
       const expected = input.expectedRevision ?? current.revision;
@@ -459,7 +453,7 @@ class DefaultJojoServerCore implements JojoServerCore {
   }
 
   testChannel(ctx: RequestContext, instanceId: string, input: TestChannelInput, key?: string): Promise<ChannelDeliveryReceipt> {
-    authorize(ctx, 'channels:send');
+    authorize(ctx, APPLICATION_OPERATIONS['channel.test'].permission);
     return this.idempotency.execute(ctx.principal.id, `channel.instance.test:${instanceId}`, key, input, async () => {
       await this.requireChannels().getInstance(instanceId);
       if (input.bindingId) {
@@ -485,7 +479,7 @@ class DefaultJojoServerCore implements JojoServerCore {
   }
 
   createChannelBinding(ctx: RequestContext, input: CreateChannelBindingInput, key?: string): Promise<ChannelBindingDto> {
-    authorize(ctx, 'channels:bind');
+    authorize(ctx, APPLICATION_OPERATIONS['channel.binding.create'].permission);
     return this.idempotency.execute(ctx.principal.id, 'channel.binding.create', key, input, async () => (
       channelBindingDto(await this.requireChannels().saveBinding(await this.newBinding(input)))
     ));
@@ -497,7 +491,7 @@ class DefaultJojoServerCore implements JojoServerCore {
     input: UpdateChannelBindingInput,
     key?: string
   ): Promise<ChannelBindingDto> {
-    authorize(ctx, 'channels:bind');
+    authorize(ctx, APPLICATION_OPERATIONS['channel.binding.update'].permission);
     return this.idempotency.execute(ctx.principal.id, `channel.binding.update:${bindingId}`, key, input, async () => {
       const current = await this.requireChannels().getBinding(bindingId);
       const expected = input.expectedRevision ?? current.revision;
@@ -530,7 +524,7 @@ class DefaultJojoServerCore implements JojoServerCore {
     input: ApproveChannelPairingInput,
     key?: string
   ): Promise<ChannelBindingDto> {
-    authorize(ctx, 'channels:approve');
+    authorize(ctx, APPLICATION_OPERATIONS['channel.pairing.approve'].permission);
     return this.idempotency.execute(ctx.principal.id, `channel.pairing.approve:${pairingId}`, key, input, async () => (
       channelBindingDto(await this.requireChannels().approvePairing(pairingId, await this.newBinding(input.binding)))
     ));
@@ -594,7 +588,7 @@ class DefaultJojoServerCore implements JojoServerCore {
     await this.service.close();
   }
 
-  private withLease(ctx: RequestContext, snapshot: ServerSessionSnapshot): ServerSessionSnapshot {
+  private withLease(ctx: RequestContext, snapshot: ApplicationSessionSnapshot): ServerSessionSnapshot {
     return { ...snapshot, lease: this.leases.get(snapshot.id, ctx.connectionId) };
   }
 

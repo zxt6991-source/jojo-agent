@@ -1,3 +1,5 @@
+import { APPLICATION_OPERATIONS } from './application/operations.js';
+import { ChannelConversationSchema, ChannelRoutingSchema, ChannelBindingPolicySchema } from './application/channels.js';
 import type { ArtifactReadRequestV2, ArtifactReadResponseV2, ArtifactSaveRequestV2, ArtifactSaveResponseV2 } from './artifact-content';
 import { ModelConfigSchema, type ModelConfig } from './model-metadata';
 import { z } from 'zod';
@@ -41,8 +43,8 @@ import type {
 export const MAX_IMAGE_ATTACHMENTS = 4;
 export const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 
-export const CreateSessionInputSchema = z.object({
-  title: z.string().trim().min(1).max(SESSION_TITLE_MAX_LENGTH),
+export const CreateSessionInputSchema = APPLICATION_OPERATIONS['session.create'].input.pick({ title: true }).extend({
+  title: APPLICATION_OPERATIONS['session.create'].input.shape.title.unwrap().max(SESSION_TITLE_MAX_LENGTH),
   workingDirectory: z.string().trim().min(1).max(4_096).optional()
 });
 
@@ -56,11 +58,11 @@ export const BindSessionProjectInputSchema = z.object({
   workingDirectory: z.string().trim().min(1).max(4_096)
 });
 
-export const StartTurnInputSchema = z.object({
+export const StartTurnInputSchema = APPLICATION_OPERATIONS['run.start'].input.pick({ providerId: true, model: true }).extend({
   sessionId: z.string(),
   text: z.string().trim().max(100_000),
-  providerId: z.string().trim().min(1),
-  model: z.string().trim().min(1),
+  providerId: APPLICATION_OPERATIONS['run.start'].input.shape.providerId.trim().min(1),
+  model: APPLICATION_OPERATIONS['run.start'].input.shape.model.trim().min(1),
   images: z.array(ImageContentBlockSchema).max(MAX_IMAGE_ATTACHMENTS).default([]),
   files: z.array(FileAttachmentSchema).max(MAX_FILE_ATTACHMENTS).default([])
 }).strict().refine((input) => input.text.trim().length > 0 || input.images.length > 0 || input.files.length > 0, {
@@ -548,11 +550,11 @@ export const SaveChannelSecretsInputSchema = z.object({
 export type SaveChannelSecretsInput = z.infer<typeof SaveChannelSecretsInputSchema>;
 export type ChannelSecretReferences = Partial<Record<keyof SaveChannelSecretsInput['secrets'], string>>;
 
-const ChannelInstanceDraftSchema = z.object({
+const ChannelInstanceDraftSchema = APPLICATION_OPERATIONS['channel.instance.create'].input.extend({
   id: ChannelEntityIdSchema,
   kind: z.enum(['telegram', 'feishu']),
-  name: z.string().trim().min(1).max(120),
-  enabled: z.boolean(),
+  name: APPLICATION_OPERATIONS['channel.instance.create'].input.shape.name.max(120),
+  enabled: APPLICATION_OPERATIONS['channel.instance.create'].input.shape.enabled.unwrap(),
   config: z.record(z.string().min(1).max(128), JsonValueSchema),
   secretRefs: z.record(
     z.string().min(1).max(128),
@@ -563,16 +565,14 @@ const ChannelInstanceDraftSchema = z.object({
   )
 }).strict();
 
-const ChannelBindingDraftSchema = z.object({
+const ChannelBindingDraftSchema = APPLICATION_OPERATIONS['channel.binding.create'].input.extend({
   id: ChannelEntityIdSchema,
   instanceId: ChannelEntityIdSchema,
-  conversation: z.object({
+  conversation: ChannelConversationSchema.extend({
     id: ChannelEntityIdSchema,
     threadId: ChannelEntityIdSchema.optional(),
-    type: z.enum(['direct', 'group'])
   }).strict(),
-  routing: z.object({
-    sessionMode: z.enum(['persistent', 'per_thread', 'stateless']),
+  routing: ChannelRoutingSchema.extend({
     sessionId: ChannelEntityIdSchema.optional(),
     workspaceRoot: z.string().trim().min(1).max(4_096).optional(),
     providerId: ChannelEntityIdSchema.optional(),
@@ -580,12 +580,8 @@ const ChannelBindingDraftSchema = z.object({
     instructions: z.array(z.string().max(10_000)).max(20).optional(),
     profile: ChannelEntityIdSchema.optional()
   }).strict(),
-  policy: z.object({
-    enabled: z.boolean(),
-    requireMention: z.boolean(),
-    queueMode: z.enum(['queue', 'reject', 'interrupt']),
+  policy: ChannelBindingPolicySchema.extend({
     allowedSenders: z.array(ChannelEntityIdSchema).max(1_000).optional(),
-    allowAttachments: z.boolean()
   }).strict()
 }).strict();
 

@@ -1,4 +1,5 @@
-export const SERVER_STATE_SCHEMA_VERSION = 2;
+import { BUILD_COMPATIBILITY } from '@desktop-agent/contracts/build-compatibility';
+export const SERVER_STATE_SCHEMA_VERSION = BUILD_COMPATIBILITY.serverStateSchema;
 
 export const SERVER_STATE_SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS server_sessions (
@@ -14,7 +15,26 @@ export const SERVER_STATE_SCHEMA_SQL = `
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS application_deleted_sessions (
+    session_id TEXT PRIMARY KEY,
+    deleted_at INTEGER NOT NULL
+  );
+  CREATE TRIGGER IF NOT EXISTS application_session_no_resurrection
+  BEFORE INSERT ON server_sessions
+  WHEN EXISTS (SELECT 1 FROM application_deleted_sessions WHERE session_id = NEW.session_id)
+  BEGIN SELECT RAISE(ABORT, 'application_session_deleted'); END;
   CREATE INDEX IF NOT EXISTS server_sessions_updated ON server_sessions(updated_at DESC);
+
+  CREATE TABLE IF NOT EXISTS application_metadata_imports (
+    session_id TEXT NOT NULL REFERENCES server_sessions(session_id) ON DELETE CASCADE,
+    source TEXT NOT NULL,
+    PRIMARY KEY(session_id, source)
+  );
+
+  CREATE TABLE IF NOT EXISTS application_session_projects (
+    session_id TEXT PRIMARY KEY REFERENCES server_sessions(session_id) ON DELETE CASCADE,
+    metadata_json TEXT NOT NULL
+  );
 
   CREATE TABLE IF NOT EXISTS server_runs (
     id TEXT PRIMARY KEY,
@@ -42,8 +62,9 @@ export const SERVER_STATE_SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS server_approvals (
     id TEXT PRIMARY KEY,
     session_id TEXT NOT NULL REFERENCES server_sessions(session_id) ON DELETE CASCADE,
-    run_id TEXT NOT NULL REFERENCES server_runs(id) ON DELETE CASCADE,
-    lane_id TEXT NOT NULL,
+    scope TEXT NOT NULL DEFAULT 'run' CHECK(scope IN ('run', 'session')),
+    run_id TEXT REFERENCES server_runs(id) ON DELETE CASCADE,
+    lane_id TEXT,
     status TEXT NOT NULL CHECK(status IN ('pending', 'allowed', 'denied', 'expired', 'interrupted')),
     tool_call_id TEXT NOT NULL,
     tool_name TEXT NOT NULL,
@@ -56,7 +77,9 @@ export const SERVER_STATE_SCHEMA_SQL = `
     created_at INTEGER NOT NULL,
     resolved_at INTEGER,
     updated_at INTEGER NOT NULL,
-    version INTEGER NOT NULL DEFAULT 1
+    version INTEGER NOT NULL DEFAULT 1,
+    CHECK((scope = 'run' AND run_id IS NOT NULL AND lane_id IS NOT NULL)
+       OR (scope = 'session' AND run_id IS NULL AND lane_id IS NULL))
   );
   CREATE INDEX IF NOT EXISTS server_approvals_session_status ON server_approvals(session_id, status);
   CREATE INDEX IF NOT EXISTS server_approvals_run ON server_approvals(run_id);
