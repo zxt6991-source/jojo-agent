@@ -7,6 +7,7 @@ import {
   MemoryServerStateStore,
   ServerApprovalBroker,
   type JojoAppService,
+  type JojoAppServiceOptions,
   type RuntimeAppService,
   type ServerStateStore
 } from '@desktop-agent/app-service';
@@ -54,6 +55,8 @@ export type HeadlessServerOptions = Omit<JojoRuntimeCompositionOptions, 'host' |
   stateStore?: ServerStateStore;
   server?: JojoServerCoreOptions;
   channels?: HeadlessChannelOptions;
+  /** Explicit per-principal history authorization; remote identities are denied by default. */
+  canReadSessionHistory?: JojoAppServiceOptions['canReadSessionHistory'];
   /** Disable the built-in headless scheduler when explicitly false. */
   scheduler?: boolean;
 };
@@ -124,6 +127,7 @@ export async function createHeadlessServer(options: HeadlessServerOptions): Prom
       recovery: 'interrupt',
       application: {
         approvalBroker, stateStore,
+        ...(options.canReadSessionHistory ? { canReadSessionHistory: options.canReadSessionHistory } : {}),
         ...(options.idGenerator ? { idGenerator: options.idGenerator } : {}),
         ...(options.now ? { now: options.now } : {})
       },

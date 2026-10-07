@@ -272,13 +272,13 @@ export class JsonConfigStore {
         });
       }
       const providers = stored.providers
-        .filter((provider) => provider.protocol === 'openai_chat_completions')
+        .filter((provider) => ['openai_chat_completions', 'openai_responses'].includes(provider.protocol))
         .map((provider) => {
           if ('contextWindowTokens' in provider) {
             const { contextWindowTokens, maxOutputTokens, ...rest } = provider;
-            return { ...rest, models: [...new Set([...provider.models, provider.model])].map((id) => legacyModelConfig(id, contextWindowTokens, maxOutputTokens)), protocol: 'openai_chat_completions' as const, hasApiKey: hasKey(provider.id) };
+            return { ...rest, models: [...new Set([...provider.models, provider.model])].map((id) => legacyModelConfig(id, contextWindowTokens, maxOutputTokens)), protocol: provider.protocol as 'openai_chat_completions' | 'openai_responses', hasApiKey: hasKey(provider.id) };
           }
-          return { ...provider, protocol: 'openai_chat_completions' as const, hasApiKey: hasKey(provider.id) };
+          return { ...provider, protocol: provider.protocol as 'openai_chat_completions' | 'openai_responses', hasApiKey: hasKey(provider.id) };
         });
       if (providers.length === 0) {
         return ProviderSettingsSchema.parse({

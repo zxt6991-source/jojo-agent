@@ -16,6 +16,8 @@ export * from './persistence';
 export * from './runtime';
 export * from './scheduler';
 export * from './tools';
+export * from './verification';
+export * from './session-history';
 export * from './workspace';
 
 export * from './artifact';

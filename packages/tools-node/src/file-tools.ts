@@ -1,3 +1,4 @@
+import { withWorkspaceMutationLock } from './workspace-mutation-lock.js';
 import { classifyArtifact } from '@desktop-agent/contracts';
 import { produceWorkspaceArtifact } from './artifact-storage.js';
 import { chmod, mkdir, rename, rm, stat, unlink, writeFile } from 'node:fs/promises';
@@ -5,7 +6,7 @@ import path from 'node:path';
 import type { Tool, ToolContext, ToolResult } from '@desktop-agent/contracts';
 import { FileSnapshotRegistry } from './file-snapshots.js';
 import { backupFileToTrash } from './file-trash.js';
-import { prepareFileMutation } from './file-mutation.js';
+import { prepareFileMutation, mutationApprovalFingerprint } from './file-mutation.js';
 import { toolResult } from './tool-result.js';
 
 type FileToolName = 'write_file' | 'edit_file' | 'delete_file';
@@ -61,6 +62,10 @@ class FileMutationTool implements Tool {
   }
 
   async execute(input: unknown, context: ToolContext): Promise<ToolResult> {
+    return withWorkspaceMutationLock(context.workingDirectory, () => this.executeLocked(input, context));
+  }
+
+  private async executeLocked(input: unknown, context: ToolContext): Promise<ToolResult> {
     if (!context.approved) return toolResult(false, 'File changes require approval.', { code: 'permission_denied' });
     const prepared = await prepareFileMutation(
       { id: '', name: this.name, input },
@@ -68,6 +73,7 @@ class FileMutationTool implements Tool {
       this.snapshots
     );
 
+    this.snapshots.assertMutationApproval(context.sessionId, context.toolCallId, mutationApprovalFingerprint([prepared]));
     let trashed = false;
     let previousMode: number | undefined;
     if (prepared.before !== null) {

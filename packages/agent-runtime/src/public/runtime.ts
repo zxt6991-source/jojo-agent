@@ -167,6 +167,8 @@ export interface AgentRuntime {
   recoverInterruptedOperations(input: { reason: 'host_restart' }): Promise<RuntimeRecoveryReport>;
   openSession(request: OpenSessionRequest): Promise<RuntimeSession>;
   getSession(id: string): Promise<RuntimeSession | undefined>;
+  searchSessionMessages?(query: import('@desktop-agent/contracts').SessionSearchQuery, allowedSessionIds: readonly string[]): Promise<import('@desktop-agent/contracts').SessionSearchHit[]>;
+  readSessionMessageWindow?(query: import('@desktop-agent/contracts').SessionReadWindowQuery): Promise<import('@desktop-agent/contracts').SessionReadWindow>;
   listSessions(): Promise<SessionInfo[]>;
   inspectRun(runId: string): Promise<RuntimeRunSnapshot | undefined>;
   /** Crash recovery only. Continue a conversation with RuntimeLane.run(). */
@@ -292,6 +294,13 @@ class DefaultAgentRuntime implements AgentRuntime {
   async getSession(id: string): Promise<RuntimeSession | undefined> {
     this.assertOpen();
     return await this.store.getSession(id) ? new DefaultRuntimeSession(this, id) : undefined;
+  }
+
+  async searchSessionMessages(query: import('@desktop-agent/contracts').SessionSearchQuery, allowedSessionIds: readonly string[]): Promise<import('@desktop-agent/contracts').SessionSearchHit[]> {
+    return this.store.searchMessages ? this.store.searchMessages(query, allowedSessionIds) : [];
+  }
+  async readSessionMessageWindow(query: import('@desktop-agent/contracts').SessionReadWindowQuery): Promise<import('@desktop-agent/contracts').SessionReadWindow> {
+    return this.store.readMessageWindow ? this.store.readMessageWindow(query) : { items: [], truncated: false };
   }
 
   async listSessions(): Promise<SessionInfo[]> {

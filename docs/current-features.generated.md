@@ -12,7 +12,7 @@
 | configSchema | 4 |
 | sessionJsonlSchema | 1 |
 | runtimeContract | 1 |
-| runtimeSqliteSchema | 3 |
+| runtimeSqliteSchema | 4 |
 | desktopIpcProtocol | 尚未实现版本握手 |
 
 这些数值表示当前写入格式，不承诺旧版本兼容；兼容性必须由迁移测试验证。

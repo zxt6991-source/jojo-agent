@@ -1,3 +1,8 @@
+import { preparePatch, prepareJournalMutation, patchPreview } from './patch-tools.js';
+import os from 'node:os';
+import path from 'node:path';
+import { prepareSkillDraft, prepareSkillActivation } from './skill-draft-tools.js';
+import { ResultReadInput } from './result-read-tool.js';
 import { ShowArtifactInput } from './show-artifact-tool.js';
 import type {
   ApprovalRequest,
@@ -7,18 +12,19 @@ import type {
 } from '@desktop-agent/contracts';
 import { GlobInput, GrepInput, ListFilesInput, ReadFileInput, TerminalInput, WebFetchInput, WebSearchInput } from './inputs.js';
 import { FileSnapshotRegistry } from './file-snapshots.js';
-import { mutationErrorCode, prepareFileMutation } from './file-mutation.js';
+import { mutationErrorCode, prepareFileMutation, mutationApprovalFingerprint } from './file-mutation.js';
 import { parseHttpUrl, UnsafeWebUrlError } from './web-url.js';
 import { isWebFetchSpillPath } from './web-fetch-storage.js';
 import { resolveWorkspacePath } from './workspace-paths.js';
 import { createProcessSandbox } from '@desktop-agent/process-sandbox';
 import { DefaultTerminalSecurityPolicy, type TerminalSecurityPolicy } from './terminal-security-policy.js';
-import { GeneratedDocumentSchema } from '@desktop-agent/contracts';
+import { SessionSearchQuerySchema, SessionReadWindowQuerySchema, GeneratedDocumentSchema } from '@desktop-agent/contracts';
 
 export class DefaultPermissionGate implements PermissionGate {
   constructor(
     private readonly snapshots = new FileSnapshotRegistry(),
-    private readonly terminalPolicy: TerminalSecurityPolicy = new DefaultTerminalSecurityPolicy(createProcessSandbox('fallback'))
+    private readonly terminalPolicy: TerminalSecurityPolicy = new DefaultTerminalSecurityPolicy(createProcessSandbox('fallback')),
+    private readonly journalDirectory: string = path.join(os.tmpdir(), 'desktop-agent-trash')
   ) {}
 
   async check(
@@ -26,6 +32,32 @@ export class DefaultPermissionGate implements PermissionGate {
     context: { sessionId: string; workingDirectory: string }
   ): Promise<PermissionDecision> {
     switch (call.name) {
+      case 'apply_patch':
+      case 'file_undo': {
+        try {
+          const mutations = call.name === 'apply_patch' ? await preparePatch(call.input, context.workingDirectory, this.snapshots) : (await prepareJournalMutation(call.input, context, this.journalDirectory)).mutations;
+          this.snapshots.rememberMutationApproval(context.sessionId, call.id, mutationApprovalFingerprint(mutations));
+          return { decision: 'ask', request: { ...this.createRequest(call, context.sessionId, `Review ${mutations.length} file changes`), preview: patchPreview(mutations) } };
+        } catch (error) { return this.denyError(error); }
+      }
+      case 'skill_draft':
+      case 'skill_activate': {
+        try {
+          const prepared = call.name === 'skill_draft' ? prepareSkillDraft(call.input, context.sessionId) : await prepareSkillActivation(call.input, context.workingDirectory);
+          return this.checkFileMutation({ ...call, name: 'write_file', input: { path: prepared.path, content: prepared.content } }, context).then(decision => decision.decision === 'ask' ? { ...decision, request: { ...decision.request, call } } : decision);
+        } catch (error) { return this.denyError(error); }
+      }
+      case 'session_search':
+      case 'session_read_window': {
+        const parsed = (call.name === 'session_search' ? SessionSearchQuerySchema : SessionReadWindowQuerySchema).safeParse(call.input);
+        return parsed.success ? { decision: 'allow' } : { decision: 'deny', reason: parsed.error.message, code: 'invalid_input' };
+      }
+      case 'verification_profile':
+        return call.input && typeof call.input === 'object' && !Array.isArray(call.input) && !Object.keys(call.input).length ? { decision: 'allow' } : { decision: 'deny', reason: 'Expected an empty object.', code: 'invalid_input' };
+      case 'result_read': {
+        const parsed = ResultReadInput.safeParse(call.input);
+        return parsed.success ? { decision: 'allow' } : { decision: 'deny', reason: parsed.error.message, code: 'invalid_input' };
+      }
       case 'create_document': {
         const parsed = GeneratedDocumentSchema.safeParse(call.input);
         return parsed.success ? { decision: 'allow' } : { decision: 'deny', reason: parsed.error.message, code: 'invalid_input' };
@@ -100,6 +132,7 @@ export class DefaultPermissionGate implements PermissionGate {
   ): Promise<PermissionDecision> {
     try {
       const prepared = await prepareFileMutation(call, context.workingDirectory, this.snapshots);
+      this.snapshots.rememberMutationApproval(context.sessionId, call.id, mutationApprovalFingerprint([prepared]));
       return {
         decision: 'ask',
         request: {

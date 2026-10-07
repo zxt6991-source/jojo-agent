@@ -9,3 +9,5 @@ export type { RequestPolicy } from './request-policy.js';
 export { resolveModelMetadata, mergeRefreshedModels } from './model-metadata/resolver.js';
 export { lookupBuiltinModel } from './model-metadata/builtin-registry.js';
 export { ModelDiscoveryRefresh } from './model-metadata/refresh.js';
+
+export { OpenAIResponsesProvider, createResponsesBody, parseResponsesStream } from './openai-responses-provider.js';

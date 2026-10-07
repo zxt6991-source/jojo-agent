@@ -17,11 +17,17 @@ export type ToolDefinition = z.infer<typeof ToolDefinitionSchema>;
 
 export type ToolContext = {
   sessionId: string;
+  toolCallId?: string;
   workingDirectory: string;
   /** Phase-A runtime scope; workingDirectory remains available for compatibility. */
   executionScope?: ExecutionScope;
   signal: AbortSignal;
   approved: boolean;
+  /** Scoped by the host to the current session and branch, including pre-compaction history. */
+  isVerificationCurrent?: (callId: string) => Promise<boolean>;
+  readToolResult?: (callId: string) => Promise<ToolResult | undefined>;
+  searchSessionHistory?: (query: import('./session-history.js').SessionSearchQuery) => Promise<import('./session-history.js').SessionSearchHit[]>;
+  readSessionHistoryWindow?: (query: import('./session-history.js').SessionReadWindowQuery) => Promise<import('./session-history.js').SessionReadWindow>;
   onProgress: (text: string) => void;
 };
 

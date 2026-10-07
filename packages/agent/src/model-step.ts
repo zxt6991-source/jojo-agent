@@ -24,12 +24,14 @@ export type ModelStepResult = {
   text: string;
   calls: ToolCall[];
   stopReason: string;
+  providerState?: import('@desktop-agent/contracts').ProviderState;
 };
 
 export async function runModelStep(options: ModelStepOptions): Promise<ModelStepResult> {
   let text = '';
   let stopReason = 'stop';
   const calls: ToolCall[] = [];
+  let providerState: import('@desktop-agent/contracts').ProviderState | undefined;
   let receivedEvent = false;
   let completed = false;
 
@@ -52,6 +54,9 @@ export async function runModelStep(options: ModelStepOptions): Promise<ModelStep
     }
 
     switch (event.type) {
+      case 'provider_state':
+        providerState = event.state;
+        break;
       case 'text_delta':
         text += event.text;
         options.emit({ type: 'text.delta', text: event.text });
@@ -83,5 +88,5 @@ export async function runModelStep(options: ModelStepOptions): Promise<ModelStep
   throwIfAborted(options.signal);
   if (!receivedEvent) throw new AgentError('empty_response', 'The provider returned no events.');
   if (!completed) throw new AgentError('provider_stream_incomplete', 'Response interrupted; this output was not saved as a completed result.');
-  return { text, calls, stopReason };
+  return { text, calls, stopReason, ...(providerState ? { providerState } : {}) };
 }

@@ -120,6 +120,10 @@ test('approval allow writes and approval deny has no side effect', async () => {
 test('approves host network and injects a named Terminal secret without persisting it in history', async () => {
   const dataDirectory = await mkdtemp(path.join(os.tmpdir(), 'jojo-electron-e2e-'));
   const launched = await launchElectron(dataDirectory);
+  const protocolViolations: string[] = [];
+  launched.app.process().stderr?.on('data', chunk => {
+    if (String(chunk).includes('IPC protocol violation')) protocolViolations.push(String(chunk));
+  });
   try {
     await createSession(launched.page);
     await send(launched.page, 'E2E: terminal secret');
@@ -138,6 +142,7 @@ test('approves host network and injects a named Terminal secret without persisti
     const sessions = await launched.page.evaluate(() => window.desktopAgent.listSessions());
     const journal = JSON.stringify(await launched.page.evaluate((id) => window.desktopAgent.loadMessages(id), sessions[0]!.id));
     expect(journal).not.toContain('e2e-secret-value');
+    expect(protocolViolations).toEqual([]);
   } finally {
     await launched.app.close();
   }

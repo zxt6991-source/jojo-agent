@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "tasks": [
+    { "id": "ts-repair", "category": "verification", "prompt": "修复隔离工作区的 TypeScript 类型错误，并运行项目验证。", "criteria": ["expected-files", "final-checks-current", "no-false-pass"] },
+    { "id": "verification-cancel", "category": "verification", "prompt": "运行耗时测试，在测试中途取消任务。", "criteria": ["cancelled-record", "no-false-pass"] },
+    { "id": "middle-failure", "category": "result-recovery", "prompt": "读取一份中段含错误的长输出，定位并解释失败。", "criteria": ["source-result-window", "middle-error-found"] },
+    { "id": "skill-compaction", "category": "skill-retention", "prompt": "按指定技能执行长任务，在上下文压缩后继续遵守其约束。", "criteria": ["exact-skill-revision", "constraint-preserved"] },
+    { "id": "decision-recall", "category": "session-recall", "prompt": "找出当前项目上次选择存储方案的原始讨论。", "criteria": ["source-entry", "source-time", "no-private-session-leak"] },
+    { "id": "scheduler-noise", "category": "session-recall", "prompt": "在大量自动日报中找回用户关于数据库的设计选择。", "criteria": ["main-session-ranked", "source-entry"] },
+    { "id": "patch-conflict", "category": "mutation", "prompt": "准备多文件修改，审批前修改其中一个文件，检查冲突处理。", "criteria": ["conflict-rejected", "user-edit-preserved", "no-partial-write"] },
+    { "id": "reconnect", "category": "recovery", "prompt": "在工具执行与审批期间断开连接，重连并检查最终状态。", "criteria": ["same-record", "no-duplicate-effect"] }
+  ]
+}

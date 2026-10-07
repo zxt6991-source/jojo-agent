@@ -133,6 +133,14 @@ describe('desktop worker IPC contracts', () => {
     }).success).toBe(false);
   });
 
+  it('accepts verification facts and bounded structured tool results without dropping IPC events', () => {
+    const record = { kind: 'test', scope: 'repository', command: 'pnpm', args: ['test'], cwd: '.', startedAt: '2026-10-07T00:00:00.000Z', finishedAt: '2026-10-07T00:00:01.000Z', exitCode: 0, status: 'passed', changeId: 'check', outputRef: 'check' };
+    const finished = { type: 'tool.finished', id: 'check', result: { callId: 'check', ok: true, content: 'passed', verification: record, verificationChecks: [{ ...record, status: 'skipped', exitCode: null }], structuredResult: { exitCode: 0 } } };
+    expect(AgentEventSchema.parse(finished)).toEqual(finished);
+    expect(AgentEventSchema.safeParse({ ...finished, result: { ...finished.result, structuredResult: { exitCode: 0, signal: undefined } } }).success).toBe(false);
+    expect(AgentEventSchema.safeParse({ ...finished, result: { ...finished.result, structuredResult: { output: 'x'.repeat(200001) } } }).success).toBe(false);
+  });
+
   it('rejects oversized fields and malformed approvals', () => {
     expect(AgentEventSchema.safeParse({ type: 'text.delta', text: 'x'.repeat(100_001) }).success).toBe(false);
     expect(AgentEventSchema.safeParse({

@@ -12,14 +12,14 @@ import type {
 } from '../types.js';
 
 const READ_TOOLS = new Set([
-  'show_artifact', 'create_document', 'read_file', 'list_files', 'glob', 'grep', 'web_search', 'web_fetch', 'load_skill',
+  'session_search', 'session_read_window', 'verification_profile', 'result_read', 'show_artifact', 'create_document', 'read_file', 'list_files', 'glob', 'grep', 'web_search', 'web_fetch', 'load_skill',
   'memory_search', 'mcp_tool_manifest', 'mcp_tool_describe', 'mcp_list_resources',
   'mcp_read_resource', 'mcp_list_prompts', 'mcp_get_prompt', 'workflow_list',
   'sub_agent_status', 'sub_agent_wait', 'workflow_status', 'workflow_wait',
   'team_list', 'team_status', 'team_wait', 'team_inbox',
   'schedule_list', 'schedule_get', 'schedule_runs', 'channel_list_targets'
 ]);
-const WRITE_TOOLS = new Set(['write_file', 'edit_file', 'delete_file', 'save_memory']);
+const WRITE_TOOLS = new Set(['apply_patch', 'file_undo', 'write_file', 'edit_file', 'delete_file', 'save_memory']);
 const CONTROL_TOOLS = new Set([
   'sub_agent_start', 'sub_agent_cancel', 'sub_agent_send', 'sub_agent_close',
   'team_delegate', 'team_send',
@@ -58,7 +58,7 @@ function sourceFor(call: ToolCall, baseline: PermissionDecision): ToolSource {
   if (call.name.includes('memory')) return 'memory';
   if (call.name.startsWith('sub_agent_') || call.name.startsWith('workflow_')
     || call.name.startsWith('team_') || call.name.startsWith('schedule_')) return 'orchestration';
-  if (call.name === 'load_skill' || call.name === 'install_skill') return 'skill';
+  if (call.name === 'load_skill' || call.name === 'install_skill' || call.name === 'skill_draft' || call.name === 'skill_activate') return 'skill';
   if (call.name.includes('hook')) return 'hook';
   return 'native';
 }
@@ -66,6 +66,7 @@ function sourceFor(call: ToolCall, baseline: PermissionDecision): ToolSource {
 function operationsFor(call: ToolCall, source: ToolSource, mcpRisk?: 'read' | 'external_side_effect'): OperationKind[] {
   if (call.name === 'channel_send') return ['network', 'external_effect'];
   if (call.name === 'terminal') return ['execute'];
+  if (call.name === 'skill_draft' || call.name === 'skill_activate') return ['write'];
   if (call.name === 'install_skill') return ['install', 'write'];
   if (call.name === 'trust_project_hooks') return ['trust', 'control'];
   if (source === 'mcp') return mcpRisk === 'read' ? ['read', 'network'] : ['network', 'external_effect'];
@@ -102,7 +103,7 @@ function contextFor(context: RuntimeResolutionContext): GovernanceContext {
 function resourceScopeFor(call: ToolCall, source: ToolSource, baseline: PermissionDecision): GovernanceFacts['resourceScope'] {
   if (source === 'browser' || source === 'mcp' || source === 'channel' || call.name === 'web_search' || call.name === 'web_fetch') return 'external';
   if (baseline.decision === 'ask' && call.name === 'read_file' && !baseline.request.preview) return 'outside_workspace';
-  if (['show_artifact', 'read_file', 'list_files', 'glob', 'grep', 'write_file', 'edit_file', 'delete_file', 'terminal'].includes(call.name)) return 'workspace';
+  if (['show_artifact', 'read_file', 'list_files', 'glob', 'grep', 'write_file', 'edit_file', 'delete_file', 'skill_draft', 'skill_activate', 'apply_patch', 'file_undo', 'terminal'].includes(call.name)) return 'workspace';
   return 'none';
 }
 

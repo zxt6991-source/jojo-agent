@@ -72,7 +72,7 @@ export function registerSettingsIpc(ctx: Context): void {
     const apiKey = input.apiKey || (configured ? (await ctx.readApiKeys())[configured.id] : undefined);
     if (!apiKey) throw new Error('请先填写模型 API Key。');
     return modelRefresh.refresh(input.providerId, JSON.stringify([input.baseUrl, apiKey]), async (signal) => {
-      const remote = await createProvider({ baseUrl: input.baseUrl }, apiKey, 15_000).listModels(signal);
+      const remote = await createProvider({ baseUrl: input.baseUrl, protocol: input.protocol }, apiKey, 15_000).listModels(signal);
       const keys = await ctx.readApiKeys();
       const latest = await ctx.configStore.get(keys);
       const current = latest.providers.find((provider) => provider.id === input.providerId);

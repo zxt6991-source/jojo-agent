@@ -1,3 +1,4 @@
+import type { SessionSearchQuery, SessionSearchHit, SessionReadWindowQuery, SessionReadWindow } from '@desktop-agent/contracts';
 import { APPLICATION_OPERATIONS } from '@desktop-agent/contracts/application/operations';
 import { BUILD_COMPATIBILITY } from '@desktop-agent/contracts/build-compatibility';
 import { createServerCapabilityDefaults } from '@desktop-agent/contracts/capability-manifest';
@@ -106,6 +107,8 @@ export interface JojoServerCore {
   readonly capabilities: ServerCapabilities;
   readonly models: ModelInfo[];
   serverSnapshot(ctx: RequestContext): Promise<ServerSnapshot>;
+  searchSessionHistory(ctx: RequestContext, projectSessionId: string, query: SessionSearchQuery): Promise<SessionSearchHit[]>;
+  readSessionHistoryWindow(ctx: RequestContext, query: SessionReadWindowQuery): Promise<SessionReadWindow>;
   listSessions(ctx: RequestContext): Promise<ServerSessionSummary[]>;
   createSession(ctx: RequestContext, input: CreateSessionInput, idempotencyKey?: string): Promise<ServerSessionSnapshot>;
   patchSession(
@@ -217,6 +220,17 @@ class DefaultJojoServerCore implements JojoServerCore {
 
   async serverSnapshot(ctx: RequestContext): Promise<ServerSnapshot> {
     return { server: this.info, capabilities: this.capabilities, sessions: await this.listSessions(ctx) };
+  }
+
+  async searchSessionHistory(ctx: RequestContext, projectSessionId: string, query: SessionSearchQuery): Promise<SessionSearchHit[]> {
+    authorize(ctx, APPLICATION_OPERATIONS['session.search'].permission);
+    if (!this.service.searchSessionHistory) throw new Error('session_history_unavailable');
+    return this.service.searchSessionHistory(ctx, projectSessionId, query);
+  }
+  async readSessionHistoryWindow(ctx: RequestContext, query: SessionReadWindowQuery): Promise<SessionReadWindow> {
+    authorize(ctx, APPLICATION_OPERATIONS['session.read-window'].permission);
+    if (!this.service.readSessionHistoryWindow) throw new Error('session_history_unavailable');
+    return this.service.readSessionHistoryWindow(ctx, query);
   }
 
   listSessions(ctx: RequestContext): Promise<ServerSessionSummary[]> {
@@ -560,6 +574,8 @@ class DefaultJojoServerCore implements JojoServerCore {
     switch (command.type) {
       case 'server.snapshot': return this.serverSnapshot(ctx);
       case 'session.list': return this.listSessions(ctx);
+      case 'session.search': return this.searchSessionHistory(ctx, command.sessionId, command.input);
+      case 'session.read-window': return this.readSessionHistoryWindow(ctx, command.input);
       case 'session.create': return this.createSession(ctx, command.input, command.id);
       case 'session.patch': return this.patchSession(ctx, command.sessionId, command.input, command.id);
       case 'session.attach': return this.attach(ctx, command.input.sessionId, command.input.mode);

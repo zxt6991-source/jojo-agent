@@ -1,3 +1,4 @@
+import { verificationFacts } from '@desktop-agent/contracts';
 import { resolveModelAttachments } from '@desktop-agent/attachment-access';
 import type { AgentEvent, Message, Tool, ToolCall, ToolDefinition, ToolResult } from '@desktop-agent/contracts';
 import { AgentError, errorMessage, isAbortError, throwIfAborted } from './errors.js';
@@ -176,6 +177,12 @@ function handleTurnError(
 
 export async function runAgentTurn(options: AgentRunOptions): Promise<AgentRunResult> {
   const state = createTurnState(options);
+  options = { ...options, isVerificationCurrent: async callId => verificationFacts(state.messages).some(fact => fact.outputRef === callId && fact.status === 'passed' && !fact.stale), readToolResult: async (callId) => {
+    for (const message of state.messages) for (const block of message.content) {
+      if (block.type === 'tool_result' && block.result.callId === callId) return block.result;
+    }
+    return undefined;
+  } };
   let iterationBudget = createIterationBudgetPolicy(options);
 
   options.emit({ type: 'turn.started', sessionId: options.sessionId, turnId: crypto.randomUUID() });
@@ -218,7 +225,8 @@ export async function runAgentTurn(options: AgentRunOptions): Promise<AgentRunRe
       const iterationInstruction = finalResponseOnly
         ? 'This is the mandatory tool-free final response. Do not request tools. Report completed work, concrete results, unfinished work, and the next action.'
         : iterationBudgetInstruction(iterationBudget, iteration);
-      const instructions = [...(options.instructions ?? []), iterationInstruction];
+      const facts = verificationFacts(state.messages);
+      const instructions = [...(options.instructions ?? []), iterationInstruction, ...(facts.length ? [`Verification facts (stale records do not verify later changes): ${JSON.stringify(facts.slice(-20))}`] : [])];
       const budget = calculateContextBudget({
         tools: state.toolDefinitions,
         instructions,
@@ -327,6 +335,7 @@ export async function runAgentTurn(options: AgentRunOptions): Promise<AgentRunRe
         state.messages,
         createAssistantMessage(step.text, cycleDetected || resourceReason ? [] : step.calls, undefined, {
           iteration: Math.min(iteration + 1, iterationBudget.currentLimit),
+          ...(step.providerState ? { providerState: step.providerState } : {}),
           ...(finalResponseOnly ? { finalResponseOnly: true } : {})
         })
       );

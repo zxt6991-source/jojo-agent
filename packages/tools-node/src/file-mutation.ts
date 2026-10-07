@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import type { ToolCall } from '@desktop-agent/contracts';
@@ -106,4 +107,8 @@ export function mutationErrorCode(error: unknown): string {
   return error && typeof error === 'object' && 'code' in error && typeof error.code === 'string'
     ? error.code
     : 'tool_error';
+}
+
+export function mutationApprovalFingerprint(mutations: readonly PreparedMutation[]): string {
+  return createHash('sha256').update(JSON.stringify(mutations.map(mutation => ({ root: mutation.root, target: mutation.target, before: mutation.before, after: mutation.after })))).digest('hex');
 }

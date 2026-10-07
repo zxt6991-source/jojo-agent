@@ -293,6 +293,8 @@ export async function createJojoHttpServer(
     }, true));
   }
 
+  app.get('/api/v1/sessions/:sessionId/search', async (request, reply) => withHttp(request, reply, options.token, ctx => core.searchSessionHistory(ctx, param(request, 'sessionId'), parse(APPLICATION_OPERATIONS['session.search'].input, request.query))));
+  app.get('/api/v1/sessions/:sessionId/read-window', async (request, reply) => withHttp(request, reply, options.token, ctx => core.readSessionHistoryWindow(ctx, parse(APPLICATION_OPERATIONS['session.read-window'].input, { ...(request.query as Record<string, unknown>), sessionId: param(request, 'sessionId') }))));
   app.get('/api/v1/sessions/:sessionId/transcript', async (request, reply) => withHttp(request, reply, options.token, (ctx) => (
     core.transcript(ctx, param(request, 'sessionId'), parse(APPLICATION_OPERATIONS['transcript.get'].input, request.query))
   )));

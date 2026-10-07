@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "budgetMs": 300000,
+  "commands": [
+    { "id": "lint", "kind": "lint", "command": "pnpm", "args": ["lint"], "scope": "repository", "timeoutMs": 120000 },
+    { "id": "typecheck", "kind": "typecheck", "command": "pnpm", "args": ["typecheck"], "scope": "repository", "timeoutMs": 120000 },
+    { "id": "test", "kind": "test", "command": "pnpm", "args": ["test"], "scope": "repository", "timeoutMs": 300000 }
+  ]
+}

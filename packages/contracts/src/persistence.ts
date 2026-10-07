@@ -85,7 +85,7 @@ export const SessionRecordSchema = z.discriminatedUnion('type', [
 ]);
 export type SessionRecord = z.infer<typeof SessionRecordSchema>;
 
-export const ProviderProtocolSchema = z.literal('openai_chat_completions');
+export const ProviderProtocolSchema = z.enum(['openai_chat_completions', 'openai_responses']);
 export type ProviderProtocol = z.infer<typeof ProviderProtocolSchema>;
 
 export const ModelSelectionSchema = z.object({

@@ -1,3 +1,13 @@
+import { ApplyPatchTool, FileUndoTool } from './patch-tools.js';
+export { ApplyPatchTool, FileUndoTool, preparePatch, prepareJournalMutation } from './patch-tools.js';
+import { SkillDraftTool, SkillActivateTool } from './skill-draft-tools.js';
+export { SkillDraftTool, SkillActivateTool, prepareSkillDraft, prepareSkillActivation } from './skill-draft-tools.js';
+import { createSessionHistoryTools } from './session-history-tools.js';
+export { createSessionHistoryTools } from './session-history-tools.js';
+import { VerificationProfileTool } from './verification-profile-tool.js';
+export { VerificationProfileTool } from './verification-profile-tool.js';
+import { ResultReadTool } from './result-read-tool.js';
+export { ResultReadTool } from './result-read-tool.js';
 import { ShowArtifactTool } from './show-artifact-tool.js';
 import type { SecretBroker, Tool } from '@desktop-agent/contracts';
 import os from 'node:os';
@@ -64,12 +74,19 @@ export function createDefaultTools(options: DefaultToolOptions = {}): Tool[] {
   return [
     new ReadFileTool(undefined, snapshots),
     new ListFilesTool(),
+    new ResultReadTool(),
+    new VerificationProfileTool(),
+    new SkillDraftTool(snapshots, trashDirectory),
+    new SkillActivateTool(snapshots, trashDirectory),
+    ...createSessionHistoryTools(),
     new GrepTool(),
     new GlobTool(),
     new WebSearchTool(),
     new WebFetchTool(),
     new CreateDocumentTool(),
     new ShowArtifactTool(),
+    new ApplyPatchTool(snapshots, trashDirectory),
+    new FileUndoTool(snapshots, trashDirectory),
     new WriteFileTool(snapshots, trashDirectory),
     new EditFileTool(snapshots, trashDirectory),
     new DeleteFileTool(snapshots, trashDirectory),
@@ -86,7 +103,7 @@ export function createDefaultToolRuntime(options: Omit<DefaultToolOptions, 'snap
   const terminalPolicy = options.terminalPolicy ?? new DefaultTerminalSecurityPolicy(sandbox);
   return {
     tools: createDefaultTools({ ...options, snapshots, sandbox, terminalPolicy }),
-    permissionGate: new DefaultPermissionGate(snapshots, terminalPolicy)
+    permissionGate: new DefaultPermissionGate(snapshots, terminalPolicy, options.trashDirectory ?? path.join(os.tmpdir(), 'desktop-agent-trash'))
   };
 }
 

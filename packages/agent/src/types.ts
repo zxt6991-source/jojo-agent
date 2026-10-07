@@ -28,6 +28,10 @@ export type AgentRunOptions = {
   instructions?: string[];
   /** Returns tools that became available during this turn, such as lazily discovered MCP tools. */
   getTools?: (context: { contextWindowTokens: number; maxOutputTokens: number }) => Tool[];
+  readToolResult?: (callId: string) => Promise<import('@desktop-agent/contracts').ToolResult | undefined>;
+  searchSessionHistory?: import('@desktop-agent/contracts').ToolContext['searchSessionHistory'];
+  readSessionHistoryWindow?: import('@desktop-agent/contracts').ToolContext['readSessionHistoryWindow'];
+  isVerificationCurrent?: import('@desktop-agent/contracts').ToolContext['isVerificationCurrent'];
   permissionGate: PermissionGate;
   signal: AbortSignal;
   maxIterations?: number;

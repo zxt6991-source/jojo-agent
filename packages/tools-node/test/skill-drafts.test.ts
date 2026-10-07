@@ -1,0 +1,35 @@
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { describe, expect, it } from 'vitest';
+import type { ToolContext } from '@desktop-agent/contracts';
+import { discoverSkills } from '@desktop-agent/extensions';
+import { SkillDraftTool, SkillActivateTool, prepareSkillActivation, prepareSkillDraft, DefaultPermissionGate, FileSnapshotRegistry } from '../src/index.js';
+const draft = { name: 'verified-build', description: 'Repair project build failures.', trigger: 'Use for type errors.', inputs: 'Workspace', outputs: 'Validated change', dependencies: ['pnpm'], steps: ['Read failing code.', 'Fix it.', 'Run the typecheck.'], knownFailures: 'Do not claim skipped checks passed.', validation: 'Require a successful typecheck.', platforms: ['macOS'], sourceCallIds: ['proof'], verificationCallId: 'proof' };
+describe('project Skill draft lifecycle', () => {
+  it('keeps unverified and private material out, previews drafts and activates exact revisions through write governance', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'skill-draft-'));
+    const snapshots = new FileSnapshotRegistry();
+    const tool = new SkillDraftTool(snapshots, path.join(root, 'trash'));
+    const proof = { callId: 'proof', ok: true, content: 'passed', verification: { kind: 'typecheck' as const, scope: 'repository', command: 'pnpm', args: ['typecheck'], cwd: '.', status: 'passed' as const, exitCode: 0, changeId: 'proof', startedAt: '2026-10-07T00:00:00.000Z', finishedAt: '2026-10-07T00:00:01.000Z' } };
+    const context: ToolContext = { sessionId: 's', workingDirectory: root, approved: true, signal: new AbortController().signal, onProgress: () => undefined, readToolResult: async () => proof, isVerificationCurrent: async () => true };
+    expect(await tool.execute(draft, { ...context, isVerificationCurrent: async () => false })).toMatchObject({ code: 'skill_evidence_unverified' });
+    expect(() => prepareSkillDraft({ ...draft, inputs: '/Users/private-user/project' }, 's')).toThrow('private');
+    const result = await tool.execute(draft, context);
+    expect(result.artifacts?.[0]?.metadata?.state).toBe('draft');
+    expect(await discoverSkills([path.join(root, '.agents/skills')])).toEqual([]);
+    const saved = prepareSkillDraft(draft, 's');
+    const input = { name: draft.name, revision: saved.revision };
+    const gate = new DefaultPermissionGate(snapshots);
+    const approval = await gate.check({ id: 'activate', name: 'skill_activate', input }, { sessionId: 's', workingDirectory: root });
+    expect(approval).toMatchObject({ decision: 'ask', request: { preview: { path: '.agents/skills/verified-build/SKILL.md' } } });
+    const activated = await new SkillActivateTool(snapshots, path.join(root, 'trash')).execute(input, context);
+    expect(activated.ok).toBe(true);
+    const skills = await discoverSkills([path.join(root, '.agents/skills')]);
+    expect(skills[0]).toMatchObject({ id: draft.name, enabled: true });
+    expect(skills[0]?.content).toContain('Read failing code.');
+    const content = await readFile(path.join(root, saved.path), 'utf8');
+    await writeFile(path.join(root, saved.path), content.replace('Read failing code.', 'tampered instructions'));
+    await expect(prepareSkillActivation(input, root)).rejects.toMatchObject({ code: 'skill_revision_mismatch' });
+  });
+});

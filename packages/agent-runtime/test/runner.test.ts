@@ -204,6 +204,34 @@ describe('runtime runner', () => {
     expect((await store.listLanes('session-1')).map((lane) => lane.name)).toEqual(['agent:child-1', 'main']);
   });
 
+  it('rereads original results after durable compaction without exposing another branch', async () => {
+    const store = new MemoryAgentRuntimeStore();
+    const original = 'start '.repeat(2500) + 'ERROR middle evidence' + ' end'.repeat(2500);
+    const history: Message[] = [
+      { id: 'old-user', role: 'user', createdAt: '2026-08-20T00:00:00.000Z', content: [{ type: 'text', text: 'old requirements '.repeat(2000) }] },
+      { id: 'old-call', role: 'assistant', createdAt: '2026-08-20T00:00:01.000Z', content: [{ type: 'tool_call', call: { id: 'original-call', name: 'echo', input: {} } }] },
+      { id: 'old-result', role: 'tool', createdAt: '2026-08-20T00:00:02.000Z', content: [{ type: 'tool_result', result: { callId: 'original-call', ok: false, content: original } }] }
+    ];
+    await runAgentTurn(options(new ScriptedProvider([[{ type: 'text_delta', text: 'first answer' }, { type: 'response_completed', stopReason: 'stop' }]]), {
+      runtimeStore: store, operationId: 'read-before', history, tools: [], contextWindowTokens: 2048, maxOutputTokens: 256, summarize: async () => 'Old task summarized.'
+    }));
+    const lane = await store.getLane('session-1', 'main');
+    expect((await store.readPath(lane?.leafId ?? null)).some(entry => entry.type === 'compaction')).toBe(true);
+    await store.appendEntry({ id: 'private-result', sessionId: 'session-1', parentId: 'old-call', type: 'message', message: {
+      id: 'private-result', role: 'tool', createdAt: '2026-08-20T00:00:03.000Z', content: [{ type: 'tool_result', result: { callId: 'private-call', ok: true, content: 'abandoned branch secret' } }]
+    } });
+    const probe: Tool = { definition: { name: 'probe', description: 'probe durable results', inputSchema: { type: 'object' } }, replay: 'safe', execute: async (_input, context) => {
+      expect((await context.readToolResult?.('original-call'))?.content).toBe(original);
+      expect(await context.readToolResult?.('private-call')).toBeUndefined();
+      return { callId: '', ok: true, content: 'middle evidence recovered' };
+    } };
+    const result = await runAgentTurn(options(new ScriptedProvider([
+      [{ type: 'tool_call_completed', call: { id: 'probe-call', name: 'probe', input: {} } }, { type: 'response_completed', stopReason: 'tool_calls' }],
+      [{ type: 'text_delta', text: 'Recovered.' }, { type: 'response_completed', stopReason: 'stop' }]
+    ]), { runtimeStore: store, operationId: 'read-after', history: [], tools: [probe], contextWindowTokens: 2048, maxOutputTokens: 256, summarize: async () => 'Old task summarized.' }));
+    expect(result.messages.some(message => message.content.some(block => block.type === 'tool_result' && block.result.content === 'middle evidence recovered'))).toBe(true);
+  });
+
   it('persists compaction as an entry and reuses its projection on the next run', async () => {
     const store = new MemoryAgentRuntimeStore();
     const summarize = vi.fn(async () => 'Durable summary of the old requirements.');

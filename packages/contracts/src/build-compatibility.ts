@@ -6,7 +6,7 @@ export const BUILD_COMPATIBILITY = {
   configSchema: 4,
   sessionJsonlSchema: 1,
   runtimeContract: 1,
-  runtimeSqliteSchema: 3,
+  runtimeSqliteSchema: 4,
   // Main/Worker validates messages but does not yet negotiate a version.
   desktopIpcProtocol: null
 } as const;

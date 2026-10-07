@@ -137,7 +137,7 @@ export function createChatCompletionBody(request: ModelRequest): Record<string, 
           ...toChatMessages(request.messages, request.attachments).slice(1)
         ]
       : toChatMessages(request.messages, request.attachments),
-    tools: request.tools.map((tool) => ({
+    tools: [...request.tools].sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0).map((tool) => ({
       type: 'function',
       function: {
         name: tool.name,

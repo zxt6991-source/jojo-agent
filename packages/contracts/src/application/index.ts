@@ -1,3 +1,4 @@
+export * from '../session-history.js';
 // Host-independent application inputs and snapshots. Transport envelopes live in adapters.
 import { z } from 'zod';
 import { ApprovalRequestSchema } from '../agent.js';

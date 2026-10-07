@@ -1,4 +1,5 @@
 import { LEGACY_TRANSCRIPT_CUTOVER, LEGACY_TRANSCRIPT_MIGRATION, transcriptHash, validateLegacyTranscript, type LegacyTranscriptMigration, type LegacyTranscriptImportResult } from './legacy-transcript-migration.js';
+import { initializeSessionHistory, searchSessionMessages, readSessionMessageWindow } from './sqlite-session-history.js';
 import { MessageSchema, type Message } from '@desktop-agent/contracts';
 import { BUILD_COMPATIBILITY } from '@desktop-agent/contracts/build-compatibility';
 import { validateOperationExecution, MAX_OPERATION_META_BYTES } from '@desktop-agent/agent-runtime/spi';
@@ -152,6 +153,14 @@ export class SqliteAgentRuntimeStore implements AgentRuntimeStore {
       );
       PRAGMA user_version = ${BUILD_COMPATIBILITY.runtimeSqliteSchema};
     `);
+    initializeSessionHistory(this.database);
+  }
+
+  async searchMessages(query: import('@desktop-agent/contracts').SessionSearchQuery, allowedSessionIds: readonly string[]): Promise<import('@desktop-agent/contracts').SessionSearchHit[]> {
+    return searchSessionMessages(this.database, query, allowedSessionIds);
+  }
+  async readMessageWindow(query: import('@desktop-agent/contracts').SessionReadWindowQuery): Promise<import('@desktop-agent/contracts').SessionReadWindow> {
+    return readSessionMessageWindow(this.database, query);
   }
 
   close(): void {

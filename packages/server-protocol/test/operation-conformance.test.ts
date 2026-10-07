@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { APPLICATION_OPERATIONS as operations } from '@desktop-agent/contracts/application/operations';
-import { ApprovalInputSchema, DesktopChannelMutationSchema, StartTurnInputSchema, WorkerCommandSchema } from '@desktop-agent/contracts';
+import { SessionSearchQuerySchema, SessionReadWindowQuerySchema, ApprovalInputSchema, DesktopChannelMutationSchema, StartTurnInputSchema, WorkerCommandSchema } from '@desktop-agent/contracts';
 import { ClientCommandSchema, CreateChannelBindingInputSchema, CreateChannelInstanceInputSchema, CreateScheduleInputSchema } from '../src/index.js';
 
 const binding = {
@@ -65,6 +65,21 @@ describe('cross-transport operation contracts', () => {
     }
     // Network approval remains allow/deny; it must not silently accept unsupported grant scope.
     expect(ClientCommandSchema.safeParse({ id: 'request', type: 'approval.resolve', approvalId: 'approval', input: { decision: 'allow', scope: 'session' } }).success).toBe(false);
+  });
+
+  it('shares bounded history schemas across the operation registry and WebSocket envelope', () => {
+    expect(operations['session.search'].input).toBe(SessionSearchQuerySchema);
+    expect(operations['session.read-window'].input).toBe(SessionReadWindowQuerySchema);
+    for (const input of [{ query: 'SQLite' }, { query: 'x', limit: 21 }, { query: '', source: 'all' }, { query: 'x', extra: true }]) {
+      const ws = ClientCommandSchema.safeParse({ id: 'req', type: 'session.search', sessionId: 's', input });
+      const shared = SessionSearchQuerySchema.safeParse(input);
+      expect(ws.success).toBe(shared.success);
+      if (ws.success && ws.data.type === 'session.search' && shared.success) expect(ws.data.input).toEqual(shared.data);
+    }
+    const input = { sessionId: 's', anchorSeq: 4 };
+    expect(ClientCommandSchema.parse({ id: 'req', type: 'session.read-window', input })).toMatchObject({ input: SessionReadWindowQuerySchema.parse(input) });
+    expect(ClientCommandSchema.safeParse({ id: 'req', type: 'session.read-window', input: { ...input, before: 100 } }).success).toBe(false);
+    expect(operations['session.search'].permission).toBe('sessions:read');
   });
 
   it('uses neutral session validation inside the strict WebSocket envelope', () => {

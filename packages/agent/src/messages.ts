@@ -22,7 +22,7 @@ export function createAssistantMessage(
   text: string,
   calls: ToolCall[],
   id = createId(),
-  metadata?: { iteration?: number; finalResponseOnly?: boolean }
+  metadata?: NonNullable<Message['metadata']>
 ): Message {
   return {
     id,

@@ -5,6 +5,8 @@
 
 | 操作 | 类型 | 权限 scope | 无幂等键可安全重试 |
 |---|---|---|---|
+| session.search | query | sessions:read | true |
+| session.read-window | query | sessions:read | true |
 | session.list | query | sessions:read | true |
 | session.create | command | sessions:write | false |
 | session.patch | command | sessions:write | false |

@@ -25,6 +25,7 @@ export type ModelRequest = {
 };
 
 export type ModelEvent =
+  | { type: 'provider_state'; state: import('./messages.js').ProviderState }
   | { type: 'text_delta'; text: string }
   | { type: 'tool_call_delta'; id: string; name?: string; argumentsDelta: string }
   | { type: 'tool_call_completed'; call: ToolCall }
@@ -47,6 +48,10 @@ export interface ModelProvider {
 }
 
 export const ProviderCapabilitiesSchema = z.object({
+  protocol: z.enum(['openai_chat_completions', 'openai_responses']).optional(),
+  usage: z.boolean().optional(),
+  cacheUsage: z.boolean().optional(),
+  cancellation: z.enum(['abort-stream']).optional(),
   toolCalls: z.boolean().optional(),
   vision: z.boolean().optional(),
   reasoning: z.boolean().optional(),

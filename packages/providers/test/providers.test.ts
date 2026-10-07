@@ -507,7 +507,7 @@ describe('OpenAICompatibleProvider', () => {
 
 describe('provider registry', () => {
   it('registers and constructs the OpenAI-compatible adapter', () => {
-    expect(PROVIDER_REGISTRY.map((entry) => entry.protocol)).toEqual(['openai_chat_completions']);
+    expect(PROVIDER_REGISTRY.map((entry) => entry.protocol)).toEqual(['openai_responses', 'openai_chat_completions']);
     expect(createProvider({
       baseUrl: 'https://provider.example/v1'
     }, 'secret')).toBeInstanceOf(OpenAICompatibleProvider);

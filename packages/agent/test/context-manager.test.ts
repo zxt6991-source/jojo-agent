@@ -122,3 +122,22 @@ describe('output truncation recovery', () => {
     expect(result.stopReason).toBe('end_turn');
   });
 });
+
+
+describe('semantic result retention', () => {
+  it('preserves middle failures and original read references without mutating history', async () => {
+    const output = 'a'.repeat(18000) + '\nERROR: middle failure\n' + 'z'.repeat(18000);
+    const messages: Message[] = [{ id: 'result', role: 'tool', createdAt: time, content: [{ type: 'tool_result', result: { callId: 'failure', ok: false, content: output } }] }];
+    const result = await prepareModelContext({ messages, tools: [], contextWindowTokens: 128000, maxOutputTokens: 8192, signal: new AbortController().signal });
+    const block = result.messages[0]!.content[0]!;
+    expect(block.type === 'tool_result' && block.result.content).toContain('ERROR: middle failure');
+    expect(block.type === 'tool_result' && block.result.content).toContain('result_read callId="failure"');
+    expect(messages[0]!.content[0]).toMatchObject({ result: { content: output } });
+  });
+  it('keeps complete Skill instructions and call pairing across compaction', async () => {
+    const messages: Message[] = [textMessage('u', 'user', 'task'), { id: 'load', role: 'assistant', createdAt: time, content: [{ type: 'tool_call', call: { id: 'skill', name: 'load_skill', input: {} } }] }, { id: 'body', role: 'tool', createdAt: time, content: [{ type: 'tool_result', result: { callId: 'skill', ok: true, content: 'critical constraints' } }] }, textMessage('big', 'assistant', 'x'.repeat(30000)), textMessage('latest', 'user', 'continue')];
+    const result = await prepareModelContext({ messages, tools: [], contextWindowTokens: 8192, maxOutputTokens: 1024, signal: new AbortController().signal });
+    expect(result.compaction?.retainedTail.map(message => message.id)).toContain('body');
+    expect(groupContextMessages(result.messages).some(group => group.some(message => message.id === 'load') && group.some(message => message.id === 'body'))).toBe(true);
+  });
+});

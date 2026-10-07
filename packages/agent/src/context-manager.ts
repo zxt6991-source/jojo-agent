@@ -107,14 +107,17 @@ export function calculateContextBudget(options: Pick<
 
 function reclaimToolResults(messages: Message[]): { messages: Message[]; reclaimed: number } {
   let reclaimed = 0;
+  const calls = new Map(messages.flatMap(message => message.content.flatMap(block => block.type === 'tool_call' ? [[block.call.id, block.call.name] as const] : [])));
   const mapped = messages.map((message) => ({
     ...message,
     content: message.content.map((block) => {
       if (block.type !== 'tool_result' || block.result.content.length <= TOOL_RESULT_CHARACTER_LIMIT) return block;
+      if (calls.get(block.result.callId) === 'load_skill') return block;
       const omitted = block.result.content.length - TOOL_RESULT_EDGE_CHARACTERS * 2;
-      const content = `${block.result.content.slice(0, TOOL_RESULT_EDGE_CHARACTERS)}\n\n[${omitted} characters reclaimed from older tool output]\n\n${block.result.content.slice(-TOOL_RESULT_EDGE_CHARACTERS)}`;
+      const evidence = block.result.content.split('\n').filter(line => /(?:error|failed|failure|exception|错误|失败)/iu.test(line)).map(line => line.slice(0, 500)).slice(0, 8).join('\n');
+      const content = `${block.result.content.slice(0, TOOL_RESULT_EDGE_CHARACTERS)}\n\n[${omitted} characters reclaimed; original result_read callId=${JSON.stringify(block.result.callId)} offset=0 limit=6000; totalCharacters=${block.result.content.length}]\n${evidence ? `[Error excerpts]\n${evidence}\n` : ''}\n${block.result.content.slice(-TOOL_RESULT_EDGE_CHARACTERS)}`;
       reclaimed += block.result.content.length - content.length;
-      return { ...block, result: { ...block.result, content, truncated: true } };
+      return { ...block, result: { ...block.result, content, ...(block.result.contentBlocks ? { contentBlocks: [{ type: 'text' as const, text: content }, ...block.result.contentBlocks.filter(item => item.type === 'image')] } : {}), truncated: true } };
     })
   }));
   return { messages: mapped, reclaimed };
@@ -252,9 +255,13 @@ function pinnedUserRequirements(messages: Message[], maxTokens: number): string[
 function stableCompactionSummary(generated: string, messages: Message[], messageBudgetTokens: number): string {
   const summaryTokenBudget = Math.max(256, Math.min(3_200, Math.floor(messageBudgetTokens * 0.34)));
   const pinned = pinnedUserRequirements(messages, Math.floor(summaryTokenBudget * 0.68));
-  const header = pinned.length > 0
+  const references = messages.flatMap(message => message.content.flatMap(block => block.type === 'tool_result' ? [block.result] : []))
+    .sort((a, b) => Number(a.ok) - Number(b.ok)).slice(0, 16).map(result => `- result_read callId=${JSON.stringify(result.callId)}; ${result.ok ? 'ok' : 'failed'}; ${result.content.length} projected characters`);
+  const referenceText = references.length ? `[Original tool outputs; bounded reread available]\n${references.join('\n')}\n\n` : '';
+  const pinnedHeader = pinned.length > 0
     ? `${PINNED_REQUIREMENTS_START}\n${pinned.map((value) => `- ${JSON.stringify(value)}`).join('\n')}\n${PINNED_REQUIREMENTS_END}\n\n`
     : '';
+  const header = pinnedHeader + boundedSummaryText(referenceText, Math.floor(summaryTokenBudget * 0.18));
   const summaryPrefix = '[Conversation summary; subordinate to pinned requirements]\n';
   const availableTokens = Math.max(0, summaryTokenBudget - textTokens(header) - textTokens(summaryPrefix));
   const body = boundedSummaryText(generated, availableTokens);
@@ -302,6 +309,10 @@ export async function prepareModelContext(options: ContextPreparationOptions): P
     groups.pop();
   }
 
+  // Carry complete Skill call/result groups into the durable retained tail.
+  const skills = groups.filter(group => group.some(message => message.content.some(block => block.type === 'tool_call' && block.call.name === 'load_skill')));
+  for (const group of skills) groups.splice(groups.indexOf(group), 1);
+  kept.unshift(...skills);
   const compacted = groups.flat();
   if (compacted.length === 0) {
     return {

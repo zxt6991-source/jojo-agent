@@ -1,3 +1,4 @@
+import { SessionSearchQuerySchema, SessionReadWindowQuerySchema, type SessionSearchQuery, type SessionSearchHit, type SessionReadWindowQuery, type SessionReadWindow } from '@desktop-agent/contracts';
 import { createHash } from 'node:crypto';
 import type { AgentRuntime, OpenSessionRequest, RunHandle, RunRequest, RuntimeActor, RuntimeTriggerContext, RuntimeRunSnapshot } from '@desktop-agent/agent-runtime';
 import type { RunResult, SessionSnapshot, RuntimeEventEnvelope } from '@desktop-agent/contracts/runtime';
@@ -26,6 +27,8 @@ export type AppServiceEvent =
   | ApprovalEvent;
 
 export type JojoAppServiceOptions = {
+  /** Explicit per-session policy for non-local identities. No scope=all bypass. */
+  canReadSessionHistory?: (ctx: ApplicationContext, sessionId: string) => boolean | Promise<boolean>;
   approvalBroker?: ApplicationApprovalBroker;
   stateStore?: ServerStateStore;
   idGenerator?: () => string;
@@ -55,6 +58,8 @@ export type StartRunOptions = {
 };
 
 export interface JojoAppService {
+  searchSessionHistory?(ctx: ApplicationContext, projectSessionId: string, query: SessionSearchQuery): Promise<SessionSearchHit[]>;
+  readSessionHistoryWindow?(ctx: ApplicationContext, query: SessionReadWindowQuery): Promise<SessionReadWindow>;
   /** Prepare an existing host-owned session without recreating its metadata. */
   openSession(ctx: ApplicationContext, input: OpenSessionRequest): Promise<SessionSnapshot>;
   executeRun(ctx: ApplicationContext, sessionId: string, input: StartRunInput, options?: StartRunOptions): Promise<RunResult>;
@@ -91,7 +96,7 @@ class DefaultJojoAppService implements JojoAppService {
   private readonly unsubscribeApproval: () => void;
   private closed = false;
 
-  constructor(private readonly runtime: AgentRuntime, options: JojoAppServiceOptions) {
+  constructor(private readonly runtime: AgentRuntime, private readonly options: JojoAppServiceOptions) {
     this.stateStore = options.stateStore ?? new MemoryServerStateStore(options.now);
     this.approvalBroker = options.approvalBroker ?? new ServerApprovalBroker({
       store: this.stateStore.approvals,
@@ -103,6 +108,28 @@ class DefaultJojoAppService implements JojoAppService {
       this.emit({ type: 'runtime.event', envelope });
     });
     this.unsubscribeApproval = this.approvalBroker.subscribe((event) => this.emit(event));
+  }
+
+  private async canReadHistory(ctx: ApplicationContext, sessionId: string): Promise<boolean> {
+    return this.options.canReadSessionHistory ? this.options.canReadSessionHistory(ctx, sessionId) : ctx.principal.type === 'local';
+  }
+  async searchSessionHistory(ctx: ApplicationContext, projectSessionId: string, input: SessionSearchQuery): Promise<SessionSearchHit[]> {
+    const query = SessionSearchQuerySchema.parse(input);
+    if (!await this.canReadHistory(ctx, projectSessionId)) throw new Error('forbidden: Session history is not accessible to this identity.');
+    const sessions = await this.runtime.listSessions();
+    const current = sessions.find(session => session.id === projectSessionId);
+    if (!current) throw new Error('runtime_session_not_found');
+    const project = current.executionScope.kind === 'workspace' ? current.executionScope.workingDirectory : undefined;
+    const candidates = sessions.filter(session => session.id === projectSessionId || (project && session.executionScope.kind === 'workspace' && session.executionScope.workingDirectory === project));
+    const allowed: string[] = [];
+    for (const session of candidates) if (await this.canReadHistory(ctx, session.id)) allowed.push(session.id);
+    return this.runtime.searchSessionMessages?.(query, allowed) ?? [];
+  }
+  async readSessionHistoryWindow(ctx: ApplicationContext, input: SessionReadWindowQuery): Promise<SessionReadWindow> {
+    const query = SessionReadWindowQuerySchema.parse(input);
+    if (!await this.canReadHistory(ctx, query.sessionId)) throw new Error('forbidden: Session history is not accessible to this identity.');
+    if (!await this.runtime.getSession(query.sessionId)) throw new Error('runtime_session_not_found');
+    return this.runtime.readSessionMessageWindow?.(query) ?? { items: [], truncated: false };
   }
 
   async listSessions(_ctx: ApplicationContext): Promise<ApplicationSessionSummary[]> {

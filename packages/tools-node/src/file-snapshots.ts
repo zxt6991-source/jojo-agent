@@ -31,6 +31,18 @@ export async function inspectFile(file: string, completeRead: boolean): Promise<
 }
 
 export class FileSnapshotRegistry {
+  private readonly approvals = new Map<string, string>();
+  rememberMutationApproval(sessionId: string, callId: string, fingerprint: string): void {
+    if (this.approvals.size >= 1024) this.approvals.delete(this.approvals.keys().next().value!);
+    this.approvals.set(`${sessionId}\0${callId}`, fingerprint);
+  }
+  assertMutationApproval(sessionId: string, callId: string | undefined, fingerprint: string): void {
+    // Direct trusted Tool calls without a model call identity preserve the legacy adapter boundary.
+    if (!callId) return;
+    const key = `${sessionId}\0${callId}`;
+    if (this.approvals.get(key) !== fingerprint) throw Object.assign(new Error('Mutation changed after its approval preview. Request a new approval.'), { code: 'file_conflict' });
+    this.approvals.delete(key);
+  }
   private readonly snapshots = new Map<string, FileSnapshot>();
 
   set(file: string, snapshot: FileSnapshot): void {

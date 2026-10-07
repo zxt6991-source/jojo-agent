@@ -12,6 +12,8 @@ export interface IdGenerator {
 }
 
 export interface AgentRuntimeStore {
+  searchMessages?(query: import('@desktop-agent/contracts').SessionSearchQuery, allowedSessionIds: readonly string[]): Promise<import('@desktop-agent/contracts').SessionSearchHit[]>;
+  readMessageWindow?(query: import('@desktop-agent/contracts').SessionReadWindowQuery): Promise<import('@desktop-agent/contracts').SessionReadWindow>;
   createSession(session: Session): Promise<void>;
   getSession(sessionId: string): Promise<Session | null>;
   listSessions(): Promise<Session[]>;

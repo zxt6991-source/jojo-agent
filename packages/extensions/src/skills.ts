@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { readdir, readFile, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -198,7 +199,7 @@ export async function discoverSkills(directories: SkillDirectory[], disabledIds:
   return skills;
 }
 
-const LoadSkillInput = z.object({ skillId: z.string().min(1) });
+const LoadSkillInput = z.object({ skillId: z.string().min(1), reload: z.boolean().default(false), revision: z.string().regex(/^[a-f0-9]{64}$/u).optional() }).strict();
 
 function resourceCatalog(skill: DiscoveredSkill): string {
   return RESOURCE_DIRECTORY_NAMES.map((name) => {
@@ -216,7 +217,7 @@ export function createSkillTool(
 ): Tool | null {
   const enabled = skills.filter((skill) => skill.enabled && !skill.error && !skill.overriddenBy);
   if (enabled.length === 0) return null;
-  const byId = new Map(enabled.map((skill) => [skill.id, skill]));
+  const byId = new Map(enabled.map((skill) => [skill.id, structuredClone(skill)]));
   const catalog = enabled.map((skill) => `${skill.id}: ${skill.description}`).join('\n').slice(0, 16_000);
   return {
     replay: 'safe',
@@ -225,28 +226,32 @@ export function createSkillTool(
       description: `Load the full instructions for one installed skill when its description matches the task. Load before following it. Available skills:\n${catalog}`,
       inputSchema: {
         type: 'object',
-        properties: { skillId: { type: 'string', enum: enabled.map((skill) => skill.id) } },
+        properties: { skillId: { type: 'string', enum: enabled.map((skill) => skill.id) },
+          reload: { type: 'boolean', description: 'Restore instructions lost from context.' },
+          revision: { type: 'string', description: 'Require the exact SHA-256 revision returned by an earlier load.' } },
         required: ['skillId'],
         additionalProperties: false
       }
     },
     async execute(input) {
-      const { skillId } = LoadSkillInput.parse(input);
+      const { skillId, reload, revision } = LoadSkillInput.parse(input);
       const skill = byId.get(skillId);
       if (!skill) return { callId: '', ok: false, code: 'skill_not_found', content: `Unknown or disabled skill: ${skillId}` };
-      if (options.loadedSkillIds?.has(skillId)) {
+      const currentRevision = createHash('sha256').update(skill.content).digest('hex');
+      if (revision && revision !== currentRevision) return { callId: '', ok: false, code: 'skill_revision_mismatch', content: 'Requested Skill revision is no longer active. Recover the original load via result_read.' };
+      if (!reload && options.loadedSkillIds?.has(skillId)) {
         return {
           callId: '',
           ok: true,
           code: 'already_loaded',
-          content: `[Skill already loaded: ${skill.name}] Reuse its existing instructions and previously read references; do not reload it again in this conversation.`
+          content: `[Skill already loaded: ${skill.name}] Reuse its existing instructions and previously read references; If its instructions were lost from context, set reload=true and provide its revision, or use result_read on the original load.`
         };
       }
       options.loadedSkillIds?.add(skillId);
       return {
         callId: '',
         ok: true,
-        content: `[Skill: ${skill.name}]\nRoot: ${skill.rootPath}\nSKILL.md: ${skill.path}\n\nResource directories (resolve relative paths from Root):\n${resourceCatalog(skill)}\n\n${skill.content}\n\n[End skill]`
+        content: `[Skill: ${skill.name}]\nRevision: ${currentRevision}\nRoot: ${skill.rootPath}\nSKILL.md: ${skill.path}\n\nResource directories (resolve relative paths from Root):\n${resourceCatalog(skill)}\n\n${skill.content}\n\n[End skill]`
       };
     }
   };

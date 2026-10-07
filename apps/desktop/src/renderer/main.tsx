@@ -1575,6 +1575,15 @@ function App() {
           {snapshot.nodes.length === 0 && !sessionBusy && conversationView === 'chat' && <div className="empty"><div className="empty-icon">⌁</div><h2>{active.projectBound === false ? '开始一段新对话' : '从本地项目开始'}</h2><p>{active.projectBound === false ? '直接提问，或从侧边栏选择项目后处理本地文件。' : '可以让我阅读文件、列出目录，或在你批准后执行命令。'}</p></div>}
           {conversationView === 'chat'
             ? <ChatTranscript
+              onOpenHistory={(sessionId, entryId) => {
+                void selectSession(sessionId).then(() => {
+                  setConversationView('chat');
+                  requestAnimationFrame(() => requestAnimationFrame(() => {
+                    const element = document.querySelector(`[data-node-id="${CSS.escape(entryId)}"]`);
+                    element?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+                  }));
+                }).catch(caught => setError(caught instanceof Error ? caught.message : String(caught)));
+              }}
               onOpenArtifact={setSelectedArtifactId}
               snapshot={snapshot}
               running={sessionBusy}
@@ -1848,6 +1857,7 @@ function App() {
       <section className="model-connection-section" aria-labelledby="model-connection-title">
       <h2 className="model-group-title" id="model-connection-title">连接</h2>
       <div className="model-preferences-group">
+        <label className="model-preference-row"><span className="model-preference-label">API 协议</span><select value={draftProvider.protocol} onChange={(event) => { updateDraftProvider({ protocol: event.target.value as 'openai_chat_completions' | 'openai_responses' }); modelRefreshGeneration.current += 1; setModelsFresh(false); }}><option value="openai_chat_completions">OpenAI Chat Completions</option><option value="openai_responses">OpenAI Responses</option></select></label>
         <label className="model-preference-row"><span className="model-preference-label">API Base URL</span><input required value={draftProvider.baseUrl} onChange={(event) => { updateDraftProvider({ baseUrl: event.target.value }); modelRefreshGeneration.current += 1; setModelsLoading(false); void window.desktopAgent.cancelModelRefresh(draftProvider.id); setModelsFresh(false); setModelsError(''); }} /></label>
         <label className="model-preference-row"><span className="model-preference-label">API Key {draftProvider.hasApiKey && <small className="model-inline-note">已安全保存</small>}</span><input type="password" value={apiKey} placeholder={draftProvider.hasApiKey ? '留空以保留当前密钥' : '输入 API Key'} onChange={(event) => { setApiKey(event.target.value); modelRefreshGeneration.current += 1; setModelsLoading(false); void window.desktopAgent.cancelModelRefresh(draftProvider.id); setModelsFresh(false); setModelsError(''); }} /></label>
       </div>

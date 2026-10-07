@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { ArtifactDescriptorSchema } from './artifact';
+import { VerificationRecordSchema } from './verification';
 
 export const ToolCallSchema = z.object({
   id: z.string().min(1),
@@ -24,6 +25,8 @@ export const ToolResultSchema = z.object({
   ok: z.boolean(),
   content: z.string(),
   artifacts: z.array(ArtifactDescriptorSchema).max(100).optional(),
+  verification: VerificationRecordSchema.optional(),
+  verificationChecks: z.array(VerificationRecordSchema).max(20).optional(),
   structuredResult: z.unknown().optional(),
   contentBlocks: z.array(ToolResultContentBlockSchema).optional(),
   truncated: z.boolean().optional(),
@@ -102,12 +105,19 @@ export const ContentBlockSchema = z.discriminatedUnion('type', [
 ]);
 export type ContentBlock = z.infer<typeof ContentBlockSchema>;
 
+export const ProviderStateSchema = z.object({
+  protocol: z.literal('openai_responses'), model: z.string().min(1),
+  reasoning: z.array(z.object({ type: z.literal('reasoning'), id: z.string().min(1), encrypted_content: z.string().min(1).max(1000000), summary: z.array(z.object({ type: z.literal('summary_text'), text: z.string().max(100000) }).strict()).max(100) }).strict()).max(100)
+}).strict();
+export type ProviderState = z.infer<typeof ProviderStateSchema>;
+
 export const MessageSchema = z.object({
   id: z.string().min(1),
   role: z.enum(['user', 'assistant', 'tool']),
   content: z.array(ContentBlockSchema),
   createdAt: z.string().datetime(),
   metadata: z.object({
+    providerState: ProviderStateSchema.optional(),
     internal: z.boolean().optional(),
     iteration: z.number().int().positive().optional(),
     finalResponseOnly: z.boolean().optional(),

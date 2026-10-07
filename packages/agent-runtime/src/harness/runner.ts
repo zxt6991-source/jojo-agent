@@ -4,6 +4,8 @@ import { resolveModelAttachments } from '@desktop-agent/attachment-access';
 import { createHash } from 'node:crypto';
 import {
   NoopHookRuntime,
+  verificationFacts,
+  verificationResult,
   type AgentEvent,
   type HookEnvelope,
   type HookInjectionResult,
@@ -414,6 +416,13 @@ async function appendDurableMessage(
   state: OperationState,
   message: Message
 ): Promise<void> {
+  if (state.phase === 'tools') {
+    for (const block of message.content) {
+      if (block.type !== 'tool_result') continue;
+      const pending = state.calls.find(call => call.callId === block.result.callId);
+      if (pending) block.result = verificationResult({ id: pending.callId, name: pending.toolName, input: pending.input }, block.result);
+    }
+  }
   await appendMessage(options, data.messages, message);
   if (!await store.getEntry(message.id)) {
     const lane = await store.getLane(options.sessionId, state.lane);
@@ -542,7 +551,7 @@ async function executeAgentTurn(options: RuntimeAgentRunOptions, resuming: boole
       maxOutputTokens: snapshot.budget.maxOutputTokens, allowPartialOnMaxIterations: snapshot.budget.allowPartialOnLimit,
       instructions: [...snapshot.instructions.requested, ...snapshot.instructions.contributed.map(block => block.content)] };
   }
-  const runtimeStore = options.runtimeStore ?? new MemoryAgentRuntimeStore();
+  const runtimeStore: AgentRuntimeStore = options.runtimeStore ?? new MemoryAgentRuntimeStore();
   const hooks = options.hooks ?? NoopHookRuntime.instance;
   const memory = options.memoryRuntime ?? NoopMemoryRuntime.instance;
   const operationId = options.operationId ?? crypto.randomUUID();
@@ -707,6 +716,37 @@ async function executeAgentTurn(options: RuntimeAgentRunOptions, resuming: boole
     operationStarted = true;
   }
 
+  const allowedHistorySessions = async (): Promise<string[]> => {
+    const execution = options.execution;
+    if (!execution || execution.actor.kind !== 'main' || execution.trigger?.kind !== 'user' || execution.executionScope.kind !== 'workspace') return [options.sessionId];
+    const project = execution.executionScope.workingDirectory;
+    const sessions = await runtimeStore.listSessions();
+    return sessions.filter(session => {
+      const scope = session.metadata?.[EXECUTION_SCOPE_METADATA];
+      return session.id === options.sessionId || (scope && typeof scope === 'object' && !Array.isArray(scope) && 'workingDirectory' in scope && scope.workingDirectory === project);
+    }).map(session => session.id);
+  };
+  options = { ...options,
+    isVerificationCurrent: async callId => {
+      const lane = await runtimeStore.getLane(options.sessionId, laneName);
+      const path = await runtimeStore.readPath(lane?.leafId ?? null);
+      return verificationFacts(path.flatMap(entry => entry.type === 'message' ? [entry.message] : [])).some(fact => fact.outputRef === callId && fact.status === 'passed' && !fact.stale);
+    },
+    searchSessionHistory: async query => runtimeStore.searchMessages ? runtimeStore.searchMessages(query, await allowedHistorySessions()) : [],
+    readSessionHistoryWindow: async query => {
+      if (!(await allowedHistorySessions()).includes(query.sessionId)) throw new AgentError('permission_denied', 'Session is outside the allowed history scope.');
+      return runtimeStore.readMessageWindow ? runtimeStore.readMessageWindow(query) : { items: [], truncated: false };
+    },
+    readToolResult: async (callId) => {
+    const lane = await runtimeStore.getLane(options.sessionId, laneName);
+    const entries = await runtimeStore.readPath(lane?.leafId ?? null);
+    for (const entry of entries) {
+      if (entry.sessionId !== options.sessionId || entry.type !== 'message') continue;
+      const result = toolResultFromMessage(entry.message, callId);
+      if (result) return result;
+    }
+    return undefined;
+  } };
   const data = createRunnerData(options);
   if (resuming && state.phase === 'tools' && state.calls.some(call => call.status !== 'completed' && !data.toolsByName.has(call.toolName))) {
     executionError('runtime_resume_environment_unavailable', 'tools');
@@ -1012,6 +1052,8 @@ async function executeAgentTurn(options: RuntimeAgentRunOptions, resuming: boole
             'Memory save nudge: if this turn established a durable user preference, project constraint, design decision, or verified lesson that is not already recoverable from project files, consider proposing memory_write. Never save secrets, transient output, or unverified guesses, and never write without user approval.'
           );
         }
+        const facts = verificationFacts(durablePath.flatMap(entry => entry.type === 'message' ? [entry.message] : []));
+        if (facts.length) ambientInstructions.push(`Verification facts (durable execution evidence; stale results do not verify later changes): ${JSON.stringify(facts.slice(-20))}`);
         const requestInstructions = [...ambientInstructions, ...(options.instructions ?? [])];
         requestInstructions.push(finalResponseOnly
           ? 'This is the mandatory tool-free final response. Do not request tools. Report completed work, concrete results, unfinished work, and the next action.'
@@ -1312,6 +1354,7 @@ async function executeAgentTurn(options: RuntimeAgentRunOptions, resuming: boole
           pending,
           createAssistantMessage(step.text, cycleDetected || resourceReason ? [] : step.calls, pending.responseEntryId, {
             iteration: Math.min(pending.iteration + 1, iterationBudget.currentLimit),
+            ...(step.providerState ? { providerState: step.providerState } : {}),
             ...(pending.request.finalResponseOnly ? { finalResponseOnly: true } : {})
           })
         );

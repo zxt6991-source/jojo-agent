@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { VerificationRequestSchema } from '@desktop-agent/contracts';
 
 export const ReadFileInput = z.object({
   path: z.string().min(1)
@@ -20,7 +21,8 @@ export const TerminalInput = z.object({
   secretEnv: z.array(
     z.string().trim().min(1).max(128).regex(/^[A-Za-z_][A-Za-z0-9_]*$/u)
   ).max(20).default([]),
-  timeoutMs: z.number().int().min(1_000).max(300_000).default(120_000)
+  timeoutMs: z.number().int().min(1_000).max(300_000).default(120_000),
+  verification: VerificationRequestSchema.optional()
 });
 
 const FileContent = z.string().max(2_000_000);

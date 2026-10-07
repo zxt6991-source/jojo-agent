@@ -4,7 +4,7 @@
 
 核心 Runtime 通过稳定的公共 API 和组合层同时服务 Electron、普通 Node 测试与无界面 Server Host，不依赖 Renderer 或 Electron IPC。
 
-桌面端基础上手见 [`docs/current-features.md`](./docs/current-features.md)。权限治理设计见 [`docs/Jojo-Agent-Permission-Governance.md`](./docs/Jojo-Agent-Permission-Governance.md)，Spawn / Team 设计见 [`docs/Jojo-Agent-Spawn-Team.md`](./docs/Jojo-Agent-Spawn-Team.md)，Scheduler 实现说明见 [`docs/technical-implementation/scheduler.md`](./docs/technical-implementation/scheduler.md)，Channel 与 CLI 设计分别见 [`docs/Jojo-Agent-Channel-Abstraction-Design.md`](./docs/Jojo-Agent-Channel-Abstraction-Design.md) 和 [`docs/jojo-serve-cli-daemon-config-logging-design.md`](./docs/jojo-serve-cli-daemon-config-logging-design.md)；与代码冲突时以 Contracts、Runtime 和测试为准。
+桌面端基础上手见 [`docs/current-features.md`](./docs/current-features.md)。权限治理设计见 [`docs/Jojo-Agent-Permission-Governance.md`](./docs/Jojo-Agent-Permission-Governance.md)，Spawn / Team 设计见 [`docs/Jojo-Agent-Spawn-Team.md`](./docs/Jojo-Agent-Spawn-Team.md)，Scheduler 实现说明见 [`docs/technical-implementation/scheduler.md`](./docs/technical-implementation/scheduler.md)，Channel 与 CLI 设计分别见 [`docs/Jojo-Agent-Channel-Abstraction-Design.md`](./docs/Jojo-Agent-Channel-Abstraction-Design.md) 和 [`docs/jojo-serve-cli-daemon-config-logging-design.md`](./docs/jojo-serve-cli-daemon-config-logging-design.md)；与代码冲突时以 Contracts、Runtime 和测试为准。OpenCode / Hermes 比较报告的开发落地和使用边界见 [`docs/jojo-opencode-hermes-implementation.md`](./docs/jojo-opencode-hermes-implementation.md)。
 
 ## 当前项目流程
 

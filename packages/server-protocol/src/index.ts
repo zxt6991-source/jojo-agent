@@ -21,6 +21,8 @@ export {
 } from '@desktop-agent/contracts/application';
 export type { CreateSessionInput, PatchSessionMetadataInput, TranscriptQuery, TranscriptItem, TranscriptPage, RunStatus, ApprovalDecision, ResolveApprovalInput, PendingApprovalSnapshot, Principal, ApplicationSessionSummary as ServerSessionSummary } from '@desktop-agent/contracts/application';
 export { ServerSessionSummarySchema };
+export { SessionSearchQuerySchema, SessionSearchHitSchema, SessionReadWindowQuerySchema, SessionReadWindowSchema } from '@desktop-agent/contracts';
+export type { SessionSearchQuery, SessionSearchHit, SessionReadWindowQuery, SessionReadWindow } from '@desktop-agent/contracts';
 import { FileAttachmentRefSchema } from '@desktop-agent/contracts';
 import { z } from 'zod';
 import {
@@ -219,6 +221,8 @@ const CommandBaseSchema = z.object({ id: z.string().min(1) });
 export const ClientCommandSchema = z.discriminatedUnion('type', [
   CommandBaseSchema.extend({ type: z.literal('server.snapshot') }).strict(),
   CommandBaseSchema.extend({ type: z.literal('session.list') }).strict(),
+  CommandBaseSchema.extend({ type: z.literal('session.search'), sessionId: z.string().min(1), input: APPLICATION_OPERATIONS['session.search'].input }).strict(),
+  CommandBaseSchema.extend({ type: z.literal('session.read-window'), input: APPLICATION_OPERATIONS['session.read-window'].input }).strict(),
   CommandBaseSchema.extend({ type: z.literal('session.create'), input: APPLICATION_OPERATIONS['session.create'].input }).strict(),
   CommandBaseSchema.extend({
     type: z.literal('session.patch'),

@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { ScriptedProvider } from '@desktop-agent/agent-runtime/testing';
 import type { PermissionGate, Tool } from '@desktop-agent/contracts';
 import { createNetworkServer } from '../../../apps/server/src/index.js';
+import { SqliteAgentRuntimeStore } from '@desktop-agent/storage';
 import { JojoClient } from '../src/index.js';
 
 const allow: PermissionGate = { check: async () => ({ decision: 'allow' }) };
@@ -28,6 +29,7 @@ describe('Jojo client SDK', () => {
       })).resolves.toMatchObject({ labels: ['sdk'], favorite: true, revision: beforePatch.revision + 1 });
       const run = await session.run({ input: 'hello', providerId: 'test', model: 'test', laneId: 'main' });
       await expect(run.result()).resolves.toMatchObject({ status: 'completed', finalText: 'sdk answer' });
+      await expect(client.searchSessionHistory(session.id, { query: 'sdk' })).rejects.toMatchObject({ protocol: { code: 'forbidden' } });
       await expect(session.transcript()).resolves.toMatchObject({
         items: [{ message: { role: 'user' } }, { message: { role: 'assistant' } }]
       });
@@ -35,6 +37,36 @@ describe('Jojo client SDK', () => {
       await client.close();
       await server.close();
     }
+  });
+
+  it('uses the same bounded history contracts through SDK REST and WebSocket with explicit principal access', async () => {
+    const store = new SqliteAgentRuntimeStore(':memory:');
+    const project = process.cwd();
+    const server = await createNetworkServer({
+      store, server: { workspaceRoots: [project] },
+      canReadSessionHistory: (ctx, id) => ctx.principal.type === 'token' && id === 'shared',
+      providers: { describe: describeTestProvider, resolve: () => new ScriptedProvider([[
+        { type: 'text_delta', text: 'SQLite is our recorded decision.' },
+        { type: 'response_completed', stopReason: 'stop' }
+      ]]) },
+      permissions: allow, http: { host: '127.0.0.1', port: 0, token: 'history-token' }
+    });
+    const client = new JojoClient({ baseUrl: await server.listen(), token: 'history-token', reconnect: false, runPollIntervalMs: 10 });
+    try {
+      await client.connect();
+      const session = await client.createSession({ id: 'shared', executionScope: { kind: 'workspace', workingDirectory: project } });
+      const run = await session.run({ input: 'choose storage', providerId: 'test', model: 'test', laneId: 'main' });
+      await run.result();
+      const hits = await client.searchSessionHistory(session.id, { query: 'SQLite' });
+      expect(hits).toHaveLength(1);
+      expect(hits[0]).toMatchObject({ sessionId: 'shared', role: 'assistant', project });
+      expect(await client.command({ id: 'history-search', type: 'session.search', sessionId: session.id, input: { query: 'SQLite', limit: 10, source: 'main' } })).toEqual(hits);
+      const input = { sessionId: 'shared', anchorSeq: hits[0]!.seq, before: 2, after: 2, maxCharacters: 12 };
+      const window = await client.readSessionHistoryWindow(input);
+      expect(window.items.map(item => item.content).join('').length).toBeLessThanOrEqual(12);
+      expect(await client.command({ id: 'history-window', type: 'session.read-window', input })).toEqual(window);
+      await expect(client.searchSessionHistory('private', { query: 'SQLite', source: 'all' })).rejects.toMatchObject({ protocol: { code: 'forbidden' } });
+    } finally { await client.close(); await server.close(); }
   });
 
   it('keeps a run pending until a remote client resolves approval', async () => {

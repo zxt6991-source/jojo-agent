@@ -1,3 +1,4 @@
+import { SessionSearchQuerySchema, SessionSearchHitSchema, SessionReadWindowQuerySchema, SessionReadWindowSchema, type SessionSearchQuery, type SessionSearchHit, type SessionReadWindowQuery, type SessionReadWindow } from '@desktop-agent/server-protocol';
 import { AttachmentUploadReceiptSchema, type AttachmentUploadReceipt } from '@desktop-agent/server-protocol';
 import {
   ClientHelloSchema,
@@ -242,6 +243,17 @@ export class JojoClient {
 
   getCapabilities(): Promise<ServerCapabilities> {
     return this.http('/api/v1/capabilities', ServerCapabilitiesSchema);
+  }
+
+  searchSessionHistory(projectSessionId: string, input: Partial<SessionSearchQuery> & { query: string }): Promise<SessionSearchHit[]> {
+    const query = SessionSearchQuerySchema.parse(input);
+    const params = new URLSearchParams(Object.entries(query).map(([key, value]) => [key, String(value)]));
+    return this.http(`/api/v1/sessions/${encodeURIComponent(projectSessionId)}/search?${params}`, SessionSearchHitSchema.array());
+  }
+  readSessionHistoryWindow(input: Partial<SessionReadWindowQuery> & { sessionId: string; anchorSeq: number }): Promise<SessionReadWindow> {
+    const { sessionId, ...query } = SessionReadWindowQuerySchema.parse(input);
+    const params = new URLSearchParams(Object.entries(query).map(([key, value]) => [key, String(value)]));
+    return this.http(`/api/v1/sessions/${encodeURIComponent(sessionId)}/read-window?${params}`, SessionReadWindowSchema);
   }
 
   listSessions(): Promise<ServerSessionSummary[]> {

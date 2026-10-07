@@ -7,6 +7,7 @@ import type {
   ProviderContribution,
   ProviderProtocol
 } from '@desktop-agent/contracts';
+import { OpenAIResponsesProvider } from './openai-responses-provider.js';
 import { OpenAICompatibleProvider } from './openai-compatible-provider.js';
 
 export type ProviderRegistration = {
@@ -18,6 +19,7 @@ export type ProviderRegistration = {
 };
 
 export const PROVIDER_REGISTRY: readonly ProviderRegistration[] = [
+  { protocol: 'openai_responses', vendor: 'openai', displayName: 'OpenAI Responses', defaultBaseUrl: 'https://api.openai.com/v1', supportsModelDiscovery: true },
   {
     protocol: 'openai_chat_completions', vendor: 'openai-compatible', displayName: 'OpenAI Chat Completions',
     defaultBaseUrl: 'https://api.openai.com/v1', supportsModelDiscovery: true
@@ -26,9 +28,9 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistration[] = [
 
 export type DiscoverableModelProvider = ModelProvider & { listModels(signal?: AbortSignal): Promise<DiscoveredModel[]> };
 
-export function createProvider(config: Pick<ProviderConfig, 'baseUrl'>, apiKey: string, timeoutMs?: number): DiscoverableModelProvider {
+export function createProvider(config: Pick<ProviderConfig, 'baseUrl'> & Partial<Pick<ProviderConfig, 'protocol'>>, apiKey: string, timeoutMs?: number): DiscoverableModelProvider {
   const options = { apiKey, baseUrl: config.baseUrl, ...(timeoutMs !== undefined ? { timeoutMs } : {}) };
-  return new OpenAICompatibleProvider(options);
+  return config.protocol === 'openai_responses' ? new OpenAIResponsesProvider(options) : new OpenAICompatibleProvider(options);
 }
 
 /** Dynamic preview registry used by the Extension Contribution adapter. */

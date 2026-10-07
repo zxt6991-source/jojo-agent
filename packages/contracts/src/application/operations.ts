@@ -1,3 +1,4 @@
+import { SessionSearchQuerySchema, SessionSearchHitSchema, SessionReadWindowQuerySchema, SessionReadWindowSchema } from '../session-history.js';
 import { z } from 'zod';
 import {
   ApplicationSessionSnapshotSchema, ApplicationSessionSummarySchema,
@@ -30,6 +31,8 @@ const EmptyInputSchema = z.object({}).strict();
 
 /** Resource IDs belong to adapter routing. Inputs describe the application body/query only. */
 export const APPLICATION_OPERATIONS = {
+  'session.search': defineOperation({ kind: 'query', input: SessionSearchQuerySchema, output: z.array(SessionSearchHitSchema).max(20), permission: 'sessions:read', idempotent: true }),
+  'session.read-window': defineOperation({ kind: 'query', input: SessionReadWindowQuerySchema, output: SessionReadWindowSchema, permission: 'sessions:read', idempotent: true }),
   'session.list': defineOperation({ kind: 'query', input: EmptyInputSchema, output: z.array(ApplicationSessionSummarySchema), permission: 'sessions:read', idempotent: true }),
   'session.create': defineOperation({ kind: 'command', input: CreateSessionInputSchema, output: ApplicationSessionSnapshotSchema, permission: 'sessions:write', idempotent: false }),
   'session.patch': defineOperation({ kind: 'command', input: PatchSessionMetadataInputSchema, output: ApplicationSessionSnapshotSchema, permission: 'sessions:write', idempotent: false }),

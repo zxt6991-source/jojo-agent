@@ -1,3 +1,4 @@
+import { verificationResult } from '@desktop-agent/contracts';
 import type { Tool, ToolCall, ToolResult } from '@desktop-agent/contracts';
 import { errorMessage, throwIfAborted } from './errors.js';
 import { canonicalJson, normalizeObservation, sha256 } from './loop/fingerprint.js';
@@ -148,13 +149,18 @@ async function executeApprovedTool(
   try {
     const result = await tool.execute(call.input, {
       sessionId: options.sessionId,
+      toolCallId: call.id,
       workingDirectory: options.workingDirectory,
       ...(options.executionScope ? { executionScope: options.executionScope } : {}),
       signal: options.signal,
       approved: true,
+      ...(options.isVerificationCurrent ? { isVerificationCurrent: options.isVerificationCurrent } : {}),
+      ...(options.readToolResult ? { readToolResult: options.readToolResult } : {}),
+      ...(options.searchSessionHistory ? { searchSessionHistory: options.searchSessionHistory } : {}),
+      ...(options.readSessionHistoryWindow ? { readSessionHistoryWindow: options.readSessionHistoryWindow } : {}),
       onProgress: (text) => options.emit({ type: 'tool.progress', id: call.id, text })
     });
-    return { ...result, callId: call.id };
+    return { ...result, callId: call.id, ...(result.verification ? { verification: { ...result.verification, changeId: call.id, outputRef: call.id } } : {}) };
   } catch (error) {
     if (options.signal.aborted) throw error;
     const code = error && typeof error === 'object' && 'code' in error && typeof error.code === 'string'
@@ -185,6 +191,7 @@ export async function executeToolCall(
       ?? repeatedObservationResult(call, await executeKnownTool(call, tool, options), state);
   }
 
+  result = verificationResult(call, result);
   options.emit({ type: 'tool.finished', id: call.id, result });
   return result;
 }
@@ -210,6 +217,7 @@ export async function executeApprovedToolCall(
       ?? repeatedObservationResult(call, await executeApprovedTool(call, tool, options), state);
   }
 
+  result = verificationResult(call, result);
   options.emit({ type: 'tool.finished', id: call.id, result });
   return result;
 }

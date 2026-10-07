@@ -249,7 +249,7 @@ export const SaveSettingsInputSchema = z.object({
   provider: z.object({
     id: z.string().min(1),
     name: z.string().trim().min(1),
-    protocol: z.literal('openai_chat_completions'),
+    protocol: z.enum(['openai_chat_completions', 'openai_responses']),
     baseUrl: z.string().url(),
     model: z.string().min(1),
     models: z.array(ModelConfigSchema).min(1)
@@ -327,7 +327,7 @@ export type PermissionGovernanceSnapshot = z.infer<typeof PermissionGovernanceSn
 
 export const ListModelsInputSchema = z.object({
   providerId: z.string().min(1),
-  protocol: z.literal('openai_chat_completions'),
+  protocol: z.enum(['openai_chat_completions', 'openai_responses']),
   baseUrl: z.string().url(),
   apiKey: z.string().trim().min(1).optional()
 });

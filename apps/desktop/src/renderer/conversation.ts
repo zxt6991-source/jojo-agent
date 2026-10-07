@@ -1,3 +1,4 @@
+import { SessionSearchHitSchema } from '@desktop-agent/contracts';
 import type { AgentEvent, ImageContentBlock, Message, SessionCompactionRecord, ToolCall, ToolResult } from '@desktop-agent/contracts';
 
 export type ConversationViewMode = 'chat' | 'trajectory';
@@ -40,6 +41,9 @@ export type ToolNode = {
   errorSummary: string | null;
   images: Extract<NonNullable<ToolResult['contentBlocks']>[number], { type: 'image' }>[];
   artifacts?: import('@desktop-agent/contracts').ArtifactDescriptor[];
+  verification?: import('@desktop-agent/contracts').VerificationRecord & { stale?: boolean };
+  verificationChecks?: (import('@desktop-agent/contracts').VerificationRecord & { stale?: boolean })[];
+  historyHits?: import('@desktop-agent/contracts').SessionSearchHit[];
   state: ToolRowState;
   iteration?: number;
 };
@@ -290,8 +294,12 @@ export function createToolNode(options: {
 }): ToolNode {
   const progress = options.progress ?? '';
   const state = toolState(options.result, options.running === true);
+  const hits = options.name === 'session_search' ? SessionSearchHitSchema.array().max(20).safeParse((options.result?.structuredResult as { hits?: unknown } | undefined)?.hits) : undefined;
   return {
     kind: 'tool',
+    ...(options.result?.verificationChecks ? { verificationChecks: options.result.verificationChecks } : {}),
+    ...(options.result?.verification ? { verification: options.result.verification } : {}),
+    ...(hits?.success ? { historyHits: hits.data } : {}),
     ...(options.result?.artifacts !== undefined ? { artifacts: options.result.artifacts } : {}),
     id: options.id,
     callId: options.callId,
@@ -521,6 +529,19 @@ export function toTrajectoryRecords(turns: ConversationTurn[]): TrajectoryRecord
 export function buildConversationSnapshot(input: ConversationSnapshotInput): ConversationSnapshot {
   const folded = foldMessages(messagesWithCompactions(input.messages, input.compactions ?? []), input.workingDirectory);
   const nodes = appendLiveSteps(folded, input.liveSteps ?? [], input.running === true, input.workingDirectory);
+  let latestChange: string | undefined;
+  for (const node of nodes) {
+    if (node.kind !== 'tool') continue;
+    if (node.name === 'terminal' || (node.state === 'ok' && ['write_file', 'edit_file', 'delete_file', 'skill_activate', 'apply_patch', 'file_undo'].includes(node.name))) latestChange = node.callId;
+  }
+  for (const node of nodes) if (node.kind === 'tool' && node.verification) node.verification = { ...node.verification, stale: latestChange !== node.verification.changeId };
+  for (const [index, node] of nodes.entries()) {
+    if (node.kind !== 'tool' || !node.verificationChecks) continue;
+    node.verificationChecks = node.verificationChecks.map(check => {
+      const executed = nodes.slice(index + 1).filter(item => item.kind === 'tool' && item.verification && item.verification.profileId === check.profileId && item.verification.command === check.command && JSON.stringify(item.verification.args) === JSON.stringify(check.args)).at(-1);
+      return executed?.kind === 'tool' && executed.verification ? executed.verification : check;
+    });
+  }
   const turns = groupTurns(nodes);
   return { turns, nodes, records: toTrajectoryRecords(turns) };
 }

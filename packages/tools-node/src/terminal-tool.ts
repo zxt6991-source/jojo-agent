@@ -39,6 +39,7 @@ export class TerminalTool implements Tool {
         cwd: { type: 'string', default: '.' },
         network: { type: 'string', enum: ['none', 'host'], default: 'none', description: 'Use host only when unrestricted outbound network access is required.' },
         secretEnv: { type: 'array', items: { type: 'string', pattern: '^[A-Za-z_][A-Za-z0-9_]*$' }, maxItems: 20, default: [], description: 'Names of secrets to inject after approval. Never include secret values.' },
+        verification: { type: 'object', properties: { kind: { type: 'string', enum: ['lint', 'typecheck', 'test'] }, scope: { type: 'string' }, profileId: { type: 'string' } }, required: ['kind', 'scope'], additionalProperties: false },
         timeoutMs: { type: 'integer', minimum: 1000, maximum: 300000, default: 120000 }
       },
       required: ['command'],
@@ -63,7 +64,16 @@ export class TerminalTool implements Tool {
 
   async execute(input: unknown, context: ToolContext): Promise<ToolResult> {
     const parsed = TerminalInput.parse(input);
-    if (!context.approved) return toolResult(false, 'Terminal execution requires approval.', { code: 'permission_denied' });
+    const startedAt = new Date().toISOString();
+    const finish = (result: ToolResult): ToolResult => parsed.verification ? { ...result, verification: {
+      ...parsed.verification, command: parsed.command, args: parsed.args, cwd: parsed.cwd,
+      startedAt, finishedAt: new Date().toISOString(), exitCode: null, changeId: 'pending',
+      status: result.code === 'cancelled' ? 'cancelled' : result.code === 'permission_denied' ? 'skipped' : result.ok ? 'passed' : 'failed',
+      ...(typeof (result.structuredResult as { exitCode?: unknown } | undefined)?.exitCode === 'number'
+        ? { exitCode: (result.structuredResult as { exitCode: number }).exitCode } : {}),
+      ...(result.code ? { reason: result.code } : {})
+    } } : result;
+    if (!context.approved) return finish(toolResult(false, 'Terminal execution requires approval.', { code: 'permission_denied' }));
     try {
       const plan = await this.policy.plan(parsed, {
         workingDirectory: context.workingDirectory,
@@ -79,13 +89,13 @@ export class TerminalTool implements Tool {
             ...Object.fromEntries(parsed.secretEnv.map((name, index) => [name, leases[index]!.value]))
           }
         });
-        return await this.collect(
+        return finish(await this.collect(
           sandboxed,
           plan.sandbox.resources.timeoutMs,
           plan.sandbox.resources.maxOutputBytes,
           context,
           knownSecrets
-        );
+        ));
       } finally {
         leases.forEach((lease) => lease.dispose());
       }
@@ -95,7 +105,7 @@ export class TerminalTool implements Tool {
       const detail = value.code === 'ENOENT'
         ? `Executable not found: ${parsed.command}. command must contain only the executable name or path; put every argument in args.`
         : error instanceof Error ? error.message : String(error);
-      return toolResult(false, detail, { code });
+      return finish(toolResult(false, detail, { code }));
     }
   }
 
@@ -169,7 +179,7 @@ export class TerminalTool implements Tool {
       const ok = result.exitCode === 0;
       const truncationNotice = truncated ? '\n[output truncated]' : '';
       const exitNotice = `\n[exit ${result.exitCode ?? result.signal ?? 'unknown'}]`;
-      return toolResult(ok, `${output}${truncationNotice}${exitNotice}`, ok ? { truncated } : { truncated, code: 'nonzero_exit' });
+      return { ...toolResult(ok, `${output}${truncationNotice}${exitNotice}`, ok ? { truncated } : { truncated, code: 'nonzero_exit' }), structuredResult: { exitCode: result.exitCode, ...(result.signal !== undefined ? { signal: result.signal } : {}) } };
     } finally {
       clearTimeout(timeoutTimer);
       if (forceKillTimer) clearTimeout(forceKillTimer);

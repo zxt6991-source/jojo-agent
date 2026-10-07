@@ -80,7 +80,7 @@ function ToolIcon() {
   </svg>;
 }
 
-function ToolRow({ node, onInspect }: { node: ToolNode; onInspect?: (id: string) => void }) {
+function ToolRow({ node, onInspect, onOpenHistory }: { node: ToolNode; onInspect?: (id: string) => void; onOpenHistory?: (sessionId: string, entryId: string) => void }) {
   const expandable = Boolean(node.body || node.output || node.images.length);
   return <DisclosureRow
     icon={<ToolIcon />}
@@ -91,12 +91,17 @@ function ToolRow({ node, onInspect }: { node: ToolNode; onInspect?: (id: string)
     warning={node.state === 'warning'}
     running={node.state === 'running'}
   >
+    {node.verificationChecks?.map(check => <p key={check.profileId}>验证 · {check.kind} · {{ passed: '通过', failed: '失败', skipped: '未运行', cancelled: '已取消' }[check.status]}{check.stale ? ' · 后续变更尚未验证' : ''} · {check.scope}</p>)}
+    {node.verification && <p className={node.verification.status === 'failed' || node.verification.stale ? 'warning' : ''}>
+      验证 · {node.verification.kind} · {{ passed: '通过', failed: '失败', skipped: '未运行', cancelled: '已取消' }[node.verification.status]}{node.verification.stale ? ' · 后续变更尚未验证' : ''} · {node.verification.scope}
+    </p>}
     <div className="tool-io">
       {node.body && <div className="tool-io-section"><span>IN</span><pre>{node.body}</pre></div>}
       {node.body && node.output && <span className="tool-io-divider" aria-hidden="true" />}
       {node.output && <div className="tool-io-section"><span>OUT</span><pre className={node.state === 'error' ? 'error' : node.state === 'warning' ? 'warning' : ''}>{node.output}</pre></div>}
       {node.images.length > 0 && <div className="rich-images tool-images">{node.images.map((image, index) => <img key={`${node.id}-${index}`} src={`data:${image.mimeType};base64,${image.data}`} alt={image.altText ?? '工具返回的图片'} />)}</div>}
     </div>
+    {node.historyHits?.map(hit => <button key={hit.entryId} type="button" onClick={() => onOpenHistory?.(hit.sessionId, hit.entryId)} disabled={!onOpenHistory}>{hit.createdAt} · {hit.role} · {hit.snippet.slice(0, 100)} · 查看原文</button>)}
     {onInspect && <button type="button" className="tool-inspect" onClick={(event) => { event.stopPropagation(); onInspect(node.id); }}>在轨迹中查看</button>}
   </DisclosureRow>;
 }
@@ -106,8 +111,10 @@ function ChatNodeView({
   onInspect,
   onOpenAutomation,
   artifacts,
-  onOpenArtifact
+  onOpenArtifact,
+  onOpenHistory
 }: {
+  onOpenHistory?: (sessionId: string, entryId: string) => void;
   artifacts?: ArtifactDescriptor[];
   onOpenArtifact?: (id: string) => void;
   node: ConversationNode;
@@ -130,7 +137,7 @@ function ChatNodeView({
     </article>;
   }
   if (node.kind === 'tool') {
-    return <div className="chat-tool" data-node-id={node.id}><ToolRow node={node} {...(onInspect ? { onInspect } : {})} /></div>;
+    return <div className="chat-tool" data-node-id={node.id}><ToolRow node={node} {...(onInspect ? { onInspect } : {})} {...(onOpenHistory ? { onOpenHistory } : {})} /></div>;
   }
   if (node.kind === 'compaction') {
     return <DisclosureRow icon={<span className="disclosure-mark">⌥</span>} title="上下文已压缩" summary={node.summary} expandable={Boolean(node.text)}>
@@ -165,6 +172,7 @@ function TurnStatus({ startedAt }: { startedAt: number | null }) {
 }
 
 export function ChatTranscript({
+  onOpenHistory,
   onOpenArtifact,
   snapshot,
   running,
@@ -174,6 +182,7 @@ export function ChatTranscript({
   renderAfterTurn
 }: {
   onOpenArtifact?: (id: string) => void;
+  onOpenHistory?: (sessionId: string, entryId: string) => void;
   snapshot: ConversationSnapshot;
   running: boolean;
   turnStartedAt: number | null;
@@ -193,6 +202,7 @@ export function ChatTranscript({
         node={node}
         artifacts={artifacts}
         {...(onOpenArtifact ? { onOpenArtifact } : {})}
+        {...(onOpenHistory ? { onOpenHistory } : {})}
         {...(onInspect ? { onInspect } : {})}
         {...(onOpenAutomation ? { onOpenAutomation } : {})}
       />)}
@@ -216,6 +226,7 @@ export function TrajectoryView({
   selectedId,
   onSelect
 }: {
+  onOpenHistory?: (sessionId: string, entryId: string) => void;
   snapshot: ConversationSnapshot;
   selectedId: string | null;
   onSelect: (id: string) => void;
