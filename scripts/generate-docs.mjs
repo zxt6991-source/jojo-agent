@@ -3,6 +3,7 @@ import { fileURLToPath, URL } from 'node:url';
 import path from 'node:path';
 import process from 'node:process';
 import ts from 'typescript';
+import { checkApplicationBindings } from './check-application-bindings.mjs';
 import { BUILD_COMPATIBILITY } from '../packages/contracts/src/build-compatibility.ts';
 import { CAPABILITY_MANIFEST, SCHEDULER_TARGETS } from '../packages/contracts/src/capability-manifest.ts';
 
@@ -83,7 +84,20 @@ ${operationRows.join('\n')}
 Registry 描述已纳入本轮的操作，并不表示所有 Host 都实现了每项能力。
 Server Core 使用这些 scope；Desktop 仍使用本地权限治理。Desktop 的审批 scope、密钥引用、附件限制和 Session 元数据格式由 Host 适配层保留。
 `;
+const coverage = checkApplicationBindings(read);
+if (coverage.errors.length) throw new Error(coverage.errors.join('\n'));
+const describe = value => value?.path ? `${value.method.toUpperCase()} ${value.path}` : value?.command ?? value?.handler ?? `缺口：${value?.reason ?? '未绑定'}`;
+const bindingDoc = `# 应用绑定覆盖（自动生成）
+
+由 contracts/application/bindings.json 声明，pnpm test:bindings 对注册目录、HTTP → Core 调用、WS dispatch、SDK 方法和声明的 IPC 共享解析做静态检查。
+这不是权限、幂等或恢复行为的证明；这些行为仍须 conformance 测试。Desktop DTO 尚未全量统一，缺口逐项列明。
+
+| Operation | Core | HTTP | WS | SDK | IPC |
+|---|---|---|---|---|---|
+${Object.entries(coverage.bindings).map(([id, b]) => `| ${id} | ${b.core ?? '本地专用'} | ${describe(b.http)} | ${describe(b.ws)} | ${b.sdk ?? '本地专用'} | ${describe(b.ipc)} |`).join('\n')}
+`;
 const outputs = new Map([
+  ['docs/current-bindings.generated.md', bindingDoc],
   ['docs/current-features.generated.md', generated],
   ['docs/current-operations.generated.md', operationDoc],
   ['README.md', readme.slice(0, from) + summary + readme.slice(to + end.length)]

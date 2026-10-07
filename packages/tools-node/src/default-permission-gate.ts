@@ -52,6 +52,9 @@ export class DefaultPermissionGate implements PermissionGate {
         const parsed = (call.name === 'session_search' ? SessionSearchQuerySchema : SessionReadWindowQuerySchema).safeParse(call.input);
         return parsed.success ? { decision: 'allow' } : { decision: 'deny', reason: parsed.error.message, code: 'invalid_input' };
       }
+      case 'verification_run':
+        // Only the Runtime-owned callback can execute the individual governed Terminal calls.
+        return { decision: 'allow' };
       case 'verification_profile':
         return call.input && typeof call.input === 'object' && !Array.isArray(call.input) && !Object.keys(call.input).length ? { decision: 'allow' } : { decision: 'deny', reason: 'Expected an empty object.', code: 'invalid_input' };
       case 'result_read': {

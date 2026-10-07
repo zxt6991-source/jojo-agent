@@ -1,3 +1,5 @@
+import { VerificationRunTool } from './verification-run-tool.js';
+export { VerificationRunTool } from './verification-run-tool.js';
 import { ApplyPatchTool, FileUndoTool } from './patch-tools.js';
 export { ApplyPatchTool, FileUndoTool, preparePatch, prepareJournalMutation } from './patch-tools.js';
 import { SkillDraftTool, SkillActivateTool } from './skill-draft-tools.js';
@@ -76,6 +78,7 @@ export function createDefaultTools(options: DefaultToolOptions = {}): Tool[] {
     new ListFilesTool(),
     new ResultReadTool(),
     new VerificationProfileTool(),
+    new VerificationRunTool(),
     new SkillDraftTool(snapshots, trashDirectory),
     new SkillActivateTool(snapshots, trashDirectory),
     ...createSessionHistoryTools(),
@@ -109,3 +112,7 @@ export function createDefaultToolRuntime(options: Omit<DefaultToolOptions, 'snap
 
 export { ShowArtifactTool } from './show-artifact-tool.js';
 export * from './artifact-storage.js';
+
+export { WorkspaceRevisionService } from './workspace-revision.js';
+
+export { FileMutationJournalService } from './file-mutation-journal.js';

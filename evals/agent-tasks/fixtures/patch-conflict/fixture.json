@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "files": { "a.txt": "original A", "b.txt": "original B" },
+  "externalEdit": { "path": "b.txt", "content": "user edit" },
+  "changes": [
+    { "operation": "edit", "path": "a.txt", "oldText": "original A", "newText": "updated A" },
+    { "operation": "edit", "path": "b.txt", "oldText": "original B", "newText": "updated B" }
+  ]
+}

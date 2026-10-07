@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "constraint": "CONSTRAINT_ONLY_READ",
+  "noiseFiles": 10,
+  "noiseCharacters": 6000,
+  "contextWindowTokens": 16000
+}

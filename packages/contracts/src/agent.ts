@@ -1,4 +1,4 @@
-import { VerificationRecordSchema } from './verification.js';
+import { VerificationBatchSchema, VerificationRecordSchema } from './verification.js';
 import { ArtifactDescriptorSchema } from './artifact.js';
 import { GeneratedDocumentSchema } from './generated-document.js';
 import { z } from 'zod';
@@ -35,6 +35,7 @@ const IpcToolResultSchema = z.object({
   content: z.string().max(1_500_000),
   artifacts: z.array(ArtifactDescriptorSchema).max(100).optional(),
   verification: VerificationRecordSchema.optional(),
+  verificationBatch: VerificationBatchSchema.optional(),
   verificationChecks: z.array(VerificationRecordSchema).max(20).optional(),
   structuredResult: BoundedJsonValueSchema.optional(),
   contentBlocks: z.array(ToolResultContentBlockSchema).max(100).optional(),

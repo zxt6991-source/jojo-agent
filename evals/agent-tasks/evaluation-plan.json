@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "mode": "offline",
+  "variant": "offline-current",
+  "tasks": [
+    "patch-conflict",
+    "middle-failure",
+    "verification-cancel",
+    "decision-recall",
+    "scheduler-noise",
+    "ts-repair",
+    "skill-compaction"
+  ],
+  "repetitions": 2,
+  "timeoutMs": 30000,
+  "provider": "offline-scripted",
+  "model": "fixture-v1",
+  "costCapUsd": 0
+}

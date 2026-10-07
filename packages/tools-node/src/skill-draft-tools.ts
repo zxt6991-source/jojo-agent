@@ -69,7 +69,7 @@ export class SkillDraftTool implements Tool {
     for (const id of parsed.sourceCallIds) if (!await context.readToolResult?.(id)) return { callId: '', ok: false, code: 'skill_evidence_missing', content: 'Source evidence is unavailable in this session branch.' };
     const prepared = prepareSkillDraft(parsed, context.sessionId);
     const result = await new WriteFileTool(this.snapshots, this.trashDirectory).execute(prepared, context);
-    return { ...result, ...(result.ok ? { artifacts: [{ id: `skill-draft:${prepared.revision}`, name: `${parsed.name}.draft.md`, kind: 'markdown' as const, mimeType: 'text/markdown', source: 'generated' as const, storage: { type: 'conversation' as const, content: skillDraftContent({ schemaVersion: 1, revision: prepared.revision, sessionId: context.sessionId, draft: parsed }) }, version: 1, metadata: { state: 'draft', revision: prepared.revision } }] } : {}), structuredResult: { draft: { name: parsed.name, revision: prepared.revision, path: prepared.path, state: 'draft' } } };
+    return { ...result, ...(result.ok ? { artifacts: [{ id: `skill-draft:${prepared.revision}`, name: `${parsed.name}.draft.md`, kind: 'markdown' as const, mimeType: 'text/markdown', source: 'generated' as const, storage: { type: 'conversation' as const, content: skillDraftContent({ schemaVersion: 1, revision: prepared.revision, sessionId: context.sessionId, draft: parsed }) }, version: 1, metadata: { state: 'draft', revision: prepared.revision } }] } : {}), structuredResult: { ...(result.structuredResult as Record<string, unknown> | undefined), draft: { name: parsed.name, revision: prepared.revision, path: prepared.path, state: 'draft' } } };
   }
 }
 export class SkillActivateTool implements Tool {
@@ -85,6 +85,6 @@ export class SkillActivateTool implements Tool {
     if (!context.approved) return { callId: '', ok: false, code: 'permission_denied', content: 'Skill activation requires approval.' };
     const prepared = await prepareSkillActivation(input, context.workingDirectory);
     const result = await new WriteFileTool(this.snapshots, this.trashDirectory).execute(prepared, context);
-    return { ...result, structuredResult: { skill: { path: prepared.path, revision: prepared.revision, state: 'active' } } };
+    return { ...result, structuredResult: { ...(result.structuredResult as Record<string, unknown> | undefined), skill: { path: prepared.path, revision: prepared.revision, state: 'active' } } };
   }
 }

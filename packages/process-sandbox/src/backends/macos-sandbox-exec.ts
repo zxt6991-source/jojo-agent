@@ -9,6 +9,18 @@ const SENSITIVE_HOST_PATHS = ['/Users', '/home', '/Volumes', '/private/tmp', '/t
 
 function sbplString(value: string): string { return JSON.stringify(value); }
 
+function ancestorDirectories(roots: string[]): string[] {
+  const directories = new Set<string>();
+  for (const root of roots) {
+    let current = path.dirname(path.resolve(root));
+    while (current !== path.dirname(current)) {
+      directories.add(current);
+      current = path.dirname(current);
+    }
+  }
+  return [...directories].sort();
+}
+
 export function macOSSandboxProfile(spec: SandboxSpec, temporaryRoot: string): string {
   if (spec.network.mode === 'allowlist') throw Object.assign(
     new Error('macOS Seatbelt does not implement host allowlists.'),
@@ -26,6 +38,10 @@ export function macOSSandboxProfile(spec: SandboxSpec, temporaryRoot: string): s
       const operations = mount.mode === 'rw' ? 'file-read* file-write*' : 'file-read*';
       return `(allow ${operations} (subpath ${sbplString(path.resolve(mount.path))}))`;
     }),
+    // Node resolves script/module paths by statting their ancestors. Exact metadata
+    // grants permit traversal without directory listings or sibling file contents.
+    ...ancestorDirectories([temporaryRoot, ...spec.mounts.map(mount => mount.path)])
+      .map(directory => `(allow file-read-metadata (literal ${sbplString(directory)}))`),
     ...(spec.network.mode === 'host' ? [] : ['(deny network*)'])
   ];
   return rules.join('\n');

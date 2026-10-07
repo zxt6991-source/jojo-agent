@@ -65,7 +65,7 @@ function sourceFor(call: ToolCall, baseline: PermissionDecision): ToolSource {
 
 function operationsFor(call: ToolCall, source: ToolSource, mcpRisk?: 'read' | 'external_side_effect'): OperationKind[] {
   if (call.name === 'channel_send') return ['network', 'external_effect'];
-  if (call.name === 'terminal') return ['execute'];
+  if (['terminal', 'verification_run'].includes(call.name)) return ['execute'];
   if (call.name === 'skill_draft' || call.name === 'skill_activate') return ['write'];
   if (call.name === 'install_skill') return ['install', 'write'];
   if (call.name === 'trust_project_hooks') return ['trust', 'control'];
@@ -103,7 +103,7 @@ function contextFor(context: RuntimeResolutionContext): GovernanceContext {
 function resourceScopeFor(call: ToolCall, source: ToolSource, baseline: PermissionDecision): GovernanceFacts['resourceScope'] {
   if (source === 'browser' || source === 'mcp' || source === 'channel' || call.name === 'web_search' || call.name === 'web_fetch') return 'external';
   if (baseline.decision === 'ask' && call.name === 'read_file' && !baseline.request.preview) return 'outside_workspace';
-  if (['show_artifact', 'read_file', 'list_files', 'glob', 'grep', 'write_file', 'edit_file', 'delete_file', 'skill_draft', 'skill_activate', 'apply_patch', 'file_undo', 'terminal'].includes(call.name)) return 'workspace';
+  if (['show_artifact', 'read_file', 'list_files', 'glob', 'grep', 'write_file', 'edit_file', 'delete_file', 'skill_draft', 'skill_activate', 'apply_patch', 'file_undo', 'terminal', 'verification_run'].includes(call.name)) return 'workspace';
   return 'none';
 }
 

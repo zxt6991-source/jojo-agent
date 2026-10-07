@@ -28,9 +28,12 @@ export type AgentRunOptions = {
   instructions?: string[];
   /** Returns tools that became available during this turn, such as lazily discovered MCP tools. */
   getTools?: (context: { contextWindowTokens: number; maxOutputTokens: number }) => Tool[];
+  toolProvenance?: import('@desktop-agent/contracts').ToolContext['mutationProvenance'];
   readToolResult?: (callId: string) => Promise<import('@desktop-agent/contracts').ToolResult | undefined>;
   searchSessionHistory?: import('@desktop-agent/contracts').ToolContext['searchSessionHistory'];
   readSessionHistoryWindow?: import('@desktop-agent/contracts').ToolContext['readSessionHistoryWindow'];
+  runVerificationChecks?: (parentCallId: string, input: { batchId: string; checkIds?: string[] }) => Promise<import('@desktop-agent/contracts').ToolResult[]>;
+  readVerificationBatch?: import('@desktop-agent/contracts').ToolContext['readVerificationBatch'];
   isVerificationCurrent?: import('@desktop-agent/contracts').ToolContext['isVerificationCurrent'];
   permissionGate: PermissionGate;
   signal: AbortSignal;

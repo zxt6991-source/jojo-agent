@@ -3,6 +3,7 @@ import {
 } from '@desktop-agent/contracts';
 import { access, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { e2eToolWorkflow } from './e2e-tool-workflows';
 
 interface Context {
   dataDirectory: string;
@@ -18,6 +19,12 @@ export function createDesktopTestProvider(ctx: Context) {
     return {
       async *stream(request) {
         const prompt = latestUserText(request);
+        const workflow = e2eToolWorkflow(request);
+        if (workflow) {
+          if (workflow.call) yield { type: 'tool_call_completed', call: workflow.call };
+          else if (workflow.text) yield { type: 'text_delta', text: workflow.text };
+          yield { type: 'response_completed', stopReason: workflow.call ? 'tool_calls' : 'stop' }; return;
+        }
         if (prompt.includes('E2E: execution recovery')) {
           const marker = path.join(ctx.dataDirectory, 'e2e-resume-allowed');
           const recovered = await access(marker).then(() => true, () => false);
@@ -37,6 +44,20 @@ export function createDesktopTestProvider(ctx: Context) {
             request.signal.addEventListener('abort', () => { clearTimeout(timer); resolve(); }, { once: true });
           });
           return;
+        }
+        if (prompt.includes('E2E: verification batch')) {
+          let start = 0;
+          request.messages.forEach((message, index) => { if (message.role === 'user' && message.content.some(block => block.type === 'text' && block.text.includes('E2E: verification batch'))) start = index; });
+          const results = request.messages.slice(start).flatMap(message => message.content.flatMap(block => block.type === 'tool_result' ? [block.result] : []));
+          const batch = results.find(result => result.verificationBatch)?.verificationBatch;
+          if (!batch) yield { type: 'tool_call_completed', call: { id: `e2e-profile-${crypto.randomUUID()}`, name: 'verification_profile', input: {} } };
+          else if (!results.some(result => result.structuredResult && typeof result.structuredResult === 'object' && 'batchId' in result.structuredResult)) {
+            yield { type: 'tool_call_completed', call: { id: `e2e-batch-${crypto.randomUUID()}`, name: 'verification_run', input: { batchId: batch.id } } };
+          } else {
+            yield { type: 'text_delta', text: 'verification batch settled' };
+            yield { type: 'response_completed', stopReason: 'stop' }; return;
+          }
+          yield { type: 'response_completed', stopReason: 'tool_calls' }; return;
         }
         const hasToolResult = request.messages.some((message) => message.content.some((block) => block.type === 'tool_result'));
         if (prompt.includes('E2E: generated artifacts') && !hasToolResult) {

@@ -1,3 +1,5 @@
+import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import path from 'node:path';
 import { PassThrough } from 'node:stream';
 import os from 'node:os';
 import { describe, expect, it } from 'vitest';
@@ -81,6 +83,36 @@ describe('process sandbox', () => {
     expect(profile).toContain('(allow file-read* file-write* (subpath "/private/tmp/seatbelt"))');
     expect(profile).not.toContain(os.homedir());
   });
+
+  it('limits ancestor exceptions to exact metadata rather than directory data or descendants', () => {
+    const profile = macOSSandboxProfile({ ...spec('/usr/bin/true', []), mounts: [{ path: '/private/var/folders/scope/T/project', mode: 'rw' }] }, '/private/var/folders/scope/T/isolated');
+    expect(profile).toContain('(allow file-read-metadata (literal "/private/var/folders"))');
+    expect(profile).toContain('(allow file-read-metadata (literal "/private/var/folders/scope/T"))');
+    expect(profile).not.toContain('(allow file-read* (subpath "/private/var/folders"))');
+    expect(profile).not.toContain('(allow file-read* (literal "/private/var/folders"))');
+  });
+
+  it.runIf(process.platform === 'darwin' && process.env.JOJO_STRONG_SANDBOX_TEST === '1')(
+    'loads a workspace script while denying parent listing and unmounted sibling contents', async () => {
+      const directory = await realpath(await mkdtemp(path.join(os.tmpdir(), 'seatbelt-entry-')));
+      const outside = path.join(path.dirname(directory), `${path.basename(directory)}-outside.txt`);
+      try {
+        await writeFile(outside, 'unmounted data');
+        const script = path.join(directory, 'entry.cjs');
+        await writeFile(script, `const fs=require('node:fs');const result={};for(const [key,fn] of [['listing',()=>fs.readdirSync(${JSON.stringify(path.dirname(directory))})],['sibling',()=>fs.readFileSync(${JSON.stringify(outside)},'utf8')]]){try{fn();result[key]='VISIBLE'}catch(error){result[key]=error.code}}process.stdout.write(JSON.stringify(result));`);
+        const processHandle = await new MacOSSandboxExecSandbox().spawn({ ...spec(process.execPath, [script]), cwd: directory, mounts: [{ path: directory, mode: 'rw' }] });
+        let output = ''; let error = '';
+        processHandle.stdout.on('data', chunk => { output += chunk.toString(); });
+        processHandle.stderr.on('data', chunk => { error += chunk.toString(); });
+        const exit = await processHandle.wait();
+        expect(exit.exitCode, error).toBe(0);
+        const result = JSON.parse(output);
+        expect(['EPERM', 'EACCES']).toContain(result.listing);
+        expect(['EPERM', 'EACCES']).toContain(result.sibling);
+        expect(await readFile(outside, 'utf8')).toBe('unmounted data');
+      } finally { await rm(directory, { recursive: true, force: true }); await rm(outside, { force: true }); }
+    }
+  );
 
   it('rejects unsupported macOS path remapping and network allowlists', () => {
     expect(() => macOSSandboxProfile({

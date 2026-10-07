@@ -1,4 +1,6 @@
-import { verificationFacts } from '@desktop-agent/contracts';
+import { runVerificationBatch } from './verification-batch.js';
+import { captureVerificationRevisions } from './verification-context.js';
+import { verificationFacts, verificationEvidence } from '@desktop-agent/contracts';
 import { resolveModelAttachments } from '@desktop-agent/attachment-access';
 import type { AgentEvent, Message, Tool, ToolCall, ToolDefinition, ToolResult } from '@desktop-agent/contracts';
 import { AgentError, errorMessage, isAbortError, throwIfAborted } from './errors.js';
@@ -177,12 +179,16 @@ function handleTurnError(
 
 export async function runAgentTurn(options: AgentRunOptions): Promise<AgentRunResult> {
   const state = createTurnState(options);
-  options = { ...options, isVerificationCurrent: async callId => verificationFacts(state.messages).some(fact => fact.outputRef === callId && fact.status === 'passed' && !fact.stale), readToolResult: async (callId) => {
+  options = { ...options, readVerificationBatch: async id => {
+    for (const message of state.messages) for (const block of message.content) if (block.type === 'tool_result' && block.result.verificationBatch?.id === id) return block.result.verificationBatch;
+    return undefined;
+  }, isVerificationCurrent: async callId => verificationFacts(state.messages, await captureVerificationRevisions(state.messages, [...state.toolsByName.values()], options)).some(fact => fact.outputRef === callId && fact.status === 'passed' && !fact.stale), readToolResult: async (callId) => {
     for (const message of state.messages) for (const block of message.content) {
       if (block.type === 'tool_result' && block.result.callId === callId) return block.result;
     }
     return undefined;
   } };
+  options = { ...options, runVerificationChecks: (parent, input) => runVerificationBatch(parent, input, options, state, message => appendMessage(options, state.messages, message)) };
   let iterationBudget = createIterationBudgetPolicy(options);
 
   options.emit({ type: 'turn.started', sessionId: options.sessionId, turnId: crypto.randomUUID() });
@@ -225,8 +231,10 @@ export async function runAgentTurn(options: AgentRunOptions): Promise<AgentRunRe
       const iterationInstruction = finalResponseOnly
         ? 'This is the mandatory tool-free final response. Do not request tools. Report completed work, concrete results, unfinished work, and the next action.'
         : iterationBudgetInstruction(iterationBudget, iteration);
-      const facts = verificationFacts(state.messages);
-      const instructions = [...(options.instructions ?? []), iterationInstruction, ...(facts.length ? [`Verification facts (stale records do not verify later changes): ${JSON.stringify(facts.slice(-20))}`] : [])];
+      const revisions = await captureVerificationRevisions(state.messages, options.tools, options);
+      if (revisions.length) await appendMessage(options, state.messages, createAssistantMessage('', [], undefined, { internal: true, verificationRevisions: revisions }));
+      const facts = verificationFacts(state.messages, revisions);
+      const instructions = [...(options.instructions ?? []), iterationInstruction, ...(facts.length ? [`Verification facts (stale records do not verify later changes): ${JSON.stringify(facts.slice(-20).map(verificationEvidence))}`] : [])];
       const budget = calculateContextBudget({
         tools: state.toolDefinitions,
         instructions,

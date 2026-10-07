@@ -1,12 +1,14 @@
 import { mkdtemp, mkdir, readFile, readdir, stat, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import {
   DefaultPermissionGate,
   DeleteFileTool,
   EditFileTool,
   FileSnapshotRegistry,
+  FileUndoTool,
   GlobTool,
   GrepTool,
   ReadFileTool,
@@ -29,7 +31,7 @@ async function runtime() {
     root,
     trash,
     snapshots,
-    gate: new DefaultPermissionGate(snapshots),
+    gate: new DefaultPermissionGate(snapshots, undefined, trash),
     read: new ReadFileTool(undefined, snapshots),
     write: new WriteFileTool(snapshots, trash),
     edit: new EditFileTool(snapshots, trash),
@@ -146,6 +148,52 @@ describe('file mutation tools', () => {
     );
 
     expect((await stat(file)).mode & 0o777).toBe(0o755);
+  });
+
+  it.each(['write_file', 'edit_file', 'delete_file'] as const)('persists %s provenance and supports reviewed undo/redo after restart', async name => {
+    const tools = await runtime();
+    const target = path.join(tools.root, 'restore.sh');
+    await writeFile(target, 'original', { mode: 0o755 });
+    await tools.read.execute({ path: 'restore.sh' }, context(tools.root));
+    const input = name === 'write_file' ? { path: 'restore.sh', content: 'updated' }
+      : name === 'edit_file' ? { path: 'restore.sh', oldText: 'original', newText: 'updated' } : { path: 'restore.sh' };
+    const call = { id: 'mutation', name, input };
+    expect((await tools.gate.check(call, context(tools.root))).decision).toBe('ask');
+    const tool = name === 'write_file' ? tools.write : name === 'edit_file' ? tools.edit : tools.remove;
+    const result = await tool.execute(input, { ...context(tools.root, true), toolCallId: call.id,
+      mutationProvenance: { runId: 'run-1', operationId: 'operation-1', actor: { kind: 'main' } } });
+    expect(result.ok).toBe(true);
+    const journalId = (result.structuredResult as { journalId: string }).journalId;
+    const filename = path.join(tools.trash, 'patch-journals', createHash('sha256').update('session-1').digest('hex'), `${journalId}.json`);
+    expect(JSON.parse(await readFile(filename, 'utf8'))).toMatchObject({ runId: 'run-1', operationId: 'operation-1', toolCallId: 'mutation', actor: { kind: 'main' }, status: 'applied' });
+    const snapshots = new FileSnapshotRegistry();
+    const gate = new DefaultPermissionGate(snapshots, undefined, tools.trash);
+    const undo = new FileUndoTool(snapshots, tools.trash);
+    for (const action of ['undo', 'redo', 'undo'] as const) {
+      const callId = `restore-${action}-${Date.now()}`;
+      const restore = { journalId, action };
+      expect((await gate.check({ id: callId, name: 'file_undo', input: restore }, context(tools.root))).decision).toBe('ask');
+      expect((await undo.execute(restore, { ...context(tools.root, true), toolCallId: callId })).ok).toBe(true);
+      if (name === 'delete_file' && action === 'redo') await expect(stat(target)).rejects.toMatchObject({ code: 'ENOENT' });
+      else {
+        expect(await readFile(target, 'utf8')).toBe(action === 'undo' ? 'original' : 'updated');
+        expect((await stat(target)).mode & 0o777).toBe(0o755);
+      }
+    }
+    await writeFile(target, 'user edit');
+    await expect(undo.execute({ journalId, action: 'redo' }, context(tools.root, true))).rejects.toMatchObject({ code: 'file_conflict' });
+    expect(await readFile(target, 'utf8')).toBe('user edit');
+  });
+
+  it('undoes and redoes a created file without requiring a prior read', async () => {
+    const tools = await runtime();
+    const created = await tools.write.execute({ path: 'new.txt', content: 'created' }, context(tools.root, true));
+    const journalId = (created.structuredResult as { journalId: string }).journalId;
+    const undo = new FileUndoTool(new FileSnapshotRegistry(), tools.trash);
+    expect((await undo.execute({ journalId }, context(tools.root, true))).ok).toBe(true);
+    await expect(stat(path.join(tools.root, 'new.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
+    expect((await undo.execute({ journalId, action: 'redo' }, context(tools.root, true))).ok).toBe(true);
+    expect(await readFile(path.join(tools.root, 'new.txt'), 'utf8')).toBe('created');
   });
 
   it('rejects ambiguous exact edits unless replaceAll is explicit', async () => {

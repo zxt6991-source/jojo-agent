@@ -2,8 +2,8 @@ import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { verificationFacts, verificationResult, type Message, type ToolContext } from '@desktop-agent/contracts';
-import { ResultReadTool, VerificationProfileTool, DefaultPermissionGate } from '../src/index.js';
+import { verificationFacts, verificationResult, AgentEventSchema, WorkspaceRevisionSchema, type Message, type ToolContext } from '@desktop-agent/contracts';
+import { ResultReadTool, VerificationProfileTool, VerificationRunTool, DefaultPermissionGate } from '../src/index.js';
 const context: ToolContext = { sessionId: 's', workingDirectory: process.cwd(), approved: true, signal: new AbortController().signal, onProgress: () => undefined };
 
 describe('verification and durable result windows', () => {
@@ -38,4 +38,14 @@ describe('verification and durable result windows', () => {
     messages.push({ id: 'edit', role: 'assistant', createdAt: new Date().toISOString(), content: [{ type: 'tool_call', call: { id: 'edit-call', name: 'edit_file', input: {} } }] }, { id: 'edited', role: 'tool', createdAt: new Date().toISOString(), content: [{ type: 'tool_result', result: { callId: 'edit-call', ok: true, content: 'written' } }] });
     expect(verificationFacts(messages)[0]?.stale).toBe(true);
   });
+});
+
+it('keeps a maximum-check batch IPC-safe without duplicating large revision scopes', async () => {
+  const timestamp = new Date().toISOString();
+  const patterns = Array.from({ length: 50 }, (_, i) => `src/${i}/${'a'.repeat(490)}*`);
+  const revision = WorkspaceRevisionSchema.parse({ id: 'a'.repeat(64), workspaceId: 'b'.repeat(64), scopeHash: 'c'.repeat(64), inputs: { mode: 'paths', include: patterns, exclude: patterns }, capturedAt: timestamp, captureStatus: 'complete', fileCount: 1, byteCount: 1 });
+  const result = await new VerificationRunTool().execute({ batchId: 'batch' }, { ...context, runVerificationChecks: async () => Array.from({ length: 20 }, (_, i) => ({ callId: `check-${i}`, ok: true, content: '', verification: { kind: 'test' as const, scope: 'src', command: 'node', args: [], cwd: '.', startedAt: timestamp, finishedAt: timestamp, exitCode: 0, status: 'passed' as const, changeId: `check-${i}`, outputRef: `check-${i}`, revisionBefore: revision, revisionAfter: revision, validity: 'current' as const } })) });
+  expect(result.content.length).toBeLessThan(20000);
+  expect(result.content).not.toContain(patterns[0]);
+  expect(AgentEventSchema.safeParse({ type: 'tool.finished', id: 'batch-run', result: { ...result, callId: 'batch-run' } }).success).toBe(true);
 });

@@ -34,3 +34,15 @@ it('rejects malformed success responses', async () => {
   const failed = expect(client.list()).rejects.toThrow('Invalid');
   client.accept({ type: 'session.metadata.result', requestId, ok: true }); await failed;
 });
+
+it('permanent closing rejects new requests while ignoring late responses', async () => {
+  vi.useFakeTimers();
+  const send = vi.fn(() => true);
+  const client = new SessionMetadataClient(send);
+  const pending = client.list();
+  const failed = expect(pending).rejects.toThrow('runtime_closing');
+  client.close(new Error('runtime_closing'), true); await failed;
+  await expect(client.list()).rejects.toThrow('runtime_closing');
+  expect(send).toHaveBeenCalledTimes(1);
+  expect(vi.getTimerCount()).toBe(0);
+});

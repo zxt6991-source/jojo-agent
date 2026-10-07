@@ -113,7 +113,7 @@ export function registerTranscriptIpc(ctx: Context): void {
   ipcMain.handle(IPC.getWorkspaceChanges, async (event, raw) => {
     ctx.assertTrusted(event); const { sessionId } = SessionIdInputSchema.parse({ sessionId: raw });
     const session = await ctx.sessionStore.get(sessionId);
-    if (!session) throw new Error('Session not found.');
+    if (!session || ctx.sessionLifecycle.state(sessionId) !== 'active') return { isGitRepository: false, files: [], additions: 0, deletions: 0, truncated: false };
     return collectWorkspaceChanges(session.workingDirectory);
   });
 

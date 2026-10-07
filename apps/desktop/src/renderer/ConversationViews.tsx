@@ -91,9 +91,10 @@ function ToolRow({ node, onInspect, onOpenHistory }: { node: ToolNode; onInspect
     warning={node.state === 'warning'}
     running={node.state === 'running'}
   >
-    {node.verificationChecks?.map(check => <p key={check.profileId}>验证 · {check.kind} · {{ passed: '通过', failed: '失败', skipped: '未运行', cancelled: '已取消' }[check.status]}{check.stale ? ' · 后续变更尚未验证' : ''} · {check.scope}</p>)}
+    {node.verificationBatch && <p>验证批次 · {{ pending: '待运行', running: '运行中', completed: '已结束', cancelled: '已取消', budget_exhausted: '预算耗尽', interrupted: '已中断' }[node.verificationBatch.status ?? 'pending']} · 截止 {node.verificationBatch.deadlineAt}</p>}
+    {node.verificationChecks?.map(check => <p key={check.profileId}>验证 · {check.kind} · {{ passed: '通过', failed: '失败', skipped: '未运行', cancelled: '已取消' }[check.status]}{check.validity === 'unknown' ? ' · 版本证据不完整' : check.stale ? ' · 后续变更尚未验证' : ''} · {check.scope}</p>)}
     {node.verification && <p className={node.verification.status === 'failed' || node.verification.stale ? 'warning' : ''}>
-      验证 · {node.verification.kind} · {{ passed: '通过', failed: '失败', skipped: '未运行', cancelled: '已取消' }[node.verification.status]}{node.verification.stale ? ' · 后续变更尚未验证' : ''} · {node.verification.scope}
+      验证 · {node.verification.kind} · {{ passed: '通过', failed: '失败', skipped: '未运行', cancelled: '已取消' }[node.verification.status]}{node.verification.validity === 'unknown' ? ' · 版本证据不完整' : node.verification.stale ? ' · 后续变更尚未验证' : ''} · {node.verification.scope}
     </p>}
     <div className="tool-io">
       {node.body && <div className="tool-io-section"><span>IN</span><pre>{node.body}</pre></div>}

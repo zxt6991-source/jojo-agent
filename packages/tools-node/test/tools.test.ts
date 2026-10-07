@@ -271,7 +271,7 @@ describe('node tools', () => {
     const second = createDefaultTools();
 
     expect(first.map((tool) => tool.definition.name)).toEqual([
-      'read_file', 'list_files', 'result_read', 'verification_profile', 'skill_draft', 'skill_activate', 'session_search', 'session_read_window', 'grep', 'glob', 'web_search', 'web_fetch', 'create_document', 'show_artifact', 'apply_patch', 'file_undo', 'write_file', 'edit_file', 'delete_file', 'terminal'
+      'read_file', 'list_files', 'result_read', 'verification_profile', 'verification_run', 'skill_draft', 'skill_activate', 'session_search', 'session_read_window', 'grep', 'glob', 'web_search', 'web_fetch', 'create_document', 'show_artifact', 'apply_patch', 'file_undo', 'write_file', 'edit_file', 'delete_file', 'terminal'
     ]);
     expect(first[0]).not.toBe(second[0]);
   });

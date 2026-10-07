@@ -1,3 +1,4 @@
+import { requestToolApproval } from './verification-context.js';
 import { verificationResult } from '@desktop-agent/contracts';
 import type { Tool, ToolCall, ToolResult } from '@desktop-agent/contracts';
 import { errorMessage, throwIfAborted } from './errors.js';
@@ -132,9 +133,9 @@ async function executeKnownTool(
 
   if (decision.decision === 'ask') {
     options.emit({ type: 'approval.required', request: decision.request });
-    const allowed = await options.approve(decision.request, options.signal);
-    if (!allowed) {
-      return failureResult(call, 'The user denied this tool call.', 'user_denied');
+    const approval = await requestToolApproval(options, decision.request);
+    if (!approval.allowed) {
+      return failureResult(call, approval.code === 'budget_exhausted' ? 'Verification budget exhausted while waiting for approval.' : 'The user denied this tool call.', approval.code ?? 'user_denied');
     }
   }
 
@@ -154,6 +155,9 @@ async function executeApprovedTool(
       ...(options.executionScope ? { executionScope: options.executionScope } : {}),
       signal: options.signal,
       approved: true,
+      ...(options.toolProvenance ? { mutationProvenance: options.toolProvenance } : {}),
+      ...(call.name === 'verification_run' && options.runVerificationChecks ? { runVerificationChecks: (input: { batchId: string; checkIds?: string[] }) => options.runVerificationChecks!(call.id, input) } : {}),
+      ...(options.readVerificationBatch ? { readVerificationBatch: options.readVerificationBatch } : {}),
       ...(options.isVerificationCurrent ? { isVerificationCurrent: options.isVerificationCurrent } : {}),
       ...(options.readToolResult ? { readToolResult: options.readToolResult } : {}),
       ...(options.searchSessionHistory ? { searchSessionHistory: options.searchSessionHistory } : {}),

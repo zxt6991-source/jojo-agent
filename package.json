@@ -20,7 +20,10 @@
     "test:conformance": "vitest run packages/runtime-composition/test/cross-host-conformance.test.ts packages/server-protocol/test/operation-conformance.test.ts",
     "test:release": "node --test scripts/release/release.test.mjs",
     "release:verify": "node scripts/release/artifacts.mjs verify",
-    "release:snapshot": "node scripts/release/snapshot.mjs"
+    "release:snapshot": "node scripts/release/snapshot.mjs",
+    "test:bindings": "node --test scripts/check-application-bindings.test.mjs && node scripts/check-application-bindings.mjs",
+    "eval:offline": "node scripts/run-agent-task-evals.mjs",
+    "test:evals": "node --test scripts/evaluate-agent-tasks.test.mjs scripts/run-agent-task-evals.test.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",

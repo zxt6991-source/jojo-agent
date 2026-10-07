@@ -1,8 +1,10 @@
-import type { SecretBroker, SecretLease, Tool, ToolContext, ToolResult } from '@desktop-agent/contracts';
+import { verificationValidity } from '@desktop-agent/contracts';
+import type { SecretBroker, SecretLease, Tool, ToolContext, ToolResult, WorkspaceRevision } from '@desktop-agent/contracts';
 import {
   createProcessSandbox, createSandboxEnvironment, defaultSecretRedactorFactory, redactSecrets,
   type ProcessSandbox, type SandboxProcess, type SecretRedactorFactory, type StreamingSecretRedactor
 } from '@desktop-agent/process-sandbox';
+import { WorkspaceRevisionService } from './workspace-revision.js';
 import { TerminalInput } from './inputs.js';
 import { DefaultTerminalSecurityPolicy, type TerminalSecurityPolicy } from './terminal-security-policy.js';
 import { toolResult } from './tool-result.js';
@@ -28,6 +30,7 @@ export type TerminalToolOptions = {
 export class TerminalTool implements Tool {
   readonly replay = 'never' as const;
   readonly risk = 'external_side_effect' as const;
+  readonly captureWorkspaceRevision = new WorkspaceRevisionService().capture;
   readonly definition = {
     name: 'terminal',
     description: 'Run one non-interactive executable with an argument array inside the configured process sandbox. command must be only the executable name or path. stdin is unavailable, host credentials are not inherited, and HOME and temporary storage are isolated. network defaults to none; set network=host only when the task requires unrestricted outbound access. To use a named credential required by a Skill or CLI, list only its environment variable name in secretEnv; the Desktop Secret Broker injects the value after approval, so never read shell startup files or place secret values in arguments. This tool always requires user approval.',
@@ -39,7 +42,7 @@ export class TerminalTool implements Tool {
         cwd: { type: 'string', default: '.' },
         network: { type: 'string', enum: ['none', 'host'], default: 'none', description: 'Use host only when unrestricted outbound network access is required.' },
         secretEnv: { type: 'array', items: { type: 'string', pattern: '^[A-Za-z_][A-Za-z0-9_]*$' }, maxItems: 20, default: [], description: 'Names of secrets to inject after approval. Never include secret values.' },
-        verification: { type: 'object', properties: { kind: { type: 'string', enum: ['lint', 'typecheck', 'test'] }, scope: { type: 'string' }, profileId: { type: 'string' } }, required: ['kind', 'scope'], additionalProperties: false },
+        verification: { type: 'object', properties: { kind: { type: 'string', enum: ['lint', 'typecheck', 'test'] }, scope: { type: 'string' }, profileId: { type: 'string' }, batchId: { type: 'string' } }, required: ['kind', 'scope'], additionalProperties: false },
         timeoutMs: { type: 'integer', minimum: 1000, maximum: 300000, default: 120000 }
       },
       required: ['command'],
@@ -65,14 +68,26 @@ export class TerminalTool implements Tool {
   async execute(input: unknown, context: ToolContext): Promise<ToolResult> {
     const parsed = TerminalInput.parse(input);
     const startedAt = new Date().toISOString();
-    const finish = (result: ToolResult): ToolResult => parsed.verification ? { ...result, verification: {
+    let before: WorkspaceRevision | undefined;
+    const batch = parsed.verification?.batchId ? await context.readVerificationBatch?.(parsed.verification.batchId) : undefined;
+    const check = batch?.profile.commands.find(value => value.id === parsed.verification?.profileId);
+    if (parsed.verification?.batchId && (!batch || !check || check.command !== parsed.command || check.cwd !== parsed.cwd || check.kind !== parsed.verification.kind || check.scope !== parsed.verification.scope || JSON.stringify(check.args) !== JSON.stringify(parsed.args))) return { callId: '', ok: false, code: 'verification_batch_invalid', content: 'Verification command does not match a batch in this session branch.' };
+    const deadline = batch ? Date.parse(batch.deadlineAt) : undefined;
+    if (deadline !== undefined && deadline <= Date.now()) return { callId: '', ok: false, code: 'budget_exhausted', content: 'Verification batch deadline elapsed; start a new batch explicitly.' };
+    const finish = async (result: ToolResult): Promise<ToolResult> => {
+      const after = before && !context.signal.aborted ? await this.captureWorkspaceRevision({ workingDirectory: context.workingDirectory, inputs: before.inputs, signal: context.signal }) : undefined;
+      return parsed.verification ? { ...result, verification: {
       ...parsed.verification, command: parsed.command, args: parsed.args, cwd: parsed.cwd,
       startedAt, finishedAt: new Date().toISOString(), exitCode: null, changeId: 'pending',
-      status: result.code === 'cancelled' ? 'cancelled' : result.code === 'permission_denied' ? 'skipped' : result.ok ? 'passed' : 'failed',
+      status: result.code === 'cancelled' ? 'cancelled' : ['permission_denied', 'budget_exhausted'].includes(result.code ?? '') ? 'skipped' : result.ok ? 'passed' : 'failed',
       ...(typeof (result.structuredResult as { exitCode?: unknown } | undefined)?.exitCode === 'number'
         ? { exitCode: (result.structuredResult as { exitCode: number }).exitCode } : {}),
-      ...(result.code ? { reason: result.code } : {})
+      ...(result.code ? { reason: result.code } : {}),
+      ...(before ? { revisionBefore: before } : {}),
+      ...(after ? { revisionAfter: after } : {}),
+      ...(before ? { validity: verificationValidity({ ...parsed.verification, command: parsed.command, args: parsed.args, cwd: parsed.cwd, startedAt, finishedAt: new Date().toISOString(), exitCode: null, status: 'skipped', changeId: 'pending', revisionBefore: before, ...(after ? { revisionAfter: after } : {}) }, after) } : {})
     } } : result;
+    };
     if (!context.approved) return finish(toolResult(false, 'Terminal execution requires approval.', { code: 'permission_denied' }));
     try {
       const plan = await this.policy.plan(parsed, {
@@ -81,21 +96,27 @@ export class TerminalTool implements Tool {
       });
       const leases = await this.resolveSecrets(parsed.secretEnv, context);
       try {
+        if (parsed.verification) before = await this.captureWorkspaceRevision({ workingDirectory: context.workingDirectory, ...(batch ? { inputs: batch.revision.inputs } : {}), signal: context.signal });
+        if (deadline !== undefined && deadline <= Date.now()) return finish(toolResult(false, 'Verification budget exhausted before process start.', { code: 'budget_exhausted' }));
+        const timeoutMs = Math.min(plan.sandbox.resources.timeoutMs, check?.timeoutMs ?? Infinity, deadline !== undefined ? deadline - Date.now() : Infinity);
         const knownSecrets = leases.map((lease) => lease.value);
         const sandboxed = await this.sandbox.spawn({
           ...plan.sandbox,
+          resources: { ...plan.sandbox.resources, timeoutMs },
           env: {
             ...plan.sandbox.env,
             ...Object.fromEntries(parsed.secretEnv.map((name, index) => [name, leases[index]!.value]))
           }
         });
-        return finish(await this.collect(
+        const collected = await this.collect(
           sandboxed,
-          plan.sandbox.resources.timeoutMs,
+          timeoutMs,
           plan.sandbox.resources.maxOutputBytes,
           context,
           knownSecrets
-        ));
+        );
+        return finish(collected.code === 'timeout' && deadline !== undefined && Date.now() >= deadline
+          ? { ...collected, code: 'budget_exhausted', content: `${collected.content}\nVerification batch deadline elapsed.` } : collected);
       } finally {
         leases.forEach((lease) => lease.dispose());
       }

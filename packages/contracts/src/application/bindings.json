@@ -1,0 +1,316 @@
+{
+  "schemaVersion": 1,
+  "bindings": {
+    "session.search": {
+      "core": "searchSessionHistory",
+      "http": {
+        "method": "get",
+        "path": "/api/v1/sessions/:sessionId/search"
+      },
+      "sdk": "JojoClient.searchSessionHistory",
+      "ws": {
+        "command": "session.search"
+      },
+      "ipc": {
+        "reason": "Desktop 使用本地 Host DTO 与 IPC 管线；尚无该中立 Operation 的一对一绑定。"
+      }
+    },
+    "session.read-window": {
+      "core": "readSessionHistoryWindow",
+      "http": {
+        "method": "get",
+        "path": "/api/v1/sessions/:sessionId/read-window"
+      },
+      "sdk": "JojoClient.readSessionHistoryWindow",
+      "ws": {
+        "command": "session.read-window"
+      },
+      "ipc": {
+        "reason": "Desktop 使用本地 Host DTO 与 IPC 管线；尚无该中立 Operation 的一对一绑定。"
+      }
+    },
+    "session.list": {
+      "core": "listSessions",
+      "http": {
+        "method": "get",
+        "path": "/api/v1/sessions"
+      },
+      "sdk": "JojoClient.listSessions",
+      "ws": {
+        "command": "session.list"
+      },
+      "ipc": {
+        "reason": "Desktop 使用本地 Host DTO 与 IPC 管线；尚无该中立 Operation 的一对一绑定。"
+      }
+    },
+    "session.create": {
+      "core": "createSession",
+      "http": {
+        "method": "post",
+        "path": "/api/v1/sessions"
+      },
+      "sdk": "JojoClient.createSession",
+      "ws": {
+        "command": "session.create"
+      },
+      "ipc": {
+        "reason": "Desktop 使用本地 Host DTO 与 IPC 管线；尚无该中立 Operation 的一对一绑定。"
+      }
+    },
+    "session.patch": {
+      "core": "patchSession",
+      "http": {
+        "method": "patch",
+        "path": "/api/v1/sessions/:sessionId"
+      },
+      "sdk": "JojoSession.patch",
+      "ws": {
+        "command": "session.patch"
+      },
+      "ipc": {
+        "reason": "Desktop 使用本地 Host DTO 与 IPC 管线；尚无该中立 Operation 的一对一绑定。"
+      }
+    },
+    "session.get": {
+      "core": "getSession",
+      "http": {
+        "method": "get",
+        "path": "/api/v1/sessions/:sessionId"
+      },
+      "sdk": "JojoSession.snapshot",
+      "ws": {
+        "command": "session.snapshot"
+      },
+      "ipc": {
+        "reason": "Desktop 使用本地 Host DTO 与 IPC 管线；尚无该中立 Operation 的一对一绑定。"
+      }
+    },
+    "transcript.get": {
+      "core": "transcript",
+      "http": {
+        "method": "get",
+        "path": "/api/v1/sessions/:sessionId/transcript"
+      },
+      "sdk": "JojoSession.transcript",
+      "ws": {
+        "reason": "此操作使用 HTTP；当前 WS command 合同没有对应命令。"
+      },
+      "ipc": {
+        "reason": "Desktop 使用本地 Host DTO 与 IPC 管线；尚无该中立 Operation 的一对一绑定。"
+      }
+    },
+    "run.start": {
+      "core": "startRun",
+      "http": {
+        "method": "post",
+        "path": "/api/v1/sessions/:sessionId/runs"
+      },
+      "sdk": "JojoSession.run",
+      "ws": {
+        "command": "run.start"
+      },
+      "ipc": {
+        "reason": "Desktop 使用本地 Host DTO 与 IPC 管线；尚无该中立 Operation 的一对一绑定。"
+      }
+    },
+    "run.get": {
+      "core": "getRun",
+      "http": {
+        "method": "get",
+        "path": "/api/v1/sessions/:sessionId/runs/:runId"
+      },
+      "sdk": "JojoRun.snapshot",
+      "ws": {
+        "command": "run.get"
+      },
+      "ipc": {
+        "reason": "Desktop 使用本地 Host DTO 与 IPC 管线；尚无该中立 Operation 的一对一绑定。"
+      }
+    },
+    "approval.list": {
+      "core": "getSession",
+      "http": {
+        "method": "get",
+        "path": "/api/v1/sessions/:sessionId/approvals"
+      },
+      "sdk": "JojoSession.snapshot",
+      "ws": {
+        "reason": "此操作使用 HTTP；当前 WS command 合同没有对应命令。"
+      },
+      "ipc": {
+        "reason": "Desktop 使用本地 Host DTO 与 IPC 管线；尚无该中立 Operation 的一对一绑定。"
+      },
+      "note": "HTTP 从已授权 Session snapshot 提取 pendingApprovals；SDK 通过 snapshot 聚合访问。"
+    },
+    "approval.resolve": {
+      "core": "resolveApproval",
+      "http": {
+        "method": "post",
+        "path": "/api/v1/approvals/:approvalId/resolve"
+      },
+      "sdk": "JojoClient.resolveApproval",
+      "ws": {
+        "command": "approval.resolve"
+      },
+      "ipc": {
+        "reason": "Desktop 使用本地 Host DTO 与 IPC 管线；尚无该中立 Operation 的一对一绑定。"
+      }
+    },
+    "schedule.create": {
+      "core": "createSchedule",
+      "http": {
+        "method": "post",
+        "path": "/api/v1/schedules"
+      },
+      "sdk": "JojoClient.createSchedule",
+      "ws": {
+        "reason": "此操作使用 HTTP；当前 WS command 合同没有对应命令。"
+      },
+      "ipc": {
+        "reason": "Desktop 使用本地 Host DTO 与 IPC 管线；尚无该中立 Operation 的一对一绑定。"
+      }
+    },
+    "schedule.update": {
+      "core": "updateSchedule",
+      "http": {
+        "method": "patch",
+        "path": "/api/v1/schedules/:scheduleId"
+      },
+      "sdk": "JojoClient.updateSchedule",
+      "ws": {
+        "reason": "此操作使用 HTTP；当前 WS command 合同没有对应命令。"
+      },
+      "ipc": {
+        "reason": "Desktop 使用本地 Host DTO 与 IPC 管线；尚无该中立 Operation 的一对一绑定。"
+      }
+    },
+    "schedule.run-now": {
+      "core": "runScheduleNow",
+      "http": {
+        "method": "post",
+        "path": "/api/v1/schedules/:scheduleId/run"
+      },
+      "sdk": "JojoClient.runScheduleNow",
+      "ws": {
+        "reason": "此操作使用 HTTP；当前 WS command 合同没有对应命令。"
+      },
+      "ipc": {
+        "reason": "Desktop 使用本地 Host DTO 与 IPC 管线；尚无该中立 Operation 的一对一绑定。"
+      }
+    },
+    "channel.instance.create": {
+      "core": "createChannelInstance",
+      "http": {
+        "method": "post",
+        "path": "/api/v1/channels"
+      },
+      "sdk": "JojoClient.createChannelInstance",
+      "ws": {
+        "reason": "此操作使用 HTTP；当前 WS command 合同没有对应命令。"
+      },
+      "ipc": {
+        "reason": "Desktop 使用本地 Host DTO 与 IPC 管线；尚无该中立 Operation 的一对一绑定。"
+      }
+    },
+    "channel.instance.update": {
+      "core": "updateChannelInstance",
+      "http": {
+        "method": "patch",
+        "path": "/api/v1/channels/:instanceId"
+      },
+      "sdk": "JojoClient.updateChannelInstance",
+      "ws": {
+        "reason": "此操作使用 HTTP；当前 WS command 合同没有对应命令。"
+      },
+      "ipc": {
+        "reason": "Desktop 使用本地 Host DTO 与 IPC 管线；尚无该中立 Operation 的一对一绑定。"
+      }
+    },
+    "channel.binding.create": {
+      "core": "createChannelBinding",
+      "http": {
+        "method": "post",
+        "path": "/api/v1/channel-bindings"
+      },
+      "sdk": "JojoClient.createChannelBinding",
+      "ws": {
+        "reason": "此操作使用 HTTP；当前 WS command 合同没有对应命令。"
+      },
+      "ipc": {
+        "reason": "Desktop 使用本地 Host DTO 与 IPC 管线；尚无该中立 Operation 的一对一绑定。"
+      }
+    },
+    "channel.binding.update": {
+      "core": "updateChannelBinding",
+      "http": {
+        "method": "patch",
+        "path": "/api/v1/channel-bindings/:bindingId"
+      },
+      "sdk": "JojoClient.updateChannelBinding",
+      "ws": {
+        "reason": "此操作使用 HTTP；当前 WS command 合同没有对应命令。"
+      },
+      "ipc": {
+        "reason": "Desktop 使用本地 Host DTO 与 IPC 管线；尚无该中立 Operation 的一对一绑定。"
+      }
+    },
+    "channel.pairing.approve": {
+      "core": "approveChannelPairing",
+      "http": {
+        "method": "post",
+        "path": "/api/v1/channel-pairings/:pairingId/approve"
+      },
+      "sdk": "JojoClient.approveChannelPairing",
+      "ws": {
+        "reason": "此操作使用 HTTP；当前 WS command 合同没有对应命令。"
+      },
+      "ipc": {
+        "reason": "Desktop 使用本地 Host DTO 与 IPC 管线；尚无该中立 Operation 的一对一绑定。"
+      }
+    },
+    "channel.test": {
+      "core": "testChannel",
+      "http": {
+        "method": "post",
+        "path": "/api/v1/channels/:instanceId/test"
+      },
+      "sdk": "JojoClient.testChannel",
+      "ws": {
+        "reason": "此操作使用 HTTP；当前 WS command 合同没有对应命令。"
+      },
+      "ipc": {
+        "reason": "Desktop 使用本地 Host DTO 与 IPC 管线；尚无该中立 Operation 的一对一绑定。"
+      }
+    },
+    "schedule.save": {
+      "core": null,
+      "http": {
+        "reason": "Desktop 专用保存/启停操作；Server 使用 create/update 合同。"
+      },
+      "sdk": null,
+      "ws": {
+        "reason": "Desktop 专用 IPC 操作，未发布 WS 命令。"
+      },
+      "ipc": {
+        "handler": "saveSchedule",
+        "file": "apps/desktop/src/main/ipc/scheduler-ipc.ts"
+      },
+      "note": "Server Core / SDK 未实现此本地合同。"
+    },
+    "schedule.enabled": {
+      "core": null,
+      "http": {
+        "reason": "Desktop 专用保存/启停操作；Server 使用 create/update 合同。"
+      },
+      "sdk": null,
+      "ws": {
+        "reason": "Desktop 专用 IPC 操作，未发布 WS 命令。"
+      },
+      "ipc": {
+        "handler": "setScheduleEnabled",
+        "file": "apps/desktop/src/main/ipc/scheduler-ipc.ts"
+      },
+      "note": "Server Core / SDK 未实现此本地合同。"
+    }
+  }
+}

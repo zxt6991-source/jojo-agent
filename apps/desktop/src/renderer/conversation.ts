@@ -1,4 +1,4 @@
-import { SessionSearchHitSchema } from '@desktop-agent/contracts';
+import { verificationFacts, verificationBatchFacts, verificationValidity, SessionSearchHitSchema } from '@desktop-agent/contracts';
 import type { AgentEvent, ImageContentBlock, Message, SessionCompactionRecord, ToolCall, ToolResult } from '@desktop-agent/contracts';
 
 export type ConversationViewMode = 'chat' | 'trajectory';
@@ -42,6 +42,7 @@ export type ToolNode = {
   images: Extract<NonNullable<ToolResult['contentBlocks']>[number], { type: 'image' }>[];
   artifacts?: import('@desktop-agent/contracts').ArtifactDescriptor[];
   verification?: import('@desktop-agent/contracts').VerificationRecord & { stale?: boolean };
+  verificationBatch?: import('@desktop-agent/contracts').VerificationBatch & { status?: import('@desktop-agent/contracts').VerificationBatchStatus };
   verificationChecks?: (import('@desktop-agent/contracts').VerificationRecord & { stale?: boolean })[];
   historyHits?: import('@desktop-agent/contracts').SessionSearchHit[];
   state: ToolRowState;
@@ -297,6 +298,7 @@ export function createToolNode(options: {
   const hits = options.name === 'session_search' ? SessionSearchHitSchema.array().max(20).safeParse((options.result?.structuredResult as { hits?: unknown } | undefined)?.hits) : undefined;
   return {
     kind: 'tool',
+    ...(options.result?.verificationBatch ? { verificationBatch: options.result.verificationBatch } : {}),
     ...(options.result?.verificationChecks ? { verificationChecks: options.result.verificationChecks } : {}),
     ...(options.result?.verification ? { verification: options.result.verification } : {}),
     ...(hits?.success ? { historyHits: hits.data } : {}),
@@ -534,11 +536,21 @@ export function buildConversationSnapshot(input: ConversationSnapshotInput): Con
     if (node.kind !== 'tool') continue;
     if (node.name === 'terminal' || (node.state === 'ok' && ['write_file', 'edit_file', 'delete_file', 'skill_activate', 'apply_patch', 'file_undo'].includes(node.name))) latestChange = node.callId;
   }
-  for (const node of nodes) if (node.kind === 'tool' && node.verification) node.verification = { ...node.verification, stale: latestChange !== node.verification.changeId };
+  const batches = verificationBatchFacts(input.messages, input.running ? nodes.flatMap(node => node.kind === 'tool' && node.name === 'verification_run' && node.state === 'running' ? [node.callId] : []) : []);
+  for (const node of nodes) if (node.kind === 'tool' && node.verificationBatch) node.verificationBatch = batches.find(batch => batch.id === node.verificationBatch?.id) ?? node.verificationBatch;
+  const facts = verificationFacts(input.messages);
+  for (const node of nodes) if (node.kind === 'tool' && node.verification) {
+    const fact = facts.find(value => value.outputRef === node.callId);
+    if (node.verification.revisionBefore) {
+      // Live results use their fresh after capture until durable observations arrive.
+      const validity = fact?.validity ?? verificationValidity(node.verification, node.verification.revisionAfter);
+      node.verification = { ...node.verification, validity, stale: validity !== 'current' };
+    } else node.verification = { ...node.verification, stale: latestChange !== node.verification.changeId };
+  }
   for (const [index, node] of nodes.entries()) {
     if (node.kind !== 'tool' || !node.verificationChecks) continue;
     node.verificationChecks = node.verificationChecks.map(check => {
-      const executed = nodes.slice(index + 1).filter(item => item.kind === 'tool' && item.verification && item.verification.profileId === check.profileId && item.verification.command === check.command && JSON.stringify(item.verification.args) === JSON.stringify(check.args)).at(-1);
+      const executed = nodes.slice(index + 1).filter(item => item.kind === 'tool' && item.verification && item.verification.batchId === check.batchId && item.verification.profileId === check.profileId && item.verification.command === check.command && JSON.stringify(item.verification.args) === JSON.stringify(check.args)).at(-1);
       return executed?.kind === 'tool' && executed.verification ? executed.verification : check;
     });
   }

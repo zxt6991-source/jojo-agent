@@ -1,3 +1,4 @@
+import { runVerificationBatch, captureVerificationRevisions, requestToolApproval } from '@desktop-agent/agent';
 import { DEFAULT_CONTEXT_WINDOW_TOKENS, DEFAULT_MAX_OUTPUT_TOKENS, normalizeExecutionBudget, validateOperationExecution, validateExecutionWorkspace, parseExecutionSnapshot, executionFingerprint, executionError } from '../operation/execution-snapshot.js';
 import type { OperationExecutionSnapshotV1, RuntimeProviderBinding } from '../public/execution.js';
 import { resolveModelAttachments } from '@desktop-agent/attachment-access';
@@ -5,6 +6,7 @@ import { createHash } from 'node:crypto';
 import {
   NoopHookRuntime,
   verificationFacts,
+  verificationEvidence,
   verificationResult,
   type AgentEvent,
   type HookEnvelope,
@@ -50,6 +52,7 @@ import {
   evaluateLoopGuards,
   extendIterationBudget,
   executeApprovedToolCall,
+  executeToolCall,
   fingerprintToolBatch,
   isAbortError,
   iterationBudgetInstruction,
@@ -555,6 +558,7 @@ async function executeAgentTurn(options: RuntimeAgentRunOptions, resuming: boole
   const hooks = options.hooks ?? NoopHookRuntime.instance;
   const memory = options.memoryRuntime ?? NoopMemoryRuntime.instance;
   const operationId = options.operationId ?? crypto.randomUUID();
+  options = { ...options, toolProvenance: { runId: operationId, operationId, actor: options.execution?.actor ?? { kind: 'main' } } };
   const sessionExisted = Boolean(await runtimeStore.getSession(options.sessionId));
   let laneName = options.lane ?? 'main';
   let safety = options.loopSafety ?? DEFAULT_AGENT_LOOP_SAFETY;
@@ -726,11 +730,22 @@ async function executeAgentTurn(options: RuntimeAgentRunOptions, resuming: boole
       return session.id === options.sessionId || (scope && typeof scope === 'object' && !Array.isArray(scope) && 'workingDirectory' in scope && scope.workingDirectory === project);
     }).map(session => session.id);
   };
+  const branchMessages = async () => {
+    const lane = await runtimeStore.getLane(options.sessionId, laneName);
+    const entries = await runtimeStore.readPath(lane?.leafId ?? null);
+    return entries.flatMap(entry => entry.sessionId === options.sessionId && entry.type === 'message' ? [entry.message] : []);
+  };
   options = { ...options,
+    readVerificationBatch: async id => {
+      for (const message of await branchMessages()) for (const block of message.content) if (block.type === 'tool_result' && block.result.verificationBatch?.id === id) return block.result.verificationBatch;
+      return undefined;
+    },
     isVerificationCurrent: async callId => {
       const lane = await runtimeStore.getLane(options.sessionId, laneName);
       const path = await runtimeStore.readPath(lane?.leafId ?? null);
-      return verificationFacts(path.flatMap(entry => entry.type === 'message' ? [entry.message] : [])).some(fact => fact.outputRef === callId && fact.status === 'passed' && !fact.stale);
+      const messages = path.flatMap(entry => entry.type === 'message' ? [entry.message] : []);
+      const revisions = await captureVerificationRevisions(messages, [...data.toolsByName.values()], options);
+      return verificationFacts(messages, revisions).some(fact => fact.outputRef === callId && fact.status === 'passed' && !fact.stale);
     },
     searchSessionHistory: async query => runtimeStore.searchMessages ? runtimeStore.searchMessages(query, await allowedHistorySessions()) : [],
     readSessionHistoryWindow: async query => {
@@ -748,6 +763,31 @@ async function executeAgentTurn(options: RuntimeAgentRunOptions, resuming: boole
     return undefined;
   } };
   const data = createRunnerData(options);
+  options = { ...options, runVerificationChecks: (parent, input) => runVerificationBatch(parent, input, { ...options, loopBudget }, data,
+    message => appendDurableMessage(options, data, runtimeStore, state, message), {
+      execute: async (call, childOptions) => {
+        const decision = hooks.configured('PreToolUse') ? await safePreToolUse(hooks, {
+          ...hookEnvelope(options, state, 'PreToolUse'), event: 'PreToolUse', toolCallId: call.id, toolName: call.name, toolInput: call.input
+        }) : { decision: 'neutral' as const };
+        if (decision.decision === 'block') {
+          const result = verificationResult(call, { callId: call.id, ok: false, code: 'hook_blocked', content: decision.reason });
+          options.emit({ type: 'tool.finished', id: call.id, result });
+          return result;
+        }
+        return executeToolCall(call, data, { ...childOptions, permissionGate: {
+          check: async (requested, context) => {
+            const permission = await childOptions.permissionGate.check(requested, context);
+            return permission.decision === 'ask' && decision.decision === 'approve' && decision.canSkipApproval
+              ? { decision: 'allow' as const } : permission;
+          }
+        } });
+      },
+      after: async (call, result) => {
+        if (hooks.configured('PostToolUse')) await injectHookContextIfNeeded(options, runtimeStore, state, hooks, 'PostToolUse', {
+          ...hookEnvelope(options, state, 'PostToolUse'), event: 'PostToolUse', toolCallId: call.id, toolName: call.name, toolInput: call.input, toolResult: result
+        }, call.id);
+      }
+    }) };
   if (resuming && state.phase === 'tools' && state.calls.some(call => call.status !== 'completed' && !data.toolsByName.has(call.toolName))) {
     executionError('runtime_resume_environment_unavailable', 'tools');
   }
@@ -1052,8 +1092,11 @@ async function executeAgentTurn(options: RuntimeAgentRunOptions, resuming: boole
             'Memory save nudge: if this turn established a durable user preference, project constraint, design decision, or verified lesson that is not already recoverable from project files, consider proposing memory_write. Never save secrets, transient output, or unverified guesses, and never write without user approval.'
           );
         }
-        const facts = verificationFacts(durablePath.flatMap(entry => entry.type === 'message' ? [entry.message] : []));
-        if (facts.length) ambientInstructions.push(`Verification facts (durable execution evidence; stale results do not verify later changes): ${JSON.stringify(facts.slice(-20))}`);
+        const verificationMessages = durablePath.flatMap(entry => entry.type === 'message' ? [entry.message] : []);
+        const revisions = await captureVerificationRevisions(verificationMessages, [...data.toolsByName.values()], options);
+        if (revisions.length) await appendDurableMessage(options, data, runtimeStore, state, createAssistantMessage('', [], undefined, { internal: true, verificationRevisions: revisions }));
+        const facts = verificationFacts(verificationMessages, revisions);
+        if (facts.length) ambientInstructions.push(`Verification facts (durable execution evidence; stale results do not verify later changes): ${JSON.stringify(facts.slice(-20).map(verificationEvidence))}`);
         const requestInstructions = [...ambientInstructions, ...(options.instructions ?? [])];
         requestInstructions.push(finalResponseOnly
           ? 'This is the mandatory tool-free final response. Do not request tools. Report completed work, concrete results, unfinished work, and the next action.'
@@ -1475,15 +1518,15 @@ async function executeAgentTurn(options: RuntimeAgentRunOptions, resuming: boole
         const request = state.calls[state.currentIndex]!.approvalRequest;
         if (!request) throw new AgentError('operation_corrupted', `Approval request missing for ${call.id}.`);
         options.emit({ type: 'approval.required', request });
-        const approved = await options.approve(request, options.signal);
-        if (approved) {
+        const approval = await requestToolApproval(options, request);
+        if (approval.allowed) {
           state = await transition(resolveToolPermission(state, call.id, 'approved', request));
         } else {
           const result: ToolResult = {
             callId: call.id,
             ok: false,
-            code: 'user_denied',
-            content: 'The user denied this tool call.'
+            code: approval.code ?? 'user_denied',
+            content: approval.code === 'budget_exhausted' ? 'Verification budget exhausted while waiting for approval.' : 'The user denied this tool call.'
           };
           await appendDurableMessage(
             options, data, runtimeStore, state, createToolMessage(result, callState.resultEntryId)
@@ -1510,7 +1553,7 @@ async function executeAgentTurn(options: RuntimeAgentRunOptions, resuming: boole
           let allowed = decision.decision === 'allow';
           if (decision.decision === 'ask') {
             options.emit({ type: 'approval.required', request: decision.request });
-            allowed = await options.approve(decision.request, options.signal);
+            allowed = (await requestToolApproval(options, decision.request)).allowed;
           }
           if (!allowed) recoveryDenied = { callId: call.id, ok: false, code: 'permission_denied', content: 'Current permissions do not allow replaying this tool.' };
         }

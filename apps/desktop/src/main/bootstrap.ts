@@ -177,6 +177,7 @@ export function startDesktopHost(): void {
       protocolViolation('main_to_worker', command, parsed.error.issues);
       throw new Error('Main produced an invalid worker command.');
     }
+    if (quitting) throw Object.assign(new Error('runtime_closing'), { code: 'runtime_closing' });
     if (!worker) return false;
     worker.postMessage(parsed.data);
     return true;
@@ -686,7 +687,7 @@ export function startDesktopHost(): void {
       else if (message.type === 'channel.result') finishChannelRequest(message);
     });
     worker.on('exit', (code) => {
-      sessionStore.close(new Error(`Agent runtime exited (${code}).`));
+      sessionStore.close(new Error(quitting ? 'runtime_closing' : `Agent runtime exited (${code}).`), quitting);
       for (const requestId of workerRequests.keys()) {
         finishWorkerRequest(requestId, new Error(`Agent runtime exited (${code}).`));
       }
@@ -714,7 +715,7 @@ export function startDesktopHost(): void {
       for (const controller of browserRequestControllers.values()) controller.abort(new Error(`Agent runtime exited (${code}).`));
       browserRequestControllers.clear();
       terminalSecretRequests.clear();
-      sendToRenderer(IPC.agentEvent, { type: 'turn.failed', code: 'worker_exit', message: `Agent runtime exited (${code}).` });
+      if (!quitting) sendToRenderer(IPC.agentEvent, { type: 'turn.failed', code: 'worker_exit', message: `Agent runtime exited (${code}).` });
       worker = null;
       if (!quitting) setTimeout(startWorker, 1_000);
     });
@@ -839,7 +840,8 @@ export function startDesktopHost(): void {
     app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
     app.on('before-quit', () => {
       quitting = true;
-      sessionStore.close(new Error('Application is closing.'));
+      sessionStore.close(Object.assign(new Error('runtime_closing'), { code: 'runtime_closing' }), true);
+      for (const requestId of workerRequests.keys()) finishWorkerRequest(requestId, new Error('runtime_closing'));
       for (const requestId of oauthRequests.keys()) finishMcpOAuth(requestId, new Error('Application is closing.'));
       for (const pending of browserSecretPrompts.values()) pending.resolve(undefined);
       browserSecretPrompts.clear();

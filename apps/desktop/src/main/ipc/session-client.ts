@@ -3,9 +3,11 @@ import { SessionMetadataResultSchema, type SessionMetadataOperation, type Sessio
 
 /** Request ownership stays in Main; all metadata operations execute in Worker. */
 export class SessionMetadataClient {
+  private closing = false;
   private readonly pending = new Map<string, { resolve(result: SessionMetadataResult): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> }>();
   constructor(private readonly send: (command: WorkerCommand) => boolean, private readonly timeoutMs = 30_000) { }
   request(operation: SessionMetadataOperation): Promise<SessionMetadataResult> {
+    if (this.closing) return Promise.reject(Object.assign(new Error('runtime_closing'), { code: 'runtime_closing' }));
     const requestId = crypto.randomUUID();
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => { this.pending.delete(requestId); reject(new Error('Session metadata request timed out.')); }, this.timeoutMs);
@@ -23,7 +25,8 @@ export class SessionMetadataClient {
     if (!pending) return;
     this.pending.delete(message.requestId); clearTimeout(pending.timer); pending.resolve(result.data);
   }
-  close(error = new Error('Agent runtime exited.')): void {
+  close(error = new Error('Agent runtime exited.'), permanently = false): void {
+    this.closing ||= permanently;
     for (const id of this.pending.keys()) this.finish(id, error);
   }
   async get(sessionId: string) {

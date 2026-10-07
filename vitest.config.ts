@@ -48,5 +48,5 @@ export default defineConfig({
       ,'@desktop-agent/scheduler': path.resolve('packages/scheduler/src/index.ts')
     }
   },
-  test: { environment: 'node', include: ['packages/**/test/**/*.test.ts', 'apps/**/src/**/*.test.ts'] }
+  test: { environment: 'node', include: ['packages/**/test/**/*.test.ts', 'apps/**/src/**/*.test.ts', 'evals/**/*.test.ts'] }
 });

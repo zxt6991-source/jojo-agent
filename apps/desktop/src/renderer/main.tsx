@@ -314,6 +314,11 @@ function App() {
   const sessionDirectoriesRef = useRef(new Map<string, string>());
   const [activeId, setActiveId] = useState<string | null>(null);
   const activeIdRef = useRef<string | null>(null);
+  const transcriptGenerationRef = useRef(0);
+  const closingRef = useRef(false);
+  const reportBackgroundError = (cause: unknown) => {
+    if (!closingRef.current && !String(cause).includes('runtime_closing')) setError(cause instanceof Error ? cause.message : String(cause));
+  };
   const [messages, setMessages] = useState<Message[]>([]);
   const [compactions, setCompactions] = useState<SessionCompactionRecord[]>([]);
   const [draft, setDraft] = useState('');
@@ -447,12 +452,14 @@ function App() {
   const projectSearchRef = useRef<HTMLInputElement>(null);
 
   const refreshSessions = async () => {
+    try {
     const next = await window.desktopAgent.listSessions();
     sessionDirectoriesRef.current = new Map(next.flatMap((session) => (
       session.projectBound === false ? [] : [[session.id, session.workingDirectory] as const]
     )));
     setSessions(next);
-    if (!activeIdRef.current && next[0]) selectSession(next[0].id);
+    if (!activeIdRef.current && next[0]) await selectSession(next[0].id);
+    } catch (cause) { reportBackgroundError(cause); }
   };
 
   const refreshExtensionStatus = async (workingDirectory = activeIdRef.current ? sessionDirectoriesRef.current.get(activeIdRef.current) : undefined): Promise<ExtensionStatus> => {
@@ -878,15 +885,17 @@ function App() {
   const loadWorkspaceChanges = async (id: string): Promise<WorkspaceChanges | null> => {
     try {
       const changes = await window.desktopAgent.getWorkspaceChanges(id);
-      setWorkspaceChangesError('');
+      if (activeIdRef.current === id && !closingRef.current) setWorkspaceChangesError('');
       return changes;
     } catch (cause) {
-      setWorkspaceChangesError(cause instanceof Error ? cause.message : String(cause));
+      if (activeIdRef.current === id && !closingRef.current && !String(cause).includes('runtime_closing')) setWorkspaceChangesError(cause instanceof Error ? cause.message : String(cause));
       return null;
     }
   };
 
   const selectSession = async (id: string) => {
+    const generation = ++transcriptGenerationRef.current;
+    try {
     setSelectedArtifactId(null); activeIdRef.current = id; turnBaselineRef.current = null; setActiveId(id); setError(''); setWorkspaceChangesError(''); setLiveSteps([]); setTurnStartedAt(null); setInspectedId(null); setReviewOpen(false); setWorkspaceChanges(null); setAttachments([]); setFiles([]); setAttachmentWarnings([]); setAttachmentMenuOpen(false); setDraggingFiles(false); dragDepthRef.current = 0; setTrajectoryExportStatus('idle');
     setMessages([]);
     setCompactions([]);
@@ -900,7 +909,7 @@ function App() {
       loadWorkspaceChanges(id),
       window.desktopAgent.listWorkflowRuns(id)
     ]);
-    if (activeIdRef.current !== id) return;
+    if (activeIdRef.current !== id || generation !== transcriptGenerationRef.current || closingRef.current) return;
     setMessages(nextMessages);
     setCompactions(nextCompactions);
     setWorkspaceChanges(nextChanges);
@@ -909,9 +918,12 @@ function App() {
       ...nextWorkflows
     ]);
     setReviewPath(nextChanges?.files[0]?.path ?? '');
+    } catch (cause) { if (generation === transcriptGenerationRef.current) reportBackgroundError(cause); }
   };
 
   useEffect(() => {
+    const closeRequests = () => { closingRef.current = true; transcriptGenerationRef.current++; };
+    window.addEventListener('beforeunload', closeRequests);
     void refreshSessions();
     void window.desktopAgent.getSettings().then((saved) => {
       setSettings(saved);
@@ -919,10 +931,10 @@ function App() {
       setSelectedModel(providerById(saved, saved.activeProviderId).model);
       setExtensionDraft(saved.extensions);
       setMemoryDraft(saved.memory);
-    });
-    void refreshExtensionStatus();
+    }).catch(reportBackgroundError);
+    void refreshExtensionStatus().catch(reportBackgroundError);
     const offSessions = window.desktopAgent.onSessionsChanged(() => void refreshSessions());
-    const offExtensions = window.desktopAgent.onExtensionsChanged(() => void refreshExtensionStatus());
+    const offExtensions = window.desktopAgent.onExtensionsChanged(() => void refreshExtensionStatus().catch(reportBackgroundError));
     const offSecret = window.desktopAgent.onBrowserSecretRequest((request) => {
       setBrowserSecret(request);
       setBrowserSecretValue('');
@@ -1018,10 +1030,10 @@ function App() {
         && (event.event === 'memory.embedding.completed' || event.event === 'memory.embedding.failed')) {
         void window.desktopAgent.getMemoryStatus(memoryDirectoryInput()).then(setMemoryStatus).catch(() => undefined);
       }
-      else if (event.type === 'turn.failed') { setError(event.message); runningRef.current = false; setRunningSessionId(null); setTurnStartedAt(null); setApproval(null); setTerminalSecret(null); void reloadActive(); }
-      else if (event.type === 'turn.completed' || event.type === 'turn.cancelled') { runningRef.current = false; setRunningSessionId(null); setTurnStartedAt(null); setApproval(null); setTerminalSecret(null); void reloadActive(); }
+      else if (event.type === 'turn.failed') { setError(event.message); runningRef.current = false; setRunningSessionId(null); setTurnStartedAt(null); setApproval(null); setTerminalSecret(null); void reloadActive().catch(reportBackgroundError); }
+      else if (event.type === 'turn.completed' || event.type === 'turn.cancelled') { runningRef.current = false; setRunningSessionId(null); setTurnStartedAt(null); setApproval(null); setTerminalSecret(null); void reloadActive().catch(reportBackgroundError); }
     });
-    return () => { offSessions(); offExtensions(); offSecret(); offTerminalSecret(); offDock(); offOrchestration(); offScheduler(); offConversationMessage(); offEvents(); };
+    return () => { window.removeEventListener('beforeunload', closeRequests); offSessions(); offExtensions(); offSecret(); offTerminalSecret(); offDock(); offOrchestration(); offScheduler(); offConversationMessage(); offEvents(); };
   }, []);
 
   useEffect(() => { selectedTeamIdRef.current = selectedTeamId; }, [selectedTeamId]);
@@ -1085,6 +1097,7 @@ function App() {
   }, []);
 
   const reloadActive = async () => {
+    const generation = ++transcriptGenerationRef.current;
     const id = activeIdRef.current;
     if (id) {
       const [nextMessages, nextCompactions, nextChanges] = await Promise.all([
@@ -1092,7 +1105,7 @@ function App() {
         window.desktopAgent.loadSessionCompactions(id),
         loadWorkspaceChanges(id)
       ]);
-      if (activeIdRef.current === id) {
+      if (activeIdRef.current === id && generation === transcriptGenerationRef.current && !closingRef.current) {
         setMessages(nextMessages);
         setCompactions(nextCompactions);
         const visibleChanges = nextChanges && turnBaselineRef.current ? changesSince(turnBaselineRef.current, nextChanges) : nextChanges;
@@ -1101,7 +1114,7 @@ function App() {
         if (!visibleChanges?.files.length) setReviewOpen(false);
       }
     }
-    setLiveSteps([]);
+    if (generation === transcriptGenerationRef.current && !closingRef.current) setLiveSteps([]);
   };
 
   const resolveApprovalChoice = useCallback(async (

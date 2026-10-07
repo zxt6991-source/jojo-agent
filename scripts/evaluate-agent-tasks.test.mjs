@@ -13,3 +13,30 @@ test('rejects false pass claims, duplicated runs and unknown metrics', () => {
   assert.throws(() => summarizeTaskRuns([run('passed'), run('passed')]));
   assert.throws(() => summarizeTaskRuns([{ ...run('failed'), inputTokens: undefined }]));
 });
+
+const v2 = overrides => ({ ...run('passed'), schemaVersion: 2, fixtureHash: '1'.repeat(64), dirtyTreeHash: '2'.repeat(64), ...overrides });
+test('keeps tasks and dirty source variants in separate groups', () => {
+  assert.equal(summarizeTaskRuns([run('passed'), { ...run('passed'), runId: 'other', taskId: 'recall' }]).length, 2);
+  assert.equal(summarizeTaskRuns([v2({}), v2({ runId: 'dirty', dirtyTreeHash: '3'.repeat(64) })]).length, 2);
+});
+test('distinguishes missing measurements from measured zero and reports coverage', () => {
+  const [group] = summarizeTaskRuns([v2({ costUsd: null, inputTokens: null, metricReasons: { costUsd: 'usage unavailable', inputTokens: 'usage unavailable' } }), v2({ runId: 'zero', costUsd: 0, inputTokens: null, metricReasons: { inputTokens: 'usage unavailable' } })]);
+  assert.equal(group.totals.costUsd, 0);
+  assert.equal(group.totals.inputTokens, null);
+  assert.deepEqual(group.metricCoverage.costUsd, { knownSamples: 1, missingSamples: 1 });
+  assert.deepEqual(group.metricCoverage.inputTokens, { knownSamples: 0, missingSamples: 2 });
+  assert.throws(() => summarizeTaskRuns([v2({ costUsd: null })]));
+});
+test('unresolved criteria cannot yield a passed score', () => {
+  const criteria = [{ id: 'review', passed: null, reason: 'Requires human review', evidence: 'trace#1' }];
+  assert.throws(() => summarizeTaskRuns([v2({ criteria })]));
+  const [group] = summarizeTaskRuns([v2({ status: 'failed', failureCategory: 'unresolved', criteria })]);
+  assert.equal(group.successRate, 0);
+});
+
+test('refuses pending or invalid source identity as scored task success', () => {
+  assert.throws(() => summarizeTaskRuns([v2({ sourceValidity: 'pending' })]));
+  assert.throws(() => summarizeTaskRuns([v2({ sourceValidity: 'invalid' })]));
+  assert.equal(summarizeTaskRuns([v2({ sourceValidity: 'verified' })])[0].passed, 1);
+  assert.equal(summarizeTaskRuns([v2({ sourceValidity: 'invalid', status: 'infrastructure_error', failureCategory: 'source_changed' })])[0].infrastructureErrors, 1);
+});

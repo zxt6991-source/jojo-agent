@@ -276,7 +276,9 @@ function summaryMessage(summary: string): Message {
 }
 
 export async function prepareModelContext(options: ContextPreparationOptions): Promise<ContextPreparationResult> {
-  const reclaimed = reclaimToolResults(options.messages);
+  // Host child calls are durable evidence, not additional model-issued calls.
+  // Project only their parent summary so provider tool-call pairing stays valid.
+  const reclaimed = reclaimToolResults(options.messages.filter(message => !message.metadata?.hostToolTrace));
   const budget = calculateContextBudget(options);
   let estimatedTokens = estimateContextTokens(reclaimed.messages, options.tools, options.instructions ?? []);
   const tokensBefore = estimatedTokens;

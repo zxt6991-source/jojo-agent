@@ -2,6 +2,8 @@
 
 本文件对应 `jojo-opencode-hermes-comparative-analysis.md` 的 A → B → C → D 路线，记录本次实现、使用入口与尚未验证的部分。实现复用现有 Tool Runtime、Durable Lane、Governance、SQLite 和 App Service。
 
+待完成项的具体接口、开发步骤、权限边界和验收计划见 [后续实现方案](./jojo-opencode-hermes-remaining-implementation-plan.md)。该文档为设计，不代表这些能力已经实现。
+
 ## 阶段状态
 
 | 阶段 | 本次实现 | 验收边界 |
@@ -101,3 +103,85 @@ node scripts/evaluate-agent-tasks.mjs scored-runs.json
 已补齐有大小限制的 structuredResult、verification、verificationChecks IPC 字段，Terminal 不再传递未定义的 signal 属性。新增 IPC 合同回归，并在终端密钥交互用例断言无 IPC 协议告警。修复后完整重跑：**26 项通过，41.1 秒**；lint/typecheck 通过，相关 IPC、Terminal 与 Preload 回归通过。
 
 覆盖附件与拖放、文档预览、崩溃/审批恢复、历史迁移、模型元数据、权限、会话绑定、Channel 密钥、取消和 Team 设置。使用离线 E2E Provider，不是实际模型验收；没有覆盖本次每个新功能的独立交互场景。日志仍有关闭/重启附近的 Runtime unavailable 和 Session not found 提示，以及测试主动触发的 HTTP 503/CSP 拒绝，未导致用例失败。生命周期日志清理未在本次扩大修改。
+
+
+## 2026-10-07：待完成方案第一批核心实现
+
+已按 remaining implementation plan 推进 R01、R02、R08 的核心代码，整个 R01～R12 路线尚未完成。剩余内容和启动条件继续在[实现方案状态表](./jojo-opencode-hermes-remaining-implementation-plan.md#本轮实现状态2026-10-07)跟踪。
+
+### 验证 Profile V2 与批次执行
+
+在项目 `.jojo/verification.json` 保存配置，例如：
+
+```json
+{
+  "version": 2,
+  "inputs": {
+    "mode": "paths",
+    "include": ["src/**", "test/**", "package.json", "pnpm-lock.yaml"],
+    "exclude": [],
+    "maxFiles": 25000,
+    "maxBytes": 134217728
+  },
+  "budgetMs": 300000,
+  "commands": [
+    { "id": "lint", "kind": "lint", "command": "pnpm", "args": ["lint"], "cwd": ".", "scope": "project" },
+    { "id": "types", "kind": "typecheck", "command": "pnpm", "args": ["typecheck"], "cwd": ".", "scope": "project" },
+    { "id": "tests", "kind": "test", "command": "pnpm", "args": ["test"], "cwd": ".", "scope": "project" }
+  ]
+}
+```
+
+先调用 `verification_profile {}`，再用返回的 `batchId` 调用 `verification_run {"batchId":"…"}`；可传 `checkIds` 选择子集。也可按返回的 terminalInput 逐条执行。配置只是建议，每条实际命令仍单独经过原有权限、沙箱和审批；父调用不替代子命令审批。被 Hook 阻止、被拒、未运行、取消与超时都有独立事实。
+
+从 Profile 创建起计算 budgetMs，审批等待计时；命令超时不能超过剩余预算或父 Run 墙钟上限。预算耗尽后活动进程取消，余项跳过。重新调用 Profile 是显式新批次。ToolResult 持久保存 Profile/hash/revision/deadline，状态从分支证据推导；未知副作用不会在恢复时自动执行。
+
+只读 Host 指纹采集覆盖相对路径、内容 SHA-256、存在/删除状态和可执行位；include/exclude 及扫描限制参与 scopeHash。V1 默认 Git tracked + 未忽略 untracked，非 Git 默认采集为 unknown；V2 可明确指定 paths。自动排除 `.git`、`.jojo`、node_modules、.vite、dist、coverage；实际 exclusions 随记录保存。无法读取、符号链接、越界、过大和不稳定范围不能显示为当前已验证。最后一次复核未覆盖的范围也不能复用旧观察。
+
+连续 lint/typecheck/test 在同一完整范围内容不变时同时 current；代码在检查中变化时保留执行 passed，validity 为 stale。外部编辑在最终模型请求/Skill 证据判断时重新核对，Desktop 展示 current/stale/unknown。空闲期间未安装 watcher，尚不承诺即时刷新。历史 V1 记录继续保守失效。
+
+子命令使用独立 callId、原始结果与 result_read 引用，计入父工具调用数并走 Pre/PostToolUse。持久 child trace 在模型上下文投影时移除，父批次摘要包含子结果引用，保证 Provider 工具调用和结果配对。原始账本和 UI 仍保留证据。
+
+### Electron 交互与生命周期
+
+新增五个场景：三项验证独立审批及重启保留/外部编辑失效；原始长日志中段回读（先确认模型上下文发生回收）；历史命中与原文定位；多文件 Patch/Undo/Redo 逐次审批；验证过的 Skill 草稿保存/预览及拒绝激活不产生 active 文件。完整 Electron 回归为 **31 项通过（最终重跑 50.8 秒）**，新增场景断言无 IPC protocol violation 和 Renderer pageerror。它们采用隔离数据目录与确定性模型决策，真实工具、治理、Runtime、IPC 都执行。
+
+Main 正常关闭停止新 Worker 命令和 Session metadata 请求，排空待请求，关闭引起的 Worker exit 不制造 turn.failed；非预期 exit 仍报告并重启。Renderer transcript 用 generation 避免旧响应覆盖新页面，后台刷新消费拒绝；关闭/删除后的 workspace 查询返回空变更。复杂中断、取消、Skill 编辑/回滚和 Responses SSE Electron 矩阵仍待补齐；没有以通过的 happy path 替代这些验收。
+
+### Operation 绑定覆盖
+
+`packages/contracts/src/application/bindings.json` 声明现有 22 个 Operation 的 Core/HTTP/WS/SDK/IPC 关系。`pnpm test:bindings` 检查遗漏 Operation、HTTP 目标方法、WS dispatch、SDK 方法及已声明 IPC 的共享合同解析，失败即阻止 CI；变异回归确认删除/错接会失败。`pnpm docs:generate` 同步生成 [绑定报告](./current-bindings.generated.md)。
+
+当前部分 Desktop DTO 和内部 Scheduler 操作尚没有中立一对一绑定，报告逐项标缺口及原因；静态检查不证明权限、幂等或恢复行为。V2 batch/revision 已补严格 IPC 合同回归，不能把全目录静态覆盖当作 R08 全量行为验收。
+
+最终完整 Vitest 回归：**1293 通过、2 跳过，62.05 秒**；lint、typecheck、架构检查、绑定检查、docs:check、git diff --check 通过。新增合同/运行时检查覆盖 unknown/范围缺测、外部编辑与可执行位、累计审批/进程预算、父工具数、子 Hook、严格 IPC 保留 V2 字段及模型调用配对。
+
+全量回归后进一步加固了采集文件的路径/inode 复核、Profile 取消传播、批次 UUID 与子调用全父 ID 哈希；父结果和模型指令使用有界证据摘要，避免大范围配置重复导致 IPC 超限。上述变化已通过定向 Runtime/工具回归及静态检查；完整原始证据保留在分支账本。
+
+最终 Electron 重构建后的回归曾暴露 Patch 审批测试过早读取文件；已改为等待对应持久工具结果，再检查文件和下一次审批。修正后完整重跑：**31/31 通过，50.8 秒**。新增最大范围/20 检查摘要的 IPC 限额回归通过，最终 lint/typecheck/绑定/架构/docs 检查通过。
+
+
+## 第二批开发：离线评测与单文件 Journal（2026-10-07）
+
+- R03 新增 `pnpm eval:offline`：隔离目录 + 公开 Runtime + 真实审批/工具，当前独立评分覆盖 Patch 冲突，默认重复两次。结果保存在 test-results/agent-evals；不调用真实 Provider。`pnpm test:evals` 验证 V1/V2 汇总、缺测覆盖、unresolved 拒绝虚报成功、脏源树身份和计划边界。
+- R06 抽出 FileMutationJournalService，普通 write/edit/delete 与 Patch 共享恢复机制，保持旧回收站和 V1 Journal 兼容。文件提交/删除补 fsync，Journal 保存可信 Run/actor/toolCallId；Skill 工具返回结果保留 Journal 引用。三种普通工具均可经 file_undo 审批 Undo/Redo；后续用户编辑会拒绝恢复。
+- 新增普通文件创建/权限恢复/重启/后续冲突测试，以及三种单文件工具的 Electron 审批及 Undo/Redo 用例。
+- 仍待：其余离线任务、真实 Provider/A/B；JournalV2 内容 blob、Run 合成撤销、恢复管理 UI、保留策略和双 Host 锁。完整范围及启动条件见 remaining-implementation-plan.md 第 14 节。
+
+
+第二批验证结果：完整 Vitest 1298 passed / 2 skipped（65.13s）；完整 Electron E2E 34/34 passed（56.4s）；evals Node 测试 7/7，离线 Patch 冲突 fixture 2/2。lint、typecheck、architecture、application bindings、docs:check 和 diff whitespace 检查通过。首次沙箱全量测试因本地端口 listen EPERM 失败，在获准环境重跑后通过；没有用跳过这些测试来获得通过结果。
+
+
+## 第三次推进：七类离线任务的独立评分（2026-10-07）
+
+R03 默认离线计划扩展为七类，每类重复两次。新增中段失败回读、真实进程验证取消、SQLite 历史决策及自动日报排序、真实 TypeScript 编译修复、Skill 压缩后 revision/约束保持。公共 Runtime 管线和真实工具执行，scripted Provider 只给出固定决策；由原始账本、文件、编译退出码和当前输入哈希评分。
+
+新增 12 个 fixture 回归测试（7 个正常路径 + 5 个失败条件），任务目录标准缺项强制 unresolved。运行期间源码状态 pending，完成一致性检查才 verified；源码变化归类为基础设施错误，汇总拒绝 pending。每次要求全新的输出目录，保留独立 trace/manifest/评分文件。
+
+运行：`pnpm eval:offline`；fixture 回归：`pnpm test evals/agent-tasks/offline-fixtures.test.ts`；报告格式回归：`pnpm test:evals`。reconnect 真实传输 fixture、真实 Provider 矩阵和正式 A/B 仍待完成。
+
+
+macOS 强沙箱回归发现 Node 加载工作区脚本会被祖先目录 metadata 拒绝。已增加仅限 exact literal 父目录的 metadata 读取；真实 Seatbelt 测试同时确认脚本可加载、父目录列表及未挂载 sibling 内容仍被拒绝。TypeScript 编译器先复制到隔离工作区，并纳入输入哈希；不依赖对宿主 repo 的隐式读取。
+
+
+本次最终回归：`JOJO_STRONG_SANDBOX_TEST=1 pnpm test` 为 1313 passed / 1 skipped（71.62s），包含两个真实 macOS Seatbelt 测试；完整 Electron E2E 34/34 passed（59.6s）；fixture 回归 12/12；报告格式/计划 Node 回归 9/9；typecheck、lint、architecture、docs:check 通过。七类默认离线计划为 14 次运行，单独验证通过；最终 trace 与来源清单使用新的输出目录保存。

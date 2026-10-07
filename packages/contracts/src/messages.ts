@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { ArtifactDescriptorSchema } from './artifact';
-import { VerificationRecordSchema } from './verification';
+import { WorkspaceRevisionSchema, VerificationBatchSchema, VerificationRecordSchema } from './verification';
 
 export const ToolCallSchema = z.object({
   id: z.string().min(1),
@@ -26,6 +26,7 @@ export const ToolResultSchema = z.object({
   content: z.string(),
   artifacts: z.array(ArtifactDescriptorSchema).max(100).optional(),
   verification: VerificationRecordSchema.optional(),
+  verificationBatch: VerificationBatchSchema.optional(),
   verificationChecks: z.array(VerificationRecordSchema).max(20).optional(),
   structuredResult: z.unknown().optional(),
   contentBlocks: z.array(ToolResultContentBlockSchema).optional(),
@@ -118,7 +119,9 @@ export const MessageSchema = z.object({
   createdAt: z.string().datetime(),
   metadata: z.object({
     providerState: ProviderStateSchema.optional(),
+    verificationRevisions: z.array(WorkspaceRevisionSchema).max(20).optional(),
     internal: z.boolean().optional(),
+    hostToolTrace: z.literal('verification').optional(),
     iteration: z.number().int().positive().optional(),
     finalResponseOnly: z.boolean().optional(),
     source: z.literal('scheduler').optional(),

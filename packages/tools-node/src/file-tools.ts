@@ -1,12 +1,10 @@
 import { withWorkspaceMutationLock } from './workspace-mutation-lock.js';
 import { classifyArtifact } from '@desktop-agent/contracts';
 import { produceWorkspaceArtifact } from './artifact-storage.js';
-import { chmod, mkdir, rename, rm, stat, unlink, writeFile } from 'node:fs/promises';
-import path from 'node:path';
+import { FileMutationJournalService } from './file-mutation-journal.js';
 import type { Tool, ToolContext, ToolResult } from '@desktop-agent/contracts';
 import { FileSnapshotRegistry } from './file-snapshots.js';
-import { backupFileToTrash } from './file-trash.js';
-import { prepareFileMutation, mutationApprovalFingerprint } from './file-mutation.js';
+import { prepareFileMutation } from './file-mutation.js';
 import { toolResult } from './tool-result.js';
 
 type FileToolName = 'write_file' | 'edit_file' | 'delete_file';
@@ -73,42 +71,12 @@ class FileMutationTool implements Tool {
       this.snapshots
     );
 
-    this.snapshots.assertMutationApproval(context.sessionId, context.toolCallId, mutationApprovalFingerprint([prepared]));
-    let trashed = false;
-    let previousMode: number | undefined;
-    if (prepared.before !== null) {
-      previousMode = (await stat(prepared.target)).mode & 0o777;
-      await backupFileToTrash({
-        trashDirectory: this.trashDirectory,
-        sessionId: context.sessionId,
-        root: prepared.root,
-        target: prepared.target,
-        operation: prepared.kind === 'delete' ? 'delete' : 'overwrite'
-      });
-      trashed = true;
-    }
-
-    if (prepared.kind === 'delete') {
-      await unlink(prepared.target);
-      return toolResult(true, `Deleted ${prepared.relativePath}.${trashed ? ' A copy was saved in the application trash.' : ''}`);
-    }
-
-    await mkdir(path.dirname(prepared.target), { recursive: true });
-    const temporary = path.join(
-      path.dirname(prepared.target),
-      `.${path.basename(prepared.target)}.desktop-agent-${crypto.randomUUID()}.tmp`
-    );
-    try {
-      await writeFile(temporary, prepared.after!, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
-      if (previousMode !== undefined) await chmod(temporary, previousMode);
-      await rename(temporary, prepared.target);
-    } catch (error) {
-      await rm(temporary, { force: true });
-      throw error;
-    }
-    await this.snapshots.record(prepared.target, true);
+    const trashed = prepared.before !== null;
+    const journalResult = await new FileMutationJournalService(this.trashDirectory, this.snapshots, true).executeApproved([prepared], context);
+    if (!journalResult.ok) return journalResult;
+    if (prepared.kind === 'delete') return { ...journalResult, content: `Deleted ${prepared.relativePath}.${trashed ? ' A copy was saved in the application trash.' : ''} ${journalResult.content}` };
     const action = prepared.kind === 'create' ? 'Created' : 'Updated';
-    const result = toolResult(true, `${action} ${prepared.relativePath}.${trashed ? ' The previous version was saved in the application trash.' : ''}`);
+    const result = { ...journalResult, content: `${action} ${prepared.relativePath}.${trashed ? ' The previous version was saved in the application trash.' : ''}` };
     result.artifacts = [];
     if (classifyArtifact(prepared.target).kind !== 'unknown') {
       try { result.artifacts = [await produceWorkspaceArtifact(context.workingDirectory, prepared.target, this.name as 'write_file' | 'edit_file')]; }

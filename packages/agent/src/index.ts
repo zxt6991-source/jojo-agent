@@ -42,3 +42,7 @@ export {
   createUserMessage
 } from './messages.js';
 export type { AgentRunOptions, AgentRunResult } from './types.js';
+
+export { captureVerificationRevisions, requestToolApproval } from './verification-context.js';
+
+export { runVerificationBatch } from './verification-batch.js';

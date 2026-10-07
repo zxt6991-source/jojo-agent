@@ -148,6 +148,19 @@ describe('desktop worker IPC contracts', () => {
     }).success).toBe(false);
   });
 
+  it('preserves revision and Profile batch evidence through strict IPC parsing', () => {
+    const capturedAt = '2026-10-07T00:00:00.000Z';
+    const inputs = { mode: 'paths', include: ['src/**'], exclude: ['.jojo/**'], maxFiles: 100, maxBytes: 10000 };
+    const revision = { id: 'a'.repeat(64), workspaceId: 'b'.repeat(64), scopeHash: 'c'.repeat(64), inputs, capturedAt, captureStatus: 'complete', fileCount: 1, byteCount: 30 };
+    const command = { id: 'test', kind: 'test', command: 'node', args: ['-e', 'process.exit(0)'], cwd: '.', timeoutMs: 1000, scope: 'src' };
+    const batch = { id: 'profile-call', profileHash: 'd'.repeat(64), createdAt: capturedAt, deadlineAt: '2026-10-07T00:01:00.000Z', revision, profile: { version: 2, inputs, budgetMs: 60000, commands: [command] } };
+    const profileEvent = { type: 'tool.finished', id: 'profile-call', result: { callId: 'profile-call', ok: true, content: 'batch', verificationBatch: batch } };
+    expect(AgentEventSchema.parse(profileEvent)).toEqual(profileEvent);
+    const checkEvent = { type: 'tool.finished', id: 'child', result: { callId: 'child', ok: true, content: 'passed', verification: { kind: command.kind, command: command.command, args: command.args, cwd: command.cwd, scope: command.scope, profileId: command.id, batchId: batch.id, startedAt: capturedAt, finishedAt: capturedAt, exitCode: 0, status: 'passed', changeId: 'child', outputRef: 'child', revisionBefore: revision, revisionAfter: revision, validity: 'current' } } };
+    expect(AgentEventSchema.parse(checkEvent)).toEqual(checkEvent);
+    expect(AgentEventSchema.safeParse({ ...profileEvent, result: { ...profileEvent.result, verificationBatch: { ...batch, revision: { ...revision, id: undefined } } } }).success).toBe(false);
+  });
+
   it('rejects plaintext Channel secrets at the IPC boundary', () => {
     expect(WorkerCommandSchema.safeParse({
       type: 'channel.mutate', requestId: 'r',
