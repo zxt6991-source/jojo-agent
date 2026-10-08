@@ -30,6 +30,7 @@ test('governs a three-check batch, retains evidence across restart and detects e
   };
   try {
     await launched.page.getByRole('button', { name: '新建对话' }).click();
+    await expect(launched.page.getByPlaceholder('随心输入')).toBeVisible();
     sessionId = (await launched.page.evaluate(() => window.desktopAgent.listSessions()))[0]!.id;
     await launched.page.getByPlaceholder('随心输入').fill('E2E: verification batch');
     await launched.page.getByRole('button', { name: '发送消息' }).click();

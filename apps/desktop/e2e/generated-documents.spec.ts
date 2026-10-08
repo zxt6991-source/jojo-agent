@@ -84,6 +84,7 @@ test('switches Markdown, images and PDF in one right pane from file entries and 
   app.process().stderr?.on('data', (chunk) => { logs += String(chunk); });
   try {
     await page.getByRole('button', { name: '新建对话' }).click();
+    await expect(page.getByPlaceholder('随心输入')).toBeVisible();
     const sessions = await page.evaluate(() => window.desktopAgent.listSessions());
     const root = sessions[0]!.workingDirectory;
     await writeFile(path.join(root, 'report.md'), '# Artifact Markdown\n\nA **generated** report.');

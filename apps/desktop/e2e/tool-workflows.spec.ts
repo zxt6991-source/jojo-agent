@@ -10,6 +10,8 @@ async function fixture() {
   await mkdir(workspace, { recursive: true });
   const launched = await launchElectron(directory);
   await launched.page.getByRole('button', { name: '新建对话' }).click();
+  // The click starts async session creation; the composer appears after selection.
+  await expect(launched.page.getByPlaceholder('随心输入')).toBeVisible();
   const sessionId = (await launched.page.evaluate(() => window.desktopAgent.listSessions()))[0]!.id;
   const send = async (text: string) => {
     await launched.page.getByPlaceholder('随心输入').fill(text);
