@@ -5,6 +5,8 @@
 
 本文档集说明 pnpm monorepo 中每个应用或包的技术实现。文中的“当前实现”均以仓库代码为准；“演进方案”是后续扩展建议，不代表已经可用。与代码冲突时以 Contracts、Runtime 公共 API 和测试为准。
 
+跨模块的个人 Agent 演进方案见 [通用个人 Agent 技术实现方案](../jojo-personal-agent-technical-implementation-plan.md)，涵盖领域上下文、资料检索、应用接入、产物交付、长期任务、事件自动化、执行收据、预算与分批验收。
+
 ## Workspace 清单
 
 | Workspace | 包名 | 主要职责 | 实现方案 |
