@@ -1,6 +1,6 @@
 import type { ContextBlock, ProjectIdentity, SubAgentMemoryBinding, WorkflowMemoryBinding, TeamMemberMemoryBinding } from '@desktop-agent/contracts';
 import type { ExecutionScope } from '@desktop-agent/contracts/runtime';
-import type { RunBudget, RuntimeActor, RuntimeTriggerContext, RuntimeWorkflowContext, RuntimeTeamContext } from './run.js';
+import type { RunBudget, RuntimeActor, RuntimeTriggerContext, RuntimeWorkflowContext, RuntimeTeamContext, RuntimeVoiceContext } from './run.js';
 
 export type RuntimeProviderBinding = { providerId: string; model: string; configurationFingerprint: string };
 export type ExecutionInstructionBlock = Pick<ContextBlock, 'id' | 'source' | 'content' | 'priority'> & {
@@ -15,6 +15,7 @@ export type OperationExecutionSnapshotV1 = {
   trigger?: RuntimeTriggerContext;
   workflow?: RuntimeWorkflowContext;
   team?: RuntimeTeamContext;
+  voice?: RuntimeVoiceContext;
   providerBinding: RuntimeProviderBinding;
   budget: Required<RunBudget>;
   instructions: { requested: string[]; contributed: ExecutionInstructionBlock[]; compositionVersion: 1; fingerprint: string };
@@ -25,5 +26,5 @@ export type OperationExecutionSnapshotV1 = {
   };
 };
 export type RuntimeExecutionSummary = Pick<OperationExecutionSnapshotV1,
-  'schemaVersion' | 'executionScope' | 'actor' | 'trigger' | 'workflow' | 'team' | 'providerBinding' | 'budget' | 'runContext'
+  'schemaVersion' | 'executionScope' | 'actor' | 'trigger' | 'workflow' | 'team' | 'voice' | 'providerBinding' | 'budget' | 'runContext'
 > & { instructionFingerprint: string };

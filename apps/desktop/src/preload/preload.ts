@@ -1,8 +1,11 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
-import { ArtifactReadResponseV2Schema, ArtifactSaveResponseV2Schema, MAX_FILE_BYTES, IPC, type DesktopApi } from '@desktop-agent/contracts';
+import { speechPreload } from './speech-preload';
+import { ReplayScheduleDeliveryInputSchema } from '@desktop-agent/contracts';
+import { ArtifactReadResponseV2Schema, ArtifactSaveResponseV2Schema, SpeechSettingsSnapshotSchema, SaveSpeechSettingsInputSchema, MAX_FILE_BYTES, IPC, type DesktopApi } from '@desktop-agent/contracts';
 import { parseAgentPush, parseBrowserDockPush, parseBrowserSecretPush, parseConversationMessageCreatedPush, parseOrchestrationPush, parseSchedulePush, parseTerminalSecretPush } from './push-validation';
 
 const api: DesktopApi = {
+  ...speechPreload,
   listSessions: () => ipcRenderer.invoke(IPC.listSessions),
   createSession: (input) => ipcRenderer.invoke(IPC.createSession, input),
   bindSessionProject: (input) => ipcRenderer.invoke(IPC.bindSessionProject, input),
@@ -35,6 +38,7 @@ const api: DesktopApi = {
   runScheduleNow: (input) => ipcRenderer.invoke(IPC.runScheduleNow, input),
   listScheduleRuns: (input) => ipcRenderer.invoke(IPC.listScheduleRuns, input),
   cancelScheduleRun: (input) => ipcRenderer.invoke(IPC.cancelScheduleRun, input),
+  replayScheduleVoice: (input) => ipcRenderer.invoke(IPC.replayScheduleVoice, ReplayScheduleDeliveryInputSchema.parse(input)),
   getChannelSettings: () => ipcRenderer.invoke(IPC.getChannelSettings),
   saveChannelSecrets: (input) => ipcRenderer.invoke(IPC.saveChannelSecrets, input),
   mutateChannel: (input) => ipcRenderer.invoke(IPC.mutateChannel, input),
@@ -59,6 +63,8 @@ const api: DesktopApi = {
     return ipcRenderer.invoke(IPC.importAttachments, { paths, blobs });
   },
   getSettings: () => ipcRenderer.invoke(IPC.getSettings),
+  getSpeechSettings: async () => SpeechSettingsSnapshotSchema.parse(await ipcRenderer.invoke(IPC.getSpeechSettings)),
+  saveSpeechSettings: async (input) => SpeechSettingsSnapshotSchema.parse(await ipcRenderer.invoke(IPC.saveSpeechSettings, SaveSpeechSettingsInputSchema.parse(input))),
   getPermissionGovernance: (input) => ipcRenderer.invoke(IPC.getPermissionGovernance, input),
   resetWorkspacePermissionPolicy: (input) => ipcRenderer.invoke(IPC.resetWorkspacePermissionPolicy, input),
   savePermissionPolicy: (input) => ipcRenderer.invoke(IPC.savePermissionPolicy, input),

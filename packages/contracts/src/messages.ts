@@ -112,12 +112,20 @@ export const ProviderStateSchema = z.object({
 }).strict();
 export type ProviderState = z.infer<typeof ProviderStateSchema>;
 
+/** Input provenance only; it grants no actor identity or tool permission. */
+export const VoiceTurnMetadataSchema = z.object({
+  voiceTurnId: z.string().min(1).max(256).refine(value => !value.includes('\0')),
+  generation: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER)
+}).strict();
+export type VoiceTurnMetadata = z.infer<typeof VoiceTurnMetadataSchema>;
+
 export const MessageSchema = z.object({
   id: z.string().min(1),
   role: z.enum(['user', 'assistant', 'tool']),
   content: z.array(ContentBlockSchema),
   createdAt: z.string().datetime(),
   metadata: z.object({
+    voice: VoiceTurnMetadataSchema.optional(),
     providerState: ProviderStateSchema.optional(),
     verificationRevisions: z.array(WorkspaceRevisionSchema).max(20).optional(),
     internal: z.boolean().optional(),

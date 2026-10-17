@@ -99,7 +99,7 @@ export function registerSettingsIpc(ctx: Context): void {
     const settings = {
       activeProviderId: input.activeProviderId, providers, utilityModel: input.utilityModel,
       permissions: input.permissions ?? current.permissions,
-      memory: current.memory, extensions: current.extensions
+      memory: current.memory, extensions: current.extensions, speech: current.speech
     };
     await ctx.configStore.save(settings);
     await ctx.pushConfig(); return ctx.configStore.get(apiKeys);

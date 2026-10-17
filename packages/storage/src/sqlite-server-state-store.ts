@@ -27,6 +27,7 @@ import type {
 import type { RunResult } from '@desktop-agent/agent-runtime';
 import type { ApprovalDecision, ProtocolError } from '@desktop-agent/server-protocol';
 import { SERVER_STATE_SCHEMA_SQL, SERVER_STATE_SCHEMA_VERSION } from './server-state-schema.js';
+import { isKnownCompatibleServerStateVersion } from './server-state-compatibility.js';
 
 const sessionProjectSchema = SessionMetaSchema.pick({ workingDirectory: true, projectBound: true, projectIdentity: true });
 type SessionProject = Pick<SessionMeta, 'workingDirectory' | 'projectBound' | 'projectIdentity'>;
@@ -157,35 +158,42 @@ export class SqliteServerStateStore implements ServerStateStore {
   constructor(readonly filename: string, private readonly clock: Clock = systemClock) {
     mkdirSync(path.dirname(filename), { recursive: true });
     this.database = new DatabaseSync(filename);
-    this.database.exec('PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;');
+    this.database.exec('PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
     const versionRow = this.database.prepare('PRAGMA user_version').get() as Row | undefined;
     const version = versionRow ? Number(Object.values(versionRow)[0]) : 0;
-    if (version > SERVER_STATE_SCHEMA_VERSION) {
+    const compatibleNewer = version > SERVER_STATE_SCHEMA_VERSION
+      && isKnownCompatibleServerStateVersion(this.database, version);
+    if (version > SERVER_STATE_SCHEMA_VERSION && !compatibleNewer) {
       this.database.close();
       throw new Error(`server_state_version_unsupported: ${version}`);
     }
     try {
-      this.database.exec('BEGIN IMMEDIATE');
-      const oldApprovals = this.database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'server_approvals'").get();
-      const migrateApprovals = oldApprovals && !(this.database.prepare('PRAGMA table_info(server_approvals)').all() as Row[]).some(column => column.name === 'scope');
-      if (migrateApprovals) {
-        this.database.exec(`ALTER TABLE server_approvals RENAME TO legacy_server_approvals;
-          DROP INDEX IF EXISTS server_approvals_session_status;
-          DROP INDEX IF EXISTS server_approvals_run;
-          DROP INDEX IF EXISTS server_approvals_recovery;`);
+      this.database.exec('PRAGMA journal_mode = WAL;');
+      // A known additive schema can be used without running an older migration
+      // or relabeling the database with this branch's lower schema version.
+      if (!compatibleNewer) {
+        this.database.exec('BEGIN IMMEDIATE');
+        const oldApprovals = this.database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'server_approvals'").get();
+        const migrateApprovals = oldApprovals && !(this.database.prepare('PRAGMA table_info(server_approvals)').all() as Row[]).some(column => column.name === 'scope');
+        if (migrateApprovals) {
+          this.database.exec(`ALTER TABLE server_approvals RENAME TO legacy_server_approvals;
+            DROP INDEX IF EXISTS server_approvals_session_status;
+            DROP INDEX IF EXISTS server_approvals_run;
+            DROP INDEX IF EXISTS server_approvals_recovery;`);
+        }
+        this.database.exec(SERVER_STATE_SCHEMA_SQL);
+        if (migrateApprovals) {
+          this.database.exec(`INSERT INTO server_approvals (
+            id, session_id, run_id, lane_id, status, tool_call_id, tool_name, reason,
+            request_hash, preview_json, decision, resolved_by, interrupted_reason,
+            created_at, resolved_at, updated_at, version
+          ) SELECT id, session_id, run_id, lane_id, status, tool_call_id, tool_name, reason,
+            request_hash, preview_json, decision, resolved_by, interrupted_reason,
+            created_at, resolved_at, updated_at, version FROM legacy_server_approvals;
+            DROP TABLE legacy_server_approvals;`);
+        }
+        this.database.exec(`PRAGMA user_version = ${SERVER_STATE_SCHEMA_VERSION}; COMMIT;`);
       }
-      this.database.exec(SERVER_STATE_SCHEMA_SQL);
-      if (migrateApprovals) {
-        this.database.exec(`INSERT INTO server_approvals (
-          id, session_id, run_id, lane_id, status, tool_call_id, tool_name, reason,
-          request_hash, preview_json, decision, resolved_by, interrupted_reason,
-          created_at, resolved_at, updated_at, version
-        ) SELECT id, session_id, run_id, lane_id, status, tool_call_id, tool_name, reason,
-          request_hash, preview_json, decision, resolved_by, interrupted_reason,
-          created_at, resolved_at, updated_at, version FROM legacy_server_approvals;
-          DROP TABLE legacy_server_approvals;`);
-      }
-      this.database.exec(`PRAGMA user_version = ${SERVER_STATE_SCHEMA_VERSION}; COMMIT;`);
     } catch (error) {
       if (this.database.isTransaction) this.database.exec('ROLLBACK');
       this.database.close();

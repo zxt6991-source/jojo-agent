@@ -208,7 +208,7 @@ export type ChannelOutboxItem = {
   threadId?: string;
   request: ChannelSendRequest;
   idempotencyKey: string;
-  status: 'pending' | 'sending' | 'delivered' | 'failed' | 'unknown';
+  status: 'pending' | 'sending' | 'delivered' | 'failed' | 'unknown' | 'blocked';
   attemptCount: number;
   nextAttemptAt?: string;
   createdAt: string;

@@ -89,3 +89,36 @@ test('rejects Desktop conversation JSONL regressions', (t) => {
   });
   assert.match(checkArchitecture(root).join('\n'), /Desktop conversation must use Runtime/);
 });
+
+test('AudioHost shares renderer restrictions for Node, Electron and implementation imports', (t) => {
+  const root = fixture(t, {
+    contracts: {},
+    speech: { manifest: { dependencies: { '@desktop-agent/contracts': 'workspace:*' } } },
+    desktop: { manifest: { dependencies: { '@desktop-agent/contracts': 'workspace:*', '@desktop-agent/speech': 'workspace:*' } },
+      files: {
+        'src/audio-host/player.ts': "import fs from 'fs'; const e = require('electron'); const a = import('@desktop-agent/speech');",
+        'src/renderer/player.ts': "import fs from 'node:fs'; export * from '@desktop-agent/speech';"
+      }
+    }
+  });
+  const errors = checkArchitecture(root).join('\n');
+  assert.match(errors, /audio-host\/player\.ts: renderer imports Node\/host module fs/);
+  assert.match(errors, /audio-host\/player\.ts: renderer imports Node\/host module electron/);
+  assert.match(errors, /audio-host\/player\.ts: renderer imports workspace implementation @desktop-agent\/speech/);
+  assert.match(errors, /renderer\/player\.ts: renderer imports Node\/host module node:fs/);
+  assert.match(errors, /renderer\/player\.ts: renderer imports workspace implementation @desktop-agent\/speech/);
+});
+
+test('AudioHost permits public contracts and local player code without exposing Host modules', (t) => {
+  const root = fixture(t, {
+    contracts: {},
+    desktop: { manifest: { dependencies: { '@desktop-agent/contracts': 'workspace:*' } },
+      files: {
+        'src/audio-host/player.ts': "import type { AudioAsset } from '@desktop-agent/contracts'; import { receive } from './ipc';",
+        'src/audio-host/ipc.ts': 'export const receive = () => {};',
+        'src/audio-host/player.test.ts': "import { randomUUID } from 'node:crypto';"
+      }
+    }
+  });
+  assert.deepEqual(checkArchitecture(root), []);
+});

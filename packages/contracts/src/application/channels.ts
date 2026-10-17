@@ -105,7 +105,7 @@ export const ChannelPairingListQuerySchema = z.object({
 export const ApproveChannelPairingInputSchema = z.object({ binding: CreateChannelBindingInputSchema }).strict();
 export type ApproveChannelPairingInput = z.infer<typeof ApproveChannelPairingInputSchema>;
 
-export const ChannelDeliveryStatusSchema = z.enum(['pending', 'sending', 'delivered', 'failed', 'unknown']);
+export const ChannelDeliveryStatusSchema = z.enum(['pending', 'sending', 'delivered', 'failed', 'unknown', 'blocked']);
 export const ChannelDeliverySchema = z.object({
   id: z.string().min(1),
   instanceId: z.string().min(1),

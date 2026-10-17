@@ -18,7 +18,7 @@ describe('channel delivery integration', () => {
         deliveries.push(input);
         return { deliveryId: 'delivery', status: 'pending' as const };
       }
-    } as ChannelService;
+    } as unknown as ChannelService;
     const service = new ChannelScheduleDeliveryService(channels);
     const schedule = {
       id: 'schedule', name: 'Daily', enabled: true,
@@ -26,10 +26,27 @@ describe('channel delivery integration', () => {
     } as Schedule;
     const run = { id: 'run', scheduleId: 'schedule' } as ScheduleRun;
     await expect(service.deliver({ schedule, run, content: 'done' })).resolves.toMatchObject({
-      status: 'delivered', destination: { kind: 'channel', id: 'feishu-me' }
+      status: 'pending', destination: { kind: 'channel', id: 'feishu-me' }
     });
     expect(deliveries).toMatchObject([{
       bindingId: 'feishu-me', mode: 'system', idempotencyKey: 'schedule:run:feishu-me'
     }]);
+  });
+
+  it('reports delivered only after the durable channel receipt confirms provider sending', async () => {
+    let delivered = false;
+    const channels = {
+      deliver: async () => ({ deliveryId: 'same-outbox', status: 'pending' as const }),
+      getDelivery: async () => ({ id: 'same-outbox', status: delivered ? 'delivered' as const : 'sending' as const,
+        ...(delivered ? { nativeMessageId: 'provider-message' } : {}) })
+    } as unknown as ChannelService;
+    const service = new ChannelScheduleDeliveryService(channels);
+    const schedule = { id: 'schedule', delivery: { channels: [{ enabled: true, bindingId: 'feishu' }] } } as Schedule;
+    const run = { id: 'run', scheduleId: 'schedule' } as ScheduleRun;
+    await expect(service.deliver({ schedule, run, content: 'done' })).resolves.toMatchObject({ status: 'pending' });
+    delivered = true;
+    await expect(service.deliver({ schedule, run, content: 'done' })).resolves.toMatchObject({
+      status: 'delivered', messageId: 'provider-message'
+    });
   });
 });

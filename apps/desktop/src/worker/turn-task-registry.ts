@@ -1,5 +1,6 @@
 export class TurnTaskRegistry {
   private readonly tasks = new Map<string, Promise<void>>();
+  isBusy(sessionId: string): boolean { return this.tasks.has(sessionId); }
 
   launch(sessionId: string, start: () => Promise<void>): boolean {
     if (this.tasks.has(sessionId)) return false;

@@ -39,6 +39,7 @@ import { projectEntriesToMessages } from '../context/projection.js';
 import type { RuntimeEventListener } from './events.js';
 import type { RuntimeLane, RuntimeTranscriptPage, TranscriptReadOptions } from './lane.js';
 import type { RunHandle, RunRequest, TelemetrySink } from './run.js';
+import { parseRuntimeVoiceContext } from './run.js';
 import type { CreateLaneRequest, RuntimeSession } from './session.js';
 import {
   EXECUTION_SCOPE_METADATA,
@@ -83,6 +84,7 @@ export type RuntimeResolutionContext = {
   trigger?: RunRequest['trigger'];
   workflow?: RunRequest['workflow'];
   team?: RunRequest['team'];
+  voice?: RunRequest['voice'];
 };
 
 export type RuntimeHostDescriptor = {
@@ -386,6 +388,7 @@ class DefaultAgentRuntime implements AgentRuntime {
         ...(execution.trigger ? { trigger: execution.trigger } : {}),
         ...(execution.workflow ? { workflow: execution.workflow } : {}),
         ...(execution.team ? { team: execution.team } : {}),
+        ...(execution.voice ? { voice: execution.voice } : {}),
         instructions: execution.instructions.requested,
         budget: execution.budget,
         ...(request.signal ? { signal: request.signal } : {})
@@ -498,8 +501,8 @@ class DefaultAgentRuntime implements AgentRuntime {
     this.startingLanes.add(key);
     let preparedTools: RuntimeToolSource | undefined;
     let handedOff = false;
-    request = structuredCloneRequest(request);
     try {
+      request = structuredCloneRequest(request);
       let recovered: OperationExecutionSnapshotV1 | undefined;
       if (resuming) {
         const operation = await this.store.loadOperation(runId);
@@ -536,7 +539,8 @@ class DefaultAgentRuntime implements AgentRuntime {
         ...(resuming ? { recovery: { operationId: runId } } : {}),
         ...(request.trigger ? { trigger: request.trigger } : {}),
         ...(request.workflow ? { workflow: request.workflow } : {}),
-        ...(request.team ? { team: request.team } : {})
+        ...(request.team ? { team: request.team } : {}),
+        ...(request.voice ? { voice: request.voice } : {})
       };
       const environment = this.options.environment;
       if (!environment.providers.describe) executionError(resuming ? 'runtime_resume_provider_unavailable' : 'runtime_execution_provider_description_required');
@@ -567,6 +571,7 @@ class DefaultAgentRuntime implements AgentRuntime {
       let execution = parseExecutionSnapshot(recovered ?? {
         schemaVersion: 1, origin: 'public-runtime', capturedAt: this.now().getTime(), executionScope,
         actor: context.actor, trigger: request.trigger, workflow: request.workflow, team: request.team,
+        ...(request.voice ? { voice: request.voice } : {}),
         providerBinding, budget: normalizeExecutionBudget(request.budget),
         instructions: executionInstructions(request.instructions ?? [], runContext?.instructionBlocks ?? []),
         runContext: semanticContext
@@ -896,5 +901,6 @@ function parseTranscriptCursor(cursor: string | undefined): number {
 
 function structuredCloneRequest(request: RunRequest): RunRequest {
   const { signal, ...data } = request;
+  if (data.voice !== undefined) data.voice = parseRuntimeVoiceContext(data.voice);
   return { ...structuredClone(data), ...(signal ? { signal } : {}) };
 }

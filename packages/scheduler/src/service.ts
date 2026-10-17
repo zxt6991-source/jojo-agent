@@ -5,6 +5,8 @@ import type { ScheduleStore } from './store.js';
 import type {
   CreateScheduleInput,
   Schedule,
+  ScheduleDelivery,
+  ScheduleDeliveryItem,
   ScheduleEvent,
   SchedulePrincipal,
   ScheduleRun,
@@ -17,6 +19,7 @@ const DEFAULT_MISFIRE = { kind: 'fire_once' as const, graceMs: 24 * 60 * 60_000 
 
 export interface ScheduleTargetValidator {
   validate(target: ScheduleTarget): Promise<void> | void;
+  validateDelivery?(delivery: ScheduleDelivery | undefined): Promise<void> | void;
 }
 
 export interface ScheduleService {
@@ -30,6 +33,8 @@ export interface ScheduleService {
   runNow(id: string, options?: { respectConcurrency?: boolean }): Promise<ScheduleRun>;
   listRuns(id: string, options?: ScheduleRunListOptions): Promise<ScheduleRun[]>;
   getRun(runId: string): Promise<ScheduleRun>;
+  listDeliveries(runId: string): Promise<ScheduleDeliveryItem[]>;
+  replayDelivery(itemId: string): Promise<ScheduleDeliveryItem>;
   cancelRun(runId: string): Promise<void>;
   subscribe(listener: (event: ScheduleEvent) => void): () => void;
   close(): Promise<void>;
@@ -72,6 +77,7 @@ export class DefaultScheduleService implements ScheduleService {
   async create(input: CreateScheduleInput, principal: SchedulePrincipal): Promise<Schedule> {
     this.validateInput(input);
     await this.validator?.validate(input.target);
+    await this.validator?.validateDelivery?.(input.delivery);
     const now = this.now();
     const enabled = input.enabled ?? true;
     const nextRunAt = enabled ? this.initialNext(input.spec, now) : undefined;
@@ -110,6 +116,7 @@ export class DefaultScheduleService implements ScheduleService {
     };
     this.validateInput(mergedInput);
     if (input.target) await this.validator?.validate(input.target);
+    await this.validator?.validateDelivery?.(mergedInput.delivery);
     const now = this.now();
     const recalculates = input.spec !== undefined || input.enabled === true;
     const nextRunAt = mergedInput.enabled
@@ -164,6 +171,13 @@ export class DefaultScheduleService implements ScheduleService {
     return run;
   }
 
+  async listDeliveries(runId: string): Promise<ScheduleDeliveryItem[]> {
+    await this.getRun(runId);
+    return this.store.listDeliveries({ scheduleRunId: runId });
+  }
+
+  replayDelivery(itemId: string): Promise<ScheduleDeliveryItem> { return this.engine.replayDelivery(itemId); }
+
   cancelRun(runId: string): Promise<void> { return this.engine.cancelRun(runId); }
   subscribe(listener: (event: ScheduleEvent) => void): () => void { return this.events.subscribe(listener); }
 
@@ -176,6 +190,9 @@ export class DefaultScheduleService implements ScheduleService {
 
   private validateInput(input: CreateScheduleInput): void {
     if (!input.name.trim()) throw new Error('schedule_invalid_spec: Schedule name is required.');
+    if (input.target.kind === 'reminder' && (!input.target.text.trim() || input.target.text.trim().length > 200)) {
+      throw new Error('schedule_target_invalid: Reminder text must contain 1–200 characters.');
+    }
     this.calculator.validate(input.spec);
     if (input.misfire?.kind === 'fire_once' && (!Number.isSafeInteger(input.misfire.graceMs) || input.misfire.graceMs < 0)) {
       throw new Error('schedule_invalid_spec: Misfire grace must be a non-negative integer.');

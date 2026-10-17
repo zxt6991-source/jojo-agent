@@ -70,6 +70,40 @@ it('passes host cancellation through the same run lifecycle', async () => {
   } finally { await app.close(); }
 });
 
+it('persists voice provenance without changing the user actor or trigger', async () => {
+  const { app, runtime, stateStore } = fixture();
+  const voice = { voiceTurnId: 'voice-turn-a', generation: 2 };
+  try {
+    await app.openSession(ctx, { id: 's', executionScope: { kind: 'none' } });
+    const result = await app.executeRun(ctx, 's', input, { runId: 'voice-run', actor: { kind: 'main' }, trigger: { kind: 'user' }, metadata: { voice } });
+    expect((await stateStore.runs.get('voice-run'))?.requestMeta?.origin).toEqual({ kind: 'user', voice });
+    expect((await runtime.inspectRun('voice-run'))?.execution).toMatchObject({ actor: { kind: 'main' }, trigger: { kind: 'user' }, voice });
+    expect(result.messages.filter(message => message.role === 'user')).toHaveLength(1);
+    expect(result.messages.find(message => message.role === 'user')?.metadata?.voice).toEqual(voice);
+    expect(result.messages.find(message => message.role === 'assistant')?.metadata?.voice).toBeUndefined();
+  } finally { await app.close(); }
+});
+
+it('rejects malformed voice metadata before creating an application Run', async () => {
+  const { app, stateStore } = fixture();
+  try {
+    await app.openSession(ctx, { id: 's', executionScope: { kind: 'none' } });
+    await expect(app.startRun(ctx, 's', input, { runId: 'bad-voice', metadata: { voice: { voiceTurnId: 'a', generation: -1 } } })).rejects.toThrow('runtime_voice_context_invalid');
+    expect(await stateStore.runs.get('bad-voice')).toBeUndefined();
+    const result = await app.executeRun(ctx, 's', input, { runId: 'valid-text' }); expect(result.status).toBe('completed');
+  } finally { await app.close(); }
+});
+
+it('retains voice provenance when adopting a Runtime run whose application record was absent', async () => {
+  const { app, runtime, stateStore } = fixture(); const voice = { voiceTurnId: 'voice-orphan', generation: 0 };
+  try {
+    const session = await runtime.openSession({ id: 's', executionScope: { kind: 'none' } });
+    const result = await (await (await session.getLane()).run({ ...input, runId: 'orphan-voice-run', actor: { kind: 'main' }, trigger: { kind: 'user' }, voice })).result;
+    expect(await app.resumeRun(ctx, 's', result.runId)).toEqual(result);
+    expect((await stateStore.runs.get(result.runId))?.requestMeta?.origin).toEqual({ kind: 'user', voice });
+  } finally { await app.close(); }
+});
+
 it('adopts a Runtime terminal result without executing it again', async () => {
   const { app, runtime } = fixture();
   try {

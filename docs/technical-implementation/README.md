@@ -1,13 +1,13 @@
 # 各 Workspace 技术实现方案
 
-> 文档状态：2026-08-29
+> 文档状态：2026-10-17（语音仅保留本地实现）
 > 适用版本：0.1.0
 
 本文档集说明 pnpm monorepo 中每个应用或包的技术实现。文中的“当前实现”均以仓库代码为准；“演进方案”是后续扩展建议，不代表已经可用。与代码冲突时以 Contracts、Runtime 公共 API 和测试为准。
 
 跨模块的个人 Agent 演进方案见 [通用个人 Agent 技术实现方案](../jojo-personal-agent-technical-implementation-plan.md)，涵盖领域上下文、资料检索、应用接入、产物交付、长期任务、事件自动化、执行收据、预算与分批验收。
 
-语音能力的实施基线见 [语音对话与定时语音提醒最终技术方案（豆包 ASR + TTS）](../jojo-voice-conversation-and-scheduled-reminders-design.md)，明确豆包原生适配器、PCM 采集、按键与连续对话、纯提醒 Target、可靠投递及后台播放，当前为待开发方案。
+语音能力当前使用本地 SenseVoice 与 macOS 系统朗读，配置、PCM 采集 UI、转写校正 / 提交去重、独立 AudioHost、系统通知与显式托盘常驻见 [Speech](./speech.md)；无模型提醒、原子 Delivery Outbox 与分目的地 claim / ACK 见 [Durable Scheduler](./scheduler.md)。早期[语音对话与定时语音提醒设计](../jojo-voice-conversation-and-scheduled-reminders-design.md)保留为历史方案，云端语音适配与密钥链路已删除。设备、OS 通知与签名包验收及连续监听仍待完成。
 
 ## Workspace 清单
 
@@ -30,6 +30,7 @@
 | `packages/orchestration` | `@desktop-agent/orchestration` | Spawn、Persistent Team、Workflow Engine、Isolation、Saved Workflow | [Spawn / Team](../Jojo-Agent-Spawn-Team.md)、[统一设计路线图](../subagent-workflow-unified-design-roadmap.md) |
 | `packages/scheduler` | `@desktop-agent/scheduler` | 持久时间触发、ScheduleRun、Misfire / Overlap、恢复与 Target Dispatcher | [Durable Scheduler](./scheduler.md)、[具体实现设计](../Jojo-Agent-Durable-Scheduler.md) |
 | `packages/providers` | `@desktop-agent/providers` | Chat Completions 与 Embedding 协议适配 | [Providers](./providers.md) |
+| `packages/speech` | `@desktop-agent/speech` | 文字规范化、ASR / TTS 生命周期与音频缓存编排 | [Speech](./speech.md) |
 | Phase 2 横切能力 | 多包协作 | Provider 配置、模型发现与上下文稳定性 | [Phase 2 方案](../phase-2-multi-provider-context.md) |
 | `packages/tools-node` | `@desktop-agent/tools-node` | 本地文件、目录、公开网页检索、终端工具及权限 Gate | [Tools Node](./tools-node.md) |
 | `packages/process-sandbox` | `@desktop-agent/process-sandbox` | Terminal / MCP stdio 共用的进程隔离、环境 allowlist、脱敏与平台后端 | [Terminal / MCP 权限与沙箱加固](../jojo-terminal-mcp-permission-sandbox-hardening-design.md) |
@@ -95,7 +96,7 @@ flowchart TB
 - `packages/client` 只依赖 `server-protocol`，不依赖 Runtime。
 - `apps/desktop` 的 Utility Process Worker 完成 Desktop 侧依赖注入（Spawn / Team / Workflow、Memory、MCP/Skills、Browser、Hooks），再进入 Runtime。Team 使用独立持久 Session / Lane 与 `runtime/teams.sqlite`，不随聊天 Session 删除；Main / Preload / Worker 的严格 IPC 支持 Team CRUD、状态查询和成员启停，Renderer 设置页提供对应控制面。
 - `tools-node` 和 `extensions` 共用 `process-sandbox`。Terminal 始终通过它执行；Desktop MCP stdio 强制通过它启动，避免各自维护不同的环境、进程树和平台隔离逻辑。
-- `apps/server` 导出 `createHeadlessServer()` / `createNetworkServer()`，默认监听 `127.0.0.1:7788`；非回环地址必须同时启用 `allowRemote` 并配置 token。当前默认能力为 Runtime Run / Lane / 审批 / 图片 / Sub-Agent，以及 Agent-only Durable Scheduler REST / WebSocket 控制面；Workflow、Team、Browser、Memory 远程 API 尚未开放。
+- `apps/server` 导出 `createHeadlessServer()` / `createNetworkServer()`，默认监听 `127.0.0.1:7788`；非回环地址必须同时启用 `allowRemote` 并配置 token。当前默认能力为 Runtime Run / Lane / 审批 / 图片 / Sub-Agent，以及 Agent / Reminder Durable Scheduler REST / WebSocket 控制面；本机语音投递明确拒绝，Workflow、Team、Browser、Memory 远程 API 尚未开放。
 
 ## 一次对话的端到端链路
 

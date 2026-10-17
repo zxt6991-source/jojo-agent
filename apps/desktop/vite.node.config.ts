@@ -1,11 +1,13 @@
 import type { UserConfig } from 'vite';
 import { fileURLToPath } from 'node:url';
+import { builtinModules } from 'node:module';
 
 export const electronNodeExternals: Array<string | RegExp> = [
   'electron',
   /^pdfjs-dist\//u,
   'bufferutil',
   'utf-8-validate',
+  ...builtinModules,
   /^node:/u
 ];
 
@@ -18,6 +20,8 @@ export function isElectronNodeExternal(id: string): boolean {
 export const electronNodeConfig: UserConfig = {
   resolve: {
     conditions: ['node', 'module', 'development|production'],
+    // Main/Utility Process must resolve Node entries even in a client Vite build.
+    mainFields: ['module', 'main'],
     alias: {
       '@desktop-agent/attachment-extractors': fileURLToPath(new URL('../../packages/attachment-extractors/src/index.ts', import.meta.url)),
       '@desktop-agent/attachment-access/local': fileURLToPath(new URL('../../packages/attachment-access/src/local.ts', import.meta.url)),
@@ -41,6 +45,7 @@ export const electronNodeConfig: UserConfig = {
       '@desktop-agent/memory': fileURLToPath(new URL('../../packages/memory/src/index.ts', import.meta.url)),
       '@desktop-agent/runtime-composition': fileURLToPath(new URL('../../packages/runtime-composition/src/index.ts', import.meta.url)),
       '@desktop-agent/scheduler': fileURLToPath(new URL('../../packages/scheduler/src/index.ts', import.meta.url))
+      ,'@desktop-agent/speech': fileURLToPath(new URL('../../packages/speech/src/index.ts', import.meta.url))
     }
   },
   build: {

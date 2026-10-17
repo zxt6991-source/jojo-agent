@@ -12,6 +12,10 @@ import { SemanticIndexStatusSchema } from './memory-semantic.js';
 import { OrchestrationEventSchema, TeamSnapshotSchema, TeamStatusSnapshotSchema } from './orchestration.js';
 import { SaveTeamInputSchema } from './desktop.js';
 import { ProviderSettingsSchema } from './persistence.js';
+import { ScheduleDeliveryControlSchema, ScheduleDesktopDeliverySchema, ScheduleDesktopOutcomeSchema, SchedulePlaybackIdentitySchema, ReplayScheduleDeliveryInputSchema, PreviewScheduleVoiceInputSchema, ScheduleVoicePreparationSchema } from './scheduler-desktop.js';
+import { SpeechCaptureHandleSchema, CommitVoiceTurnInputSchema, ReadSpeechMessageInputSchema,
+  TestSpeechSettingsInputSchema, ResolveSpeechAssetInputSchema, SpeechEventSchema,
+  VoiceCommitResultSchema, SpeechReadyAssetSchema, SpeechStatusSchema, ReadApprovalSpeechInputSchema } from './speech-ui.js';
 import {
   ScheduleEventSchema,
   ScheduleIdInputSchema,
@@ -27,6 +31,24 @@ export const MAX_ORCHESTRATION_EVENT_BYTES = 4 * 1024 * 1024;
 const IdSchema = z.string().min(1).max(256);
 const WorkingDirectorySchema = z.string().min(1).max(4_096);
 const ErrorSchema = z.string().max(100_000);
+
+export const SpeechControlSchema = z.discriminatedUnion('action', [
+  z.object({ action: z.literal('stopRead'), sessionId: IdSchema.optional(), generation: z.number().int().nonnegative().optional() }).strict(),
+  z.object({ action: z.literal('cancel'), input: SpeechCaptureHandleSchema }).strict(),
+  z.object({ action: z.literal('commit'), input: CommitVoiceTurnInputSchema }).strict(),
+  z.object({ action: z.literal('readMessage'), input: ReadSpeechMessageInputSchema }).strict(),
+  z.object({ action: z.literal('readApproval'), input: ReadApprovalSpeechInputSchema }).strict(),
+  z.object({ action: z.literal('approvalPending'), input: ReadApprovalSpeechInputSchema }).strict(),
+  z.object({ action: z.literal('previewSchedule'), input: PreviewScheduleVoiceInputSchema }).strict(),
+  z.object({ action: z.literal('scheduleVoicePreparation'), input: ScheduleIdInputSchema }).strict(),
+  z.object({ action: z.literal('clearCache') }).strict(),
+  z.object({ action: z.literal('test'), input: TestSpeechSettingsInputSchema }).strict(),
+  z.object({ action: z.literal('resolveAsset'), input: ResolveSpeechAssetInputSchema }).strict(),
+  z.object({ action: z.literal('releaseSession'), sessionId: IdSchema }).strict(),
+  z.object({ action: z.literal('status') }).strict()
+]);
+export type SpeechControl = z.infer<typeof SpeechControlSchema>;
+export const SpeechStreamAttachSchema = z.object({ type: z.literal('speech.stream.attach'), handle: SpeechCaptureHandleSchema }).strict();
 
 const MemoryEntryIpcSchema = z.object({
   id: z.string().min(1).max(512), scopeId: z.string().min(1).max(512), kind: MemoryKindSchema,
@@ -54,6 +76,12 @@ export const MemoryStatusSnapshotIpcSchema = z.object({
 }).strict();
 
 const WorkerCommandBaseSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('scheduler.desktop.result'), requestId: IdSchema, outcome: ScheduleDesktopOutcomeSchema }).strict(),
+  z.object({ type: z.literal('scheduler.delivery.control'), requestId: IdSchema, control: ScheduleDeliveryControlSchema }).strict(),
+  z.object({ type: z.literal('scheduler.resume') }).strict(),
+  z.object({ type: z.literal('scheduler.suspend') }).strict(),
+  z.object({ type: z.literal('scheduler.delivery.replay'), requestId: IdSchema, input: ReplayScheduleDeliveryInputSchema }).strict(),
+  z.object({ type: z.literal('speech.control'), requestId: IdSchema, control: SpeechControlSchema }).strict(),
   z.object({ type: z.literal('turn.start'), payload: StartTurnInputSchema }).strict(),
   z.object({ type: z.literal('turn.cancel'), sessionId: IdSchema }).strict(),
   z.object({ type: z.literal('session.metadata'), requestId: IdSchema, operation: SessionMetadataOperationSchema }).strict(),
@@ -126,6 +154,14 @@ const SizedOrchestrationEventSchema = OrchestrationEventSchema.superRefine((valu
 });
 
 const WorkerMessageBaseSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('scheduler.desktop.delivery'), requestId: IdSchema, delivery: ScheduleDesktopDeliverySchema }).strict(),
+  z.object({ type: z.literal('scheduler.desktop.cancel'), identity: SchedulePlaybackIdentitySchema }).strict(),
+  z.object({ type: z.literal('scheduler.delivery.result'), requestId: IdSchema, ok: z.boolean() }).strict(),
+  z.object({ type: z.literal('speech.event'), event: SpeechEventSchema }).strict(),
+  z.object({ type: z.literal('speech.result'), requestId: IdSchema, ok: z.boolean(),
+    result: z.union([z.boolean(), ScheduleVoicePreparationSchema, VoiceCommitResultSchema, SpeechReadyAssetSchema,
+      SpeechStatusSchema.extend({ validationSignature: z.string().regex(/^[a-f0-9]{64}$/u).optional() })]).optional(),
+    error: z.string().max(1_000).optional() }).strict(),
   z.object({ type: z.literal('ready') }).strict(),
   z.object({ type: z.literal('agent.event'), event: AgentEventSchema }).strict(),
   z.object({ type: z.literal('orchestration.event'), event: SizedOrchestrationEventSchema }).strict(),

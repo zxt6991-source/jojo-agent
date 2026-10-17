@@ -7,9 +7,9 @@
 | 格式 | 当前版本 |
 |---|---|
 | appVersion | 0.1.0 |
-| serverProtocol | 3 |
+| serverProtocol | 4 |
 | serverStateSchema | 6 |
-| configSchema | 4 |
+| configSchema | 5 |
 | sessionJsonlSchema | 1 |
 | runtimeContract | 1 |
 | runtimeSqliteSchema | 4 |
@@ -33,6 +33,6 @@
 
 这里描述内置 Host 的可用能力；Scheduler、Channel 等可选服务的实际启用状态由 ServerCapabilities 返回，定制 Host 可以覆盖默认能力。CLI 与 Client 应读取服务端能力，不能把此表当作当前连接的实时状态。
 
-- Desktop Scheduler targets：agent, workflow, team_member。
-- Headless Scheduler targets：agent。
+- Desktop Scheduler targets：agent, workflow, team_member, reminder。
+- Headless Scheduler targets：agent, reminder。
 - Desktop 的功能可见性尚未全部接入此 Manifest。

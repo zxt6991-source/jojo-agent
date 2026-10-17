@@ -1,7 +1,8 @@
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
-import type { MemoryEntry, MemoryKind, MemorySearchResult, MemoryScope } from '@desktop-agent/contracts';
+import { MemoryError, type MemoryEntry, type MemoryKind, type MemorySearchResult, type MemoryScope } from '@desktop-agent/contracts';
+import { getKnownCompatibleMemoryIndexFtsMode, MEMORY_INDEX_SCHEMA_SQL } from './index-compatibility.js';
 
 type Row = Record<string, unknown>;
 
@@ -45,44 +46,28 @@ export class MemoryIndex {
   constructor(readonly filename: string) {
     mkdirSync(path.dirname(filename), { recursive: true, mode: 0o700 });
     this.database = new DatabaseSync(filename);
-    this.database.exec('PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;');
-    this.database.exec(`
-      CREATE TABLE IF NOT EXISTS memory_scopes (
-        id TEXT PRIMARY KEY,
-        kind TEXT NOT NULL CHECK(kind IN ('global', 'project')),
-        canonical_path TEXT,
-        display_name TEXT NOT NULL,
-        content_version INTEGER NOT NULL DEFAULT 0,
-        content_hash TEXT NOT NULL,
-        updated_at INTEGER NOT NULL,
-        dirty INTEGER NOT NULL DEFAULT 0
-      );
-      CREATE TABLE IF NOT EXISTS memory_entries (
-        id TEXT PRIMARY KEY,
-        scope_id TEXT NOT NULL REFERENCES memory_scopes(id) ON DELETE CASCADE,
-        kind TEXT NOT NULL,
-        status TEXT NOT NULL,
-        title TEXT,
-        content TEXT NOT NULL,
-        tags_json TEXT NOT NULL,
-        source_file TEXT NOT NULL,
-        source_session_id TEXT,
-        source_operation_id TEXT,
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL,
-        content_hash TEXT NOT NULL,
-        rule_mode TEXT,
-        triggers_json TEXT,
-        unknown_metadata_json TEXT NOT NULL
-      );
-      CREATE INDEX IF NOT EXISTS memory_entries_scope ON memory_entries(scope_id);
-    `);
-    const scopeColumns = this.database.prepare('PRAGMA table_info(memory_scopes)').all() as Row[];
-    if (!scopeColumns.some((column) => column.name === 'dirty')) {
-      this.database.exec('ALTER TABLE memory_scopes ADD COLUMN dirty INTEGER NOT NULL DEFAULT 0;');
+    try {
+      const version = this.database.prepare('PRAGMA user_version').get()?.user_version;
+      if (typeof version !== 'number' || !Number.isSafeInteger(version) || version < 0) {
+        throw new MemoryError('memory_index_corrupted', 'Memory index is corrupted.');
+      }
+      if (version > 2) throw new MemoryError('memory_index_future_version', 'Memory index was created by a newer version.');
+      const compatibleFtsMode = version === 2 ? getKnownCompatibleMemoryIndexFtsMode(this.database, version) : undefined;
+      if (version === 2 && compatibleFtsMode === undefined) {
+        throw new MemoryError('memory_index_corrupted', 'Memory index version 2 has an unsupported schema.');
+      }
+      this.database.exec('PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;');
+      this.database.exec(MEMORY_INDEX_SCHEMA_SQL);
+      const scopeColumns = this.database.prepare('PRAGMA table_info(memory_scopes)').all() as Row[];
+      if (!scopeColumns.some((column) => column.name === 'dirty')) {
+        this.database.exec('ALTER TABLE memory_scopes ADD COLUMN dirty INTEGER NOT NULL DEFAULT 0;');
+      }
+      if (version < 1) this.database.exec('PRAGMA user_version = 1;');
+      this.ftsMode = compatibleFtsMode && compatibleFtsMode !== 'none' ? compatibleFtsMode : this.ensureFts();
+    } catch (error) {
+      this.database.close();
+      throw error;
     }
-    this.database.exec('PRAGMA user_version = 1;');
-    this.ftsMode = this.ensureFts();
   }
 
   close(): void { this.database.close(); }

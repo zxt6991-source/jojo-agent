@@ -2,12 +2,15 @@ import { BUILD_COMPATIBILITY } from '@desktop-agent/contracts/build-compatibilit
 import { appendFile, copyFile, mkdir, readFile, readdir, rename, rmdir, stat, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
+import { migrateStoredSpeechSettings } from './speech-config-migration.js';
 import {
   MessageSchema,
   ProviderConfigSchema,
   legacyModelConfig,
   DEFAULT_PROVIDERS,
   ProviderSettingsSchema,
+  SpeechSettingsSchema,
+  createLocalSpeechSettings,
   SessionMetaSchema,
   SessionRecordSchema,
   isPlaceholderSessionTitle,
@@ -32,6 +35,8 @@ export { SERVER_STATE_SCHEMA_VERSION } from './server-state-schema.js';
 export { SqliteAgentRuntimeStore } from './sqlite-runtime-store.js';
 export { SqliteTeamStore } from './sqlite-team-store.js';
 export { SqliteScheduleStore } from './sqlite-schedule-store.js';
+export { SqliteSpeechAssetStore, type ReadySpeechAsset } from './sqlite-speech-asset-store.js';
+export * from './voice-commit-ledger.js';
 
 const StoredConfigV1Schema = z.object({
   schemaVersion: z.literal(1),
@@ -64,9 +69,13 @@ const StoredConfigV3Schema = z.object({
 });
 
 const StoredConfigV4Schema = StoredConfigV3Schema.extend({
-  schemaVersion: z.literal(BUILD_COMPATIBILITY.configSchema), providers: z.array(ProviderConfigSchema).min(1)
+  schemaVersion: z.literal(4), providers: z.array(ProviderConfigSchema).min(1)
 });
-const StoredConfigSchema = z.union([StoredConfigV1Schema, StoredConfigV2Schema, StoredConfigV3Schema, StoredConfigV4Schema]);
+const StoredConfigV5Schema = StoredConfigV4Schema.extend({
+  schemaVersion: z.literal(BUILD_COMPATIBILITY.configSchema),
+  speech: z.preprocess(migrateStoredSpeechSettings, SpeechSettingsSchema).default(createLocalSpeechSettings)
+});
+const StoredConfigSchema = z.union([StoredConfigV1Schema, StoredConfigV2Schema, StoredConfigV3Schema, StoredConfigV4Schema, StoredConfigV5Schema]);
 
 export class JsonlSessionStore {
   private readonly locks = new Set<string>();
@@ -284,7 +293,8 @@ export class JsonConfigStore {
         return ProviderSettingsSchema.parse({
           activeProviderId: 'openai',
           providers: DEFAULT_PROVIDERS.map((provider) => ({ ...provider, hasApiKey: hasKey(provider.id) })),
-          utilityModel: { providerId: 'openai', model: 'gpt-5-mini' }
+          utilityModel: { providerId: 'openai', model: 'gpt-5-mini' },
+          ...(stored.schemaVersion === 5 ? { speech: stored.speech } : {})
         });
       }
       const activeProvider = providers.find((provider) => provider.id === stored.activeProviderId) ?? providers[0]!;
@@ -298,7 +308,8 @@ export class JsonConfigStore {
         utilityModel,
         ...(stored.permissions !== undefined ? { permissions: stored.permissions } : {}),
         ...(stored.memory !== undefined ? { memory: stored.memory } : {}),
-        ...(stored.extensions !== undefined ? { extensions: stored.extensions } : {})
+        ...(stored.extensions !== undefined ? { extensions: stored.extensions } : {}),
+        ...(stored.schemaVersion === 5 ? { speech: stored.speech } : {})
       });
     } catch {
       return ProviderSettingsSchema.parse({
@@ -320,7 +331,8 @@ export class JsonConfigStore {
       utilityModel: validSettings.utilityModel,
       permissions: validSettings.permissions,
       memory: validSettings.memory,
-      extensions: validSettings.extensions
+      extensions: validSettings.extensions,
+      speech: validSettings.speech
     };
     await writeFile(temporary, JSON.stringify(stored, null, 2), { encoding: 'utf8', mode: 0o600 });
     await rename(temporary, this.filePath);

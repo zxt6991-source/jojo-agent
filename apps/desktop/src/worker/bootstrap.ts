@@ -110,9 +110,13 @@ import { createSessionController } from './session-controller';
 import { InteractiveTerminalSecretBroker } from './terminal-secret-broker';
 import { createTurnController } from './turn-controller';
 import { TurnTaskRegistry } from './turn-task-registry';
+import { DesktopSpeechRuntime } from './speech-runtime';
+import { DesktopVoiceTasks, VoiceRunBusyError } from './voice-tasks';
+import { createE2eSpeechProvider } from './e2e-speech-provider';
+import type { PcmAudioPort } from './pcm-upload-stream';
 
 export function startWorkerHost(): void {
-  type ParentPort = { on(event: 'message', listener: (event: { data: unknown }) => void): void; postMessage(message: WorkerMessage): void };
+  type ParentPort = { on(event: 'message', listener: (event: { data: unknown; ports?: PcmAudioPort[] }) => void): void; postMessage(message: WorkerMessage): void };
   const parentPort = (process as typeof process & { parentPort?: ParentPort }).parentPort;
   if (!parentPort) throw new Error('Agent worker must run as an Electron utility process.');
 
@@ -120,6 +124,8 @@ export function startWorkerHost(): void {
   if (!configuredDataDirectory) throw new Error('DESKTOP_AGENT_DATA_DIR is required.');
   const dataDirectory: string = configuredDataDirectory;
   const e2eMode = process.env.JOJO_E2E === '1';
+  const speechRuntime = new DesktopSpeechRuntime(dataDirectory,
+    e2eMode && process.env.JOJO_E2E_SPEECH === '1' ? { createProvider: createE2eSpeechProvider } : {});
   let runtime: { settings: ProviderSettings; apiKeys: Record<string, string> } | null = null;
   let desktopChannelSecrets: Record<string, string> = {};
   const store = new DesktopSessionMetadataStore(path.join(dataDirectory, 'sessions'), path.join(dataDirectory, 'runtime', 'application.sqlite'));
@@ -134,7 +140,7 @@ export function startWorkerHost(): void {
     grantStore: permissionGrantStore
   });
   const hookTrustStore = new FileHookTrustStore(path.join(os.homedir(), '.jojo', 'hooks-trust.json'));
-  const memoryRoot = path.join(os.homedir(), '.jojo', 'memory');
+  const memoryRoot = e2eMode ? path.join(dataDirectory, 'memory') : path.join(os.homedir(), '.jojo', 'memory');
   const memoryIndex = new MemoryIndex(path.join(dataDirectory, 'runtime', 'memory.sqlite'));
   const memoryStore = new MarkdownMemoryStore(memoryRoot, memoryIndex);
   const semanticBackend = new SqliteSemanticMemoryBackend(path.join(dataDirectory, 'runtime', 'memory-semantic.sqlite'));
@@ -324,7 +330,11 @@ export function startWorkerHost(): void {
     resolveProject: async directory => (await createProjectIdentity(directory)) ?? undefined,
     readMessages: async sessionId => agentRuntimeStore.readConversationMessages(sessionId),
     stopSession: async sessionId => { await stopSession(sessionId); permissionGrantStore.clearSession(sessionId); },
-    deleteRuntimeSession: async sessionId => { agentRuntimeStore.deleteSessionPermanently(sessionId); },
+    deleteRuntimeSession: async sessionId => {
+      await voiceTasks?.releaseSession(sessionId);
+      await speechRuntime.releaseOwner({ kind: 'session', id: sessionId });
+      agentRuntimeStore.deleteSessionPermanently(sessionId);
+    },
     deleteApplicationSession: async sessionId => { applicationState.deleteSessionPermanently(sessionId); }
   });
   async function getSessionMetadata(sessionId: string): Promise<SessionMeta | null> {
@@ -621,6 +631,7 @@ export function startWorkerHost(): void {
     terminalSecrets: Record<string, string>
   ): Promise<void> {
     runtime = { settings, apiKeys };
+    await speechRuntime.configure(settings.speech);
     // The scheduler may now restore persisted occurrences. Dispatch preparation
     // still awaits the complete extensionReady chain, so resolving here avoids a
     // permanent startup wait when an optional extension later fails to configure.
@@ -835,6 +846,7 @@ export function startWorkerHost(): void {
   }
 
   async function validateScheduleTarget(target: ScheduleTarget): Promise<void> {
+    if (target.kind === 'reminder') return;
     if (target.kind === 'workflow') {
       scheduledAgentConfiguration({
         kind: 'agent', sessionId: target.sessionId, input: { content: [{ type: 'text', text: 'workflow' }] },
@@ -1131,6 +1143,27 @@ export function startWorkerHost(): void {
       subscribeOrchestration,
       prepareAgent: prepareScheduledAgent,
       validateTarget: validateScheduleTarget,
+      desktop: { speech: speechRuntime, readSettings: () => runtime!.settings.speech, post },
+      resultContent: {
+        readCommittedResult: async ({ targetKind, executionId }) => {
+          if (targetKind === 'team_member') {
+            const task = await teamManager.getTask(executionId);
+            return task?.state === 'completed' ? task.result : undefined;
+          }
+          if (targetKind === 'workflow') {
+            const result = await workflowManager.get(executionId);
+            return result?.state === 'completed' ? result.result : undefined;
+          }
+          const operation = await agentRuntimeStore.loadOperation(executionId);
+          if (operation?.state.phase !== 'completed' || !operation.state.finalEntryId) return undefined;
+          agentRuntimeStore.flushConversationMessages(operation.meta.sessionId);
+          const messages = agentRuntimeStore.readConversationMessages(operation.meta.sessionId);
+          const finalEntryId = operation.state.finalEntryId;
+          const message = messages.find(value => value.id === finalEntryId);
+          if (!message || message.role !== 'assistant' || message.metadata?.internal || message.content.some(value => value.type === 'tool_call')) return undefined;
+          return message.content.filter(value => value.type === 'text').map(value => value.text).join('\n') || undefined;
+        }
+      },
       deliveryService: new CompositeScheduleDeliveryService([
         new ConversationScheduleDeliveryService({
           appendMessage: async (sessionId, message) => {
@@ -1164,8 +1197,45 @@ export function startWorkerHost(): void {
     }))
     .finally(() => post({ type: 'ready' }));
 
+  const voiceTasks = new DesktopVoiceTasks(speechRuntime, dataDirectory, {
+    emit: event => post({ type: 'speech.event', event }),
+    isApprovalPending: async (sessionId, approvalId) => approvals.get(approvalId)?.sessionId === sessionId,
+    readCommittedMessages: async sessionId => {
+      const session = await getSessionMetadata(sessionId);
+      if (!session) throw new Error('speech_session_unavailable');
+      await prepareTranscript(sessionId);
+      return agentRuntimeStore.readConversationMessages(sessionId);
+    },
+    isBusy: async sessionId => stoppingTranscripts.has(sessionId) || preparingTranscripts.has(sessionId)
+      || turnTasks.isBusy(sessionId) || Boolean((await agentRuntimeStore.getLane(sessionId, 'main'))?.currentOperationId),
+    submit: (input, runId) => new Promise((resolve, reject) => {
+      const launched = turnTasks.launch(input.sessionId, () => startTurn(input.sessionId, input.text, [], input.providerId, input.model, {
+        runId, actor: { kind: 'main' }, trigger: { kind: 'user', id: input.voiceTurnId },
+        voice: { voiceTurnId: input.voiceTurnId, generation: input.generation },
+        onStarted: () => resolve({ runId }), onFailed: reject
+      }));
+      if (!launched) reject(new VoiceRunBusyError());
+    }),
+    inspectRun: async record => {
+      const [application, operation] = await Promise.all([applicationState.runs.get(record.runId), agentRuntimeStore.loadOperation(record.runId)]);
+      if (!application && !operation) return 'missing';
+      if (!application) return 'unknown';
+      if (application.sessionId !== record.sessionId || application.laneId !== record.laneId
+        || application.providerId !== record.providerId || application.model !== record.model) return 'unknown';
+      const inputHash = createHash('sha256').update(JSON.stringify({ content: [{ text: record.text, type: 'text' }] })).digest('hex');
+      const applicationVoice = application.requestMeta?.origin?.voice;
+      if (application.inputHash !== inputHash || applicationVoice?.voiceTurnId !== record.voiceTurnId
+        || applicationVoice.generation !== record.generation) return 'unknown';
+      if (!operation) return 'accepted';
+      if (operation.meta.sessionId !== record.sessionId || operation.meta.lane !== record.laneId
+        || operation.meta.providerId !== record.providerId || operation.meta.model !== record.model) return 'unknown';
+      const runtimeVoice = operation.meta.execution?.voice;
+      if (runtimeVoice?.voiceTurnId !== record.voiceTurnId || runtimeVoice.generation !== record.generation) return 'unknown';
+      return 'started';
+    }
+  });
   bindWorkerIpc({
-    parentPort, sessionController,
+    parentPort, sessionController, voiceTasks,
     get desktopChannelSecrets() { return desktopChannelSecrets; },
     set desktopChannelSecrets(value) { desktopChannelSecrets = value; },
     get extensionReady() { return extensionReady; },
@@ -1173,8 +1243,9 @@ export function startWorkerHost(): void {
     get runtime() { return runtime; }, agentRuntimeStore, utilityCompletion, browserBridge, sessionHookRuntimes, teamReady, teamManager, schedulerReady, compactScheduleInput, channelSnapshot, mutateChannel, memoryReady, memoryStatus, memoryService, memoryCandidateService
   });
   process.once('SIGTERM', () => {
+    voiceTasks?.dispose();
     void Promise.allSettled([
-      schedulerReady.then((activeScheduler) => activeScheduler.close()),
+      schedulerReady.then((activeScheduler) => activeScheduler.close()).finally(() => speechRuntime.close()),
       channelReady.then((activeChannels) => activeChannels.stop()),
       mcpManager.close(),
       semanticMemoryService.idle(),

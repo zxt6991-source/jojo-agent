@@ -58,7 +58,7 @@ function mapCode(code: string): string {
     'approval_interrupted', 'run_transition_conflict', 'schedule_not_found', 'schedule_run_not_found',
     'schedule_conflict', 'schedule_revision_conflict', 'schedule_run_conflict',
     'schedule_run_revision_conflict', 'schedule_run_transition_conflict', 'schedule_invalid_spec',
-    'schedule_target_invalid', 'schedule_target_not_found', 'schedule_run_not_cancellable',
+    'schedule_target_invalid', 'schedule_target_not_found', 'schedule_run_not_cancellable', 'schedule_delivery_unavailable',
     'schedule_dispatch_uncertain', 'scheduler_unavailable', 'scheduler_not_leader', 'scheduler_store_failed'
     , 'channels_unavailable', 'channel_instance_not_found', 'channel_binding_not_found', 'channel_pairing_not_found',
     'channel_delivery_not_found', 'channel_instance_revision_conflict', 'channel_binding_revision_conflict',

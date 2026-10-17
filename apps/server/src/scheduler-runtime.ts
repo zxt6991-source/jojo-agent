@@ -1,6 +1,6 @@
 import type { JojoAppService } from '@desktop-agent/app-service';
 import path from 'node:path';
-import type { AgentRuntime } from '@desktop-agent/agent-runtime';
+import type { AgentRuntime, RuntimeRunSnapshot } from '@desktop-agent/agent-runtime';
 import {
   AgentScheduleDispatcher,
   AgentScheduleTargetValidator,
@@ -8,6 +8,7 @@ import {
   DefaultScheduleService,
   DurableScheduleEngine,
   MemoryScheduleStore,
+  ReminderScheduleDispatcher,
   ScheduleDispatcherRegistry,
   type CreateScheduleInput,
   type Schedule,
@@ -17,6 +18,8 @@ import {
   type ScheduleRunListOptions,
   type ScheduleService,
   type ScheduleDeliveryService,
+  type ScheduleDelivery,
+  type ScheduleDeliveryItem,
   type ScheduleTarget,
   type ScheduleTargetValidator,
   type UpdateScheduleInput
@@ -33,18 +36,31 @@ export type HeadlessSchedulerRuntimeOptions = {
   deliveryService?: ScheduleDeliveryService;
 };
 
-class HeadlessAgentTargetValidator implements ScheduleTargetValidator {
+export function committedHeadlessScheduleResult(snapshot: RuntimeRunSnapshot | undefined): string | undefined {
+  if (snapshot?.status !== 'completed' || !snapshot.result) return undefined;
+  const message = snapshot.result.messages.at(-1);
+  if (!message || message.role !== 'assistant' || message.metadata?.internal || !message.content.length ||
+    message.content.some((block) => block.type !== 'text')) return undefined;
+  return message.content.flatMap((block) => block.type === 'text' ? [block.text] : []).join('').trim() || undefined;
+}
+
+class HeadlessScheduleTargetValidator implements ScheduleTargetValidator {
   private readonly agent: AgentScheduleTargetValidator;
 
   constructor(runtime: AgentRuntime) {
     this.agent = new AgentScheduleTargetValidator(runtime);
   }
 
-  validate(target: ScheduleTarget): Promise<void> {
+  async validate(target: ScheduleTarget): Promise<void> {
+    if (target.kind === 'reminder') return;
     if (target.kind !== 'agent') {
-      throw new Error(`schedule_target_invalid: Headless Server only supports agent targets; received ${target.kind}.`);
+      throw new Error(`schedule_target_invalid: Headless Server supports agent and reminder targets; received ${target.kind}.`);
     }
     return this.agent.validate(target);
+  }
+
+  validateDelivery(delivery: ScheduleDelivery | undefined): void {
+    if (delivery?.voice?.enabled) throw new Error('schedule_delivery_unavailable: Headless Server has no local desktop voice device.');
   }
 }
 
@@ -76,6 +92,8 @@ class ManagedScheduleService implements ScheduleService {
   }
   getRun(runId: string): Promise<ScheduleRun> { return this.service.getRun(runId); }
   cancelRun(runId: string): Promise<void> { return this.service.cancelRun(runId); }
+  listDeliveries(runId: string): Promise<ScheduleDeliveryItem[]> { return this.service.listDeliveries(runId); }
+  replayDelivery(itemId: string): Promise<ScheduleDeliveryItem> { return this.service.replayDelivery(itemId); }
   subscribe(listener: (event: ScheduleEvent) => void): () => void { return this.service.subscribe(listener); }
 
   async close(): Promise<void> {
@@ -110,6 +128,7 @@ export async function createHeadlessSchedulerRuntime(
     })
   });
   registry.register(dispatcher);
+  registry.register(new ReminderScheduleDispatcher());
   const engine = new DurableScheduleEngine(
     store,
     calculator,
@@ -118,11 +137,18 @@ export async function createHeadlessSchedulerRuntime(
     {
       ...(options.now ? { now: options.now } : {}),
       ...(options.idGenerator ? { idGenerator: options.idGenerator } : {}),
+      resultContent: {
+        readCommittedResult: async ({ targetKind, executionId }) => {
+          if (targetKind !== 'agent') return undefined;
+          const persisted = await options.runtime.inspectRun(executionId);
+          return committedHeadlessScheduleResult(persisted);
+        }
+      },
       ...(options.deliveryService ? { deliveryService: options.deliveryService } : {})
     }
   );
   const service = new DefaultScheduleService(store, calculator, engine, {
-    validator: new HeadlessAgentTargetValidator(options.runtime),
+    validator: new HeadlessScheduleTargetValidator(options.runtime),
     ...(options.now ? { now: options.now } : {}),
     ...(options.idGenerator ? { idGenerator: options.idGenerator } : {})
   });

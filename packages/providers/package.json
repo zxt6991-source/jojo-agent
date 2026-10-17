@@ -9,6 +9,7 @@
   },
   "devDependencies": {
     "@desktop-agent/attachment-access": "workspace:*",
-    "@desktop-agent/attachments": "workspace:*"
+    "@desktop-agent/attachments": "workspace:*",
+    "tsx": "^4.23.15"
   }
 }

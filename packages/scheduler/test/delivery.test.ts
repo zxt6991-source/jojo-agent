@@ -46,6 +46,7 @@ describe('schedule conversation delivery', () => {
     const engine = new DurableScheduleEngine(store, new DefaultScheduleCalculator(), new CompletedDispatcher(), 'engine', {
       now: () => new Date('2026-08-30T00:00:00.000Z'),
       idGenerator: () => 'run',
+      resultContent: { readCommittedResult: async () => '今日天气晴朗。' },
       deliveryService: new ConversationScheduleDeliveryService({
         appendMessage: async (sessionId, message) => { messages.push({ sessionId, message }); }
       })
@@ -53,7 +54,10 @@ describe('schedule conversation delivery', () => {
     await engine.initialize();
 
     const run = await engine.runNow(item);
-    expect(run).toMatchObject({ status: 'completed', deliveryStatus: 'delivered', deliveryMessageId: 'scheduler_sr_run' });
+    expect(run).toMatchObject({ status: 'completed', deliveryStatus: 'pending' });
+    await expect.poll(() => store.getRun(run.id)).toMatchObject({
+      status: 'completed', deliveryItems: [expect.objectContaining({ state: 'delivered' })]
+    });
     expect(messages).toMatchObject([{
       sessionId: 'session-1',
       message: {
@@ -79,8 +83,10 @@ describe('schedule conversation delivery', () => {
     });
     await engine.initialize();
 
-    await expect(engine.runNow(item)).resolves.toMatchObject({
-      status: 'completed', deliveryStatus: 'failed', deliveryError: 'session store unavailable'
+    const run = await engine.runNow(item);
+    expect(run.status).toBe('completed');
+    await expect.poll(() => store.getRun(run.id)).toMatchObject({ status: 'completed',
+      deliveryItems: [expect.objectContaining({ state: 'failed', error: 'session store unavailable', attempts: 1 })]
     });
     await engine.close();
   });
@@ -119,7 +125,7 @@ describe('schedule conversation delivery', () => {
     await engine.close();
   });
 
-  it('recovers a pending terminal delivery after restart', async () => {
+  it('preserves legacy terminal history without guessing a changed delivery payload', async () => {
     const messages: Message[] = [];
     const store = new MemoryScheduleStore();
     const item = await store.create(schedule());
@@ -137,8 +143,8 @@ describe('schedule conversation delivery', () => {
     });
     await engine.initialize();
 
-    expect(await store.getRun('sr_recover')).toMatchObject({ deliveryStatus: 'delivered' });
-    expect(messages).toHaveLength(1);
+    expect(await store.getRun('sr_recover')).toMatchObject({ deliveryStatus: 'skipped' });
+    expect(messages).toHaveLength(0);
     await engine.close();
   });
 });

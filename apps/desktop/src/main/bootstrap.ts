@@ -11,7 +11,10 @@ import { userSkillDirectories, type SkillDirectory } from '@desktop-agent/extens
 import { FileHookTrustStore, loadHookSettings } from '@desktop-agent/hooks';
 import { JsonConfigStore, SqlitePermissionGovernanceStore } from '@desktop-agent/storage';
 import { SqliteAgentRuntimeStore } from '@desktop-agent/storage/sqlite-runtime-store';
-import { app, BrowserWindow, ipcMain, nativeImage, safeStorage, shell, utilityProcess, type IpcMainInvokeEvent, type UtilityProcess } from 'electron';
+import { app, BrowserWindow, ipcMain, nativeImage, powerMonitor, safeStorage, shell, utilityProcess, type IpcMainInvokeEvent, type UtilityProcess } from 'electron';
+import { DesktopBackgroundHost } from './background-host';
+import { ScheduleDeliveryRpc } from './schedule-delivery-rpc';
+import { ScheduleNotificationHost } from './schedule-notifications';
 import { access, cp, mkdir, readFile, rename, stat } from 'node:fs/promises';
 import { createServer, type Server } from 'node:http';
 import os from 'node:os';
@@ -34,6 +37,9 @@ import { registerSecretsIpc } from './ipc/secrets-ipc';
 import { SessionMetadataClient } from './ipc/session-client';
 import { registerSessionMetadataIpc } from './ipc/session-ipc';
 import { registerSettingsIpc } from './ipc/settings-ipc';
+import { registerSpeechIpc } from './ipc/speech-ipc';
+import { DesktopSpeechHost } from './speech-host';
+import { SpeechRpcClient } from './speech-rpc';
 import { registerTeamIpc } from './ipc/team-ipc';
 import { registerTranscriptIpc } from './ipc/transcript-ipc';
 import { createDesktopSecrets } from './secrets/desktop-secrets';
@@ -96,7 +102,15 @@ export function startDesktopHost(): void {
   if (e2eMode && process.platform === 'linux') app.commandLine.appendSwitch('password-store', 'basic');
   let mainWindow: BrowserWindow | null = null;
   let worker: UtilityProcess | null = null;
+  let speechHost: DesktopSpeechHost | undefined;
+  const speechRpc = new SpeechRpcClient(command => {
+    if (!postWorkerCommand(command)) throw new Error('语音运行进程尚未就绪。');
+  });
   let quitting = false;
+  const deliveryRpc = new ScheduleDeliveryRpc(command => { if (!postWorkerCommand(command)) throw new Error('Worker unavailable.'); });
+  const backgroundHost = new DesktopBackgroundHost({ window: () => mainWindow, createWindow,
+    stopSpeech: () => speechHost?.stop({}), quit: () => app.quit() });
+  const notifications = new ScheduleNotificationHost(() => backgroundHost.show(), e2eMode);
   const sessionStore = new SessionMetadataClient(postWorkerCommand);
   let configStore: JsonConfigStore;
   let permissionGovernanceStore: SqlitePermissionGovernanceStore;
@@ -288,6 +302,8 @@ export function startDesktopHost(): void {
     const mcpOAuthCredentials = await readMcpOAuthCredentials();
     const terminalSecrets = await readTerminalSecrets();
     const channelSecrets = await readChannelSecrets();
+    await speechHost?.configure(settings.speech);
+    backgroundHost.configure(settings.speech.backgroundRunning);
     postWorkerCommand({ type: 'config.update', settings, apiKeys, mcpOAuthCredentials, terminalSecrets, channelSecrets });
   }
 
@@ -359,7 +375,7 @@ export function startDesktopHost(): void {
 
   function requestScheduler(command: Extract<WorkerCommand, {
     type: 'scheduler.list' | 'scheduler.get' | 'scheduler.save' | 'scheduler.delete' | 'scheduler.enabled'
-    | 'scheduler.run-now' | 'scheduler.runs.list' | 'scheduler.run.cancel'
+    | 'scheduler.run-now' | 'scheduler.runs.list' | 'scheduler.run.cancel' | 'scheduler.delivery.replay'
   }>): Promise<SchedulerResponse> {
     if (!worker) return Promise.reject(new Error('Agent runtime is not available.'));
     return new Promise((resolve, reject) => {
@@ -569,6 +585,19 @@ export function startDesktopHost(): void {
         return;
       }
       const message = parsed.data;
+      if (message.type === 'scheduler.delivery.result') { deliveryRpc.accept(message); return; }
+      if (message.type === 'scheduler.desktop.cancel') { speechHost?.cancelScheduled(message.identity); return; }
+      if (message.type === 'scheduler.desktop.delivery') {
+        const input = message.delivery;
+        const task = input.kind === 'notification' ? notifications.deliver(input)
+          : speechHost?.playScheduled(input) ?? Promise.resolve({ identity: input.identity, state: 'uncertain' as const, errorCode: 'desktop_output_unavailable' });
+        void task.then(outcome => postWorkerCommand({ type: 'scheduler.desktop.result', requestId: message.requestId, outcome }),
+          () => postWorkerCommand({ type: 'scheduler.desktop.result', requestId: message.requestId,
+            outcome: { identity: input.identity, state: 'failed', errorCode: 'desktop_output_failed' } }));
+        return;
+      }
+      if (message.type === 'speech.result') { speechRpc.accept(message); return; }
+      if (message.type === 'speech.event') { speechHost?.accept(message.event); return; }
       if (message.type === 'ready') { /* Configuration was sent immediately after process start. */ }
       else if (message.type === 'agent.event') sendToRenderer(IPC.agentEvent, message.event);
       else if (message.type === 'orchestration.event') {
@@ -687,6 +716,8 @@ export function startDesktopHost(): void {
       else if (message.type === 'channel.result') finishChannelRequest(message);
     });
     worker.on('exit', (code) => {
+      speechRpc.close(); speechHost?.suspend();
+      deliveryRpc.close();
       sessionStore.close(new Error(quitting ? 'runtime_closing' : `Agent runtime exited (${code}).`), quitting);
       for (const requestId of workerRequests.keys()) {
         finishWorkerRequest(requestId, new Error(`Agent runtime exited (${code}).`));
@@ -731,6 +762,7 @@ export function startDesktopHost(): void {
       ipc: ipcMain, assertTrusted, client: sessionStore, lifecycle: sessionLifecycle,
       changed: () => sendToRenderer(IPC.sessionsChanged),
       deleted: sessionId => {
+        speechHost?.releaseSession(sessionId);
         for (const [id, workflow] of workflowRuns) if (workflow.sessionId === sessionId) workflowRuns.delete(id);
         for (const [id, request] of terminalSecretRequests) if (request.sessionId === sessionId) terminalSecretRequests.delete(id);
       }
@@ -744,7 +776,7 @@ export function startDesktopHost(): void {
       get worker() { return worker; }, sessionStore, postWorkerCommand, terminalSecretRequests, workflowRuns, waitForWorker
     });
     registerTeamIpc({ assertTrusted, requestTeam });
-    registerSchedulerIpc({ assertTrusted, requestScheduler });
+    registerSchedulerIpc({ assertTrusted, requestScheduler, prepareVoiceReplay: itemId => speechHost?.authorizeReplay(itemId) });
     registerChannelIpc({ assertTrusted, requestChannel, persistChannelSecrets, pushConfig });
     ipcMain.handle(IPC.resolveApproval, async (event, raw) => {
       assertTrusted(event); const input = ApprovalInputSchema.parse(raw);
@@ -758,6 +790,14 @@ export function startDesktopHost(): void {
       assertTrusted,
       get configStore() { return configStore; }, readApiKeys, permissionGovernanceSnapshot,
       get permissionGovernanceStore() { return permissionGovernanceStore; }, pushConfig, saveApiKey
+    });
+    registerSpeechIpc({
+      assertTrusted, get configStore() { return configStore; }, readApiKeys, pushConfig,
+      get speechHost() { return speechHost; },
+      validateEnabled: async (settings) => {
+        if (!speechHost) throw new Error('语音运行环境尚未就绪。');
+        await speechHost.validateEnabled(settings);
+      }
     });
     registerExtensionsIpc({
       assertTrusted, readApiKeys,
@@ -786,12 +826,31 @@ export function startDesktopHost(): void {
   }
 
   function createWindow(): void {
+    if (!speechHost) speechHost = new DesktopSpeechHost({
+      dataDirectory: app.getPath('userData'), buildDirectory: currentDirectory,
+      window: () => mainWindow, worker: () => worker,
+      readSettings: async () => (await configStore.get(await readApiKeys())).speech,
+      assertSession: async sessionId => {
+        sessionLifecycle.assertMutable(sessionId);
+        if (!(await sessionStore.get(sessionId))) throw new Error('会话不存在。');
+      }, request: control => speechRpc.request(control),
+      deliveryControl: control => deliveryRpc.request(control),
+      emit: event => sendToRenderer(IPC.speechEvent, event), e2e: e2eMode
+    });
     mainWindow = new BrowserWindow({
       width: 1280, height: 820, minWidth: 900, minHeight: 600, backgroundColor: '#111318',
       webPreferences: {
         preload: path.join(currentDirectory, 'preload.js'), nodeIntegration: false,
         contextIsolation: true, sandbox: true, webSecurity: true
       }
+    });
+    speechHost.installPermissions(mainWindow);
+    mainWindow.on('close', event => {
+      if (!quitting && backgroundHost.enabled) { event.preventDefault(); speechHost?.suspend(); mainWindow?.hide(); }
+    });
+    mainWindow.on('closed', () => {
+      mainWindow = null; speechHost?.close(); speechHost = undefined;
+      if (process.platform !== 'darwin' && !quitting) app.quit();
     });
     mainWindow.webContents.on('console-message', (details) => {
       const location = details.sourceId ? ` (${details.sourceId}:${details.lineNumber})` : '';
@@ -817,7 +876,7 @@ export function startDesktopHost(): void {
   if (!e2eMode && !app.requestSingleInstanceLock()) app.quit();
   else {
     if (!e2eMode) {
-      app.on('second-instance', () => { if (mainWindow) { if (mainWindow.isMinimized()) mainWindow.restore(); mainWindow.focus(); } });
+      app.on('second-instance', () => backgroundHost.show());
     }
     void app.whenReady().then(() => {
       if (e2eMode && process.platform === 'linux') safeStorage.setUsePlainTextEncryption(true);
@@ -837,9 +896,15 @@ export function startDesktopHost(): void {
       registerIpc(); startWorker(); createWindow();
     });
     app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
-    app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
+    app.on('activate', () => backgroundHost.show());
+    powerMonitor.on('lock-screen', () => speechHost?.lockedState(true));
+    powerMonitor.on('unlock-screen', () => speechHost?.lockedState(false));
+    powerMonitor.on('suspend', () => { speechHost?.suspend(); postWorkerCommand({ type: 'scheduler.suspend' }); });
+    powerMonitor.on('resume', () => { void speechHost?.configure().catch(() => undefined); postWorkerCommand({ type: 'scheduler.resume' }); });
     app.on('before-quit', () => {
       quitting = true;
+      speechHost?.close(); speechRpc.close();
+      deliveryRpc.close(); backgroundHost.close(); notifications.close();
       sessionStore.close(Object.assign(new Error('runtime_closing'), { code: 'runtime_closing' }), true);
       for (const requestId of workerRequests.keys()) finishWorkerRequest(requestId, new Error('runtime_closing'));
       for (const requestId of oauthRequests.keys()) finishMcpOAuth(requestId, new Error('Application is closing.'));

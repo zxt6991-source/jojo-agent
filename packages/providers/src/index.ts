@@ -11,3 +11,6 @@ export { lookupBuiltinModel } from './model-metadata/builtin-registry.js';
 export { ModelDiscoveryRefresh } from './model-metadata/refresh.js';
 
 export { OpenAIResponsesProvider, createResponsesBody, parseResponsesStream } from './openai-responses-provider.js';
+export * from './speech/registry.js';
+export { createSenseVoiceAsrProvider } from './speech/sensevoice-asr-adapter.js';
+export { createMacosTtsProvider, listMacosTtsVoices } from './speech/macos-tts.js';

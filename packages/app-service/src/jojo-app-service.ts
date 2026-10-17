@@ -1,6 +1,7 @@
 import { SessionSearchQuerySchema, SessionReadWindowQuerySchema, type SessionSearchQuery, type SessionSearchHit, type SessionReadWindowQuery, type SessionReadWindow } from '@desktop-agent/contracts';
 import { createHash } from 'node:crypto';
 import type { AgentRuntime, OpenSessionRequest, RunHandle, RunRequest, RuntimeActor, RuntimeTriggerContext, RuntimeRunSnapshot } from '@desktop-agent/agent-runtime';
+import { parseRuntimeVoiceContext } from '@desktop-agent/agent-runtime';
 import type { RunResult, SessionSnapshot, RuntimeEventEnvelope } from '@desktop-agent/contracts/runtime';
 import type {
   ApprovalDecision,
@@ -17,7 +18,7 @@ import type {
   TranscriptQuery
 } from '@desktop-agent/contracts/application';
 import { ServerApprovalBroker, type ApprovalEvent, type ApplicationApprovalBroker } from './approval-service.js';
-import { MemoryServerStateStore, type PersistedRunRecord, type ServerStateStore } from './persistence.js';
+import { MemoryServerStateStore, type PersistedRunRecord, type RunRequestMeta, type ServerStateStore } from './persistence.js';
 import { LiveRunRegistry } from './run-registry.js';
 
 export type AppServiceEvent =
@@ -46,6 +47,7 @@ export type StartRunOptions = {
   metadata?: {
     scheduleId?: string;
     scheduleRunId?: string;
+    voice?: RunRequest['voice'];
     channel?: {
       bindingId: string;
       instanceId: string;
@@ -197,7 +199,11 @@ class DefaultJojoAppService implements JojoAppService {
         providerId: snapshot.execution.providerBinding.providerId,
         model: snapshot.execution.providerBinding.model,
         // The original request is owned by Runtime; this sentinel is not a request replay hash.
-        inputHash: `recovered:${snapshot.id}`
+        inputHash: `recovered:${snapshot.id}`,
+        ...(snapshot.execution.voice ? { requestMeta: { origin: {
+          kind: runOriginKind(snapshot.execution.trigger?.kind),
+          voice: snapshot.execution.voice
+        } } } : {})
       });
     }
     if (record.status === 'accepted') record = await this.stateStore.runs.markStarting(record.id, record.version);
@@ -311,21 +317,17 @@ class DefaultJojoAppService implements JojoAppService {
   }
 
   async startRun(_ctx: ApplicationContext, sessionId: string, input: StartRunInput, options: StartRunOptions = {}): Promise<RunSnapshot> {
+    const voice = options.metadata?.voice === undefined ? undefined : parseRuntimeVoiceContext(options.metadata.voice);
     const runId = options.runId ?? this.idGenerator();
     const trigger = options.trigger ?? { kind: 'api' as const };
-    const originKind = trigger.kind === 'scheduler'
-      ? 'scheduler' as const
-      : trigger.kind === 'user'
-        ? 'user' as const
-        : trigger.kind === 'channel_message' ? 'channel' as const
-          : trigger.kind === 'workflow' || trigger.kind === 'subagent' || trigger.kind === 'team_member'
-            ? trigger.kind : 'api' as const;
+    const originKind = runOriginKind(trigger.kind);
     const requestMeta = {
       ...(input.budget ? { budget: compactBudget(input.budget) } : {}),
       origin: {
         kind: originKind,
         ...(options.metadata?.scheduleId ? { scheduleId: options.metadata.scheduleId } : {}),
         ...(options.metadata?.scheduleRunId ? { scheduleRunId: options.metadata.scheduleRunId } : {}),
+        ...(voice ? { voice } : {}),
         ...(options.metadata?.channel ? { channel: options.metadata.channel } : {})
       }
     };
@@ -359,6 +361,7 @@ class DefaultJojoAppService implements JojoAppService {
         model: input.model,
         actor: options.actor ?? { kind: 'main' },
         trigger,
+        ...(voice ? { voice } : {}),
         ...(options.workflow ? { workflow: options.workflow } : {}),
         ...(options.team ? { team: options.team } : {}),
         ...(options.signal ? { signal: options.signal } : {}),
@@ -471,6 +474,12 @@ export function createJojoAppService(
   options: JojoAppServiceOptions = {}
 ): JojoAppService {
   return new DefaultJojoAppService(runtime, options);
+}
+
+function runOriginKind(kind: RuntimeTriggerContext['kind'] | undefined): NonNullable<RunRequestMeta['origin']>['kind'] {
+  if (kind === 'channel_message') return 'channel';
+  if (kind === 'scheduler' || kind === 'user' || kind === 'workflow' || kind === 'subagent' || kind === 'team_member') return kind;
+  return 'api';
 }
 
 function toRunSnapshot(record: PersistedRunRecord): RunSnapshot {

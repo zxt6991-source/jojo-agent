@@ -1,4 +1,5 @@
 import type { RuntimeInput } from '@desktop-agent/contracts/runtime';
+import type { ScheduleDeliveryItemContract, ScheduleVoiceDeliveryContract } from '@desktop-agent/contracts';
 
 export type ScheduleSpec =
   | { kind: 'once'; runAt: string }
@@ -45,7 +46,12 @@ export type TeamMemberScheduleTarget = {
   outputSchema?: Record<string, unknown>;
 };
 
-export type ScheduleTarget = AgentScheduleTarget | WorkflowScheduleTarget | TeamMemberScheduleTarget;
+export type ReminderScheduleTarget = { kind: 'reminder'; text: string };
+export type ScheduleTarget = AgentScheduleTarget | WorkflowScheduleTarget | TeamMemberScheduleTarget | ReminderScheduleTarget;
+export type ScheduleVoiceDelivery = ScheduleVoiceDeliveryContract;
+export type ScheduleDeliveryItem = ScheduleDeliveryItemContract;
+export type ScheduleDeliveryState = ScheduleDeliveryItem['state'];
+export type ScheduleDeliverySnapshot = { name: string; scheduleRevision: number; delivery?: ScheduleDelivery };
 
 export type ScheduleChannelDelivery = {
   enabled: boolean;
@@ -54,6 +60,7 @@ export type ScheduleChannelDelivery = {
 };
 
 export type ScheduleDelivery = {
+  voice?: ScheduleVoiceDelivery;
   conversation?: { enabled: boolean; sessionId: string };
   notification?: { enabled: boolean };
   channels?: ScheduleChannelDelivery[];
@@ -115,6 +122,8 @@ export type ScheduleRun = {
   deliveryMessageId?: string;
   deliveryError?: string;
   targetSnapshot: ScheduleTarget;
+  deliverySnapshot?: ScheduleDeliverySnapshot;
+  deliveryItems?: ScheduleDeliveryItem[];
   version: number;
 };
 

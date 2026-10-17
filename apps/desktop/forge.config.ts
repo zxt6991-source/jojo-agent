@@ -24,7 +24,9 @@ const macSign = signedRelease && process.platform === 'darwin' ? {
 } : {};
 
 const config: ForgeConfig = {
-  packagerConfig: { asar: true, executableName: 'DesktopAgent', ...macSign, ...(windowsSign ? { windowsSign } : {}) },
+  packagerConfig: { asar: true, executableName: 'DesktopAgent',
+    extendInfo: { NSMicrophoneUsageDescription: 'Jojo 仅在你主动录音时使用麦克风，将语音转为可校正的文字。' },
+    ...macSign, ...(windowsSign ? { windowsSign } : {}) },
   rebuildConfig: {},
   makers: [
     new MakerSquirrel({ name: 'DesktopAgent', authors: 'Desktop Agent', description: 'Desktop AI agent', ...windowsSign }), new MakerZIP({}, ['darwin', 'win32']),
@@ -36,9 +38,13 @@ const config: ForgeConfig = {
         { entry: 'src/main/file-attachments-worker.ts', config: 'vite.main.config.ts', target: 'main' },
         { entry: 'src/main/main.ts', config: 'vite.main.config.ts', target: 'main' },
         { entry: 'src/preload/preload.ts', config: 'vite.preload.config.ts', target: 'preload' },
+        { entry: 'src/preload/audio-preload.ts', config: 'vite.audio-preload.config.ts', target: 'preload' },
         { entry: 'src/worker/worker.ts', config: 'vite.worker.config.ts', target: 'main' }
       ],
-      renderer: [{ name: 'main_window', config: 'vite.renderer.config.ts' }]
+      renderer: [
+        { name: 'main_window', config: 'vite.renderer.config.ts' },
+        { name: 'audio_host', config: 'vite.audio-renderer.config.ts' }
+      ]
     }),
     new FusesPlugin({
       version: FuseVersion.V1,

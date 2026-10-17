@@ -1,5 +1,10 @@
 import { SessionSearchQuerySchema, SessionSearchHitSchema, SessionReadWindowQuerySchema, SessionReadWindowSchema } from '../session-history.js';
 import { z } from 'zod';
+import { ReplayScheduleDeliveryInputSchema, PreviewScheduleVoiceInputSchema, ScheduleVoicePreparationSchema } from '../scheduler-desktop.js';
+import { SaveSpeechSettingsInputSchema, SpeechSettingsSnapshotSchema } from '../speech.js';
+import { BeginSpeechCaptureInputSchema, SpeechCaptureHandleSchema, CommitVoiceTurnInputSchema,
+  VoiceCommitResultSchema, ReadSpeechMessageInputSchema, TestSpeechSettingsInputSchema,
+  StopSpeechPlaybackInputSchema, SpeechPlaybackResultSchema, SpeechStatusSchema, ReadApprovalSpeechInputSchema } from '../speech-ui.js';
 import {
   ApplicationSessionSnapshotSchema, ApplicationSessionSummarySchema,
   CreateSessionInputSchema, PatchSessionMetadataInputSchema, StartRunInputSchema,
@@ -31,6 +36,20 @@ const EmptyInputSchema = z.object({}).strict();
 
 /** Resource IDs belong to adapter routing. Inputs describe the application body/query only. */
 export const APPLICATION_OPERATIONS = {
+  'speech.settings.get': defineOperation({ kind: 'query', input: EmptyInputSchema, output: SpeechSettingsSnapshotSchema, permission: 'speech:read', idempotent: true }),
+  'speech.settings.save': defineOperation({ kind: 'command', input: SaveSpeechSettingsInputSchema, output: SpeechSettingsSnapshotSchema, permission: 'speech:configure', idempotent: false }),
+  'speech.capture.begin': defineOperation({ kind: 'command', input: BeginSpeechCaptureInputSchema, output: SpeechCaptureHandleSchema, permission: 'speech:capture', idempotent: false }),
+  'speech.capture.attach': defineOperation({ kind: 'command', input: SpeechCaptureHandleSchema, output: z.void(), permission: 'speech:capture', idempotent: true }),
+  'speech.capture.cancel': defineOperation({ kind: 'command', input: SpeechCaptureHandleSchema, output: z.void(), permission: 'speech:capture', idempotent: true }),
+  'voice.commit': defineOperation({ kind: 'command', input: CommitVoiceTurnInputSchema, output: VoiceCommitResultSchema, permission: 'runs:start', idempotent: true }),
+  'speech.readMessage': defineOperation({ kind: 'command', input: ReadSpeechMessageInputSchema, output: SpeechPlaybackResultSchema, permission: 'speech:play', idempotent: false }),
+  'speech.readApproval': defineOperation({ kind: 'command', input: ReadApprovalSpeechInputSchema, output: SpeechPlaybackResultSchema, permission: 'speech:play', idempotent: false }),
+  'speech.previewSchedule': defineOperation({ kind: 'command', input: PreviewScheduleVoiceInputSchema, output: SpeechPlaybackResultSchema, permission: 'speech:play', idempotent: false }),
+  'speech.schedulePreparation': defineOperation({ kind: 'query', input: z.object({ scheduleId: z.string().min(1).max(256) }).strict(), output: ScheduleVoicePreparationSchema, permission: 'speech:read', idempotent: true }),
+  'speech.cache.clear': defineOperation({ kind: 'command', input: EmptyInputSchema, output: z.void(), permission: 'speech:configure', idempotent: true }),
+  'speech.settings.test': defineOperation({ kind: 'command', input: TestSpeechSettingsInputSchema, output: SpeechPlaybackResultSchema, permission: 'speech:configure', idempotent: false }),
+  'speech.playback.stop': defineOperation({ kind: 'command', input: StopSpeechPlaybackInputSchema, output: z.void(), permission: 'speech:play', idempotent: true }),
+  'speech.status': defineOperation({ kind: 'query', input: EmptyInputSchema, output: SpeechStatusSchema, permission: 'speech:read', idempotent: true }),
   'session.search': defineOperation({ kind: 'query', input: SessionSearchQuerySchema, output: z.array(SessionSearchHitSchema).max(20), permission: 'sessions:read', idempotent: true }),
   'session.read-window': defineOperation({ kind: 'query', input: SessionReadWindowQuerySchema, output: SessionReadWindowSchema, permission: 'sessions:read', idempotent: true }),
   'session.list': defineOperation({ kind: 'query', input: EmptyInputSchema, output: z.array(ApplicationSessionSummarySchema), permission: 'sessions:read', idempotent: true }),
@@ -47,6 +66,7 @@ export const APPLICATION_OPERATIONS = {
   'schedule.save': defineOperation({ kind: 'command', input: SaveScheduleInputSchema, output: ScheduleSchema, permission: 'schedules:write', idempotent: false }),
   'schedule.enabled': defineOperation({ kind: 'command', input: SetScheduleEnabledInputSchema, output: ScheduleSchema, permission: 'schedules:write', idempotent: false }),
   'schedule.run-now': defineOperation({ kind: 'command', input: z.object({ respectConcurrency: z.boolean().optional() }).strict(), output: ScheduleRunSchema, permission: 'schedules:run', idempotent: false }),
+  'schedule.delivery.replay': defineOperation({ kind: 'command', input: ReplayScheduleDeliveryInputSchema, output: z.void(), permission: 'schedules:run', idempotent: false }),
   'channel.instance.create': defineOperation({ kind: 'command', input: CreateChannelInstanceInputSchema, output: ChannelInstanceSchema, permission: 'channels:write', idempotent: false }),
   'channel.instance.update': defineOperation({ kind: 'command', input: UpdateChannelInstanceInputSchema, output: ChannelInstanceSchema, permission: 'channels:write', idempotent: false }),
   'channel.binding.create': defineOperation({ kind: 'command', input: CreateChannelBindingInputSchema, output: ChannelBindingSchema, permission: 'channels:bind', idempotent: false }),

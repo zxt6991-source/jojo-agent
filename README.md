@@ -4,6 +4,8 @@
 
 核心 Runtime 通过稳定的公共 API 和组合层同时服务 Electron、普通 Node 测试与无界面 Server Host，不依赖 Renderer 或 Electron IPC。
 
+语音仅使用本地 SenseVoice 转写与 macOS 系统朗读，录音、转写校正、提交去重、缓存和独立 AudioHost 共用同一链路，见 [Speech 实现说明](./docs/technical-implementation/speech.md)。新安装保持禁用，填写模型与 Python 路径并完成转写 / 试听验证后，通过“启用语音并保存”开启。语音功能无需 API Key；旧云端配置读取时转为禁用的本地配置。设置页提供系统音色预设、缓存清理、本次启动请求 / 耗时统计、静默时段和显式托盘常驻。Automations 支持固定提醒、任务结果播报、文案试听与分目的地持久投递。硬件、OS 通知、签名包和休眠恢复验收，以及连续监听 / 插话仍待完成。
+
 桌面端基础上手见 [`docs/current-features.md`](./docs/current-features.md)。权限治理设计见 [`docs/Jojo-Agent-Permission-Governance.md`](./docs/Jojo-Agent-Permission-Governance.md)，Spawn / Team 设计见 [`docs/Jojo-Agent-Spawn-Team.md`](./docs/Jojo-Agent-Spawn-Team.md)，Scheduler 实现说明见 [`docs/technical-implementation/scheduler.md`](./docs/technical-implementation/scheduler.md)，Channel 与 CLI 设计分别见 [`docs/Jojo-Agent-Channel-Abstraction-Design.md`](./docs/Jojo-Agent-Channel-Abstraction-Design.md) 和 [`docs/jojo-serve-cli-daemon-config-logging-design.md`](./docs/jojo-serve-cli-daemon-config-logging-design.md)；与代码冲突时以 Contracts、Runtime 和测试为准。OpenCode / Hermes 比较报告的开发落地和使用边界见 [`docs/jojo-opencode-hermes-implementation.md`](./docs/jojo-opencode-hermes-implementation.md)。 待完成项的具体实现方案见 [`docs/jojo-opencode-hermes-remaining-implementation-plan.md`](./docs/jojo-opencode-hermes-remaining-implementation-plan.md)。
 
 ## 当前项目流程
@@ -73,7 +75,7 @@ flowchart LR
   ChannelRuntime -.回复 / 主动投递.-> Channel
 ```
 
-桌面端与 Headless Server 复用同一个 Runtime。Server 使用 App Service，Desktop 会话准备与新运行已接入共享 App Service，恢复与审批入口仍在收口：请求进入 Session 与 Lane 后，由模型决定是否调用工具；工具调用先经过 Domain Security Gate 和 Permission Governance，再进入文件、终端、浏览器、扩展或编排能力。执行事件和结果会持久化并返回原入口。Scheduler 使用独立 SQLite、租约和运行记录保证重启后可恢复；桌面端支持 Agent、Team Member、Workflow 三类 Target，Headless Server 当前只支持 Agent Target。Channel Runtime 负责外部会话的绑定、配对、审批和可靠投递，不绕过 Runtime 权限边界。
+桌面端与 Headless Server 复用同一个 Runtime。Server 使用 App Service，Desktop 会话准备与新运行已接入共享 App Service，恢复与审批入口仍在收口：请求进入 Session 与 Lane 后，由模型决定是否调用工具；工具调用先经过 Domain Security Gate 和 Permission Governance，再进入文件、终端、浏览器、扩展或编排能力。执行事件和结果会持久化并返回原入口。Scheduler 使用独立 SQLite、租约、运行记录和原子 Delivery Outbox 保证恢复；桌面端支持 Reminder、Agent、Team Member、Workflow，Headless Server 支持 Reminder / Agent 并拒绝本机 voice。Channel Runtime 负责外部会话的绑定、配对、审批和可靠投递，不绕过 Runtime 权限边界。
 
 ## 已实现
 
@@ -104,13 +106,13 @@ flowchart LR
 - 后台 Sub-Agent：Profile（`explore` / `general` / `code-review` / `synthesize`，可叠加 user/project）、Tool Policy、Continue / Send / Close、Structured Output；工具调用进入统一 Governance，actor / profile 会参与 Policy 与 Audit；
 - Persistent Team：稳定 Team / Member 身份与 Runtime Lane、SQLite Task / Inbox、同成员串行与跨成员并行、崩溃安全中断、Team Member Spawn Owner / Cancel 传播，以及 `team_list` / `team_status` / `team_delegate` / `team_wait` / `team_send` / `team_inbox`；设置页支持团队创建编辑、成员策略、运行时启停与任务状态；
 - Workflow DAG：依赖与并发、Timeout / Cancel、Retry、Typed Inputs、Tool Step、foreach / condition / 嵌套 Saved Workflow、Budget、资源组与 Provider 限流、JSONL Journal / Resume；
-- Durable Scheduler：支持单次、固定间隔与带 IANA 时区的 Cron，misfire 补跑 / 跳过、并发 skip / queue / allow、手动触发、取消、运行历史、租约与崩溃恢复；桌面端可调度 Agent、Team Member 与 Workflow，并可在对话中通过 `schedule_*` 工具直接创建和管理自动化；
+- Durable Scheduler：支持单次、固定间隔与带 IANA 时区的 Cron，misfire 补跑 / 跳过、并发 skip / queue / allow、手动触发、取消、运行历史、租约与崩溃恢复；可执行无模型固定提醒，桌面端也可调度 Agent、Team Member 与 Workflow；Run 终态与各目的地投递原子提交，语音不确定状态不自动重播；可在对话中通过 `schedule_*` 工具创建和管理自动化；
 - Channel Abstraction：内置 Telegram 与飞书 Adapter，支持外部消息入站、回复与主动投递、会话绑定、陌生私聊配对、群聊提及 / 发送者 / 附件策略、队列策略、审批按钮、健康状态与可靠 Outbox；飞书支持长连接和 Webhook，定时任务结果可投递到已绑定 Channel；
 - 可写 Agent 强制 Git Worktree 隔离，Branch / Diff 可审查，默认不自动 Merge；
 - WorkflowCard：步骤列表、依赖图、时间线、Usage、预算、错误码、结构化输出与 Isolation Diff；
 - 生命周期 Hooks：用户 `~/.jojo/hooks.yml`、项目 `.jojo/hooks.yml`（fingerprint 信任 / 可禁用）、设置页状态与 Reload。
 
-尚未实现：Worker Runtime Backend、Workflow / Browser / Memory 远程 API、可视化 Workflow 编辑器、pipeline / human / HTTP Step、专用 Git 提交工具、自动更新与云同步。Headless Scheduler 当前只支持 Agent Target，桌面端才支持 Team Member 与 Workflow Target；CLI 的 OS 用户服务管理当前支持 Linux systemd 与 macOS launchd，不支持 Windows。Process Sandbox 后续项还包括 Windows 强隔离、OCI Backend、可选域名级网络代理、cgroup 资源限制，以及系统 Keychain provider。
+尚未实现：Worker Runtime Backend、Workflow / Browser / Memory 远程 API、可视化 Workflow 编辑器、pipeline / human / HTTP Step、专用 Git 提交工具、自动更新与云同步。Headless Scheduler 支持 Reminder / Agent Target，桌面端才支持 Team Member 与 Workflow Target 和本机语音；CLI 的 OS 用户服务管理当前支持 Linux systemd 与 macOS launchd，不支持 Windows。Process Sandbox 后续项还包括 Windows 强隔离、OCI Backend、可选域名级网络代理、cgroup 资源限制，以及系统 Keychain provider。
 
 ## 开发
 
@@ -128,6 +130,15 @@ pnpm dev
 3. 选择一个本地项目目录创建会话（可写 Sub-Agent / Workflow 需要 Git 仓库）；
 4. 在输入框右下角选择本轮模型后发送任务。可用「＋」添加文件、文件夹或最多 4 张图片；
 5. 可选：在「Automations」创建单次 / 间隔 / Cron 自动化，在「Channels」连接 Telegram 或飞书并建立会话绑定。
+
+macOS 本地语音首次准备（Python 3.9–3.12）：
+
+```bash
+pnpm speech:setup --python /usr/bin/python3
+pnpm speech:smoke:local --tts-only
+```
+
+安装命令会显式联网安装本地依赖和官方 SenseVoice 模型，默认保存在仓库 `.local-speech/`，输出设置页所需 Python / 模型路径，不修改用户设置。完成下载后可用 `pnpm speech:smoke:local --wav /absolute/path/to/SenseVoiceSmall/test_wavs/zh.wav` 测试官方样本；本地 smoke 不播放或保存合成音频，不读取云端 Key。随后在「语音设置」填写路径，保存并完成转写与试听验证。详见 [本地语音首次配置](./docs/technical-implementation/speech.md#本地语音首次配置与-smoke)。
 
 支持将文件或文件夹直接拖到输入框，也可复制文件后在输入框按 Cmd+V / Ctrl+V 粘贴；剪贴板图片可直接粘贴为图片附件，普通文字粘贴保持不变。文件附件支持 PDF、Markdown、HTML、Excel（`.xlsx` / `.xls` / `.xlsm` / `.xlsb`）、ODS、TXT、CSV、JSON 及常见代码文件。添加文件夹时会递归读取支持的文件并保留相对路径，跳过隐藏项、依赖 / 构建目录与符号链接。文件在本地解析，提取后的文字随消息发送给当前模型；发送后可展开附件查看内容，后续追问会沿用会话中的附件。每条消息最多 50 个文件、总计 200,000 字符，单文件最多 20 MB / 50,000 字符，每次导入最多读取 50 MB；Excel 每张表最多提取前 2,000 行及 500 列。超限截断和解析失败会提示，扫描 PDF 需先 OCR。
 
@@ -176,10 +187,10 @@ pnpm test:e2e:electron
 ### Headless Server 与 Client SDK
 
 <!-- generated:compatibility:start -->
-当前应用版本：`0.1.0`；Server 协议版本：`3`。完整格式版本与内置能力见 [自动生成的能力清单](docs/current-features.generated.md)。
+当前应用版本：`0.1.0`；Server 协议版本：`4`。完整格式版本与内置能力见 [自动生成的能力清单](docs/current-features.generated.md)。
 <!-- generated:compatibility:end -->
 
-`apps/server` 导出 `createHeadlessServer()` 和 `createNetworkServer()`。网络层默认只允许监听 `127.0.0.1:7788`；非回环地址必须同时显式启用 `allowRemote` 并配置 token。协议版本见下方自动生成摘要，提供 `/healthz`、`/readyz`、`/api/v1` REST 资源与 `/api/v1/events` WebSocket。REST API 除 Session / Run / Approval 外，还覆盖 Schedule 和 Channel Instance / Binding / Pairing / Delivery / Health；内置 Headless Scheduler 目前只接受 Agent Target。Channel 内置 Telegram 与飞书 Adapter，Webhook 入口为 `/api/v1/channels/webhook/:instanceId`。
+`apps/server` 导出 `createHeadlessServer()` 和 `createNetworkServer()`。网络层默认只允许监听 `127.0.0.1:7788`；非回环地址必须同时显式启用 `allowRemote` 并配置 token。协议版本见下方自动生成摘要，提供 `/healthz`、`/readyz`、`/api/v1` REST 资源与 `/api/v1/events` WebSocket。REST API 除 Session / Run / Approval 外，还覆盖 Schedule 和 Channel Instance / Binding / Pairing / Delivery / Health；内置 Headless Scheduler 接受 Reminder / Agent Target，启用本机语音会返回明确的设备不可用错误。Channel 内置 Telegram 与飞书 Adapter，Webhook 入口为 `/api/v1/channels/webhook/:instanceId`。
 
 Client SDK 示例：
 
@@ -317,7 +328,7 @@ packages/memory/          Markdown 记忆、候选治理、语义检索与 Runti
 - CLI：配置合并 / 校验 / 脱敏、Provider Secret 检查、远程监听保护、端口预检、实例锁、信号关闭、状态 / 日志 / Doctor 与 systemd / launchd 定义；
 - Permission Governance：ASK 兼容、AUTO / YOLO 边界、Hard Deny / Mandatory Approval、Global / Workspace Policy、稳定 Grant fingerprint、SQLite Policy / Audit、Settings UI，以及 Main / Sub-Agent / Workflow / Scheduler / Channel actor 追踪；
 - Orchestration：Sub-Agent 生命周期、Profile / Tool Policy、Workflow DAG、Worktree 隔离、Budget、依赖图 UI；
-- Scheduler：时间计算、misfire / concurrency、leader lease、重启恢复、Agent / Team Member / Workflow Dispatcher、对话 / Channel 投递、`schedule_*` 工具与运行历史 UI；
+- Scheduler：时间计算、misfire / concurrency、leader lease、重启恢复、Reminder / Agent / Team Member / Workflow Dispatcher、对话 / 通知 / 语音 / Channel 原子 Outbox、claim / ACK 与不确定播放恢复、`schedule_*` 工具和分目的地运行历史 UI；
 - Channels：Telegram / 飞书 Adapter、入站去重与路由、绑定 / 配对、可靠 Outbox、审批桥接、密钥引用、健康状态、REST / Desktop 设置与定时结果投递；
 - Memory：Markdown 存储、候选治理、语义检索与权限 Gate；
 - Extensions：Skill 发现 / 按需加载、MCP 指纹信任和失效、stdio Sandbox、HTTP SSRF / Redirect、OAuth 安全存储、Secret Reference、结果限额、Instructions 默认关闭、大工具集延迟激活与细粒度审批；Extension Host 契约在包内测试，尚未接入 Desktop Worker；

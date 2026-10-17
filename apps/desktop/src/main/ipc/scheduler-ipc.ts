@@ -9,9 +9,10 @@ import { ipcMain, type IpcMainInvokeEvent } from 'electron';
 
 interface Context {
   assertTrusted: (event: IpcMainInvokeEvent) => void;
+  prepareVoiceReplay?: (itemId: string) => void;
   requestScheduler: (command: Extract<WorkerCommand, {
     type: 'scheduler.list' | 'scheduler.get' | 'scheduler.save' | 'scheduler.delete' | 'scheduler.enabled'
-    | 'scheduler.run-now' | 'scheduler.runs.list' | 'scheduler.run.cancel'
+    | 'scheduler.run-now' | 'scheduler.runs.list' | 'scheduler.run.cancel' | 'scheduler.delivery.replay'
   }>) => Promise<SchedulerResponse>;
 }
 
@@ -64,6 +65,12 @@ export function registerSchedulerIpc(ctx: Context): void {
     ctx.assertTrusted(event);
     const input = ScheduleRunIdInputSchema.parse(raw);
     await ctx.requestScheduler({ type: 'scheduler.run.cancel', requestId: crypto.randomUUID(), ...input });
+  });
+  ipcMain.handle(IPC.replayScheduleVoice, async (event, raw) => {
+    ctx.assertTrusted(event);
+    const input = APPLICATION_OPERATIONS['schedule.delivery.replay'].input.parse(raw);
+    ctx.prepareVoiceReplay?.(input.itemId);
+    await ctx.requestScheduler({ type: 'scheduler.delivery.replay', requestId: crypto.randomUUID(), input });
   });
 
 }

@@ -32,8 +32,10 @@ export type {
   RuntimeTriggerContext,
   RuntimeTeamContext,
   RuntimeWorkflowContext,
+  RuntimeVoiceContext,
   TelemetrySink
 } from './run.js';
+export { parseRuntimeVoiceContext } from './run.js';
 export type { RuntimeEventListener } from './events.js';
 export { RUNTIME_CONTRACT_VERSION } from '@desktop-agent/contracts/runtime';
 export type {

@@ -32,6 +32,7 @@ export default defineConfig({
       '@desktop-agent/client': path.resolve('packages/client/src/index.ts'),
       '@desktop-agent/hooks': path.resolve('packages/hooks/src/index.ts'),
       '@desktop-agent/providers': path.resolve('packages/providers/src/index.ts'),
+      '@desktop-agent/speech': path.resolve('packages/speech/src/index.ts'),
       '@desktop-agent/tools-node': path.resolve('packages/tools-node/src/index.ts'),
       '@desktop-agent/storage': path.resolve('packages/storage/src/index.ts')
       ,'@desktop-agent/memory': path.resolve('packages/memory/src/index.ts')

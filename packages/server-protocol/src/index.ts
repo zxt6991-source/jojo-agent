@@ -77,7 +77,7 @@ export const ServerCapabilitiesSchema = z.object({
   approvals: z.boolean(),
   scheduler: z.object({
     enabled: z.boolean(),
-    targets: z.array(z.enum(['agent', 'workflow', 'team_member']))
+    targets: z.array(z.enum(['agent', 'workflow', 'team_member', 'reminder']))
   }).strict(),
   channels: z.object({
     enabled: z.boolean(),

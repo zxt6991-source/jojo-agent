@@ -1,9 +1,9 @@
 /** Current formats only. Compatibility with older versions requires migration tests. */
 export const BUILD_COMPATIBILITY = {
   appVersion: '0.1.0',
-  serverProtocol: 3,
+  serverProtocol: 4,
   serverStateSchema: 6,
-  configSchema: 4,
+  configSchema: 5,
   sessionJsonlSchema: 1,
   runtimeContract: 1,
   runtimeSqliteSchema: 4,

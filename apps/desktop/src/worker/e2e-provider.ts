@@ -45,6 +45,10 @@ export function createDesktopTestProvider(ctx: Context) {
           });
           return;
         }
+        if (prompt.includes('E2E: long speech')) {
+          yield { type: 'text_delta', text: '这是用于验证分段继续朗读的离线文本。'.repeat(75) };
+          yield { type: 'response_completed', stopReason: 'stop' }; return;
+        }
         if (prompt.includes('E2E: verification batch')) {
           let start = 0;
           request.messages.forEach((message, index) => { if (message.role === 'user' && message.content.some(block => block.type === 'text' && block.text.includes('E2E: verification batch'))) start = index; });

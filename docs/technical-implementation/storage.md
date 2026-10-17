@@ -24,6 +24,12 @@ Storage 提供 Agent Runtime、本地会话元数据、Workflow Journal 与普�
 
 Desktop 另用 `runtime/application.sqlite` 保存 App Service 的运行索引，复用 `SqliteServerStateStore` 适配器；其 schema 版本由 Compatibility Manifest 管理。Runtime 仍是会话正文事实源，应用运行结果为派生记录。Desktop 启动恢复保留待续跑 operation，同时对账已终结或未提交的应用记录；Server 默认采用重启中断策略。
 
+当前分支仍创建 schema v6 数据库，同时支持个人 Agent 开发分支写入的已知 v8 结构：在原有会话表上增加可为空的 `role_id` 和 `personal_context_json`。打开 v8 前校验核心表、列、外键、约束、索引及触发器，匹配后直接使用，保留版本号与新增字段；不运行 v6 迁移或将其降为 v6。未知更高版本和结构不符的 v8 仍会拒绝，版本检查发生在切换 WAL 之前。
+
+Worker 的渠道状态由 `packages/channel-runtime` 保存到 `runtime/channels.sqlite`。新库仍创建 schema v1；已知个人 Agent 分支 v2 的批次表、`batch_id` / `part_index` 和唯一索引通过完整结构校验后可直接使用，保留原版本及请求哈希。兼容历史 v1 ALTER 升级和早期 pairing 缺少外键的结构。已有批次按分片顺序发送；前序失败阻断后续分片并保留 `blocked` 状态，中断中的发送恢复为 `unknown`，批次收据在事务中更新。未知结构在写入前拒绝并关闭连接。
+
+`packages/memory` 的 `MemoryIndex` 也保留已知 schema v2：仅扩大 `memory_scopes.kind` 的 CHECK，允许历史 `space` scope。校验核心表、约束、索引及 FTS 结构后保留原版本和记录，不再无条件写回 v1；新库仍创建 v1。当前分支不提供个人分支的 Space 功能，已有 Space 记录继续保存在索引中。
+
 应用索引永久删除会话时级联清理运行和审批记录，并通过数据库触发器阻止重建。Main 先写文件 tombstone，再分别删除 Runtime 与应用索引；Worker 启动时基于 tombstone 补齐中断的清理，不将多个数据库的操作宣称为一个原子事务。
 
 应用状态从 schema v4 起的审批记录有两种归属：运行级记录保留 Session/Run 外键和 Lane 校验；会话级记录以 `scope=session` 表示运行前授权，Run/Lane 必须为空。两类记录均保存审批状态、处理人和时间，随 Session 删除。v3 审批表在事务内重建并复制原记录、终态和版本；发生迁移错误时回滚，成功后才更新 `user_version`。审批记录不保存工具输入或预览 patch 正文。
@@ -95,6 +101,8 @@ Desktop 删除先通过 Main 生命周期门禁停止会话，确认文件 tombs
 迁移测试覆盖去重、重开、entry/lane/marker 写入故障回滚、旧孤立 entry、跨会话冲突、busy、tombstone、损坏源与 SQLite 升级。会话投递测试覆盖忙时持久队列、幂等、冲突、排空失败回滚、删除级联和永久删除防重建。历史测试验证压缩前正文仍可读取。
 
 Electron E2E 覆盖旧会话迁移、重启、删除后复制旧文件防复活，以及运行中 SIGKILL 后恢复；新对话断言 JSONL 没有 message 记录。迁移事务故障通过 SQL trigger 注入，尚未单独执行迁移过程的 OS 级 SIGKILL 验证。结果与限制见[实施记录](../architecture-closure-progress.md)。
+
+跨分支兼容 E2E 在同一临时数据目录同时放入应用索引 v8、渠道 v2 和记忆索引 v2，确认会话正文可读、离线运行完成、渠道、Scheduler 与 Memory 初始化成功，并在重启后核对版本、批次、Space 记录及扩展字段保留。E2E 的记忆 Markdown 根目录位于临时数据目录内。
 
 ## 8. 演进方案
 

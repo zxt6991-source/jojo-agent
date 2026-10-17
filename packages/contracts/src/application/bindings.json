@@ -1,6 +1,30 @@
 {
   "schemaVersion": 1,
   "bindings": {
+    "speech.settings.get": {
+      "http": {
+        "reason": "Desktop speech configuration is local only; remote speech settings are deferred."
+      },
+      "ws": {
+        "reason": "Desktop speech configuration is local only; remote speech settings are deferred."
+      },
+      "ipc": {
+        "handler": "getSpeechSettings",
+        "file": "apps/desktop/src/main/ipc/speech-ipc.ts"
+      }
+    },
+    "speech.settings.save": {
+      "http": {
+        "reason": "Desktop speech configuration is local only; remote speech settings are deferred."
+      },
+      "ws": {
+        "reason": "Desktop speech configuration is local only; remote speech settings are deferred."
+      },
+      "ipc": {
+        "handler": "saveSpeechSettings",
+        "file": "apps/desktop/src/main/ipc/speech-ipc.ts"
+      }
+    },
     "session.search": {
       "core": "searchSessionHistory",
       "http": {
@@ -311,6 +335,162 @@
         "file": "apps/desktop/src/main/ipc/scheduler-ipc.ts"
       },
       "note": "Server Core / SDK 未实现此本地合同。"
+    },
+    "speech.capture.begin": {
+      "http": {
+        "reason": "Desktop microphone and playback are local only; remote audio is deferred."
+      },
+      "ws": {
+        "reason": "Desktop microphone and playback are local only; remote audio is deferred."
+      },
+      "ipc": {
+        "handler": "beginSpeechCapture",
+        "file": "apps/desktop/src/main/ipc/speech-ipc.ts"
+      }
+    },
+    "speech.capture.attach": {
+      "http": {
+        "reason": "Desktop microphone and playback are local only; remote audio is deferred."
+      },
+      "ws": {
+        "reason": "Desktop microphone and playback are local only; remote audio is deferred."
+      },
+      "ipc": {
+        "handler": "attachSpeechCapture",
+        "file": "apps/desktop/src/main/ipc/speech-ipc.ts"
+      }
+    },
+    "speech.capture.cancel": {
+      "http": {
+        "reason": "Desktop microphone and playback are local only; remote audio is deferred."
+      },
+      "ws": {
+        "reason": "Desktop microphone and playback are local only; remote audio is deferred."
+      },
+      "ipc": {
+        "handler": "cancelSpeechCapture",
+        "file": "apps/desktop/src/main/ipc/speech-ipc.ts"
+      }
+    },
+    "voice.commit": {
+      "http": {
+        "reason": "Desktop microphone and playback are local only; remote audio is deferred."
+      },
+      "ws": {
+        "reason": "Desktop microphone and playback are local only; remote audio is deferred."
+      },
+      "ipc": {
+        "handler": "commitVoiceTurn",
+        "file": "apps/desktop/src/main/ipc/speech-ipc.ts"
+      }
+    },
+    "speech.readMessage": {
+      "http": {
+        "reason": "Desktop microphone and playback are local only; remote audio is deferred."
+      },
+      "ws": {
+        "reason": "Desktop microphone and playback are local only; remote audio is deferred."
+      },
+      "ipc": {
+        "handler": "readSpeechMessage",
+        "file": "apps/desktop/src/main/ipc/speech-ipc.ts"
+      }
+    },
+    "speech.settings.test": {
+      "http": {
+        "reason": "Desktop microphone and playback are local only; remote audio is deferred."
+      },
+      "ws": {
+        "reason": "Desktop microphone and playback are local only; remote audio is deferred."
+      },
+      "ipc": {
+        "handler": "testSpeechSettings",
+        "file": "apps/desktop/src/main/ipc/speech-ipc.ts"
+      }
+    },
+    "speech.playback.stop": {
+      "http": {
+        "reason": "Desktop microphone and playback are local only; remote audio is deferred."
+      },
+      "ws": {
+        "reason": "Desktop microphone and playback are local only; remote audio is deferred."
+      },
+      "ipc": {
+        "handler": "stopSpeechPlayback",
+        "file": "apps/desktop/src/main/ipc/speech-ipc.ts"
+      }
+    },
+    "speech.status": {
+      "http": {
+        "reason": "Desktop microphone and playback are local only; remote audio is deferred."
+      },
+      "ws": {
+        "reason": "Desktop microphone and playback are local only; remote audio is deferred."
+      },
+      "ipc": {
+        "handler": "getSpeechStatus",
+        "file": "apps/desktop/src/main/ipc/speech-ipc.ts"
+      }
+    },
+    "schedule.delivery.replay": {
+      "http": {
+        "reason": "尚无远程授权播放设备协议；语音重播只提供本地桌面入口。"
+      },
+      "ws": {
+        "reason": "当前 WS 不承载经过用户授权的语音播放设备或重播命令。"
+      },
+      "ipc": {
+        "handler": "replayScheduleVoice",
+        "file": "apps/desktop/src/main/ipc/scheduler-ipc.ts"
+      }
+    },
+    "speech.readApproval": {
+      "http": {
+        "reason": "Desktop 本地语音控制；远程播放设备协议尚未发布。"
+      },
+      "ws": {
+        "reason": "Desktop 本地语音控制，不通过事件广播传输音频。"
+      },
+      "ipc": {
+        "handler": "readApprovalSpeech",
+        "file": "apps/desktop/src/main/ipc/speech-ipc.ts"
+      }
+    },
+    "speech.previewSchedule": {
+      "http": {
+        "reason": "Desktop 本地语音控制；远程播放设备协议尚未发布。"
+      },
+      "ws": {
+        "reason": "Desktop 本地语音控制，不通过事件广播传输音频。"
+      },
+      "ipc": {
+        "handler": "previewScheduleVoice",
+        "file": "apps/desktop/src/main/ipc/speech-ipc.ts"
+      }
+    },
+    "speech.schedulePreparation": {
+      "http": {
+        "reason": "Desktop 本地语音控制；远程播放设备协议尚未发布。"
+      },
+      "ws": {
+        "reason": "Desktop 本地语音控制，不通过事件广播传输音频。"
+      },
+      "ipc": {
+        "handler": "getScheduleVoicePreparation",
+        "file": "apps/desktop/src/main/ipc/speech-ipc.ts"
+      }
+    },
+    "speech.cache.clear": {
+      "http": {
+        "reason": "Desktop 本地语音控制；远程播放设备协议尚未发布。"
+      },
+      "ws": {
+        "reason": "Desktop 本地语音控制，不通过事件广播传输音频。"
+      },
+      "ipc": {
+        "handler": "clearSpeechCache",
+        "file": "apps/desktop/src/main/ipc/speech-ipc.ts"
+      }
     }
   }
 }

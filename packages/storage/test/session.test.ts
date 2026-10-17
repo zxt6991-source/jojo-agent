@@ -3,7 +3,7 @@ import { appendFile, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_BROWSER_SETTINGS, DEFAULT_MEMORY_SETTINGS } from '@desktop-agent/contracts';
+import { DEFAULT_BROWSER_SETTINGS, DEFAULT_MEMORY_SETTINGS, createLocalSpeechSettings } from '@desktop-agent/contracts';
 import { JsonConfigStore, JsonlSessionStore } from '../src/index.js';
 
 describe('JsonlSessionStore', () => {
@@ -95,6 +95,7 @@ describe('JsonConfigStore', () => {
       utilityModel: { providerId: 'openai', model: 'legacy-model' },
       permissions: { mode: 'ask' },
       memory: DEFAULT_MEMORY_SETTINGS,
+      speech: createLocalSpeechSettings(),
       extensions: { mcpServers: [], skills: { directories: [], disabled: [] }, browser: { ...DEFAULT_BROWSER_SETTINGS } }
     });
   });
@@ -127,7 +128,7 @@ describe('JsonConfigStore', () => {
     });
   });
 
-  it('persists multiple providers in the v4 config format without API keys', async () => {
+  it('persists multiple providers in the v5 config format without API keys', async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), 'desktop-agent-config-'));
     const file = path.join(directory, 'config.json');
     const store = new JsonConfigStore(file);
@@ -148,7 +149,7 @@ describe('JsonConfigStore', () => {
 
     const stored = JSON.parse(await readFile(file, 'utf8'));
     expect(stored).toMatchObject({
-      schemaVersion: 4, activeProviderId: 'openai',
+      schemaVersion: 5, activeProviderId: 'openai',
       providers: expect.arrayContaining([expect.objectContaining({ id: 'openai', model: 'model-b', models: [legacyModelConfig('model-a'), legacyModelConfig('model-b')] })]),
       utilityModel: { providerId: 'openai', model: 'model-a' }
     });

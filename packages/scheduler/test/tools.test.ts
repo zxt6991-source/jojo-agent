@@ -88,6 +88,8 @@ class RecordingScheduleService implements ScheduleService {
     if (runId !== 'run_1') throw new Error(`schedule_run_not_found: ${runId}`);
     return this.run();
   }
+  async listDeliveries(): Promise<[]> { return []; }
+  async replayDelivery(): Promise<never> { throw new Error('schedule_delivery_not_found'); }
   async cancelRun(runId: string): Promise<void> { this.cancelledRunId = runId; }
   subscribe(_listener: (event: ScheduleEvent) => void): () => void { return () => undefined; }
   async close(): Promise<void> {}
@@ -131,6 +133,44 @@ function content(result: Awaited<ReturnType<Tool['execute']>>): any {
 }
 
 describe('conversation scheduler tools', () => {
+  it('creates a fixed reminder with explicit local voice delivery without Agent context', async () => {
+    const service = new RecordingScheduleService();
+    const voice = { enabled: true, deviceId: 'local-desktop', content: { kind: 'result', maxChars: 200 }, expiresAfterMs: 600_000 };
+    const tools = schedulerTools(service);
+    const result = await tool(tools, 'schedule_create').execute({
+      name: 'Drink water', spec: { kind: 'once', runAt: '2026-08-30T00:10:00.000Z' },
+      target: { kind: 'reminder', text: '  该喝水了  ' }, voice
+    }, context);
+    expect(result.ok).toBe(true);
+    expect(service.createdInput?.target).toEqual({ kind: 'reminder', text: '该喝水了' });
+    expect(service.createdInput?.delivery).toEqual({ conversation: { enabled: true, sessionId: context.sessionId }, voice });
+    const schema = tool(tools, 'schedule_create').definition.inputSchema as any;
+    expect(schema.properties.target.oneOf.some((branch: any) => branch.properties.kind.const === 'reminder')).toBe(true);
+    expect(schema.properties.spec.oneOf.some((branch: any) => branch.properties.kind.const === 'reminder')).toBe(false);
+  });
+
+  it('rejects invalid reminder text and remote voice device before modifying a schedule', async () => {
+    const service = new RecordingScheduleService();
+    const create = tool(schedulerTools(service), 'schedule_create');
+    for (const text of ['', 'x'.repeat(201)]) {
+      expect((await create.execute({ name: 'Reminder', spec: { kind: 'interval', everyMinutes: 5 }, target: { kind: 'reminder', text } }, context)).ok).toBe(false);
+    }
+    expect((await create.execute({
+      name: 'Reminder', spec: { kind: 'interval', everyMinutes: 5 }, target: { kind: 'reminder', text: '喝水' },
+      voice: { enabled: true, deviceId: 'remote-device', content: { kind: 'result', maxChars: 200 }, expiresAfterMs: 600_000 }
+    }, context)).ok).toBe(false);
+    expect(service.createdInput).toBeUndefined();
+  });
+
+  it('preserves conversation and channel destinations when updating only voice delivery', async () => {
+    const service = new RecordingScheduleService();
+    service.current.delivery = { conversation: { enabled: true, sessionId: 'session-1' }, channels: [{ enabled: true, bindingId: 'channel-1' }] };
+    const voice = { enabled: true, deviceId: 'local-desktop', content: { kind: 'fixed', text: '任务已完成' }, expiresAfterMs: 600_000 };
+    const result = await tool(schedulerTools(service), 'schedule_update').execute({ scheduleId: service.current.id, voice }, context);
+    expect(result.ok).toBe(true);
+    expect(service.updatedInput?.delivery).toEqual({ conversation: { enabled: true, sessionId: 'session-1' }, channels: [{ enabled: true, bindingId: 'channel-1' }], voice });
+  });
+
   it('converts an agent cron target using current turn context and defaults', async () => {
     const service = new RecordingScheduleService();
     const result = await tool(schedulerTools(service), 'schedule_create').execute({

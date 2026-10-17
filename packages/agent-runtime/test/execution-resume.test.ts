@@ -20,7 +20,7 @@ async function fixture(actor: RuntimeActor = { kind: 'main' }, config: Record<st
   const environment: RuntimeEnvironment = { host: { kind: 'test' }, providers: { describe: describeTestProvider, resolve: resolveProvider },
     tools: { resolve: resolveTools }, permissions: { check: async () => ({ decision: 'allow' }) },
     runContext: { resolve: context => { contexts.push(context); return { instructionBlocks: [instructionBlock] }; } },
-    telemetry: { diagnostic: (_event, context) => { expect(context.actor).toEqual(actor); expect(context.trigger).toEqual({ kind: 'scheduler', id: 'schedule-original' }); } }
+    telemetry: { diagnostic: (_event, context) => { expect(context.actor).toEqual(actor); expect(context.trigger).toEqual(overrides.trigger ?? { kind: 'scheduler', id: 'schedule-original' }); } }
   };
   const runtime = createAgentRuntime({ store, environment });
   await runtime.openSession({ id: 's', executionScope: { kind: 'none' } });
@@ -112,6 +112,30 @@ describe('semantic recovery preflight', () => {
     instructions.push('mutation'); release();
     expect((await (await starting).result).status).toBe('completed');
     expect((await store.loadOperation('o'))?.meta.execution?.instructions.requested).toEqual(['original', 'original']);
+    await runtime.close();
+  });
+  it('preserves voice identity across recovery and does not append the user sentence again', async () => {
+    const voice = { voiceTurnId: 'voice-resume', generation: 4 };
+    const f = await fixture({ kind: 'main' }, {}, { voice, trigger: { kind: 'user' } });
+    await f.store.appendEntry({ id: 'original-user', sessionId: 's', parentId: null, type: 'message',
+      message: { id: 'original-user', role: 'user', createdAt: '2026-01-01T00:00:00.000Z', content: [{ type: 'text', text: 'voice sentence' }], metadata: { voice } } });
+    await f.store.saveLane({ sessionId: 's', name: 'main', leafId: 'original-user', currentOperationId: 'o' });
+    const result = await (await f.runtime.resumeOperation({ operationId: 'o' })).result;
+    expect(result.status).toBe('completed'); expect(result.messages.filter(message => message.role === 'user')).toHaveLength(1);
+    expect(result.messages.find(message => message.role === 'user')?.metadata?.voice).toEqual(voice);
+    expect((await f.store.loadOperation('o'))?.meta.execution?.voice).toEqual(voice);
+    expect((await f.runtime.inspectRun('o'))?.execution).toMatchObject({ voice, actor: { kind: 'main' }, trigger: { kind: 'user' } });
+    for (const context of f.contexts) expect(context).toMatchObject({ voice, actor: { kind: 'main' }, trigger: { kind: 'user' } });
+    await f.runtime.close();
+  });
+  it('rejects untrusted voice fields without leaving a session lane stuck in preparation', async () => {
+    const store = new MemoryAgentRuntimeStore(); const resolve = vi.fn(() => new ScriptedProvider([[{ type: 'response_completed', stopReason: 'stop' }]]));
+    const runtime = createAgentRuntime({ store, environment: { host: { kind: 'test' }, providers: { describe: describeTestProvider, resolve },
+      tools: { resolve: () => ({ snapshot: () => [] }) }, permissions: { check: async () => ({ decision: 'allow' }) } } });
+    const lane = await (await runtime.openSession({ id: 's' })).getLane();
+    await expect(lane.run({ input: 'hello', providerId: 'p', model: 'm', voice: { voiceTurnId: 'a', generation: -1 } })).rejects.toThrow('runtime_voice_context_invalid');
+    expect(resolve).not.toHaveBeenCalled();
+    expect((await (await lane.run({ input: 'hello', providerId: 'p', model: 'm' })).result).status).toBe('completed');
     await runtime.close();
   });
 });

@@ -16,6 +16,7 @@ import {
   MessageSchema,
   MemorySettingsSchema,
   ProviderSettingsSchema,
+  createLocalSpeechSettings,
   ExtensionSettingsSchema,
   PermissionPolicyDocumentSchema,
   SavePermissionPolicyInputSchema,
@@ -69,6 +70,7 @@ describe('contracts', () => {
       utilityModel: { providerId: 'openai', model: 'gpt-5-mini' },
       permissions: { mode: 'ask' },
       memory: DEFAULT_MEMORY_SETTINGS,
+      speech: createLocalSpeechSettings(),
       extensions: { mcpServers: [], skills: { directories: [], disabled: [] }, browser: { ...DEFAULT_BROWSER_SETTINGS } }
     });
     expect(SaveSettingsInputSchema.parse({

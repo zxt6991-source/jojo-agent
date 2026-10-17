@@ -113,9 +113,17 @@ function ChatNodeView({
   onOpenAutomation,
   artifacts,
   onOpenArtifact,
-  onOpenHistory
+  onOpenHistory,
+  onReadMessage,
+  canReadMessage,
+  onContinueMessage,
+  speechContinuation
 }: {
   onOpenHistory?: (sessionId: string, entryId: string) => void;
+  onReadMessage?: (messageId: string) => void;
+  canReadMessage?: (messageId: string) => boolean;
+  onContinueMessage?: (messageId: string, offset: number) => void;
+  speechContinuation?: (messageId: string) => number | undefined;
   artifacts?: ArtifactDescriptor[];
   onOpenArtifact?: (id: string) => void;
   node: ConversationNode;
@@ -135,6 +143,8 @@ function ChatNodeView({
         {onOpenAutomation && <button type="button" onClick={() => onOpenAutomation(node.automation!.scheduleId)}>查看自动化</button>}
       </header>}
       <div className="bubble"><Markdown text={node.text} {...(artifacts ? { artifacts } : {})} {...(onOpenArtifact ? { onOpenArtifact } : {})} /></div>
+      {!node.streaming && node.text.trim() && onReadMessage && (!canReadMessage || canReadMessage(node.id)) && <button type="button" className="speech-read-message" aria-label="朗读助手回复" title="AI 合成语音" onClick={() => onReadMessage(node.id)}>♬ 朗读</button>}
+      {!node.streaming && onContinueMessage && (!canReadMessage || canReadMessage(node.id)) && speechContinuation?.(node.id) !== undefined && <button type="button" className="speech-read-message" aria-label="继续朗读助手回复" title="AI 合成语音 · 下一段" onClick={() => onContinueMessage(node.id, speechContinuation(node.id)!)}>继续朗读</button>}
     </article>;
   }
   if (node.kind === 'tool') {
@@ -180,9 +190,17 @@ export function ChatTranscript({
   turnStartedAt,
   onInspect,
   onOpenAutomation,
-  renderAfterTurn
+  renderAfterTurn,
+  onReadMessage,
+  canReadMessage,
+  onContinueMessage,
+  speechContinuation
 }: {
   onOpenArtifact?: (id: string) => void;
+  onReadMessage?: (messageId: string) => void;
+  canReadMessage?: (messageId: string) => boolean;
+  onContinueMessage?: (messageId: string, offset: number) => void;
+  speechContinuation?: (messageId: string) => number | undefined;
   onOpenHistory?: (sessionId: string, entryId: string) => void;
   snapshot: ConversationSnapshot;
   running: boolean;
@@ -206,6 +224,10 @@ export function ChatTranscript({
         {...(onOpenHistory ? { onOpenHistory } : {})}
         {...(onInspect ? { onInspect } : {})}
         {...(onOpenAutomation ? { onOpenAutomation } : {})}
+        {...(onReadMessage ? { onReadMessage } : {})}
+        {...(canReadMessage ? { canReadMessage } : {})}
+        {...(onContinueMessage ? { onContinueMessage } : {})}
+        {...(speechContinuation ? { speechContinuation } : {})}
       />)}
       {artifacts.filter((artifact) => lastTurn.get(artifact.id) === turn.id).map((artifact) => <ArtifactCard key={artifact.id} artifact={artifact} {...(onOpenArtifact ? { onOpen: onOpenArtifact } : {})} />)}
       {renderAfterTurn?.(turn)}

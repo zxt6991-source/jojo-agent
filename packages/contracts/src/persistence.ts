@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { MessageSchema } from './messages';
 import { ExtensionSettingsSchema, DEFAULT_BROWSER_SETTINGS } from './integrations';
 import { DEFAULT_MEMORY_SETTINGS, MemorySettingsSchema, ProjectIdentitySchema } from './memory';
+import { SpeechSettingsSchema, createLocalSpeechSettings } from './speech';
 
 export const DEFAULT_SESSION_TITLE = '新会话';
 export const SESSION_TITLE_MAX_LENGTH = 120;
@@ -119,6 +120,7 @@ export const ProviderSettingsSchema = z.object({
   utilityModel: ModelSelectionSchema.default({ providerId: 'openai', model: 'gpt-5-mini' }),
   permissions: PermissionSettingsSchema.default({ ...DEFAULT_PERMISSION_SETTINGS }),
   memory: MemorySettingsSchema.default(() => structuredClone(DEFAULT_MEMORY_SETTINGS)),
+  speech: SpeechSettingsSchema.default(createLocalSpeechSettings),
   extensions: ExtensionSettingsSchema.default({
     mcpServers: [], skills: { directories: [], disabled: [] }, browser: { ...DEFAULT_BROWSER_SETTINGS }
   })

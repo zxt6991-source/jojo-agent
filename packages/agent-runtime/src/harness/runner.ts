@@ -850,12 +850,14 @@ async function executeAgentTurn(options: RuntimeAgentRunOptions, resuming: boole
       );
     }
     if (!resuming) {
+      const userMessage = createUserMessage(options.userText, options.userImages, options.userFiles, options.userContent);
+      if (options.execution?.voice) userMessage.metadata = { ...userMessage.metadata, voice: { ...options.execution.voice } };
       await appendDurableMessage(
         options,
         data,
         runtimeStore,
         state,
-        createUserMessage(options.userText, options.userImages, options.userFiles, options.userContent)
+        userMessage
       );
     }
     if (!startedTerminal && hooks.configured('UserPromptSubmit')) {

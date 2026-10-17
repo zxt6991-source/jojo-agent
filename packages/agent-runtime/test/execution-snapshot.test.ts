@@ -81,4 +81,19 @@ describe('execution snapshot protocol', () => {
     }
     expect(() => assertPersistableInstructions(['a CANARY-key prompt'], ['CANARY-key'])).toThrow('runtime_execution_snapshot_invalid: instructions');
   });
+  it('accepts a bounded optional voice source while keeping legacy snapshots valid', () => {
+    const legacy = createTestExecutionSnapshot(); expect(parseExecutionSnapshot(legacy).voice).toBeUndefined();
+    const voice = { voiceTurnId: 'voice-a', generation: 0 };
+    const snapshot = createTestExecutionSnapshot({ voice, actor: { kind: 'main' }, trigger: { kind: 'user' } });
+    expect(parseExecutionSnapshot(JSON.parse(JSON.stringify(snapshot)))).toMatchObject({ voice, actor: { kind: 'main' }, trigger: { kind: 'user' } });
+  });
+  it.each([
+    { voiceTurnId: '', generation: 0 }, { voiceTurnId: 'a'.repeat(257), generation: 0 },
+    { voiceTurnId: 'a\0b', generation: 0 }, { voiceTurnId: 'a', generation: -1 },
+    { voiceTurnId: 'a', generation: Number.MAX_SAFE_INTEGER + 1 }, { voiceTurnId: 'a', generation: 1.5 },
+    { voiceTurnId: 'a', generation: Infinity }, { voiceTurnId: 'a', generation: NaN },
+    { voiceTurnId: 'a', generation: 0, actor: { kind: 'main' } }, { voiceTurnId: 'a', generation: 0, authorization: 'secret-canary' }
+  ])('rejects malformed or privileged voice provenance %j', voice => {
+    expect(() => parseExecutionSnapshot({ ...createTestExecutionSnapshot(), voice })).toThrow('runtime_execution_snapshot_invalid');
+  });
 });

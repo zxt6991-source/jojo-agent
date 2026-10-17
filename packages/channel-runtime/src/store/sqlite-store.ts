@@ -12,9 +12,19 @@ import type {
 } from '@desktop-agent/channel-core';
 import { assertChannelInstanceSecrets } from '@desktop-agent/channel-core';
 import { CHANNEL_SCHEMA_SQL, CHANNEL_SCHEMA_VERSION } from './schema.js';
+import { isKnownCompatibleChannelVersion } from './schema-compatibility.js';
 import type { ChannelInboundStatus, ChannelStore } from './store.js';
 
 type Row = Record<string, unknown>;
+
+// Existing v2 batches were inserted atomically. An incomplete manifest must not
+// dispatch or become a successful receipt after the surviving parts finish.
+const completeCompatibleBatch = `channel_outbox.batch_id IS NULL OR EXISTS (
+  SELECT 1 FROM channel_delivery_batches batch WHERE batch.batch_id = channel_outbox.batch_id
+  AND (SELECT COUNT(*) FROM channel_outbox part WHERE part.batch_id = batch.batch_id) = batch.expected_parts
+  AND (SELECT COUNT(*) FROM channel_outbox part WHERE part.batch_id = batch.batch_id
+    AND typeof(part.part_index) = 'integer' AND part.part_index >= 0 AND part.part_index < batch.expected_parts) = batch.expected_parts
+)`;
 
 function text(value: unknown, field: string): string {
   if (typeof value !== 'string') throw new Error(`channel_sqlite_corrupted: ${field}`);
@@ -117,18 +127,29 @@ function outboxFromRow(row: Row): ChannelOutboxItem {
 
 export class SqliteChannelStore implements ChannelStore {
   private readonly database: DatabaseSync;
+  private readonly compatibleV2: boolean;
 
   constructor(filename: string) {
     mkdirSync(path.dirname(filename), { recursive: true });
     this.database = new DatabaseSync(filename);
-    this.database.exec('PRAGMA journal_mode = WAL;');
-    const version = this.database.prepare('PRAGMA user_version').get() as { user_version: number };
-    if (version.user_version > CHANNEL_SCHEMA_VERSION) throw new Error(`channel_sqlite_version_unsupported: ${version.user_version}`);
-    this.database.exec(CHANNEL_SCHEMA_SQL);
-    // Version 1 databases created the pairing table without an instance FK.
-    // Remove already orphaned rows; deleteInstance also handles those databases explicitly.
-    this.database.prepare('DELETE FROM channel_pairings WHERE instance_id NOT IN (SELECT id FROM channel_instances)').run();
-    this.database.exec(`PRAGMA user_version = ${CHANNEL_SCHEMA_VERSION};`);
+    try {
+      const version = this.database.prepare('PRAGMA user_version').get() as { user_version: number };
+      this.compatibleV2 = isKnownCompatibleChannelVersion(this.database, version.user_version);
+      if (version.user_version > CHANNEL_SCHEMA_VERSION && !this.compatibleV2) {
+        throw new Error(`channel_sqlite_version_unsupported: ${version.user_version}`);
+      }
+      // Reject unknown versions before changing journal mode or writing schema/data.
+      this.database.exec('PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON;');
+      if (!this.compatibleV2) {
+        this.database.exec(CHANNEL_SCHEMA_SQL);
+        // Early v1 databases lacked the pairing FK. Preserve existing v1 cleanup behavior.
+        this.database.prepare('DELETE FROM channel_pairings WHERE instance_id NOT IN (SELECT id FROM channel_instances)').run();
+        this.database.exec(`PRAGMA user_version = ${CHANNEL_SCHEMA_VERSION};`);
+      }
+    } catch (error) {
+      this.database.close();
+      throw error;
+    }
   }
 
   async listInstances(): Promise<ChannelInstance[]> {
@@ -336,23 +357,75 @@ export class SqliteChannelStore implements ChannelStore {
       .all(...values) as Row[]).map(outboxFromRow);
   }
   async listReadyOutbox(now: string, limit = 100): Promise<ChannelOutboxItem[]> {
+    const orderedParts = this.compatibleV2 ? `AND (${completeCompatibleBatch}) AND NOT EXISTS (
+      SELECT 1 FROM channel_outbox earlier WHERE earlier.batch_id = channel_outbox.batch_id
+      AND earlier.part_index < channel_outbox.part_index AND earlier.status != 'delivered')` : '';
     return (this.database.prepare(`SELECT * FROM channel_outbox WHERE status = 'pending'
-      AND (next_attempt_at IS NULL OR next_attempt_at <= ?) ORDER BY created_at LIMIT ?`).all(now, limit) as Row[]).map(outboxFromRow);
+      AND (next_attempt_at IS NULL OR next_attempt_at <= ?) ${orderedParts}
+      ORDER BY created_at LIMIT ?`).all(now, limit) as Row[]).map(outboxFromRow);
   }
   async updateOutbox(id: string, patch: Partial<Omit<ChannelOutboxItem, 'id' | 'request' | 'createdAt'>>): Promise<ChannelOutboxItem> {
-    const current = await this.getOutbox(id);
-    if (!current) throw new Error(`channel_delivery_not_found: ${id}`);
-    const updated = { ...current, ...patch };
-    this.database.prepare(`UPDATE channel_outbox SET instance_id = ?, binding_id = ?, conversation_id = ?, thread_id = ?,
-      idempotency_key = ?, status = ?, attempt_count = ?, next_attempt_at = ?, delivered_at = ?, native_message_id = ?, last_error = ?
-      WHERE id = ?`).run(updated.instanceId, updated.bindingId ?? null, updated.conversationId, updated.threadId ?? null,
-        updated.idempotencyKey, updated.status, updated.attemptCount, updated.nextAttemptAt ?? null,
-        updated.deliveredAt ?? null, updated.nativeMessageId ?? null, updated.lastError ?? null, id);
-    return (await this.getOutbox(id))!;
+    this.database.exec('BEGIN IMMEDIATE;');
+    try {
+      const row = this.database.prepare('SELECT * FROM channel_outbox WHERE id = ?').get(id) as Row | undefined;
+      if (!row) throw new Error(`channel_delivery_not_found: ${id}`);
+      const updated = { ...outboxFromRow(row), ...patch };
+      // The v1 dispatcher transitions via updateOutbox rather than v2's claim API.
+      // Keep that transition atomic and enforce the same ordering for historical batches.
+      if (this.compatibleV2 && patch.status === 'sending') {
+        const ready = this.database.prepare(`SELECT 1 FROM channel_outbox WHERE id = ? AND status = 'pending'
+          AND (${completeCompatibleBatch}) AND NOT EXISTS (
+            SELECT 1 FROM channel_outbox earlier WHERE earlier.batch_id = channel_outbox.batch_id
+            AND earlier.part_index < channel_outbox.part_index AND earlier.status != 'delivered')`).get(id);
+        if (!ready) throw new Error(`channel_delivery_not_ready: ${id}`);
+      }
+      this.database.prepare(`UPDATE channel_outbox SET instance_id = ?, binding_id = ?, conversation_id = ?, thread_id = ?,
+        idempotency_key = ?, status = ?, attempt_count = ?, next_attempt_at = ?, delivered_at = ?, native_message_id = ?, last_error = ?
+        WHERE id = ?`).run(updated.instanceId, updated.bindingId ?? null, updated.conversationId, updated.threadId ?? null,
+          updated.idempotencyKey, updated.status, updated.attemptCount, updated.nextAttemptAt ?? null,
+          updated.deliveredAt ?? null, updated.nativeMessageId ?? null, updated.lastError ?? null, id);
+      if (this.compatibleV2) this.refreshCompatibleBatch(optionalText(row.batch_id));
+      const saved = outboxFromRow(this.database.prepare('SELECT * FROM channel_outbox WHERE id = ?').get(id) as Row);
+      this.database.exec('COMMIT;');
+      return saved;
+    } catch (error) {
+      this.database.exec('ROLLBACK;');
+      throw error;
+    }
   }
   async recoverOutbox(): Promise<void> {
-    this.database.prepare(`UPDATE channel_outbox SET status = 'unknown', last_error = COALESCE(last_error,
-      'Process stopped after dispatch began; delivery outcome is unknown.') WHERE status = 'sending'`).run();
+    this.database.exec('BEGIN IMMEDIATE;');
+    try {
+      this.database.prepare(`UPDATE channel_outbox SET status = 'unknown', last_error = COALESCE(last_error,
+        'Process stopped after dispatch began; delivery outcome is unknown.') WHERE status = 'sending'`).run();
+      if (this.compatibleV2) {
+        for (const row of this.database.prepare('SELECT batch_id FROM channel_delivery_batches').all() as Row[]) {
+          this.refreshCompatibleBatch(text(row.batch_id, 'batch.id'));
+        }
+      }
+      this.database.exec('COMMIT;');
+    } catch (error) {
+      this.database.exec('ROLLBACK;');
+      throw error;
+    }
+  }
+
+  private refreshCompatibleBatch(batchId?: string): void {
+    if (!batchId) return;
+    this.database.prepare(`UPDATE channel_outbox SET status = 'blocked', last_error = 'A preceding delivery part failed.'
+      WHERE batch_id = ? AND status = 'pending' AND part_index >
+      (SELECT MIN(part_index) FROM channel_outbox WHERE batch_id = ? AND status = 'failed')`).run(batchId, batchId);
+    const batch = this.database.prepare('SELECT request_hash, expected_parts FROM channel_delivery_batches WHERE batch_id = ?')
+      .get(batchId) as Row | undefined;
+    if (!batch) return;
+    const parts = this.database.prepare('SELECT status, part_index FROM channel_outbox WHERE batch_id = ? ORDER BY part_index')
+      .all(batchId) as Row[];
+    const incomplete = parts.length !== integer(batch.expected_parts, 'batch.expected_parts')
+      || parts.some((part, index) => part.part_index !== index);
+    const status = incomplete || text(batch.request_hash, 'batch.request_hash').startsWith('legacy:') || parts.some(part => part.status === 'unknown')
+      ? 'unknown' : parts.some(part => part.status === 'pending' || part.status === 'sending')
+        ? 'pending' : parts.length > 0 && parts.every(part => part.status === 'delivered') ? 'delivered' : 'failed';
+    this.database.prepare('UPDATE channel_delivery_batches SET status = ? WHERE batch_id = ?').run(status, batchId);
   }
 
   async close(): Promise<void> { this.database.close(); }

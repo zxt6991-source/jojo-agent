@@ -30,17 +30,20 @@ const aliases = {
   '@desktop-agent/memory': path.join(repositoryRoot, 'packages/memory/src/index.ts'),
   '@desktop-agent/runtime-composition': path.join(repositoryRoot, 'packages/runtime-composition/src/index.ts'),
   '@desktop-agent/scheduler': path.join(repositoryRoot, 'packages/scheduler/src/index.ts')
+  ,'@desktop-agent/speech': path.join(repositoryRoot, 'packages/speech/src/index.ts')
 };
 const external = [/^pdfjs-dist\//u, 'electron', 'bufferutil', 'utf-8-validate', /^node:/u, ...builtinModules];
 const define = {
   MAIN_WINDOW_VITE_DEV_SERVER_URL: 'undefined',
-  MAIN_WINDOW_VITE_NAME: JSON.stringify('main_window')
+  MAIN_WINDOW_VITE_NAME: JSON.stringify('main_window'),
+  AUDIO_HOST_VITE_DEV_SERVER_URL: 'undefined',
+  AUDIO_HOST_VITE_NAME: JSON.stringify('audio_host')
 };
 
 async function buildNodeTarget(entry, filename, emptyOutDir) {
   await build({
     root: desktopRoot,
-    resolve: { alias: aliases, conditions: ['node', 'module', 'production'] },
+    resolve: { alias: aliases, conditions: ['node', 'module', 'production'], mainFields: ['module', 'main'] },
     define,
     build: {
       outDir: buildDirectory,
@@ -55,7 +58,11 @@ async function buildNodeTarget(entry, filename, emptyOutDir) {
 
 await buildNodeTarget('src/main/main.ts', 'main.js', true);
 await buildNodeTarget('src/main/file-attachments-worker.ts', 'file-attachments-worker.js', false);
+// A separate export of the production host lets Electron E2E exercise it
+// directly with silent offline audio, without reaching a cloud provider.
+await buildNodeTarget('src/main/audio-host.ts', 'audio-host.js', false);
 await buildNodeTarget('src/preload/preload.ts', 'preload.js', false);
+await buildNodeTarget('src/preload/audio-preload.ts', 'audio-preload.js', false);
 await buildNodeTarget('src/worker/worker.ts', 'worker.js', false);
 await build({
   root: desktopRoot,
@@ -66,5 +73,14 @@ await build({
     outDir: path.join(desktopRoot, '.vite', 'renderer', 'main_window'),
     emptyOutDir: true,
     rollupOptions: { input: path.join(desktopRoot, 'index.html') }
+  }
+});
+await build({
+  root: desktopRoot,
+  base: './',
+  build: {
+    outDir: path.join(desktopRoot, '.vite', 'renderer', 'audio_host'),
+    emptyOutDir: true,
+    rollupOptions: { input: path.join(desktopRoot, 'audio-host.html') }
   }
 });

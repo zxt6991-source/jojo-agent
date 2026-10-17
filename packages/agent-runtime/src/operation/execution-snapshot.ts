@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { realpath, stat } from 'node:fs/promises';
 import { z } from 'zod';
-import { normalizeContextBlocks, ProjectIdentitySchema, SubAgentMemoryBindingSchema, WorkflowMemoryBindingSchema, TeamMemberMemoryBindingSchema, SubAgentProfileSchema } from '@desktop-agent/contracts';
+import { normalizeContextBlocks, ProjectIdentitySchema, SubAgentMemoryBindingSchema, WorkflowMemoryBindingSchema, TeamMemberMemoryBindingSchema, SubAgentProfileSchema, VoiceTurnMetadataSchema } from '@desktop-agent/contracts';
 import { ExecutionScopeSchema } from '@desktop-agent/contracts/runtime';
 import { createIterationBudgetPolicy } from '@desktop-agent/agent';
 import type { RunBudget } from '../public/run.js';
@@ -45,6 +45,7 @@ const schema = z.object({
   trigger: z.object({ kind: z.enum(['user', 'api', 'scheduler', 'workflow', 'subagent', 'team_member', 'resume', 'channel_message']), id: id.optional() }).strict().optional(),
   workflow: z.object({ id, runId: id.optional(), stepId: id.optional() }).strict().optional(),
   team: z.object({ id, memberId: id, taskId: id.optional() }).strict().optional(),
+  voice: VoiceTurnMetadataSchema.optional(),
   providerBinding: z.object({ providerId: id, model: id, configurationFingerprint: hash }).strict(),
   budget: budgetSchema,
   instructions: z.object({ requested: z.array(z.string()).max(128), contributed: z.array(block).max(128), compositionVersion: z.literal(1), fingerprint: hash }).strict(),
@@ -143,8 +144,8 @@ export function validateOperationExecution(meta: OperationMeta, state?: Operatio
     && (!Number.isSafeInteger(state.progress.iterationLimit) || state.progress.iterationLimit > meta.maxIterations)) executionError(undefined, 'state.progress');
 }
 export function executionSummary(value: unknown): RuntimeExecutionSummary {
-  const { schemaVersion, executionScope, actor, trigger, workflow, team, providerBinding, budget, runContext, instructions } = parseExecutionSnapshot(value);
-  return { schemaVersion, executionScope, actor, ...(trigger ? { trigger } : {}), ...(workflow ? { workflow } : {}), ...(team ? { team } : {}), providerBinding, budget, runContext, instructionFingerprint: instructions.fingerprint };
+  const { schemaVersion, executionScope, actor, trigger, workflow, team, voice, providerBinding, budget, runContext, instructions } = parseExecutionSnapshot(value);
+  return { schemaVersion, executionScope, actor, ...(trigger ? { trigger } : {}), ...(workflow ? { workflow } : {}), ...(team ? { team } : {}), ...(voice ? { voice } : {}), providerBinding, budget, runContext, instructionFingerprint: instructions.fingerprint };
 }
 export async function validateExecutionWorkspace(snapshot: OperationExecutionSnapshotV1): Promise<void> {
   if (snapshot.executionScope.kind !== 'workspace') return;

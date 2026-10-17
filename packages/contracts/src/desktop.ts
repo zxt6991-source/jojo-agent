@@ -1,4 +1,9 @@
 import { APPLICATION_OPERATIONS } from './application/operations.js';
+import { SaveSpeechSettingsInputSchema, type SpeechSettingsSnapshot } from './speech';
+import type { BeginSpeechCaptureInput, SpeechCaptureHandle, CommitVoiceTurnInput, VoiceCommitResult,
+  ReadSpeechMessageInput, TestSpeechSettingsInput, StopSpeechPlaybackInput, SpeechPlaybackResult,
+  SpeechStatus, SpeechEvent, ReadApprovalSpeechInput } from './speech-ui';
+import type { ScheduleVoicePreparation, PreviewScheduleVoiceInput } from './scheduler-desktop';
 import { ChannelConversationSchema, ChannelRoutingSchema, ChannelBindingPolicySchema } from './application/channels.js';
 import type { ArtifactReadRequestV2, ArtifactReadResponseV2, ArtifactSaveRequestV2, ArtifactSaveResponseV2 } from './artifact-content';
 import { ModelConfigSchema, type ModelConfig } from './model-metadata';
@@ -27,6 +32,7 @@ import type {
   ChannelDeliveryReceipt,
   ChannelInstance,
   ChannelInstanceHealth,
+  ChannelOutboxItem,
   ChannelPairing
 } from '@desktop-agent/channel-core';
 export type { ChannelDeliveryReceipt } from '@desktop-agent/channel-core';
@@ -522,7 +528,7 @@ export type SessionCompactionRecord = {
 
 export type ChannelDeliverySummary = {
   id: string; instanceId: string; bindingId?: string; conversationId: string; threadId?: string;
-  mode?: 'reply' | 'proactive' | 'system'; status: 'pending' | 'sending' | 'delivered' | 'failed' | 'unknown';
+  mode?: 'reply' | 'proactive' | 'system'; status: ChannelOutboxItem['status'];
   attemptCount: number; createdAt: string; deliveredAt?: string; nativeMessageId?: string; lastError?: string;
 };
 
@@ -654,6 +660,7 @@ export type DesktopApi = {
   runScheduleNow(input: { scheduleId: string }): Promise<ScheduleRunContract>;
   listScheduleRuns(input: { scheduleId: string }): Promise<ScheduleRunContract[]>;
   cancelScheduleRun(input: { runId: string }): Promise<void>;
+  replayScheduleVoice(input: { itemId: string }): Promise<void>;
   getChannelSettings(): Promise<ChannelSettingsSnapshot>;
   saveChannelSecrets(input: SaveChannelSecretsInput): Promise<ChannelSecretReferences>;
   mutateChannel(input: DesktopChannelMutation): Promise<ChannelDeliveryReceipt | ChannelSettingsSnapshot>;
@@ -665,6 +672,21 @@ export type DesktopApi = {
   hasClipboardFiles(): boolean;
   pasteFiles(): Promise<AttachmentSelection>;
   getSettings(): Promise<ProviderSettings>;
+  getSpeechSettings(): Promise<SpeechSettingsSnapshot>;
+  saveSpeechSettings(input: z.input<typeof SaveSpeechSettingsInputSchema>): Promise<SpeechSettingsSnapshot>;
+  beginSpeechCapture(input: BeginSpeechCaptureInput): Promise<SpeechCaptureHandle>;
+  attachSpeechCapture(input: SpeechCaptureHandle): Promise<void>;
+  cancelSpeechCapture(input: SpeechCaptureHandle): Promise<void>;
+  commitVoiceTurn(input: CommitVoiceTurnInput): Promise<VoiceCommitResult>;
+  readSpeechMessage(input: ReadSpeechMessageInput): Promise<SpeechPlaybackResult>;
+  readApprovalSpeech(input: ReadApprovalSpeechInput): Promise<SpeechPlaybackResult>;
+  previewScheduleVoice(input: PreviewScheduleVoiceInput): Promise<SpeechPlaybackResult>;
+  getScheduleVoicePreparation(input: { scheduleId: string }): Promise<ScheduleVoicePreparation>;
+  clearSpeechCache(): Promise<void>;
+  testSpeechSettings(input: TestSpeechSettingsInput): Promise<SpeechPlaybackResult>;
+  stopSpeechPlayback(input: StopSpeechPlaybackInput): Promise<void>;
+  getSpeechStatus(): Promise<SpeechStatus>;
+  onSpeechEvent(listener: (event: SpeechEvent) => void): () => void;
   cancelModelRefresh(providerId: string): Promise<void>;
   listModels(input: z.input<typeof ListModelsInputSchema>): Promise<ModelConfig[]>;
   saveSettings(input: z.input<typeof SaveSettingsInputSchema>): Promise<ProviderSettings>;
@@ -752,6 +774,7 @@ export const IPC = {
   runScheduleNow: 'scheduler:run-now',
   listScheduleRuns: 'scheduler:runs-list',
   cancelScheduleRun: 'scheduler:run-cancel',
+  replayScheduleVoice: 'scheduler:delivery-replay',
   getChannelSettings: 'channels:get',
   saveChannelSecrets: 'channels:secrets-save',
   mutateChannel: 'channels:mutate',
@@ -765,6 +788,22 @@ export const IPC = {
   hasClipboardFiles: 'system:has-clipboard-files',
   pasteFiles: 'system:paste-files',
   getSettings: 'settings:get',
+  getSpeechSettings: 'speech:settings:get',
+  saveSpeechSettings: 'speech:settings:save',
+  beginSpeechCapture: 'speech:capture:begin',
+  attachSpeechCapture: 'speech:capture:attach',
+  speechCapturePort: 'speech:capture:port',
+  cancelSpeechCapture: 'speech:capture:cancel',
+  commitVoiceTurn: 'voice:commit',
+  readSpeechMessage: 'speech:read-message',
+  readApprovalSpeech: 'speech:read-approval',
+  previewScheduleVoice: 'speech:preview-schedule',
+  getScheduleVoicePreparation: 'speech:schedule-preparation',
+  clearSpeechCache: 'speech:cache-clear',
+  testSpeechSettings: 'speech:settings:test',
+  stopSpeechPlayback: 'speech:playback:stop',
+  getSpeechStatus: 'speech:status',
+  speechEvent: 'speech:event',
   cancelModelRefresh: 'models:cancel-refresh',
   listModels: 'models:list',
   saveSettings: 'settings:save',

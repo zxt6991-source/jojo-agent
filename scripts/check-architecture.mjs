@@ -20,9 +20,10 @@ const allowed = {
   'channel-core': [],
   'agent-runtime': ['agent', 'contracts', 'attachment-access'],
   'app-service': ['agent-runtime', 'contracts'],
+  speech: ['contracts'],
   'server-protocol': ['contracts']
 };
-const hostIndependent = new Set(['contracts', 'agent-runtime', 'app-service', 'server-protocol', 'runtime-composition']);
+const hostIndependent = new Set(['contracts', 'agent-runtime', 'app-service', 'server-protocol', 'runtime-composition', 'speech']);
 const hostModules = new Set(['electron', 'fastify', 'ws']);
 const nodeModules = new Set(builtinModules.map((name) => name.replace(/^node:/, '')));
 
@@ -58,6 +59,7 @@ export function checkArchitecture(root) {
     for (const filename of files(pkg.directory).filter((file) => /\.[cm]?[jt]sx?$/.test(file))) {
       const relative = path.relative(pkg.directory, filename).split(path.sep).join('/');
       const production = relative.startsWith('src/') && !/\.(test|spec)\.[cm]?[jt]sx?$/.test(relative) && !relative.includes('/test/');
+      const renderer = relative.startsWith('src/renderer/') || relative.startsWith('src/audio-host/');
       const source = ts.createSourceFile(filename, readFileSync(filename, 'utf8'), ts.ScriptTarget.Latest, true);
       const imports = [];
       function visit(node) {
@@ -74,7 +76,7 @@ export function checkArchitecture(root) {
       visit(source);
       for (const specifier of imports) {
         const location = path.relative(root, filename).split(path.sep).join('/');
-        if (production && relative.startsWith('src/renderer/') && (specifier.startsWith('node:') || nodeModules.has(specifier) || specifier === 'electron')) errors.push(`${location}: renderer imports Node/host module ${specifier}`);
+        if (production && renderer && (specifier.startsWith('node:') || nodeModules.has(specifier) || specifier === 'electron')) errors.push(`${location}: renderer imports Node/host module ${specifier}`);
         if (specifier.startsWith('.')) {
           const target = path.resolve(path.dirname(filename), specifier);
           if (production && !target.startsWith(pkg.directory + path.sep)) errors.push(`${location}: cross-package relative import ${specifier}`);
@@ -83,7 +85,7 @@ export function checkArchitecture(root) {
         const dependency = specifier.startsWith('@') ? specifier.split('/').slice(0, 2).join('/') : specifier.split('/')[0];
         if (production) checkBoundary(name, dependency, location);
         if (!specifier.startsWith(prefix)) continue;
-        if (production && relative.startsWith('src/renderer/') && dependency !== '@desktop-agent/contracts') errors.push(`${location}: renderer imports workspace implementation ${dependency}`);
+        if (production && renderer && dependency !== '@desktop-agent/contracts') errors.push(`${location}: renderer imports workspace implementation ${dependency}`);
         const target = packages.get(dependency);
         if (!target) { errors.push(`${location}: unknown workspace import ${specifier}`); continue; }
         const subpath = specifier === dependency ? '.' : `.${specifier.slice(dependency.length)}`;

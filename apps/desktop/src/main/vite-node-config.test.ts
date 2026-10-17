@@ -7,6 +7,9 @@ describe('Electron Node Vite config', () => {
     expect(isElectronNodeExternal('electron')).toBe(true);
     expect(isElectronNodeExternal('node:fs')).toBe(true);
     expect(isElectronNodeExternal('node:sqlite')).toBe(true);
+    expect(isElectronNodeExternal('worker_threads')).toBe(true);
+    expect(isElectronNodeExternal('vm')).toBe(true);
+    expect(isElectronNodeExternal('url')).toBe(true);
     expect(isElectronNodeExternal('bufferutil')).toBe(true);
     expect(isElectronNodeExternal('utf-8-validate')).toBe(true);
     expect(isElectronNodeExternal('@desktop-agent/storage')).toBe(false);

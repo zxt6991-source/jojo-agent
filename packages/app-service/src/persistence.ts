@@ -1,4 +1,5 @@
 import type { RunResult } from '@desktop-agent/agent-runtime';
+import type { VoiceTurnMetadata } from '@desktop-agent/contracts';
 import type { ApprovalDecision, ApplicationError } from '@desktop-agent/contracts/application';
 
 export type SessionMetadataRecord = {
@@ -47,6 +48,7 @@ export type RunRequestMeta = {
     kind: 'user' | 'api' | 'scheduler' | 'channel' | 'workflow' | 'subagent' | 'team_member';
     scheduleId?: string;
     scheduleRunId?: string;
+    voice?: VoiceTurnMetadata;
     channel?: {
       bindingId: string;
       instanceId: string;

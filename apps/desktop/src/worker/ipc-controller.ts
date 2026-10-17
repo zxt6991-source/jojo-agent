@@ -3,6 +3,8 @@ import type { ChannelDeliveryReceipt, DesktopChannelMutation, MemoryStatusSnapsh
 import {
   serializedIpcBytes,
   WorkerCommandSchema,
+  SpeechStreamAttachSchema,
+  SpeechProviderError,
   type ChannelSettingsSnapshot,
   type FileAttachment,
   type HookRuntime, type ImageContentBlock,
@@ -11,6 +13,8 @@ import {
   type WorkerMessage
 } from '@desktop-agent/contracts';
 import type { ApplicationContext } from '@desktop-agent/contracts/application';
+import type { DesktopVoiceTasks } from './voice-tasks';
+import type { PcmAudioPort } from './pcm-upload-stream';
 import {
   McpManager
 } from '@desktop-agent/extensions';
@@ -36,6 +40,7 @@ import type { DesktopSchedulerRuntime } from './scheduler-runtime';
 import { InteractiveTerminalSecretBroker } from './terminal-secret-broker';
 
 interface Context {
+  voiceTasks: DesktopVoiceTasks;
   parentPort: ParentPort;
   sessionController: { handle(command: WorkerCommand): boolean };
   desktopChannelSecrets: Record<string, string>;
@@ -74,6 +79,13 @@ interface Context {
 
 export function bindWorkerIpc(ctx: Context): void {
   ctx.parentPort.on('message', (event) => {
+    if (event.data && typeof event.data === 'object' && 'type' in event.data && event.data.type === 'speech.stream.attach') {
+      const attach = SpeechStreamAttachSchema.safeParse(event.data);
+      if (!attach.success || event.ports?.length !== 1) { event.ports?.forEach(port => port.close()); return; }
+      const port = event.ports[0]!;
+      void ctx.extensionReady.then(() => ctx.voiceTasks.attachCapture(attach.data.handle, port)).catch(() => port.close());
+      return;
+    }
     const parsed = WorkerCommandSchema.safeParse(event.data);
     if (!parsed.success) {
       const raw = event.data;
@@ -87,7 +99,40 @@ export function bindWorkerIpc(ctx: Context): void {
     }
     const command = parsed.data;
     if (ctx.sessionController.handle(command)) return;
-    if (command.type === 'config.update') {
+    if (command.type === 'speech.control') {
+      void ctx.extensionReady.then(async () => {
+        const control = command.control;
+        if (control.action === 'status') return ctx.voiceTasks.status();
+        if (control.action === 'cancel') { await ctx.voiceTasks.cancelCapture(control.input.captureId, control.input.generation); return; }
+        if (control.action === 'stopRead') { ctx.voiceTasks.cancelReadTasks(control.sessionId, control.generation); return; }
+        if (control.action === 'commit') return ctx.voiceTasks.commit(control.input);
+        if (control.action === 'readMessage') return ctx.voiceTasks.readMessage(control.input);
+        if (control.action === 'readApproval') return ctx.voiceTasks.readApproval(control.input);
+        if (control.action === 'approvalPending') return ctx.approvals.get(control.input.approvalId)?.sessionId === control.input.sessionId;
+        if (control.action === 'clearCache') {
+          await ctx.voiceTasks.clearCache();
+          const active = await ctx.schedulerReady; active.desktopDelivery?.clearPreparation(); return;
+        }
+        if (control.action === 'scheduleVoicePreparation' || control.action === 'previewSchedule') {
+          const active = await ctx.schedulerReady;
+          const schedule = await active.service.get(control.input.scheduleId);
+          if (!schedule || schedule.deletedAt || !active.desktopDelivery) throw new Error('schedule_voice_unavailable');
+          return control.action === 'scheduleVoicePreparation'
+            ? active.desktopDelivery.readPreparation(schedule)
+            : active.desktopDelivery.preview(schedule, control.input.generation);
+        }
+        if (control.action === 'test') return ctx.voiceTasks.testTts(control.input.generation, control.input.presetId);
+        if (control.action === 'resolveAsset') return ctx.voiceTasks.resolveAsset(control.input.assetId, control.input.owner);
+        if (control.action === 'releaseSession') { await ctx.voiceTasks.releaseSession(control.sessionId); return; }
+      }).then(result => ctx.post({ type: 'speech.result', requestId: command.requestId, ok: true, ...(result !== undefined ? { result } : {}) }))
+        .catch((error: unknown) => ctx.post({ type: 'speech.result', requestId: command.requestId, ok: false,
+          error: error instanceof SpeechProviderError && error.code === 'local_unavailable'
+            ? '本地朗读不可用，请确认使用 macOS 且已安装所选系统声音。'
+            : error instanceof SpeechProviderError && error.code === 'speaker_unavailable'
+              ? '所选音色不可用，请检查当前朗读服务和声音设置。'
+              : '语音请求失败，请检查设置、录音或对话任务状态。' }));
+    }
+    else if (command.type === 'config.update') {
       ctx.desktopChannelSecrets = { ...command.channelSecrets };
       ctx.extensionReady = ctx.extensionReady.then(
         () => ctx.applyRuntimeConfig(command.settings, command.apiKeys, command.mcpOAuthCredentials, command.terminalSecrets)
@@ -259,6 +304,28 @@ export function bindWorkerIpc(ctx: Context): void {
           type: 'team.result', requestId: command.requestId, ok: false,
           error: error instanceof Error ? error.message : String(error)
         }));
+    } else if (command.type === 'scheduler.desktop.result') {
+      void ctx.schedulerReady.then(({ desktopDelivery }) => desktopDelivery?.accept(command.requestId, command.outcome)).catch(() => undefined);
+    } else if (command.type === 'scheduler.resume') {
+      void ctx.schedulerReady.then(active => active.resume()).catch(() => undefined);
+    } else if (command.type === 'scheduler.suspend') {
+      void ctx.schedulerReady.then(({ desktopDelivery }) => desktopDelivery?.cancelAll()).catch(() => undefined);
+    } else if (command.type === 'scheduler.delivery.control') {
+      void ctx.schedulerReady.then(async ({ store }) => {
+        const identity = command.control.identity;
+        const item = command.control.action === 'start'
+          ? await store.ackDelivery({ ...identity, now: Date.now(), state: 'playing' })
+          : await store.renewDeliveryClaim({ ...identity, now: Date.now(), ttlMs: 20_000 });
+        ctx.post({ type: 'scheduler.delivery.result', requestId: command.requestId, ok: Boolean(item) });
+        if (item) {
+          const run = await store.getRun(item.scheduleRunId);
+          if (run) ctx.post({ type: 'scheduler.event', event: { type: 'schedule.run.changed', run } });
+        }
+      }).catch(() => ctx.post({ type: 'scheduler.delivery.result', requestId: command.requestId, ok: false }));
+    } else if (command.type === 'scheduler.delivery.replay') {
+      void ctx.schedulerReady.then(({ service }) => service.replayDelivery(command.input.itemId))
+        .then(() => ctx.post({ type: 'scheduler.result', requestId: command.requestId, ok: true }))
+        .catch(() => ctx.post({ type: 'scheduler.result', requestId: command.requestId, ok: false, error: '该语音提醒暂时无法重播。' }));
     } else if (command.type === 'scheduler.list') {
       void ctx.schedulerReady
         .then(({ service }) => service.list())
@@ -408,4 +475,4 @@ export function bindWorkerIpc(ctx: Context): void {
 
 }
 
-type ParentPort = { on(event: 'message', listener: (event: { data: unknown }) => void): void; postMessage(message: WorkerMessage): void };
+type ParentPort = { on(event: 'message', listener: (event: { data: unknown; ports?: PcmAudioPort[] }) => void): void; postMessage(message: WorkerMessage): void };

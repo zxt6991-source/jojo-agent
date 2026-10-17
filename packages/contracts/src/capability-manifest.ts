@@ -12,10 +12,10 @@ export const CAPABILITY_MANIFEST = [
 ] as const;
 
 export type CapabilityId = typeof CAPABILITY_MANIFEST[number]['id'];
-export type ScheduleTargetKind = 'agent' | 'workflow' | 'team_member';
+export type ScheduleTargetKind = 'agent' | 'workflow' | 'team_member' | 'reminder';
 export const SCHEDULER_TARGETS: Record<'desktop' | 'server', readonly ScheduleTargetKind[]> = {
-  desktop: ['agent', 'workflow', 'team_member'],
-  server: ['agent']
+  desktop: ['agent', 'workflow', 'team_member', 'reminder'],
+  server: ['agent', 'reminder']
 };
 
 export function createServerCapabilityDefaults(options: {

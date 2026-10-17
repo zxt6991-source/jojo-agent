@@ -9,6 +9,36 @@ import { JojoClient } from '../src/index.js';
 const allow: PermissionGate = { check: async () => ({ decision: 'allow' }) };
 
 describe('Jojo client SDK', () => {
+  it('round-trips fixed reminder targets over REST without a session and rejects local speaker delivery', async () => {
+    let providerCalls = 0;
+    const server = await createNetworkServer({
+      providers: { describe: describeTestProvider, resolve: () => { providerCalls += 1; throw new Error('Reminder must not execute a provider'); } },
+      permissions: allow, http: { host: '127.0.0.1', port: 0, token: 'reminder-token' }
+    });
+    const client = new JojoClient({ baseUrl: await server.listen(), token: 'reminder-token', reconnect: false });
+    try {
+      await client.connect();
+      expect((await client.getCapabilities()).scheduler.targets).toContain('reminder');
+      const schedule = await client.createSchedule({
+        name: 'Drink water', enabled: false,
+        spec: { kind: 'once', runAt: new Date(Date.now() + 60_000).toISOString() },
+        target: { kind: 'reminder', text: '该喝水了' }
+      });
+      expect((await client.getSchedule(schedule.id)).target).toEqual({ kind: 'reminder', text: '该喝水了' });
+      await expect(client.updateSchedule(schedule.id, {
+        delivery: { voice: { enabled: true, deviceId: 'local-desktop', content: { kind: 'result', maxChars: 200 }, expiresAfterMs: 60_000 } }
+      })).rejects.toThrow('Headless Server has no local desktop voice device');
+      const started = await client.runScheduleNow(schedule.id);
+      let terminal = await client.getScheduleRun(started.id);
+      for (let attempt = 0; attempt < 40 && terminal.status !== 'completed'; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        terminal = await client.getScheduleRun(started.id);
+      }
+      expect(terminal).toMatchObject({ targetKind: 'reminder', status: 'completed', resultPreview: '该喝水了' });
+      expect(providerCalls).toBe(0);
+    } finally { await client.close(); await server.close(); }
+  });
+
   it('runs a remote turn and recovers the result through the queryable run snapshot', async () => {
     const server = await createNetworkServer({
       providers: { describe: describeTestProvider, resolve: () => new ScriptedProvider([[
@@ -134,7 +164,7 @@ describe('Jojo client SDK', () => {
     try {
       await client.connect();
       await expect(client.getCapabilities()).resolves.toMatchObject({
-        scheduler: { enabled: true, targets: ['agent'] }
+        scheduler: { enabled: true, targets: ['agent', 'reminder'] }
       });
       const session = await client.createSession({ executionScope: { kind: 'none' } });
       const changed = new Promise<string>((resolve) => {

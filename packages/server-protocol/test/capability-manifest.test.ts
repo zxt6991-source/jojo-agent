@@ -11,10 +11,10 @@ describe('capability manifest', () => {
     expect(disabled.channels).toEqual({ enabled: false, kinds: [], inbound: false, outbound: false, approvals: false });
     const enabled = createServerCapabilityDefaults({ scheduler: true, channels: true, channelKinds: ['feishu'] });
     expect(ServerCapabilitiesSchema.parse(enabled)).toEqual(enabled);
-    expect(enabled.scheduler.targets).toEqual(['agent']);
+    expect(enabled.scheduler.targets).toEqual(['agent', 'reminder']);
     expect(enabled.channels.kinds).toEqual(['feishu']);
     expect(enabled.workflow).toBe(false);
-    expect(SCHEDULER_TARGETS.desktop).toEqual(['agent', 'workflow', 'team_member']);
+    expect(SCHEDULER_TARGETS.desktop).toEqual(['agent', 'workflow', 'team_member', 'reminder']);
   });
 
   it('returns independent mutable snapshots without mutating the registry', () => {
@@ -23,7 +23,7 @@ describe('capability manifest', () => {
     first.scheduler.targets.push('workflow');
     first.channels.kinds.push('telegram');
     const second = createServerCapabilityDefaults({ scheduler: true, channels: true, channelKinds: kinds });
-    expect(second.scheduler.targets).toEqual(['agent']);
+    expect(second.scheduler.targets).toEqual(['agent', 'reminder']);
     expect(second.channels.kinds).toEqual(['feishu']);
     expect(new Set(CAPABILITY_MANIFEST.map((item) => item.id)).size).toBe(CAPABILITY_MANIFEST.length);
     expect(JOJO_SERVER_PROTOCOL_VERSION).toBe(BUILD_COMPATIBILITY.serverProtocol);

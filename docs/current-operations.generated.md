@@ -5,6 +5,20 @@
 
 | 操作 | 类型 | 权限 scope | 无幂等键可安全重试 |
 |---|---|---|---|
+| speech.settings.get | query | speech:read | true |
+| speech.settings.save | command | speech:configure | false |
+| speech.capture.begin | command | speech:capture | false |
+| speech.capture.attach | command | speech:capture | true |
+| speech.capture.cancel | command | speech:capture | true |
+| voice.commit | command | runs:start | true |
+| speech.readMessage | command | speech:play | false |
+| speech.readApproval | command | speech:play | false |
+| speech.previewSchedule | command | speech:play | false |
+| speech.schedulePreparation | query | speech:read | true |
+| speech.cache.clear | command | speech:configure | true |
+| speech.settings.test | command | speech:configure | false |
+| speech.playback.stop | command | speech:play | true |
+| speech.status | query | speech:read | true |
 | session.search | query | sessions:read | true |
 | session.read-window | query | sessions:read | true |
 | session.list | query | sessions:read | true |
@@ -21,6 +35,7 @@
 | schedule.save | command | schedules:write | false |
 | schedule.enabled | command | schedules:write | false |
 | schedule.run-now | command | schedules:run | false |
+| schedule.delivery.replay | command | schedules:run | false |
 | channel.instance.create | command | channels:write | false |
 | channel.instance.update | command | channels:write | false |
 | channel.binding.create | command | channels:bind | false |

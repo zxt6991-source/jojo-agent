@@ -1,5 +1,5 @@
 import { ModelMetadataSettings } from './ModelMetadataSettings';
-import { ModelConfigSchema, isModelMetadataStale, type ModelConfig } from '@desktop-agent/contracts';
+import { ModelConfigSchema, SpeechSettingsSchema, isModelMetadataStale, type ModelConfig } from '@desktop-agent/contracts';
 import { ArtifactPanel } from './artifacts/ArtifactPanel';
 import { detectArtifacts } from '@desktop-agent/contracts';
 import { attachmentPreviewText } from '@desktop-agent/contracts';
@@ -27,6 +27,11 @@ import { permissionModes } from './permissions/permission-copy';
 import { SchedulerSettingsPage } from './SchedulerSettings';
 import { TeamSettingsPage } from './TeamSettings';
 import { ChannelsSettingsPage } from './ChannelsSettings';
+import { SpeechSettingsPage } from './SpeechSettings';
+import { VoiceCaptureButton, VoiceCaptureStatus } from './VoiceComposer';
+import { activeSpeechPlayback, getSpeechContinuation, nextSpeechGeneration, useSpeechAutoRead, useSpeechCapture, useSpeechStatus } from './useSpeech';
+import { shouldDisableAutoRead } from './speech-output-policy';
+import type { SpeechCaptureState } from '@desktop-agent/contracts';
 import { ChatTranscript, ConversationViewTabs, Markdown, TrajectoryView } from './ConversationViews';
 import { Sidebar } from './Sidebar';
 import { WorkflowCard } from './WorkflowCard';
@@ -36,7 +41,7 @@ import './styles.css';
 
 type DiffLine = { type: 'addition' | 'deletion' | 'context' | 'hunk' | 'meta'; oldLine?: number; newLine?: number; text: string };
 const FOLLOW_THRESHOLD = 24;
-type SettingsSection = 'models' | 'permissions' | 'memory' | 'automations' | 'channels' | 'teams' | 'browser' | 'browser-recordings' | 'mcp' | 'skills' | 'hooks';
+type SettingsSection = 'models' | 'permissions' | 'memory' | 'automations' | 'channels' | 'teams' | 'browser' | 'browser-recordings' | 'mcp' | 'skills' | 'hooks' | 'speech';
 
 const defaultSettings: ProviderSettings = {
   activeProviderId: 'openai',
@@ -44,6 +49,7 @@ const defaultSettings: ProviderSettings = {
   utilityModel: { providerId: 'openai', model: 'gpt-5-mini' },
   permissions: { mode: 'ask' },
   memory: structuredClone(DEFAULT_MEMORY_SETTINGS),
+  speech: SpeechSettingsSchema.parse({}),
   extensions: { mcpServers: [], skills: { directories: [], disabled: [] }, browser: { ...DEFAULT_BROWSER_SETTINGS } }
 };
 
@@ -322,6 +328,8 @@ function App() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [compactions, setCompactions] = useState<SessionCompactionRecord[]>([]);
   const [draft, setDraft] = useState('');
+  const [voiceDraft, setVoiceDraft] = useState<SpeechCaptureState | undefined>();
+  const [voiceNotice, setVoiceNotice] = useState('');
   const [attachments, setAttachments] = useState<ImageContentBlock[]>([]);
   const [files, setFiles] = useState<FileAttachment[]>([]);
   const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
@@ -358,6 +366,49 @@ function App() {
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('models');
   const [settings, setSettings] = useState<ProviderSettings>(defaultSettings);
   const [settingsDraft, setSettingsDraft] = useState<ProviderSettings>(defaultSettings);
+  const autoReadAllowedRef = useRef(false);
+  autoReadAllowedRef.current = settings.speech.autoReadReplies;
+  const speechStatus = useSpeechStatus(window.desktopAgent);
+  const speechCapture = useSpeechCapture({ api: window.desktopAgent, ...(activeId ? { sessionId: activeId } : {}), purpose: 'conversation',
+    ...(settings.speech.inputDeviceId ? { inputDeviceId: settings.speech.inputDeviceId } : {}),
+    onFinal: capture => {
+      if (capture.sessionId !== activeIdRef.current || !capture.text?.trim()) return;
+      setDraft(capture.text); setVoiceDraft(capture);
+      setVoiceNotice(settings.speech.inputMode === 'review' ? '识别完成，可校正后发送。' : '');
+      if (settings.speech.inputMode === 'auto_send') void submitVoice(capture, capture.text);
+    }
+  });
+  const speechPlayback = activeSpeechPlayback(speechStatus.playbacks, activeId ?? undefined);
+  useSpeechAutoRead(window.desktopAgent, { ...(activeId ? { sessionId: activeId } : {}), readSessionId: () => activeIdRef.current, enabled: settings.speech.enabled, autoReadReplies: settings.speech.autoReadReplies,
+    isAutoReadAllowed: () => autoReadAllowedRef.current,
+    allowPlayback: !['connecting', 'recording', 'recognizing'].includes(speechCapture.state) }, setVoiceNotice);
+  const spokenApprovals = useRef(new Set<string>());
+  const approvalSpeechSession = approval?.sessionId;
+  const approvalSpeechId = approval?.requestId;
+  const approvalSpeechBlocked = ['connecting', 'recording', 'recognizing'].includes(speechCapture.state);
+  useEffect(() => {
+    if (!approvalSpeechSession || !approvalSpeechId || approvalSpeechSession !== activeId
+      || !settings.speech.enabled || !settings.speech.autoReadReplies || !autoReadAllowedRef.current || approvalSpeechBlocked) return;
+    const key = JSON.stringify([approvalSpeechSession, approvalSpeechId]);
+    if (spokenApprovals.current.has(key)) return;
+    spokenApprovals.current.add(key);
+    if (spokenApprovals.current.size > 100) spokenApprovals.current.delete(spokenApprovals.current.values().next().value!);
+    const input = { sessionId: approvalSpeechSession, approvalId: approvalSpeechId, generation: nextSpeechGeneration() };
+    let live = true;
+    let playbackId: string | undefined;
+    void window.desktopAgent.readApprovalSpeech(input).then(result => {
+      playbackId = result.playbackId;
+      if (!live || !autoReadAllowedRef.current) void window.desktopAgent.stopSpeechPlayback({ playbackId }).catch(() => undefined);
+    }).catch(cause => { if (live && autoReadAllowedRef.current) setVoiceNotice(cause instanceof Error ? cause.message : String(cause)); });
+    return () => {
+      live = false;
+      void window.desktopAgent.stopSpeechPlayback(playbackId ? { playbackId } : { sessionId: input.sessionId, generation: input.generation }).catch(() => undefined);
+    };
+  }, [approvalSpeechSession, approvalSpeechId, activeId, settings.speech.enabled, settings.speech.autoReadReplies, approvalSpeechBlocked]);
+  useEffect(() => {
+    setVoiceDraft(undefined); setVoiceNotice('');
+    return () => { if (activeId) void window.desktopAgent.stopSpeechPlayback({ sessionId: activeId }).catch(() => undefined); };
+  }, [activeId]);
   const [selectedModel, setSelectedModel] = useState(providerById(defaultSettings, defaultSettings.activeProviderId).model);
   const [apiKey, setApiKey] = useState('');
   const modelRefreshGeneration = useRef(0);
@@ -1343,14 +1394,73 @@ function App() {
     }
   };
 
+  const applySpeechOutputPolicy = async (text: string, sessionId: string) => {
+    if (!shouldDisableAutoRead(text)) return;
+    // Block reply receipts immediately, before React renders or settings IPC settles.
+    autoReadAllowedRef.current = false;
+    const disable = (current: ProviderSettings) => ({ ...current, speech: { ...current.speech, autoReadReplies: false } });
+    setSettings(disable); setSettingsDraft(disable);
+    await window.desktopAgent.stopSpeechPlayback({ sessionId });
+    const { settings: speech } = await window.desktopAgent.getSpeechSettings();
+    if (speech.autoReadReplies) await window.desktopAgent.saveSpeechSettings({ settings: { ...speech, autoReadReplies: false } });
+  };
+
+  const changeDraft = (text: string) => {
+    setDraft(text);
+    if (!voiceDraft || text.trim()) return;
+    setVoiceDraft(undefined); setVoiceNotice('');
+    const { captureId, voiceTurnId, generation, purpose, sessionId } = voiceDraft;
+    if (speechCapture.handle?.captureId === captureId && speechCapture.handle.generation === generation) speechCapture.cancel();
+    else void window.desktopAgent.cancelSpeechCapture({ captureId, voiceTurnId, generation, purpose, ...(sessionId ? { sessionId } : {}) }).catch(() => undefined);
+  };
+
+  const submitVoice = async (capture: SpeechCaptureState, text: string) => {
+    if (!activeId || capture.sessionId !== activeId || !text.trim()) return;
+    if (runningRef.current || importingFilesRef.current) { setVoiceNotice('上一任务仍在运行，已保留转写草稿。任务结束后可发送。'); return; }
+    runningRef.current = true;
+    setRunningSessionId(activeId); setError(''); setVoiceNotice('正在提交语音文字…');
+    setLiveSteps(emptyLiveSteps()); setTurnStartedAt(Date.now());
+    try {
+      await applySpeechOutputPolicy(text, activeId);
+      const result = await window.desktopAgent.commitVoiceTurn({ voiceTurnId: capture.voiceTurnId, generation: capture.generation, sessionId: activeId, text, providerId: settings.activeProviderId, model: selectedModel });
+      if (activeIdRef.current !== capture.sessionId) return;
+      if (result.status !== 'committed') {
+        runningRef.current = false; setRunningSessionId(null); setTurnStartedAt(null);
+        setDraft(text); setVoiceDraft(capture); setVoiceNotice(result.reason ?? (result.status === 'pending' ? '上一任务仍在结束中，已保留草稿。' : '语音文字未提交，请重试。')); return;
+      }
+      setDraft(''); setVoiceDraft(undefined); setVoiceNotice(''); setUsage({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }); setContextUsage(null);
+      atBottomRef.current = true; setAtBottom(true);
+      setMessages((items) => [...items, { id: `pending-voice-${capture.voiceTurnId}`, role: 'user', createdAt: new Date().toISOString(), content: [{ type: 'text', text }] }]);
+    } catch (cause) {
+      if (activeIdRef.current !== capture.sessionId) return;
+      runningRef.current = false; setRunningSessionId(null); setTurnStartedAt(null);
+      setDraft(text); setVoiceDraft(capture); setVoiceNotice(cause instanceof Error ? cause.message : String(cause));
+    }
+  };
+
+  const stopTaskAndSendVoice = async () => {
+    if (!activeId || !voiceDraft) return;
+    const sessionId = activeId;
+    await window.desktopAgent.cancelTurn(sessionId);
+    setVoiceNotice('正在等待上一任务结束…');
+    const deadline = Date.now() + 10_000;
+    while (runningRef.current && activeIdRef.current === sessionId && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 100));
+    if (activeIdRef.current !== sessionId) return;
+    if (runningRef.current) { setVoiceNotice('上一任务仍在结束中，已保留草稿。'); return; }
+    await submitVoice(voiceDraft, draft.trim());
+  };
+
   const send = async () => {
     const text = draft.trim();
     const images = attachments;
     if ((!text && images.length === 0 && files.length === 0) || !activeId || runningRef.current || importingFilesRef.current) return;
+    if (voiceDraft && images.length === 0 && files.length === 0) { await submitVoice(voiceDraft, text); return; }
     runningRef.current = true;
+    setVoiceDraft(undefined); setVoiceNotice('');
     setDraft(''); setAttachments([]); setFiles([]); setAttachmentWarnings([]); setAttachmentMenuOpen(false); setError(''); setRunningSessionId(activeId); setLiveSteps(emptyLiveSteps()); setTurnStartedAt(Date.now()); setUsage({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }); setContextUsage(null); setTrajectoryExportStatus('idle'); atBottomRef.current = true; setAtBottom(true);
     setMessages((items) => [...items, { id: `pending-${Date.now()}`, role: 'user', createdAt: new Date().toISOString(), content: [...(text ? [{ type: 'text' as const, text }] : []), ...images, ...files] }]);
     try {
+      await applySpeechOutputPolicy(text, activeId);
       turnBaselineRef.current = await loadWorkspaceChanges(activeId);
       await window.desktopAgent.startTurn({ sessionId: activeId, text, images, files, providerId: settings.activeProviderId, model: selectedModel });
     }
@@ -1598,6 +1708,12 @@ function App() {
                 }).catch(caught => setError(caught instanceof Error ? caught.message : String(caught)));
               }}
               onOpenArtifact={setSelectedArtifactId}
+              canReadMessage={messageId => messages.some(message => message.id === messageId && message.role === 'assistant' && !message.content.some(block => block.type === 'tool_call'))}
+              speechContinuation={messageId => getSpeechContinuation(speechStatus.playbacks, activeId!, messageId)}
+              {...(settings.speech.enabled ? {
+                onReadMessage: (messageId: string) => { void window.desktopAgent.readSpeechMessage({ sessionId: activeId!, messageId, generation: nextSpeechGeneration() }).catch(cause => setVoiceNotice(cause instanceof Error ? cause.message : String(cause))); },
+                onContinueMessage: (messageId: string, offset: number) => { void window.desktopAgent.readSpeechMessage({ sessionId: activeId!, messageId, offset, generation: nextSpeechGeneration() }).catch(cause => setVoiceNotice(cause instanceof Error ? cause.message : String(cause))); }
+              } : {})}
               snapshot={snapshot}
               running={sessionBusy}
               turnStartedAt={turnStartedAt}
@@ -1697,8 +1813,11 @@ function App() {
           </div>)}</div>}
           {importingFiles && <div className="attachment-status" role="status">正在读取文件…</div>}
           {attachmentWarnings.length > 0 && <div className="attachment-warnings" role="status">{attachmentWarnings.map((warning, index) => <div key={index}>{warning}</div>)}<button type="button" onClick={() => setAttachmentWarnings([])}>关闭提示</button></div>}
-          <textarea value={draft} onPaste={pasteAttachments} onChange={(event) => setDraft(event.target.value)} placeholder="随心输入" rows={2}
+          {voiceNotice && <div className="voice-notice" role="status">{voiceNotice}{voiceDraft && sessionBusy && <button type="button" onClick={() => void stopTaskAndSendVoice().catch(cause => setVoiceNotice(cause instanceof Error ? cause.message : String(cause)))}>停止任务并发送</button>}</div>}
+          {speechPlayback && <div className="voice-playback-status" role="status"><span>{speechPlayback.state === 'playing' ? '正在朗读' : '正在准备朗读'} · AI 合成语音</span><button type="button" onClick={() => void window.desktopAgent.stopSpeechPlayback({ playbackId: speechPlayback.playbackId })}>停止朗读</button></div>}
+          <textarea value={draft} onPaste={pasteAttachments} onChange={(event) => changeDraft(event.target.value)} placeholder="随心输入" rows={2}
             onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void send(); } }} />
+          <VoiceCaptureStatus capture={speechCapture} />
           <div className="composer-toolbar">
             <div className="composer-context"><span className="approval-status">⌁ 权限 {permissionModes[settings.permissions.mode].title}</span>{contextUsage && <span className={`context-status ${contextUsage.overCapacity ? 'over-capacity' : ''}`} title={contextUsage.overCapacity ? `固定指令与工具定义约 ${contextUsage.fixed} tokens，已超过可用目标 ${contextUsage.target} tokens。请提高上下文窗口或减少工具。` : contextUsage.compacted ? `已压缩 ${contextUsage.compacted} 条历史消息；消息预算 ${contextUsage.messageBudget} tokens` : `上下文估算；消息预算 ${contextUsage.messageBudget} tokens`}>{contextUsage.overCapacity ? '容量不足 · ' : ''}{Math.round(contextUsage.estimated / 1000)}k / {Math.round(contextUsage.window / 1000)}k{contextUsage.maxIterations > 0 ? ` · Loop ${contextUsage.iteration}/${contextUsage.maxIterations}${contextUsage.finalResponseOnly ? ' 收尾' : ''}` : ''}</span>}{(usage.input > 0 || usage.output > 0) && <span className="context-status" title={`缓存读取 ${usage.cacheRead} · 缓存写入 ${usage.cacheWrite}`}>↑{usage.input} ↓{usage.output}</span>}</div>
             <div className="composer-actions">
@@ -1713,6 +1832,8 @@ function App() {
               <select className="model-select" aria-label="本轮使用的模型" title="选择本轮使用的模型" value={selectedModel} disabled={sessionBusy} onChange={(event) => setSelectedModel(event.target.value)}>
                 {selectedProvider.models.map((model) => <option key={model.id} value={model.id}>{model.id}</option>)}
               </select>
+              <VoiceCaptureButton capture={speechCapture} enabled={settings.speech.enabled} disabled={importingFiles}
+                onSettings={() => { setSettingsOpen(true); setSettingsSection('speech'); }} />
               {sessionBusy
                 ? <button className="stop" aria-label="停止生成" title="停止生成" onClick={() => activeId && window.desktopAgent.cancelTurn(activeId)}>■</button>
                 : <button className="send" aria-label="发送消息" title="发送消息" disabled={importingFiles || (!draft.trim() && attachments.length === 0 && files.length === 0)} onClick={() => void send()}>↑</button>}
@@ -1831,6 +1952,7 @@ function App() {
         <button className="settings-back" type="button" onClick={() => setSettingsOpen(false)}><span aria-hidden="true">←</span> 返回</button>
         <nav aria-label="设置分类">
           <button type="button" className={settingsSection === 'models' ? 'active' : ''} onClick={() => { setSettingsSection('models'); setExtensionEditorOpen(false); }}><span aria-hidden="true">◇</span> 模型</button>
+          <button type="button" className={settingsSection === 'speech' ? 'active' : ''} onClick={() => { setSettingsSection('speech'); setExtensionEditorOpen(false); }}><span aria-hidden="true">♬</span> 语音</button>
           <button type="button" className={settingsSection === 'permissions' ? 'active' : ''} onClick={() => { setSettingsSection('permissions'); setExtensionEditorOpen(false); void refreshPermissionGovernance(); }}><span aria-hidden="true">⌁</span> 权限</button>
           <button type="button" className={settingsSection === 'memory' ? 'active' : ''} onClick={() => { setSettingsSection('memory'); setExtensionEditorOpen(false); }}><span aria-hidden="true">◈</span> Memory</button>
           <button type="button" className={settingsSection === 'automations' ? 'active' : ''} onClick={() => { setSettingsSection('automations'); setExtensionEditorOpen(false); setSelectedScheduleId(null); selectedScheduleIdRef.current = null; setScheduleRuns([]); void refreshSchedules(); }}><span aria-hidden="true">◷</span> Automations</button>
@@ -1843,7 +1965,7 @@ function App() {
         </nav>
       </aside>}
       <main className={`settings-main ${settingsSection === 'automations' ? 'automations-settings-main' : ''}`}>
-        <header className="settings-topbar"><strong>{settingsSection === 'models' ? '模型' : settingsSection === 'permissions' ? '权限' : settingsSection === 'memory' ? 'Memory' : settingsSection === 'automations' ? 'Automations' : settingsSection === 'channels' ? 'Channels' : settingsSection === 'teams' ? '团队' : settingsSection === 'browser-recordings' ? '浏览器自动化' : settingsSection === 'browser' ? '浏览器' : settingsSection === 'skills' ? '技能' : settingsSection === 'hooks' ? 'Hooks' : 'MCP 服务'}</strong></header>
+        <header className="settings-topbar"><strong>{settingsSection === 'models' ? '模型' : settingsSection === 'speech' ? '语音' : settingsSection === 'permissions' ? '权限' : settingsSection === 'memory' ? 'Memory' : settingsSection === 'automations' ? 'Automations' : settingsSection === 'channels' ? 'Channels' : settingsSection === 'teams' ? '团队' : settingsSection === 'browser-recordings' ? '浏览器自动化' : settingsSection === 'browser' ? '浏览器' : settingsSection === 'skills' ? '技能' : settingsSection === 'hooks' ? 'Hooks' : 'MCP 服务'}</strong></header>
         <div className="settings-page-body">
     {settingsSection === 'models' && <form className="settings-content model-settings-page" aria-labelledby="settings-title" onSubmit={async (event) => {
       event.preventDefault();
@@ -1895,6 +2017,7 @@ function App() {
       {settingsError && <div className="settings-error" role="alert">{settingsError}</div>}
       <div className="model-save-row"><span>更改将在下一轮对话生效</span><button className="model-save-button" type="submit" disabled={modelsLoading}>保存模型设置</button></div>
     </form>}
+    {settingsSection === 'speech' && <SpeechSettingsPage api={window.desktopAgent} onSaved={speech => { setSettings(current => ({ ...current, speech })); setSettingsDraft(current => ({ ...current, speech })); }} />}
     {settingsSection === 'permissions' && <PermissionsSettingsPage
       snapshot={permissionSnapshot}
       busy={permissionBusy}
@@ -1947,6 +2070,11 @@ function App() {
       runs={scheduleRuns}
       busy={schedulerBusy}
       error={schedulerError}
+      speechEnabled={settings.speech.enabled}
+      api={window.desktopAgent}
+      voicePresets={settings.speech.voicePresets}
+      onOpenSpeechSettings={() => setSettingsSection('speech')}
+      onReplayVoiceDelivery={async itemId => { await window.desktopAgent.replayScheduleVoice({ itemId }); if (selectedScheduleId) await selectSchedule(selectedScheduleId); }}
       onSelect={selectSchedule}
       onClose={() => { setSelectedScheduleId(null); selectedScheduleIdRef.current = null; setScheduleRuns([]); }}
       onRefresh={() => { void refreshSchedules(); }}

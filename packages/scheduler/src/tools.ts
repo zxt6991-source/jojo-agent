@@ -1,4 +1,5 @@
 import type { Tool, ToolContext, ToolResult } from '@desktop-agent/contracts';
+import { ScheduleVoiceDeliverySchema } from '@desktop-agent/contracts';
 import { z } from 'zod';
 import type {
   Schedule,
@@ -30,6 +31,7 @@ const SpecInput = z.discriminatedUnion('kind', [
 ]);
 
 const TargetInput = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('reminder'), text: z.string().trim().min(1).max(200) }).strict(),
   z.object({
     kind: z.literal('agent'),
     prompt: z.string().trim().min(1).max(100_000)
@@ -58,6 +60,7 @@ const CreateInput = z.object({
   spec: SpecInput,
   target: TargetInput,
   enabled: z.boolean().optional(),
+  voice: ScheduleVoiceDeliverySchema.optional(),
   misfire: MisfireInput.optional(),
   concurrency: z.enum(['skip', 'queue']).optional()
 }).strict();
@@ -68,6 +71,7 @@ const UpdateInput = z.object({
   description: z.string().max(4_000).optional(),
   spec: SpecInput.optional(),
   target: TargetInput.optional(),
+  voice: ScheduleVoiceDeliverySchema.optional(),
   misfire: MisfireInput.optional(),
   concurrency: z.enum(['skip', 'queue']).optional()
 }).strict();
@@ -144,6 +148,7 @@ function toScheduleTarget(
   context: ToolContext,
   options: SchedulerToolOptions
 ): ScheduleTarget {
+  if (input.kind === 'reminder') return { kind: 'reminder', text: input.text };
   if (input.kind === 'agent') {
     const budget = {
       ...(options.contextWindowTokens !== undefined
@@ -229,7 +234,12 @@ function compactRun(run: ScheduleRun) {
     resultPreview: run.resultPreview ?? null,
     deliveryStatus: run.deliveryStatus ?? null,
     deliveryMessageId: run.deliveryMessageId ?? null,
-    deliveryError: run.deliveryError ?? null
+    deliveryError: run.deliveryError ?? null,
+    deliveryItems: run.deliveryItems?.map((item) => ({
+      id: item.id, destination: item.destination, destinationId: item.destinationId,
+      state: item.state, attempts: item.attempts, expiresAt: item.expiresAt ?? null,
+      errorCode: item.errorCode ?? null, error: item.error ?? null
+    })) ?? []
   };
 }
 
@@ -257,6 +267,10 @@ const SPEC_SCHEMA = {
 const TARGET_SCHEMA = {
   oneOf: [
     {
+      type: 'object', properties: { kind: { const: 'reminder' }, text: { type: 'string', minLength: 1, maxLength: 200 } },
+      required: ['kind', 'text'], additionalProperties: false
+    },
+    {
       type: 'object', properties: { kind: { const: 'agent' }, prompt: { type: 'string' } },
       required: ['kind', 'prompt'], additionalProperties: false
     },
@@ -281,6 +295,17 @@ const MISFIRE_SCHEMA = {
   },
   required: ['kind'],
   additionalProperties: false
+};
+
+const VOICE_SCHEMA = {
+  type: 'object', properties: {
+    enabled: { type: 'boolean' }, deviceId: { const: 'local-desktop' },
+    content: { oneOf: [
+      { type: 'object', properties: { kind: { const: 'fixed' }, text: { type: 'string', minLength: 1, maxLength: 200 } }, required: ['kind', 'text'], additionalProperties: false },
+      { type: 'object', properties: { kind: { const: 'result' }, maxChars: { type: 'integer', minimum: 1, maximum: 600 } }, required: ['kind', 'maxChars'], additionalProperties: false }
+    ] },
+    expiresAfterMs: { type: 'integer', minimum: 1_000, maximum: 7 * 86_400_000 }, presetId: { type: 'string', minLength: 1, maxLength: 256 }
+  }, required: ['enabled', 'deviceId', 'content', 'expiresAfterMs'], additionalProperties: false
 };
 
 function mutationTool(tool: Omit<Tool, 'replay' | 'repeatPolicy' | 'risk' | 'effects'>): Tool {
@@ -339,12 +364,12 @@ export function createSchedulerTools(service: ScheduleService, options: Schedule
     mutationTool({
       definition: {
         name: 'schedule_create',
-        description: 'Create a durable future or recurring automation. Use only when the user explicitly asks for a reminder, scheduled task, recurring task, automation, or future execution.',
+        description: 'Create a durable future or recurring automation only when explicitly requested. For a fixed reminder use target.kind=reminder and text (1–200 characters); it does not run an Agent. Use an agent target only for work that needs execution. Add voice only when the user asks for spoken reminders; this records local-desktop delivery without enabling speech or running voice validation.',
         inputSchema: {
           type: 'object', properties: {
             name: { type: 'string' }, description: { type: 'string' }, spec: SPEC_SCHEMA,
             target: TARGET_SCHEMA, enabled: { type: 'boolean' }, misfire: MISFIRE_SCHEMA,
-            concurrency: { type: 'string', enum: ['skip', 'queue'] }
+            concurrency: { type: 'string', enum: ['skip', 'queue'] }, voice: VOICE_SCHEMA
           }, required: ['name', 'spec', 'target'], additionalProperties: false
         }
       },
@@ -359,7 +384,8 @@ export function createSchedulerTools(service: ScheduleService, options: Schedule
             spec: toScheduleSpec(parsed.data.spec, now(), timezone),
             target: toScheduleTarget(parsed.data.target, context, options),
             delivery: {
-              conversation: { enabled: true, sessionId: context.sessionId }
+              conversation: { enabled: true, sessionId: context.sessionId },
+              ...(parsed.data.voice ? { voice: parsed.data.voice } : {})
             },
             misfire: toMisfire(parsed.data.misfire),
             concurrency: parsed.data.concurrency ?? 'skip'
@@ -371,12 +397,12 @@ export function createSchedulerTools(service: ScheduleService, options: Schedule
     mutationTool({
       definition: {
         name: 'schedule_update',
-        description: 'Update the name, description, timing, target, misfire behavior, or concurrency of an existing automation.',
+        description: 'Update the name, description, timing, target, voice delivery, misfire behavior, or concurrency of an existing automation. Voice delivery requires an explicit user request and does not enable the speech provider. Omitted delivery settings are preserved.',
         inputSchema: {
           type: 'object', properties: {
             scheduleId: { type: 'string' }, name: { type: 'string' }, description: { type: 'string' },
             spec: SPEC_SCHEMA, target: TARGET_SCHEMA, misfire: MISFIRE_SCHEMA,
-            concurrency: { type: 'string', enum: ['skip', 'queue'] }
+            concurrency: { type: 'string', enum: ['skip', 'queue'] }, voice: VOICE_SCHEMA
           }, required: ['scheduleId'], additionalProperties: false
         }
       },
@@ -390,6 +416,7 @@ export function createSchedulerTools(service: ScheduleService, options: Schedule
             ...(parsed.data.description !== undefined ? { description: parsed.data.description } : {}),
             ...(parsed.data.spec !== undefined ? { spec: toScheduleSpec(parsed.data.spec, now(), timezone) } : {}),
             ...(parsed.data.target !== undefined ? { target: toScheduleTarget(parsed.data.target, context, options) } : {}),
+            ...(parsed.data.voice !== undefined ? { delivery: { ...current.delivery, voice: parsed.data.voice } } : {}),
             ...(parsed.data.misfire !== undefined ? { misfire: toMisfire(parsed.data.misfire) } : {}),
             ...(parsed.data.concurrency !== undefined ? { concurrency: parsed.data.concurrency } : {}),
             expectedRevision: current.revision

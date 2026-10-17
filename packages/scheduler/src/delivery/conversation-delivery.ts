@@ -7,13 +7,15 @@ export class ConversationScheduleDeliveryService implements ScheduleDeliveryServ
     const conversation = input.schedule.delivery?.conversation;
     if (!conversation?.enabled) return { status: 'skipped' as const };
 
-    const messageId = `scheduler_${input.run.id}`;
+    const payload = input.run.deliveryItems?.find((item) => item.destination === 'conversation'
+      && item.destinationId === conversation.sessionId)?.payloadSnapshot;
+    const messageId = payload?.messageId ?? `scheduler_${input.run.id}`;
     try {
       await this.conversations.appendMessage(conversation.sessionId, {
         id: messageId,
         role: 'assistant',
         content: [{ type: 'text', text: input.content }],
-        createdAt: new Date().toISOString(),
+        createdAt: payload?.createdAt ?? input.run.finishedAt ?? input.run.scheduledFor,
         metadata: {
           source: 'scheduler',
           automation: {

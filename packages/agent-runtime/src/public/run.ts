@@ -2,6 +2,15 @@ import type {
   AgentEvent
 } from '@desktop-agent/contracts';
 import type { RunResult, RuntimeInput } from '@desktop-agent/contracts/runtime';
+import { VoiceTurnMetadataSchema, type VoiceTurnMetadata } from '@desktop-agent/contracts';
+
+export type RuntimeVoiceContext = VoiceTurnMetadata;
+/** Redacted boundary validation before App Service or Runtime persists metadata. */
+export function parseRuntimeVoiceContext(value: unknown): RuntimeVoiceContext {
+  const parsed = VoiceTurnMetadataSchema.safeParse(value);
+  if (!parsed.success) throw Object.assign(new Error('runtime_voice_context_invalid'), { code: 'runtime_voice_context_invalid' });
+  return parsed.data;
+}
 
 export type RunBudget = {
   maxIterations?: number;
@@ -46,6 +55,7 @@ export type RunRequest = {
   trigger?: RuntimeTriggerContext;
   workflow?: RuntimeWorkflowContext;
   team?: RuntimeTeamContext;
+  voice?: RuntimeVoiceContext;
   signal?: AbortSignal;
 };
 

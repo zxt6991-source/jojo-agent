@@ -27,6 +27,7 @@
     "@desktop-agent/runtime-composition": "workspace:*",
     "@desktop-agent/scheduler": "workspace:*",
     "@desktop-agent/storage": "workspace:*",
+    "@desktop-agent/speech": "workspace:*",
     "@desktop-agent/tools-node": "workspace:*",
     "bplist-parser": "^0.3.2",
     "dompurify": "^3.3.0",

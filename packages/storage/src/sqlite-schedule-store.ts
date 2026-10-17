@@ -1,6 +1,11 @@
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
+import { ScheduleDeliveryItemSchema, ScheduleDeliverySnapshotSchema, ScheduleRunSchema, ScheduleSchema } from '@desktop-agent/contracts';
+import {
+  aggregateScheduleDeliveries, ackScheduleDelivery, claimScheduleDelivery, recoverScheduleDelivery, renewScheduleDelivery,
+  replayScheduleDelivery, revokeScheduleVoice, snapshotScheduleRun, validateDeliveryInsert
+} from '@desktop-agent/scheduler';
 import type {
   ClaimOccurrenceInput,
   Schedule,
@@ -13,7 +18,8 @@ import type {
   ScheduleSpec,
   MisfirePolicy,
   ScheduleConcurrencyPolicy,
-  ScheduleDelivery
+  ScheduleDelivery,
+  ScheduleDeliveryItem, ScheduleDeliveryListOptions, DeliveryClaimInput, DeliveryClaimIdentity, DeliveryAckInput
 } from '@desktop-agent/scheduler';
 
 type Row = Record<string, unknown>;
@@ -76,6 +82,29 @@ const SCHEMA = `
   );
 `;
 
+const OUTBOX_SCHEMA = `
+  CREATE TABLE IF NOT EXISTS scheduler_schema_meta (
+    key TEXT PRIMARY KEY CHECK(key = 'scheduler'), version INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS schedule_delivery_items (
+    id TEXT PRIMARY KEY,
+    schedule_run_id TEXT NOT NULL REFERENCES schedule_runs(id),
+    destination TEXT NOT NULL CHECK(destination IN ('conversation', 'notification', 'voice', 'channel')),
+    destination_id TEXT NOT NULL,
+    dedupe_key TEXT NOT NULL UNIQUE,
+    state TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    next_attempt_at INTEGER,
+    expires_at INTEGER,
+    claim_expires_at INTEGER,
+    item_json TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    UNIQUE(schedule_run_id, destination, destination_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_schedule_delivery_due ON schedule_delivery_items(state, next_attempt_at, expires_at);
+  CREATE INDEX IF NOT EXISTS idx_schedule_delivery_run ON schedule_delivery_items(schedule_run_id);
+`;
+
 const terminal = new Set<ScheduleRunStatus>(['completed', 'failed', 'cancelled', 'skipped', 'interrupted']);
 const recoverable: ScheduleRunStatus[] = ['pending', 'dispatching', 'running', 'waiting_approval'];
 
@@ -121,7 +150,7 @@ function scheduleFromRow(row: Row): Schedule {
   const deletedAt = iso(optionalInteger(row.deleted_at, 'schedule deleted_at'));
   const description = optionalString(row.description, 'schedule description');
   const delivery = optionalString(row.delivery_json, 'schedule delivery');
-  return {
+  return ScheduleSchema.parse({
     id: stringValue(row.id, 'schedule id'),
     name: stringValue(row.name, 'schedule name'),
     ...(description ? { description } : {}),
@@ -138,7 +167,7 @@ function scheduleFromRow(row: Row): Schedule {
     createdAt: new Date(integerValue(row.created_at, 'schedule created_at')).toISOString(),
     updatedAt: new Date(integerValue(row.updated_at, 'schedule updated_at')).toISOString(),
     ...(deletedAt ? { deletedAt } : {})
-  };
+  }) as Schedule;
 }
 
 function runFromRow(row: Row): ScheduleRun {
@@ -153,7 +182,8 @@ function runFromRow(row: Row): ScheduleRun {
   const deliveryStatus = optionalString(row.delivery_status, 'run delivery_status') as ScheduleRun['deliveryStatus'];
   const deliveryMessageId = optionalString(row.delivery_message_id, 'run delivery_message_id');
   const deliveryError = optionalString(row.delivery_error, 'run delivery_error');
-  return {
+  const deliverySnapshot = optionalString(row.delivery_snapshot_json, 'run delivery_snapshot_json');
+  return ScheduleRunSchema.parse({
     id: stringValue(row.id, 'run id'),
     scheduleId: stringValue(row.schedule_id, 'run schedule_id'),
     occurrenceKey: stringValue(row.occurrence_key, 'run occurrence_key'),
@@ -174,8 +204,9 @@ function runFromRow(row: Row): ScheduleRun {
     ...(deliveryMessageId ? { deliveryMessageId } : {}),
     ...(deliveryError ? { deliveryError } : {}),
     targetSnapshot: json<ScheduleTarget>(row.target_snapshot_json, 'run target snapshot'),
+    ...(deliverySnapshot ? { deliverySnapshot: ScheduleDeliverySnapshotSchema.parse(json(deliverySnapshot, 'run delivery snapshot')) } : {}),
     version: integerValue(row.version, 'run version')
-  };
+  }) as ScheduleRun;
 }
 
 function placeholders(values: readonly unknown[]): string { return values.map(() => '?').join(', '); }
@@ -188,14 +219,27 @@ export class SqliteScheduleStore implements ScheduleStore {
     this.database = new DatabaseSync(filename);
     this.database.exec('PRAGMA journal_mode = WAL;');
     this.database.exec('PRAGMA foreign_keys = ON;');
-    this.database.exec(SCHEMA);
-    this.ensureColumn('schedules', 'delivery_json', 'TEXT');
-    this.ensureColumn('schedule_runs', 'delivery_status', 'TEXT');
-    this.ensureColumn('schedule_runs', 'delivery_message_id', 'TEXT');
-    this.ensureColumn('schedule_runs', 'delivery_error', 'TEXT');
+    try {
+      const meta = this.database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'scheduler_schema_meta'").get();
+      if (meta) {
+        const row = this.database.prepare("SELECT version FROM scheduler_schema_meta WHERE key = 'scheduler'").get() as Row | undefined;
+        if (row && integerValue(row.version, 'scheduler schema version') > 2) throw new Error(`scheduler_schema_version_unsupported: ${row.version}`);
+      }
+      this.transaction(() => {
+        this.database.exec(SCHEMA);
+        this.ensureColumn('schedules', 'delivery_json', 'TEXT');
+        this.ensureColumn('schedule_runs', 'delivery_status', 'TEXT');
+        this.ensureColumn('schedule_runs', 'delivery_message_id', 'TEXT');
+        this.ensureColumn('schedule_runs', 'delivery_error', 'TEXT');
+        this.ensureColumn('schedule_runs', 'delivery_snapshot_json', 'TEXT');
+        this.database.exec(OUTBOX_SCHEMA);
+        this.database.prepare("INSERT INTO scheduler_schema_meta(key, version) VALUES ('scheduler', 2) ON CONFLICT(key) DO UPDATE SET version = 2").run();
+      });
+    } catch (error) { this.database.close(); throw error; }
   }
 
   async create(schedule: Schedule): Promise<Schedule> {
+    ScheduleSchema.parse(schedule);
     try {
       this.database.prepare(`
         INSERT INTO schedules (
@@ -224,7 +268,10 @@ export class SqliteScheduleStore implements ScheduleStore {
   }
 
   async update(schedule: Schedule, expectedRevision?: number): Promise<Schedule> {
+    ScheduleSchema.parse(schedule);
     const expected = expectedRevision ?? schedule.revision;
+    return this.transaction(() => {
+    const current = this.getScheduleSync(schedule.id);
     const result = this.database.prepare(`
       UPDATE schedules SET
         name = ?, description = ?, enabled = ?, schedule_kind = ?, schedule_json = ?, target_kind = ?,
@@ -239,21 +286,26 @@ export class SqliteScheduleStore implements ScheduleStore {
       epoch(schedule.updatedAt), schedule.id, expected
     );
     if (result.changes !== 1) {
-      if (!await this.get(schedule.id)) throw new Error(`schedule_not_found: ${schedule.id}`);
+      if (!current) throw new Error(`schedule_not_found: ${schedule.id}`);
       throw new Error(`schedule_revision_conflict: ${schedule.id}`);
     }
-    return (await this.get(schedule.id))!;
+    if (current?.delivery?.voice?.enabled && !schedule.delivery?.voice?.enabled) this.revokeVoice(schedule.id, Date.parse(schedule.updatedAt));
+    return this.getScheduleSync(schedule.id)!;
+    });
   }
 
   async softDelete(id: string, now: string): Promise<Schedule> {
+    return this.transaction(() => {
     const result = this.database.prepare(`
       UPDATE schedules SET enabled = 0, next_run_at = NULL, deleted_at = ?, updated_at = ?, revision = revision + 1
       WHERE id = ? AND deleted_at IS NULL
     `).run(epoch(now), epoch(now), id);
-    const schedule = await this.get(id);
+    const schedule = this.getScheduleSync(id);
     if (!schedule) throw new Error(`schedule_not_found: ${id}`);
     if (result.changes === 0 && !schedule.deletedAt) throw new Error(`scheduler_store_failed: ${id}`);
+    this.revokeVoice(id, Date.parse(now));
     return schedule;
+    });
   }
 
   async listDue(now: number, limit: number): Promise<Schedule[]> {
@@ -283,7 +335,8 @@ export class SqliteScheduleStore implements ScheduleStore {
         this.database.exec('ROLLBACK;');
         return { claimed: false };
       }
-      try { this.insertRun(input.run); }
+      const initialRun = snapshotScheduleRun(input.run, schedule);
+      try { this.insertRun(initialRun); this.insertDeliveries(initialRun.id, initialRun.deliveryItems ?? []); }
       catch (error) {
         if (String(error).includes('UNIQUE constraint failed')) {
           this.database.exec('ROLLBACK;');
@@ -311,18 +364,24 @@ export class SqliteScheduleStore implements ScheduleStore {
     }
   }
 
-  async createManualRun(run: Omit<ScheduleRun, 'version'>): Promise<ScheduleRun> {
-    try { this.insertRun(run); }
+  async createManualRun(run: Omit<ScheduleRun, 'version'>, expectedScheduleRevision?: number): Promise<ScheduleRun> {
+    return this.transaction(() => {
+    const schedule = this.getScheduleSync(run.scheduleId);
+    if (!schedule || schedule.deletedAt) throw new Error(`schedule_not_found: ${run.scheduleId}`);
+    if (expectedScheduleRevision !== undefined && schedule.revision !== expectedScheduleRevision) throw new Error(`schedule_revision_conflict: ${run.scheduleId}`);
+    const initialRun = snapshotScheduleRun(run, schedule);
+    try { this.insertRun(initialRun); this.insertDeliveries(initialRun.id, initialRun.deliveryItems ?? []); }
     catch (error) {
       if (String(error).includes('UNIQUE constraint failed')) throw new Error(`schedule_run_conflict: ${run.id}`);
       throw error;
     }
-    return (await this.getRun(run.id))!;
+    return this.getRunSync(run.id)!;
+    });
   }
 
   async getRun(id: string): Promise<ScheduleRun | undefined> {
     const row = this.database.prepare('SELECT * FROM schedule_runs WHERE id = ?').get(id) as Row | undefined;
-    return row ? runFromRow(row) : undefined;
+    return row ? this.withDeliveries(runFromRow(row)) : undefined;
   }
 
   async listRuns(scheduleId: string, options: ScheduleRunListOptions = {}): Promise<ScheduleRun[]> {
@@ -331,28 +390,34 @@ export class SqliteScheduleStore implements ScheduleStore {
     const limit = options.limit ?? 1_000;
     return (this.database.prepare(`
       SELECT * FROM schedule_runs WHERE schedule_id = ?${stateFilter} ORDER BY created_at DESC LIMIT ?
-    `).all(scheduleId, ...states, limit) as Row[]).map(runFromRow);
+    `).all(scheduleId, ...states, limit) as Row[]).map((row) => this.withDeliveries(runFromRow(row)));
   }
 
   async listRecoverableRuns(): Promise<ScheduleRun[]> {
     return (this.database.prepare(`
       SELECT * FROM schedule_runs WHERE status IN (${placeholders(recoverable)}) ORDER BY created_at ASC
-    `).all(...recoverable) as Row[]).map(runFromRow);
+    `).all(...recoverable) as Row[]).map((row) => this.withDeliveries(runFromRow(row)));
   }
 
   async listPendingDeliveryRuns(): Promise<ScheduleRun[]> {
     return (this.database.prepare(`
       SELECT * FROM schedule_runs WHERE delivery_status = 'pending' ORDER BY created_at ASC
-    `).all() as Row[]).map(runFromRow);
+    `).all() as Row[]).map((row) => this.withDeliveries(runFromRow(row))).filter((run) => run.deliveryStatus === 'pending');
   }
 
   async transitionRun(id: string, transition: ScheduleRunTransition, expectedVersion?: number): Promise<ScheduleRun> {
-    const current = await this.getRun(id);
+    return this.transitionRunWithDeliveries(id, transition, [], expectedVersion);
+  }
+
+  async transitionRunWithDeliveries(id: string, transition: ScheduleRunTransition, items: ScheduleDeliveryItem[], expectedVersion?: number): Promise<ScheduleRun> {
+    return this.transaction(() => {
+    const current = this.getRunSync(id);
     if (!current) throw new Error(`schedule_run_not_found: ${id}`);
     if (terminal.has(current.status) && transition.status !== current.status) {
       throw new Error(`schedule_run_transition_conflict: ${id}`);
     }
     const expected = expectedVersion ?? current.version;
+    if (items.length && !terminal.has(transition.status)) throw new Error('schedule_delivery_run_not_terminal');
     const result = this.database.prepare(`
       UPDATE schedule_runs SET
         status = ?,
@@ -386,7 +451,77 @@ export class SqliteScheduleStore implements ScheduleStore {
       expected
     );
     if (result.changes !== 1) throw new Error(`schedule_run_revision_conflict: ${id}`);
-    return (await this.getRun(id))!;
+    this.insertDeliveries(id, items);
+    return this.getRunSync(id)!;
+    });
+  }
+
+  async getDelivery(id: string): Promise<ScheduleDeliveryItem | undefined> { return this.getDeliverySync(id); }
+
+  async listDeliveries(options: ScheduleDeliveryListOptions = {}): Promise<ScheduleDeliveryItem[]> {
+    return this.listDeliveriesSync(options);
+  }
+
+  async claimDelivery(input: DeliveryClaimInput): Promise<ScheduleDeliveryItem | undefined> {
+    return this.transaction(() => {
+      const item = this.getDeliverySync(input.itemId);
+      if (!item) return undefined;
+      const recovered = recoverScheduleDelivery(item, input.now);
+      if (recovered) this.saveDelivery(recovered, item.version);
+      const next = claimScheduleDelivery(recovered ?? item, input);
+      return next ? this.saveDelivery(next, (recovered ?? item).version) : undefined;
+    });
+  }
+
+  async renewDeliveryClaim(input: DeliveryClaimIdentity & { now: number; ttlMs: number }): Promise<ScheduleDeliveryItem | undefined> {
+    return this.transaction(() => {
+      const item = this.getDeliverySync(input.itemId);
+      if (!item) return undefined;
+      const recovered = recoverScheduleDelivery(item, input.now);
+      if (recovered) { this.saveDelivery(recovered, item.version); return undefined; }
+      const next = renewScheduleDelivery(item, input);
+      return next ? this.saveDelivery(next, item.version) : undefined;
+    });
+  }
+
+  async ackDelivery(input: DeliveryAckInput): Promise<ScheduleDeliveryItem | undefined> {
+    return this.transaction(() => {
+      const item = this.getDeliverySync(input.itemId);
+      if (!item) return undefined;
+      const recovered = recoverScheduleDelivery(item, input.now);
+      if (recovered) { this.saveDelivery(recovered, item.version); return undefined; }
+      const next = ackScheduleDelivery(item, input);
+      if (!next) return undefined;
+      return next.version === item.version ? next : this.saveDelivery(next, item.version);
+    });
+  }
+
+  async recoverDeliveries(now: number): Promise<ScheduleDeliveryItem[]> {
+    return this.transaction(() => {
+      const changed: ScheduleDeliveryItem[] = [];
+      // Recovery includes leader handovers and is never limited to one startup scan.
+      const rows = this.database.prepare(`SELECT * FROM schedule_delivery_items
+        WHERE state IN ('pending', 'preparing', 'ready', 'claimed', 'playing', 'failed')
+          AND ((expires_at IS NOT NULL AND expires_at <= ?) OR (claim_expires_at IS NOT NULL AND claim_expires_at <= ?))
+        ORDER BY created_at ASC, id ASC`).all(now, now) as Row[];
+      for (const row of rows) {
+        const item = this.deliveryFromRow(row);
+        const next = recoverScheduleDelivery(item, now);
+        if (next) changed.push(this.saveDelivery(next, item.version));
+      }
+      return changed;
+    });
+  }
+
+  async replayDelivery(id: string, now: number): Promise<ScheduleDeliveryItem | undefined> {
+    return this.transaction(() => {
+      const item = this.getDeliverySync(id);
+      const run = item && this.getRunSync(item.scheduleRunId);
+      const schedule = run && this.getScheduleSync(run.scheduleId);
+      if (!item || !schedule || schedule.deletedAt || !schedule.delivery?.voice?.enabled) return undefined;
+      const next = replayScheduleDelivery(item, now);
+      return next ? this.saveDelivery(next, item.version) : undefined;
+    });
   }
 
   async acquireEngineLease(ownerId: string, now: number, ttlMs: number): Promise<boolean> {
@@ -418,20 +553,131 @@ export class SqliteScheduleStore implements ScheduleStore {
   }
 
   private insertRun(run: Omit<ScheduleRun, 'version'>): void {
+    ScheduleRunSchema.parse({ ...run, version: 1 });
     this.database.prepare(`
       INSERT INTO schedule_runs (
         id, schedule_id, occurrence_key, scheduled_for, trigger_kind, status, target_kind,
         target_execution_id, target_snapshot_json, claimed_by, claim_expires_at, created_at,
         started_at, finished_at, error_code, error, result_preview, delivery_status,
-        delivery_message_id, delivery_error, version
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+        delivery_message_id, delivery_error, delivery_snapshot_json, version
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
     `).run(
       run.id, run.scheduleId, run.occurrenceKey, epoch(run.scheduledFor), run.trigger, run.status, run.targetKind,
       run.targetExecutionId ?? null, JSON.stringify(run.targetSnapshot), run.claimedBy ?? null, epoch(run.claimExpiresAt),
       epoch(run.createdAt), epoch(run.startedAt), epoch(run.finishedAt), run.errorCode ?? null, run.error ?? null,
       run.resultPreview?.slice(0, 4_096) ?? null, run.deliveryStatus ?? null,
-      run.deliveryMessageId ?? null, run.deliveryError?.slice(0, 100_000) ?? null
+      run.deliveryMessageId ?? null, run.deliveryError?.slice(0, 100_000) ?? null,
+      run.deliverySnapshot ? JSON.stringify(run.deliverySnapshot) : null
     );
+  }
+
+  private transaction<T>(callback: () => T): T {
+    this.database.exec('BEGIN IMMEDIATE;');
+    try {
+      const result = callback();
+      this.database.exec('COMMIT;');
+      return result;
+    } catch (error) {
+      try { this.database.exec('ROLLBACK;'); } catch { /* Preserve original error. */ }
+      throw error;
+    }
+  }
+
+  private getScheduleSync(id: string): Schedule | undefined {
+    const row = this.database.prepare('SELECT * FROM schedules WHERE id = ?').get(id) as Row | undefined;
+    return row ? scheduleFromRow(row) : undefined;
+  }
+
+  private getRunSync(id: string): ScheduleRun | undefined {
+    const row = this.database.prepare('SELECT * FROM schedule_runs WHERE id = ?').get(id) as Row | undefined;
+    return row ? this.withDeliveries(runFromRow(row)) : undefined;
+  }
+
+  private withDeliveries(run: ScheduleRun): ScheduleRun {
+    const items = this.listDeliveriesSync({ scheduleRunId: run.id, limit: 24 });
+    return aggregateScheduleDeliveries(run, items);
+  }
+
+  private deliveryFromRow(row: Row): ScheduleDeliveryItem {
+    const parsed = ScheduleDeliveryItemSchema.parse(json(row.item_json, 'delivery item'));
+    if (parsed.id !== row.id || parsed.scheduleRunId !== row.schedule_run_id || parsed.destination !== row.destination
+      || parsed.destinationId !== row.destination_id || parsed.dedupeKey !== row.dedupe_key
+      || parsed.state !== row.state || parsed.version !== row.version) throw new Error('scheduler_store_corrupted: delivery item index');
+    return parsed;
+  }
+
+  private getDeliverySync(id: string): ScheduleDeliveryItem | undefined {
+    const row = this.database.prepare('SELECT * FROM schedule_delivery_items WHERE id = ?').get(id) as Row | undefined;
+    return row ? this.deliveryFromRow(row) : undefined;
+  }
+
+  private listDeliveriesSync(options: ScheduleDeliveryListOptions): ScheduleDeliveryItem[] {
+    const filters: string[] = [];
+    const values: SQLInputValue[] = [];
+    if (options.scheduleRunId) { filters.push('schedule_run_id = ?'); values.push(options.scheduleRunId); }
+    if (options.destination) { filters.push('destination = ?'); values.push(options.destination); }
+    if (options.states) {
+      if (options.states.length === 0) return [];
+      filters.push(`state IN (${placeholders(options.states)})`); values.push(...options.states);
+    }
+    if (options.dueAt !== undefined) {
+      filters.push("state IN ('pending', 'preparing', 'ready', 'failed')");
+      filters.push("(state != 'failed' OR next_attempt_at IS NOT NULL)");
+      filters.push('claim_expires_at IS NULL');
+      filters.push("json_extract(item_json, '$.attempts') < 3");
+      filters.push('(next_attempt_at IS NULL OR next_attempt_at <= ?)'); values.push(options.dueAt);
+      filters.push('(expires_at IS NULL OR expires_at > ?)'); values.push(options.dueAt);
+    }
+    return (this.database.prepare(`SELECT * FROM schedule_delivery_items ${filters.length ? `WHERE ${filters.join(' AND ')}` : ''}
+      ORDER BY created_at ASC, id ASC LIMIT ?`).all(...values, options.limit ?? 1_000) as Row[]).map((row) => this.deliveryFromRow(row));
+  }
+
+  private insertDeliveries(runId: string, items: ScheduleDeliveryItem[]): void {
+    const count = this.database.prepare('SELECT COUNT(*) AS count FROM schedule_delivery_items WHERE schedule_run_id = ?').get(runId) as Row;
+    if (items.length + integerValue(count.count, 'delivery count') > 24) throw new Error('schedule_delivery_limit');
+    const parsed = items.map((item) => validateDeliveryInsert(item, runId));
+    const runRow = this.database.prepare('SELECT schedule_id, status FROM schedule_runs WHERE id = ?').get(runId) as Row | undefined;
+    if (items.length && (!runRow || !terminal.has(runRow.status as ScheduleRunStatus))) throw new Error('schedule_delivery_run_not_terminal');
+    const schedule = runRow && this.getScheduleSync(stringValue(runRow.schedule_id, 'delivery schedule'));
+    const insert = this.database.prepare(`INSERT INTO schedule_delivery_items (
+      id, schedule_run_id, destination, destination_id, dedupe_key, state, created_at, next_attempt_at,
+      expires_at, claim_expires_at, item_json, version
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+    for (const item of parsed) {
+      const revoked = schedule && (schedule.deletedAt || !schedule.delivery?.voice?.enabled)
+        ? revokeScheduleVoice(item, Date.parse(item.updatedAt)) : undefined;
+      const next = revoked ?? item;
+      try {
+        insert.run(next.id, next.scheduleRunId, next.destination, next.destinationId, next.dedupeKey, next.state,
+          epoch(next.createdAt), epoch(next.nextAttemptAt), epoch(next.expiresAt), epoch(next.claimExpiresAt), JSON.stringify(next), next.version);
+      } catch (error) {
+        if (String(error).includes('UNIQUE constraint failed')) throw new Error('schedule_delivery_conflict');
+        throw error;
+      }
+    }
+  }
+
+  private saveDelivery(item: ScheduleDeliveryItem, expectedVersion: number): ScheduleDeliveryItem {
+    ScheduleDeliveryItemSchema.parse(item);
+    const result = this.database.prepare(`UPDATE schedule_delivery_items SET state = ?, next_attempt_at = ?,
+      expires_at = ?, claim_expires_at = ?, item_json = ?, version = ? WHERE id = ? AND version = ?`).run(
+      item.state, epoch(item.nextAttemptAt), epoch(item.expiresAt), epoch(item.claimExpiresAt), JSON.stringify(item), item.version,
+      item.id, expectedVersion
+    );
+    if (result.changes !== 1) throw new Error(`schedule_delivery_revision_conflict: ${item.id}`);
+    return structuredClone(item);
+  }
+
+  private revokeVoice(scheduleId: string, now: number): void {
+    const rows = this.database.prepare(`SELECT items.* FROM schedule_delivery_items AS items
+      JOIN schedule_runs AS runs ON runs.id = items.schedule_run_id
+      WHERE runs.schedule_id = ? AND items.destination = 'voice'
+        AND items.state IN ('pending', 'preparing', 'ready', 'claimed', 'failed')`).all(scheduleId) as Row[];
+    for (const row of rows) {
+      const item = this.deliveryFromRow(row);
+      const next = revokeScheduleVoice(item, now);
+      if (next) this.saveDelivery(next, item.version);
+    }
   }
 
   private ensureColumn(table: string, column: string, definition: string): void {

@@ -14,6 +14,8 @@
     "test:runtime-smoke": "vitest run packages/runtime-composition/test/headless-runtime.test.ts",
     "test:e2e:electron": "pnpm --filter @desktop-agent/desktop test:e2e",
     "test:watch": "vitest",
+    "speech:setup": "node scripts/setup-local-speech.mjs",
+    "speech:smoke:local": "pnpm --filter @desktop-agent/providers exec tsx ../../scripts/local-speech-smoke.ts",
     "test:architecture": "node --test scripts/check-architecture.test.mjs && node scripts/check-architecture.mjs",
     "docs:generate": "node --experimental-strip-types scripts/generate-docs.mjs",
     "docs:check": "node --experimental-strip-types scripts/generate-docs.mjs --check",

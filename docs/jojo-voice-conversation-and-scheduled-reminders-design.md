@@ -1,9 +1,13 @@
-# Jojo Agent 语音对话与定时语音提醒最终技术方案（豆包 ASR + TTS）
+# Jojo Agent 语音对话与定时语音提醒技术方案
 
-> 日期：2026-10-12  
-> 版本：v2.0，豆包首期实施基线，待开发  
+> 2026-10-17 当前实现更新：语音仅保留 **本地 SenseVoice 转写 → 现有 Agent Runtime → Mac 系统朗读**。豆包语音适配器、协议编解码、配置入口、独立密钥传递及云端 smoke 已删除。旧云端语音配置会迁移为禁用的本地配置；已有本地配置保留路径和使用偏好。当前契约、启用流程与安装步骤以 [Speech 实现说明](./technical-implementation/speech.md)为准。
+>
+> 以下正文保留 2026-10-12 至 2026-10-16 的历史设计，含已废弃的云端协议和密钥草案，不代表当前支持的服务或可执行开发清单。
+
+> 日期：2026-10-12；实施状态更新于 2026-10-15<br>
+> 版本：v2.0，豆包首期实施基线；P1-A / B / C 已开发，P1-D 实机验收待完成<br>
 > 适用范围：本仓库 Electron Desktop、共享 Runtime / Scheduler，以及后续 Headless Server 接入  
-> 当前交付：技术方案文档；本文新增的接口、字段、模块和指标均为设计建议，不代表已实现。
+> 实施进展：适配器、配置、密钥 / 缓存、桌面录音、转写校正 / 自动提交、Run 去重、最终助手正文朗读、独立 AudioHost、纯 Reminder Target、原子 Delivery Outbox、分目的地投递与显式通知 / 托盘已开发。2026-10-15 补齐独立 voicePresets 及试听、opt-in 固定审批短句、600 Unicode 码点分段继续朗读、已保存任务固定文案试听 / 准备状态、缓存清理和启动期请求用量 / 耗时统计；实现边界见 [Speech](./technical-implementation/speech.md) 与 [Scheduler](./technical-implementation/scheduler.md)。Main 发声前必须获得 Worker 持久 playing ACK，不确定播放不自动重播；审批播报不会批准操作。统计平均值 / P95 取最近最多 100 次请求总耗时，ASR 包含录音上传，不代表结束后转写、首音或停止延迟，也不估算金额。P2 连续监听 / 插话、P3 扩展、真实豆包、硬件、OS 通知、签名安装包和睡眠恢复实机验收待完成，不保证系统睡眠中准时提醒。本文其余内容保留最终目标设计，不等同于全部已交付。
 
 ## 1. 技术决策与交付范围
 
@@ -24,7 +28,7 @@ P1 的“支持语音对话”指用户说话、Agent 处理、助手播报、�
 
 ## 2. 当前实现与缺口
 
-本节以 2026-10-12 的仓库代码为准。旧设计文档中的“当前问题”可能已经过时，不作为实现状态的判断依据。
+本节保留 2026-10-12 的开发前基线；截至 2026-10-15 已实现的 P1-A / B / C 和首期产品补齐见页首进展、[Speech](./technical-implementation/speech.md) 与 [Scheduler](./technical-implementation/scheduler.md)。以下缺口表不作为当前交付状态的判断依据。
 
 | 模块 | 已有能力 | 本次需要补齐 |
 |---|---|---|
@@ -554,6 +558,8 @@ Telegram / 飞书语音消息作为单独功能：扩展 `ChannelCapabilities.ou
 
 ## 12. 实施清单与工作量
 
+2026-10-15 实施状态：P1-A / B / C 代码已落地，Reminder 不创建 Agent Run，Desktop 的任务结果取持久 finalEntry 正文，Run 终态与分目的地 Outbox 原子提交；Headless 支持 Reminder / Agent 并拒绝本机 voice。独立预设共用 Key，仅覆盖 TTS 声音参数，音色版本绑定解析后的实际配置；审批固定提示、长回复继续朗读、任务试听 / 准备状态、缓存清理和启动期用量 / 请求总耗时统计已补齐。首音 / 停止、结束后转写延迟与 Outbox 积压指标尚待补充。下表保留原计划与估算；P1-D 的真实服务、设备、系统通知和平台签名验收尚未完成，故不将代码实现视为全部发布验收通过。
+
 以下按 1 名熟悉仓库的工程师估算，包含必要测试，不包含新供应商商务接入；P0 后重新估算。平台签名、设备驱动和 Provider 中文效果可能改变工期。
 
 | 批次 | 工作内容 | 主要落点 | 估算 |
@@ -629,7 +635,7 @@ Mock ASR / TTS 用于确定性测试；播放状态用 Fake Playback Port 做崩
 
 记录 `voiceTurnId` / runId / deliveryId 的关联，ASR / TTS latency、录音时长 / 字节、首次发声、停止耗时、Outbox 积压、重试原因、played / uncertain / expired 比率。默认日志不记录原始音频或完整转写正文，也不记录 Secret。成本看板分别统计转写分钟、合成字符 / 音频时长和可获得的 Provider usage。
 
-实施后的必要检查包括 `pnpm typecheck`、`pnpm lint`、相关包单元 / 集成测试、`pnpm test:architecture`、`pnpm test:bindings`、`pnpm docs:check` 与语音 Electron E2E。本文为文档交付，不宣称这些实现验收已经通过。
+实施后的必要检查包括 `pnpm typecheck`、`pnpm lint`、相关包单元 / 集成测试、`pnpm test:architecture`、`pnpm test:bindings`、`pnpm docs:check` 与语音 Electron E2E。已完成的离线检查及其边界记录于 [Speech 实现](./technical-implementation/speech.md#离线验证)；本节仍为发布验收要求，不代表全部实机验收已通过。
 
 ## 14. 开工顺序与待验证项
 
@@ -706,4 +712,4 @@ TTS 缓存键包含规范化文本 hash、resourceId、speakerId、speechRate、
 | config / secret | config v5迁移、语音Key存储和非交互Broker | V4现有模型/权限/扩展保留；保存文字设置不清空speech；后台缺Key立即失败 |
 | 构建与实际验证 | providers依赖 / exports、正式包路径、短句真实调用记录 | 使用普通Speech Key/接口，PCM与MP3真实可听；不依赖全局SDK或传递依赖 |
 
-离线测试使用可注入的 WebSocket / fetch transport；真实接口测试由开发者主动运行，服务 Key 从安全存储或显式测试环境引用注入，不写仓库。首批提交只验证两个适配器及相关配置，不宣称录音 UI、Scheduler 语音提醒或连续对话已经完成。
+离线测试使用可注入的 WebSocket / fetch transport；真实接口测试由开发者主动运行，服务 Key 从安全存储或显式测试环境引用注入，不写仓库。第 15 节定义首批适配器与配置工作；后续已完成的桌面语音、Scheduler 提醒和首期产品补齐见页首进展。连续监听 / 插话、P3 扩展和真实服务 / 平台实机发布验收仍未完成。

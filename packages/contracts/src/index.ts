@@ -15,6 +15,7 @@ export * from './orchestration';
 export * from './persistence';
 export * from './runtime';
 export * from './scheduler';
+export * from './scheduler-desktop';
 export * from './tools';
 export * from './verification';
 export * from './session-history';
@@ -29,3 +30,6 @@ export * from './artifact-content';
 export * from './build-compatibility';
 
 export * from './capability-manifest';
+export * from './speech';
+export * from './speech-metrics';
+export * from './speech-ui';

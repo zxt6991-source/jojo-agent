@@ -363,7 +363,7 @@ describe('headless server consumer', () => {
     };
     expect(() => server.core.createSchedule(readContext, input)).toThrow(/schedules:write/u);
     const schedule = await server.core.createSchedule(writeContext, input, 'create-schedule');
-    expect(server.core.capabilities.scheduler).toEqual({ enabled: true, targets: ['agent'] });
+    expect(server.core.capabilities.scheduler).toEqual({ enabled: true, targets: ['agent', 'reminder'] });
     await expect(server.core.listSchedules(readContext)).resolves.toMatchObject([{ id: schedule.id }]);
 
     const started = await server.core.runScheduleNow(runContext, schedule.id, {}, 'run-schedule');
@@ -375,6 +375,34 @@ describe('headless server consumer', () => {
     expect(terminal).toMatchObject({ status: 'completed', resultPreview: 'scheduled answer' });
     await expect(server.core.cancelScheduleRun(cancelContext, started.id)).resolves.toBeUndefined();
     await server.close();
+  });
+
+  it('runs a fixed reminder without a session or provider and rejects local voice delivery', async () => {
+    let providerCalls = 0;
+    const server = await createHeadlessServer({
+      providers: { describe: describeTestProvider, resolve: () => { providerCalls += 1; throw new Error('A fixed reminder must not call the provider'); } },
+      permissions: allow
+    });
+    try {
+      const input = {
+        name: 'Drink water', enabled: false,
+        spec: { kind: 'once' as const, runAt: new Date(Date.now() + 60_000).toISOString() },
+        target: { kind: 'reminder' as const, text: '该喝水了' }
+      };
+      const voice = { enabled: true, deviceId: 'local-desktop' as const, content: { kind: 'result' as const, maxChars: 200 }, expiresAfterMs: 60_000 };
+      await expect(server.core.createSchedule(context, { ...input, delivery: { voice } })).rejects.toThrow('schedule_delivery_unavailable');
+      const schedule = await server.core.createSchedule(context, input);
+      await expect(server.core.updateSchedule(context, schedule.id, { delivery: { voice } })).rejects.toThrow('schedule_delivery_unavailable');
+      const started = await server.core.runScheduleNow(context, schedule.id);
+      let terminal = await server.core.getScheduleRun(context, started.id);
+      for (let attempt = 0; attempt < 40 && terminal.status !== 'completed'; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        terminal = await server.core.getScheduleRun(context, started.id);
+      }
+      expect(terminal).toMatchObject({ status: 'completed', targetKind: 'reminder', resultPreview: '该喝水了' });
+      expect(providerCalls).toBe(0);
+      expect(await server.core.listSessions(context)).toEqual([]);
+    } finally { await server.close(); }
   });
 
   it('restores persisted schedules from the headless scheduler database', async () => {
