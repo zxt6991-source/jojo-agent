@@ -1,6 +1,13 @@
 import { ipcRenderer } from 'electron';
 import { APPLICATION_OPERATIONS } from '@desktop-agent/contracts/application/operations';
 import { IPC, SpeechCaptureHandleSchema, SpeechEventSchema, type DesktopApi } from '@desktop-agent/contracts';
+import { VoiceOutputHandleSchema } from '@desktop-agent/contracts';
+
+ipcRenderer.on(IPC.voiceOutputPort, (event, raw: unknown) => {
+  const parsed = VoiceOutputHandleSchema.safeParse(raw);
+  if (!parsed.success || event.ports.length !== 1) { event.ports.forEach(port => port.close()); return; }
+  window.postMessage({ type: 'jojo.voice.output.port', handle: parsed.data }, '*', event.ports);
+});
 
 ipcRenderer.on(IPC.speechCapturePort, (event, raw: unknown) => {
   const parsed = SpeechCaptureHandleSchema.safeParse(raw);
@@ -11,18 +18,27 @@ ipcRenderer.on(IPC.speechCapturePort, (event, raw: unknown) => {
 });
 
 export const speechPreload: Pick<DesktopApi, 'beginSpeechCapture' | 'attachSpeechCapture' | 'cancelSpeechCapture'
+  | 'attachVoiceOutput'
   | 'commitVoiceTurn' | 'readSpeechMessage' | 'readApprovalSpeech' | 'previewScheduleVoice' | 'getScheduleVoicePreparation' | 'clearSpeechCache'
   | 'testSpeechSettings' | 'stopSpeechPlayback' | 'getSpeechStatus' | 'onSpeechEvent'> = {
   beginSpeechCapture: async input => APPLICATION_OPERATIONS['speech.capture.begin'].output.parse(
     await ipcRenderer.invoke(IPC.beginSpeechCapture, APPLICATION_OPERATIONS['speech.capture.begin'].input.parse(input))),
   attachSpeechCapture: async input => { await ipcRenderer.invoke(IPC.attachSpeechCapture,
     APPLICATION_OPERATIONS['speech.capture.attach'].input.parse(input)); },
+  attachVoiceOutput: async input => { await ipcRenderer.invoke(IPC.attachVoiceOutput,
+    APPLICATION_OPERATIONS['speech.output.attach'].input.parse(input)); },
   cancelSpeechCapture: async input => { await ipcRenderer.invoke(IPC.cancelSpeechCapture,
     APPLICATION_OPERATIONS['speech.capture.cancel'].input.parse(input)); },
   commitVoiceTurn: async input => APPLICATION_OPERATIONS['voice.commit'].output.parse(
     await ipcRenderer.invoke(IPC.commitVoiceTurn, APPLICATION_OPERATIONS['voice.commit'].input.parse(input))),
-  readSpeechMessage: async input => APPLICATION_OPERATIONS['speech.readMessage'].output.parse(
-    await ipcRenderer.invoke(IPC.readSpeechMessage, APPLICATION_OPERATIONS['speech.readMessage'].input.parse(input))),
+  readSpeechMessage: async input => {
+    try { return APPLICATION_OPERATIONS['speech.readMessage'].output.parse(
+      await ipcRenderer.invoke(IPC.readSpeechMessage, APPLICATION_OPERATIONS['speech.readMessage'].input.parse(input))); }
+    catch (cause) {
+      const message = cause instanceof Error ? cause.message : '朗读未完成，请重试。';
+      throw new Error(message.replace(/^Error invoking remote method 'speech:read-message': (?:Error: )?/u, ''));
+    }
+  },
   readApprovalSpeech: async input => APPLICATION_OPERATIONS['speech.readApproval'].output.parse(
     await ipcRenderer.invoke(IPC.readApprovalSpeech, APPLICATION_OPERATIONS['speech.readApproval'].input.parse(input))),
   previewScheduleVoice: async input => APPLICATION_OPERATIONS['speech.previewSchedule'].output.parse(

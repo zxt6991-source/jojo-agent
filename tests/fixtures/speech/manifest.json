@@ -1,0 +1,222 @@
+{
+  "version": 1,
+  "note": "No synthetic event trace is acoustic release evidence. Supply consented physical device recordings before enabling AEC or automatic endpoint gates.",
+  "endpointEvaluation": {
+    "requiredIds": [
+      "01-normal-question",
+      "02-mid-sentence-short-pause",
+      "03-mid-sentence-long-pause",
+      "10-long-utterance",
+      "11-code-terms",
+      "12-path-and-url"
+    ],
+    "thresholds": null
+  },
+  "recordings": [
+    {
+      "id": "01-normal-question",
+      "wav": "01-normal-question.wav",
+      "status": "missing"
+    },
+    {
+      "id": "02-mid-sentence-short-pause",
+      "wav": "02-mid-sentence-short-pause.wav",
+      "status": "missing"
+    },
+    {
+      "id": "03-mid-sentence-long-pause",
+      "wav": "03-mid-sentence-long-pause.wav",
+      "status": "missing"
+    },
+    {
+      "id": "04-backchannel-en",
+      "wav": "04-backchannel-en.wav",
+      "status": "missing"
+    },
+    {
+      "id": "05-backchannel-dui",
+      "wav": "05-backchannel-dui.wav",
+      "status": "missing"
+    },
+    {
+      "id": "06-cough",
+      "wav": "06-cough.wav",
+      "status": "missing"
+    },
+    {
+      "id": "07-keyboard",
+      "wav": "07-keyboard.wav",
+      "status": "missing"
+    },
+    {
+      "id": "08-speaker-echo",
+      "wav": "08-speaker-echo.wav",
+      "status": "missing"
+    },
+    {
+      "id": "09-overlap-interruption",
+      "wav": "09-overlap-interruption.wav",
+      "status": "missing"
+    },
+    {
+      "id": "10-long-utterance",
+      "wav": "10-long-utterance.wav",
+      "status": "missing"
+    },
+    {
+      "id": "11-code-terms",
+      "wav": "11-code-terms.wav",
+      "status": "missing"
+    },
+    {
+      "id": "12-path-and-url",
+      "wav": "12-path-and-url.wav",
+      "status": "missing"
+    },
+    {
+      "id": "13-background-human-speech",
+      "wav": "13-background-human-speech.wav",
+      "status": "missing"
+    }
+  ],
+  "traces": [
+    {
+      "id": "backchannel",
+      "provenance": "synthetic_event_trace",
+      "audioStatus": "missing",
+      "generation": 1,
+      "events": [
+        {
+          "type": "vad.started",
+          "atMs": 0,
+          "generation": 1
+        },
+        {
+          "type": "playback.ducked",
+          "atMs": 10,
+          "generation": 1
+        },
+        {
+          "type": "asr.final",
+          "atMs": 20,
+          "generation": 1
+        },
+        {
+          "type": "interruption.backchannel",
+          "atMs": 30,
+          "generation": 1
+        },
+        {
+          "type": "playback.resumed",
+          "atMs": 40,
+          "generation": 1
+        }
+      ],
+      "expect": {
+        "ordered": [
+          "vad.started",
+          "playback.ducked",
+          "asr.final",
+          "interruption.backchannel",
+          "playback.resumed"
+        ],
+        "forbidden": [
+          "agent_run.created",
+          "agent_run.cancelled"
+        ]
+      }
+    },
+    {
+      "id": "noise",
+      "provenance": "synthetic_event_trace",
+      "audioStatus": "missing",
+      "generation": 1,
+      "events": [
+        {
+          "type": "vad.started",
+          "atMs": 0,
+          "generation": 1
+        },
+        {
+          "type": "playback.ducked",
+          "atMs": 10,
+          "generation": 1
+        },
+        {
+          "type": "interruption.rejected",
+          "atMs": 20,
+          "generation": 1
+        },
+        {
+          "type": "playback.resumed",
+          "atMs": 30,
+          "generation": 1
+        }
+      ],
+      "expect": {
+        "ordered": [
+          "vad.started",
+          "playback.ducked",
+          "interruption.rejected",
+          "playback.resumed"
+        ],
+        "forbidden": [
+          "agent_run.created",
+          "agent_run.cancelled"
+        ]
+      }
+    },
+    {
+      "id": "interruption",
+      "provenance": "synthetic_event_trace",
+      "audioStatus": "missing",
+      "generation": 1,
+      "events": [
+        {
+          "type": "vad.started",
+          "atMs": 0,
+          "generation": 1
+        },
+        {
+          "type": "playback.ducked",
+          "atMs": 10,
+          "generation": 1
+        },
+        {
+          "type": "asr.partial",
+          "atMs": 20,
+          "generation": 1
+        },
+        {
+          "type": "interruption.confirmed",
+          "atMs": 30,
+          "generation": 1
+        },
+        {
+          "type": "playback.flushed",
+          "atMs": 40,
+          "generation": 1
+        },
+        {
+          "type": "tts.cancelled",
+          "atMs": 50,
+          "generation": 1
+        }
+      ],
+      "expect": {
+        "ordered": [
+          "vad.started",
+          "playback.ducked",
+          "asr.partial",
+          "interruption.confirmed",
+          "playback.flushed",
+          "tts.cancelled"
+        ],
+        "forbidden": [
+          "agent_run.created",
+          "agent_run.cancelled"
+        ]
+      }
+    }
+  ]
+}

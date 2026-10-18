@@ -8,14 +8,13 @@ import { createSpeechSettingsController } from './speech-settings';
 
 const directories: string[] = [];
 afterEach(async () => { await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true }))); });
-async function setup(validateEnabled?: (settings: ReturnType<typeof SpeechSettingsSchema.parse>) => Promise<void>) {
+async function setup() {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'speech-settings-')); directories.push(directory);
   const file = path.join(directory, 'config.json');
   const configStore = new JsonConfigStore(file);
   const pushConfig = vi.fn(async () => undefined);
   const controller = createSpeechSettingsController({
-    configStore, pushConfig, readApiKeys: async () => ({ openai: 'text-provider-key' }),
-    ...(validateEnabled ? { validateEnabled } : {})
+    configStore, pushConfig, readApiKeys: async () => ({ openai: 'text-provider-key' })
   });
   return { file, controller, configStore, pushConfig };
 }
@@ -32,35 +31,23 @@ it('saves local settings and preserves unrelated text provider configuration', a
   expect(pushConfig).toHaveBeenCalledTimes(1);
 });
 
-it('enables local speech only after explicit recognition and synthesis tests', async () => {
-  const validate = vi.fn(async () => undefined);
-  const { controller, file } = await setup(validate);
+it('enables speech on save without prior recording or listening tests', async () => {
+  const { controller, file, pushConfig } = await setup();
   const local = createLocalSpeechSettings();
   local.provider.asr.local.modelDirectory = '/local/SenseVoiceSmall';
   await expect(controller.save({ settings: local })).resolves.toEqual({ settings: local });
-  expect(validate).not.toHaveBeenCalled();
   const enabled = { ...local, enabled: true };
   await expect(controller.save({ settings: enabled })).resolves.toEqual({ settings: enabled });
-  expect(validate).toHaveBeenCalledWith(enabled);
   expect(JSON.parse(await readFile(file, 'utf8')).speech).toEqual(enabled);
-  const unverified = await setup();
-  await expect(unverified.controller.save({ settings: enabled })).rejects.toThrow('尚未验证');
+  expect(pushConfig).toHaveBeenCalledTimes(2);
 });
 
-it('rejects unverified local resources without changing files or pushing configuration', async () => {
+it('saves selected resource locations without starting recognition or synthesis', async () => {
   const { controller, pushConfig, file } = await setup();
-  const settings = SpeechSettingsSchema.parse({ enabled: true });
-  await expect(controller.save({ settings })).rejects.toMatchObject({ code: 'speech_settings_error' });
-  expect(pushConfig).not.toHaveBeenCalled();
-  await expect(readFile(file)).rejects.toMatchObject({ code: 'ENOENT' });
-});
-
-it('does not save or publish a failed local validation', async () => {
-  const validate = vi.fn(async () => { throw new Error('Local model unavailable'); });
-  const { controller, pushConfig, file } = await setup(validate);
-  await expect(controller.save({ settings: SpeechSettingsSchema.parse({ enabled: true }) })).rejects.toThrow('Local model unavailable');
-  expect(pushConfig).not.toHaveBeenCalled();
-  await expect(readFile(file)).rejects.toMatchObject({ code: 'ENOENT' });
+  const settings = SpeechSettingsSchema.parse({ enabled: true, provider: { asr: { local: { pythonPath: '/not-installed/python3', modelDirectory: '/not-installed/model' } } } });
+  await expect(controller.save({ settings })).resolves.toEqual({ settings });
+  expect(pushConfig).toHaveBeenCalledOnce();
+  expect(JSON.parse(await readFile(file, 'utf8')).speech).toEqual(settings);
 });
 
 it('rejects unexpected credentials rather than storing them inside speech settings', async () => {
@@ -80,7 +67,9 @@ it('preserves an enabled local provider across restart when saving playback pref
   const preferences = { ...enabled, inputMode: 'auto_send' as const, autoReadReplies: true,
     playback: { ...enabled.playback, volume: 0.5 } };
   await expect(controller.save({ settings: preferences })).resolves.toEqual({ settings: preferences });
-  await expect(controller.save({ settings: { ...preferences, provider: { ...preferences.provider,
-    tts: { ...preferences.provider.tts, speechRate: 15 } } } })).rejects.toThrow('尚未验证');
-  expect((await controller.get()).settings).toEqual(preferences);
+  const changedVoice = { ...preferences, provider: { ...preferences.provider, tts: { ...preferences.provider.tts, speechRate: 15 } } };
+  await expect(controller.save({ settings: changedVoice })).resolves.toEqual({ settings: changedVoice });
+  expect((await controller.get()).settings.enabled).toBe(true);
+  const streaming = { ...changedVoice, streamingInput: { enabled: true, vadModel: '/vad.onnx', paraformerDirectory: '/online' } };
+  await expect(controller.save({ settings: streaming })).resolves.toEqual({ settings: streaming });
 });

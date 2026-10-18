@@ -56,6 +56,14 @@ describe('deterministic readable speech text', () => {
 });
 
 describe('speech cache identity', () => {
+  it('isolates a neural model location and voice from system speech and other local models', async () => {
+    const first = SpeechSettingsSchema.parse({ provider: { tts: { id: 'mlx-qwen3', local: { pythonPath: '/local/python3', modelDirectory: '/local/model-a' } } } });
+    const second = structuredClone(first); second.provider.tts.local!.modelDirectory = '/local/model-b';
+    expect(await speechCacheKey('你好', first)).not.toBe(await speechCacheKey('你好', second));
+    expect(await speechCacheKey('你好', first)).not.toBe(await speechCacheKey('你好', settings()));
+    second.provider.tts.local!.modelDirectory = '/local/model-a'; second.provider.tts.speakerId = 'Vivian';
+    expect(await speechCacheKey('你好', first)).not.toBe(await speechCacheKey('你好', second));
+  });
   it('hashes canonical text and all model/audio/version dimensions, without clear text in the key', async () => {
     const config = settings(); const text = normalizeSpeechText('**你好** Jojo'); const { tts } = config.provider;
     const expected = createHash('sha256').update(JSON.stringify([

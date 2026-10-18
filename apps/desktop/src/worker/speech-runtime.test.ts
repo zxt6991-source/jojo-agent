@@ -44,6 +44,60 @@ function controlledProvider() {
 afterEach(() => { vi.unstubAllGlobals(); });
 
 describe('worker-owned local speech runtime', () => {
+  it('accepts enabled neural settings without probing the runtime until speech is requested', async () => {
+    const { assets, writer } = assetsHarness();
+    const createNeuralTts = vi.fn(() => { throw new SpeechProviderError('local_unavailable', 'Local voice is not installed.'); });
+    const runtime = new DesktopSpeechRuntime('/unused', { assets, createNeuralTts });
+    try {
+      const configured = SpeechSettingsSchema.parse({ enabled: true, provider: { tts: { id: 'mlx-qwen3', local: { pythonPath: 'python3', modelDirectory: '' } } } });
+      await expect(runtime.configure(configured)).resolves.toBeUndefined();
+      expect(createNeuralTts).not.toHaveBeenCalled();
+      expect(runtime.validationStatus()).toMatchObject({ asr: false, tts: false });
+      await expect(runtime.service!.synthesize(input())).rejects.toMatchObject({ code: 'local_unavailable' });
+      expect(createNeuralTts).toHaveBeenCalledOnce(); expect(writer.abort).toHaveBeenCalledOnce();
+    } finally { runtime.close(); }
+  });
+  it('shares the offline neural model across saved voice presets and disposes it when the model changes', async () => {
+    const { assets } = assetsHarness();
+    const neural = { ...idleProvider().tts, dispose: vi.fn(async () => undefined) };
+    const createNeuralTts = vi.fn(() => neural);
+    const runtime = new DesktopSpeechRuntime('/unused', { assets, createNeuralTts });
+    const configured = SpeechSettingsSchema.parse({ provider: { tts: { id: 'mlx-qwen3', local: { pythonPath: '/local/python3', modelDirectory: '/local/model' } } }, voicePresets: [{ id: 'other', name: '另一个声音', speakerId: 'Vivian', speechRate: 0 }] });
+    await runtime.configure(configured); expect(createNeuralTts).not.toHaveBeenCalled();
+    await runtime.serviceForValidation!.synthesize(input());
+    await runtime.serviceForPresetValidation('other')!.synthesize(input());
+    expect(createNeuralTts).toHaveBeenCalledOnce();
+    expect(neural.synthesize).toHaveBeenNthCalledWith(1, expect.objectContaining({ speakerId: 'default' }));
+    expect(neural.synthesize).toHaveBeenNthCalledWith(2, expect.objectContaining({ speakerId: 'Vivian' }));
+    await runtime.configure({ ...configured, provider: { ...configured.provider, tts: { ...configured.provider.tts, local: { ...configured.provider.tts.local!, modelDirectory: '/new/model' } } } });
+    expect(neural.dispose).toHaveBeenCalledOnce(); runtime.close();
+  });
+  it('selects and reuses a lazy streaming input provider only when configured, and revokes validation on model changes', async () => {
+    const { assets } = assetsHarness(); const fallback = idleProvider();
+    const streaming = { recognize: vi.fn(async function* (request: Parameters<SpeechProvider['asr']['recognize']>[0]) {
+      yield { type: 'ready' as const, requestId: request.requestId };
+      for await (const chunk of request.audio) { void chunk; }
+      yield { type: 'final' as const, requestId: request.requestId, text: '常驻转写' };
+    }), dispose: vi.fn(async () => undefined) };
+    const createStreamingAsr = vi.fn(() => streaming);
+    const runtime = new DesktopSpeechRuntime('/unused', { assets, createProvider: () => ({ ...fallback }), createStreamingAsr });
+    const configured = SpeechSettingsSchema.parse({ streamingInput: { enabled: true, vadModel: '/vad.onnx', paraformerDirectory: '/paraformer' } });
+    await runtime.configure(configured); expect(createStreamingAsr).not.toHaveBeenCalled();
+    const service = runtime.serviceForValidation!;
+    expect(createStreamingAsr).toHaveBeenCalledOnce(); expect(streaming.recognize).not.toHaveBeenCalled();
+    for (let index = 0; index < 2; index++) {
+      const events = [];
+      for await (const event of service.recognize((async function* () { yield new Uint8Array(6400); })(), new AbortController().signal)) events.push(event);
+      expect(events.at(-1)).toMatchObject({ type: 'final', text: '常驻转写' });
+    }
+    expect(fallback.asr.recognize).not.toHaveBeenCalled(); expect(createStreamingAsr).toHaveBeenCalledOnce();
+    runtime.markValidated('asr', service); runtime.markValidated('tts', service);
+    const proof = runtime.validationStatus().validationSignature;
+    await runtime.configure({ ...configured, streamingInput: { ...configured.streamingInput!, vadModel: '/another-vad.onnx' } });
+    expect(runtime.validationStatus()).toMatchObject({ asr: false, tts: false });
+    expect(runtime.validationStatus().validationSignature).not.toBe(proof); expect(streaming.dispose).toHaveBeenCalledOnce();
+    runtime.close();
+  });
   it('creates a disabled local provider only for explicit validation and resets proof after model changes', async () => {
     const { assets } = assetsHarness(); const createProvider = vi.fn(idleProvider);
     const runtime = new DesktopSpeechRuntime('/unused', { assets, createProvider });

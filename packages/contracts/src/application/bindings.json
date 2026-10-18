@@ -491,6 +491,18 @@
         "handler": "clearSpeechCache",
         "file": "apps/desktop/src/main/ipc/speech-ipc.ts"
       }
+    },
+    "speech.output.attach": {
+      "http": {
+        "reason": "Realtime audio output is a local Desktop MessagePort capability."
+      },
+      "ws": {
+        "reason": "Realtime audio output is a local Desktop MessagePort capability."
+      },
+      "ipc": {
+        "handler": "attachVoiceOutput",
+        "file": "apps/desktop/src/main/ipc/speech-ipc.ts"
+      }
     }
   }
 }

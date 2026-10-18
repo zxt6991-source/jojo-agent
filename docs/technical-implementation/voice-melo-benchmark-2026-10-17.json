@@ -1,0 +1,402 @@
+{
+  "version": 2,
+  "measuredAt": "2026-10-17T11:28:25.987Z",
+  "device": {
+    "platform": "darwin",
+    "arch": "arm64",
+    "cpu": "Apple M4 Pro"
+  },
+  "provider": "sherpa-melo-int8",
+  "capabilities": {
+    "textStreaming": false,
+    "audioStreaming": false,
+    "wordTimings": false
+  },
+  "coldStartMs": 2351.194708,
+  "warmFirstPcmMs": {
+    "samples": 15,
+    "p50Ms": 4904.206542,
+    "p95Ms": 16707.835542,
+    "meanMs": 5914.509897400002
+  },
+  "totalGenerationMs": {
+    "samples": 16,
+    "p50Ms": 4300.547584,
+    "p95Ms": 16708.488042,
+    "meanMs": 5691.959737125
+  },
+  "rtf": {
+    "samples": 16,
+    "p50": 0.8087726714779379,
+    "p95": 1.1984536207262688,
+    "mean": 0.8372878097683174
+  },
+  "cancelLatencyMs": 6.918791999996756,
+  "cancelProbeDelayMs": 50,
+  "postCancelRecovery": {
+    "firstPcmMs": 2277.821916000001,
+    "totalMs": 2277.856375000003,
+    "audioMs": 1962.0833333333333,
+    "rtf": 1.1609376300700802
+  },
+  "runs": [
+    {
+      "category": "short",
+      "cold": true,
+      "firstPcmMs": 2351.194708,
+      "totalMs": 2351.465875,
+      "audioMs": 1962.0833333333333,
+      "rtf": 1.1984536207262688
+    },
+    {
+      "category": "sentence",
+      "cold": false,
+      "firstPcmMs": 6038.012667000001,
+      "totalMs": 6038.236666999999,
+      "audioMs": 7349.125,
+      "rtf": 0.821626610923069
+    },
+    {
+      "category": "long",
+      "cold": false,
+      "firstPcmMs": 16707.835542,
+      "totalMs": 16708.488042,
+      "audioMs": 21153.375,
+      "rtf": 0.7898733909837083
+    },
+    {
+      "category": "date",
+      "cold": false,
+      "firstPcmMs": 4904.206542,
+      "totalMs": 4904.359042,
+      "audioMs": 6073.958333333333,
+      "rtf": 0.8074403499091065
+    },
+    {
+      "category": "model",
+      "cold": false,
+      "firstPcmMs": 5338.044957999999,
+      "totalMs": 5338.152750000001,
+      "audioMs": 7174.958333333333,
+      "rtf": 0.7439977351784856
+    },
+    {
+      "category": "symbols",
+      "cold": false,
+      "firstPcmMs": 4300.4701669999995,
+      "totalMs": 4300.547584,
+      "audioMs": 5317.375,
+      "rtf": 0.8087726714779379
+    },
+    {
+      "category": "path",
+      "cold": false,
+      "firstPcmMs": 2527.514292,
+      "totalMs": 2527.568916999997,
+      "audioMs": 3102.5,
+      "rtf": 0.8146878056406114
+    },
+    {
+      "category": "command",
+      "cold": false,
+      "firstPcmMs": 3509.5930420000004,
+      "totalMs": 3509.6489999999976,
+      "audioMs": 4388.583333333333,
+      "rtf": 0.7997225376450254
+    },
+    {
+      "category": "short",
+      "cold": false,
+      "firstPcmMs": 1700.0689160000038,
+      "totalMs": 1700.0949580000015,
+      "audioMs": 1962.0833333333333,
+      "rtf": 0.8664743892970915
+    },
+    {
+      "category": "sentence",
+      "cold": false,
+      "firstPcmMs": 5951.001750000003,
+      "totalMs": 5951.096541999999,
+      "audioMs": 7349.125,
+      "rtf": 0.8097694000306158
+    },
+    {
+      "category": "long",
+      "cold": false,
+      "firstPcmMs": 16665.22545900001,
+      "totalMs": 16665.643041999996,
+      "audioMs": 20984.666666666668,
+      "rtf": 0.7941819284874668
+    },
+    {
+      "category": "date",
+      "cold": false,
+      "firstPcmMs": 5170.542333000005,
+      "totalMs": 5170.624832999994,
+      "audioMs": 6072.416666666667,
+      "rtf": 0.8514937490016321
+    },
+    {
+      "category": "model",
+      "cold": false,
+      "firstPcmMs": 5325.071875000009,
+      "totalMs": 5325.188458000004,
+      "audioMs": 7174.958333333333,
+      "rtf": 0.7421908547204114
+    },
+    {
+      "category": "symbols",
+      "cold": false,
+      "firstPcmMs": 4216.226209,
+      "totalMs": 4216.298500000004,
+      "audioMs": 5317.375,
+      "rtf": 0.7929285596746524
+    },
+    {
+      "category": "path",
+      "cold": false,
+      "firstPcmMs": 2885.6224999999977,
+      "totalMs": 2885.673167000001,
+      "audioMs": 3095.0833333333335,
+      "rtf": 0.9323410248512428
+    },
+    {
+      "category": "command",
+      "cold": false,
+      "firstPcmMs": 3478.212209000005,
+      "totalMs": 3478.268417000014,
+      "audioMs": 4228.125,
+      "rtf": 0.8226503277457534
+    }
+  ],
+  "benchmarkSettings": {
+    "iterations": 2,
+    "inferenceProvider": "cpu",
+    "inferenceThreads": 2,
+    "runtimeProbeTiming": "after_cancel_recovery"
+  },
+  "cancellation": {
+    "mode": "terminate_process_and_reload",
+    "observedPhase": "native_generating",
+    "noPostCancelAudio": true
+  },
+  "sampledChildPeakCpuPercent": 696.6,
+  "sampledChildPeakRssBytes": 591167488,
+  "resourceSamples": 1832,
+  "resourceSamplingMs": 50,
+  "resourceScope": "direct_child_processes_only_not_os_voice_services",
+  "appPackageDeltaBytes": null,
+  "externalModelBytes": 74334003,
+  "model": {
+    "revision": "a0d5c6a264c0ef92d70d8661d8cc502d79627cd6",
+    "bytes": 74334003,
+    "files": [
+      {
+        "path": "LICENSE",
+        "bytes": 1053,
+        "sha256": "88a50e5a02bbc2a5c2f084dc19da751aa97b1690f5fda76cd8005c8634d1ca70"
+      },
+      {
+        "path": "README.md",
+        "bytes": 257,
+        "sha256": "ae6e44dead53dfdbd5b4a77106226f3118eb910222b46cb5533a3860773fc6c7"
+      },
+      {
+        "path": "date.fst",
+        "bytes": 59154,
+        "sha256": "eb8aa079ae3cb81d8f4404992f39d61a0cb990947512b5b8d1e54d1f6980e718"
+      },
+      {
+        "path": "dict/README.md",
+        "bytes": 683,
+        "sha256": "8bcc7c2ed7dff082d9a99c09de0bfd72249bf3b5c4298a3af328da40cbd8cfd1"
+      },
+      {
+        "path": "dict/hmm_model.utf8",
+        "bytes": 519739,
+        "sha256": "f17790586ac86dd048c8adffed052c4bd2b28ed0682972c1275e59040c0589a7"
+      },
+      {
+        "path": "dict/idf.utf8",
+        "bytes": 5998717,
+        "sha256": "dbd1e03d72b2263cc8d84a4304ed77677eed9e7deaf43a1a5133bbba9733b535"
+      },
+      {
+        "path": "dict/jieba.dict.utf8",
+        "bytes": 5071204,
+        "sha256": "3043b77068e09c9904f27cad82f12b6ebe9dbdb5aeff3b25e45ab7f9c1122b55"
+      },
+      {
+        "path": "dict/pos_dict/char_state_tab.utf8",
+        "bytes": 327139,
+        "sha256": "28b7be1dd7369766a51445af4d42e9a2ba4bf374c13be5bc1ca7721e27271dbb"
+      },
+      {
+        "path": "dict/pos_dict/prob_emit.utf8",
+        "bytes": 1687686,
+        "sha256": "c33c4cb7edf3b3a5947df7209b6e9f267eae1f21335d9e2bd2521ea07105457a"
+      },
+      {
+        "path": "dict/pos_dict/prob_start.utf8",
+        "bytes": 4347,
+        "sha256": "13623ea0e9300bdb597cb2da28770b7b385d6c0098d66e516083fb01b6bd5d96"
+      },
+      {
+        "path": "dict/pos_dict/prob_trans.utf8",
+        "bytes": 124159,
+        "sha256": "f22363e2307408293d180c6f9f6b5cb75879d52f722f7764fa2d3d0ae2400236"
+      },
+      {
+        "path": "dict/stop_words.utf8",
+        "bytes": 8974,
+        "sha256": "b788b8a939d2e2fe079abd579ea98f12f9fb84370bfd0dddd81bb9381f7ab42c"
+      },
+      {
+        "path": "dict/user.dict.utf8",
+        "bytes": 49,
+        "sha256": "495bbf49270408a1234690e1e6a97328f30a482a7a72aa769e8a12e8714b0c62"
+      },
+      {
+        "path": "lexicon.txt",
+        "bytes": 6837671,
+        "sha256": "7236884b02435ac5d10cf69b4be40a61b45aa676b5300f0e412f185748fee528"
+      },
+      {
+        "path": "model.int8.onnx",
+        "bytes": 53517430,
+        "sha256": "f085f5079e05f039b800aeb542f5253c26a303211b0c6465d0d9387977855a63"
+      },
+      {
+        "path": "new_heteronym.fst",
+        "bytes": 21974,
+        "sha256": "ca14b2127e27baa571664e4bb791e143e7425f56a6bc29db08d74f97e6aa4e29"
+      },
+      {
+        "path": "number.fst",
+        "bytes": 64482,
+        "sha256": "743f402181fcfebf76cc2f0546b71fa26476e626fbe4e460fb7b4c3a7a8bd5bd"
+      },
+      {
+        "path": "phone.fst",
+        "bytes": 88630,
+        "sha256": "1ac2b6fa56b1442320c4de7db08353bab8963a2b57f365eebcdd3a2d3562f8d7"
+      },
+      {
+        "path": "tokens.txt",
+        "bytes": 655,
+        "sha256": "d18664a7e12bd7ea1022ddaf951e534e136815016c5a809d6b64156bffb4369d"
+      }
+    ]
+  },
+  "runtime": {
+    "nativeSampleRate": 44100,
+    "runtimeVersion": "1.13.8",
+    "loadMs": 611.0427090000001
+  },
+  "processesStarted": 2,
+  "nativeSentenceCallbacks": [
+    {
+      "firstCallbackMs": 1604.718,
+      "callbacks": 1,
+      "completed": true
+    },
+    {
+      "firstCallbackMs": 1710.4352080000003,
+      "callbacks": 4,
+      "completed": true
+    },
+    {
+      "firstCallbackMs": 2845.8182920000004,
+      "callbacks": 7,
+      "completed": true
+    },
+    {
+      "firstCallbackMs": 1886.6510000000005,
+      "callbacks": 3,
+      "completed": true
+    },
+    {
+      "firstCallbackMs": 5240.575083,
+      "callbacks": 1,
+      "completed": true
+    },
+    {
+      "firstCallbackMs": 2350.4806669999994,
+      "callbacks": 2,
+      "completed": true
+    },
+    {
+      "firstCallbackMs": 1858.0324590000005,
+      "callbacks": 2,
+      "completed": true
+    },
+    {
+      "firstCallbackMs": 1435.273666999997,
+      "callbacks": 2,
+      "completed": true
+    },
+    {
+      "firstCallbackMs": 1673.4907080000028,
+      "callbacks": 1,
+      "completed": true
+    },
+    {
+      "firstCallbackMs": 1582.3212080000033,
+      "callbacks": 4,
+      "completed": true
+    },
+    {
+      "firstCallbackMs": 2889.8112919999976,
+      "callbacks": 7,
+      "completed": true
+    },
+    {
+      "firstCallbackMs": 1942.6089589999974,
+      "callbacks": 3,
+      "completed": true
+    },
+    {
+      "firstCallbackMs": 5232.035249999995,
+      "callbacks": 1,
+      "completed": true
+    },
+    {
+      "firstCallbackMs": 2297.61225,
+      "callbacks": 2,
+      "completed": true
+    },
+    {
+      "firstCallbackMs": 2191.450875000001,
+      "callbacks": 2,
+      "completed": true
+    },
+    {
+      "firstCallbackMs": 1472.547250000005,
+      "callbacks": 2,
+      "completed": true
+    },
+    {
+      "firstCallbackMs": null,
+      "callbacks": 0,
+      "completed": false
+    },
+    {
+      "firstCallbackMs": 1598.321875,
+      "callbacks": 1,
+      "completed": true
+    }
+  ],
+  "resampler": "numpy_48_tap_windowed_sinc_44100_to_24000_complete_utterance",
+  "subjectiveChineseMos": null,
+  "prosodyContinuity": null,
+  "mixedPronunciation": null,
+  "candidates": [
+    {
+      "provider": "cosyvoice",
+      "status": "not_benchmarked",
+      "reason": "candidate_model_not_installed"
+    }
+  ],
+  "productionTtsChanged": false,
+  "acousticReleaseGate": "pending_physical_device_listening"
+}

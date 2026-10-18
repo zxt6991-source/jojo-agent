@@ -2,7 +2,7 @@ import { BrowserWindow, ipcMain, type IpcMainEvent } from 'electron';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { AUDIO_HOST_ACK, AUDIO_HOST_COMMAND, AUDIO_HOST_READY, isAudioHostAck, type AudioHostAck, type AudioHostFormat } from '../audio-host/ipc';
+import { AUDIO_HOST_ACK, AUDIO_HOST_COMMAND, AUDIO_HOST_READY, isAudioHostAck, type AudioHostAck, type AudioHostPlayInput } from '../audio-host/ipc';
 import type { AudioHostPort } from './playback-broker';
 
 declare const AUDIO_HOST_VITE_DEV_SERVER_URL: string | undefined;
@@ -31,7 +31,7 @@ export class ElectronAudioHost implements AudioHostPort {
   };
   constructor(private readonly options: ElectronAudioHostOptions) { ipcMain.on(AUDIO_HOST_ACK, this.receiveAck); }
   onAck(listener: (ack: AudioHostAck) => void): () => void { this.listeners.add(listener); return () => this.listeners.delete(listener); }
-  async play(input: { token: string; generation: number; bytes: Uint8Array; volume: number; format?: AudioHostFormat }): Promise<void> {
+  async play(input: AudioHostPlayInput): Promise<void> {
     if (this.closed) throw new Error('host_unavailable');
     // Set before awaiting the ready handshake, so stop also cancels cold starts.
     this.active = { token: input.token, generation: input.generation };

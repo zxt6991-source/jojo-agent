@@ -1,0 +1,72 @@
+{
+  "repository": "https://huggingface.co/mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-4bit",
+  "revision": "08c72cad5e2fd0f41730c8bd1f28149585e46361",
+  "license": "Apache-2.0",
+  "files": [
+    {
+      "path": "README.md",
+      "bytes": 1068,
+      "gitBlob": "e5ebf059cc3b4ce50fbd25d605431d73feab1172"
+    },
+    {
+      "path": "config.json",
+      "bytes": 6058,
+      "gitBlob": "6d28080769a370305a54ebe24ae6cc21ae44eb90"
+    },
+    {
+      "path": "generation_config.json",
+      "bytes": 245,
+      "gitBlob": "1872b16d4535564abf2db5d6debe6cddd82b7f2e"
+    },
+    {
+      "path": "merges.txt",
+      "bytes": 1671839,
+      "gitBlob": "20024bfe7c83998e9aeaf98a0cd6a2ce6306c2f0"
+    },
+    {
+      "path": "model.safetensors",
+      "bytes": 1006772520,
+      "sha256": "4ab02a20be381700f6e73dbb5efdc424cadf9f1d0652cbffd662872ea41e296a"
+    },
+    {
+      "path": "model.safetensors.index.json",
+      "bytes": 71447,
+      "gitBlob": "df98594f59a2ce9d367e13fdf7ed1f4afa3dcdb9"
+    },
+    {
+      "path": "preprocessor_config.json",
+      "bytes": 127,
+      "gitBlob": "0525dd953bb9241912f7147666f0d535165d5d4f"
+    },
+    {
+      "path": "speech_tokenizer/config.json",
+      "bytes": 2336,
+      "gitBlob": "06cc8dc4c5ec8a1929086b71b98c313020d9268b"
+    },
+    {
+      "path": "speech_tokenizer/configuration.json",
+      "bytes": 76,
+      "gitBlob": "ab58e2eaf53cd14a1a2a7527d9261ceea93a24cd"
+    },
+    {
+      "path": "speech_tokenizer/model.safetensors",
+      "bytes": 682293092,
+      "sha256": "836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258"
+    },
+    {
+      "path": "speech_tokenizer/preprocessor_config.json",
+      "bytes": 234,
+      "gitBlob": "ba40914f4f49ab98a8ca545d4892ef7291a39592"
+    },
+    {
+      "path": "tokenizer_config.json",
+      "bytes": 7344,
+      "gitBlob": "6ff9fd60cc623bb54bbd603cbd418c97a11528d7"
+    },
+    {
+      "path": "vocab.json",
+      "bytes": 2776833,
+      "gitBlob": "4783fe10ac3adce15ac8f358ef5462739852c569"
+    }
+  ]
+}

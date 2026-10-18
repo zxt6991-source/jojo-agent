@@ -1,6 +1,6 @@
 import { SPEECH_LIMITS, SpeechProviderError, SpeechCaptureHandleSchema, type AudioAsset, type AudioAssetOwner, type Message,
   ReadSpeechMessageInputSchema, ReadApprovalSpeechInputSchema, type ReadSpeechMessageInput, type ReadApprovalSpeechInput, type SpeechCaptureHandle, type CommitVoiceTurnInput, type VoiceCommitResult, type SpeechEvent, type SpeechCaptureState, type SpeechErrorCode } from '@desktop-agent/contracts';
-import { type SpeechService, normalizeSpeechTextContent } from '@desktop-agent/speech';
+import { type SpeechService, normalizeSpeechTextContent, projectVoiceReply, speechTextSegment } from '@desktop-agent/speech';
 import { SqliteVoiceCommitLedger, VoiceCommitInputSchema, type VoiceCommitLedger, type VoiceCommitRecord } from '@desktop-agent/storage';
 import path from 'node:path';
 import { z } from 'zod';
@@ -18,6 +18,7 @@ export class VoiceRunBusyError extends Error {
 export interface DesktopVoiceTasksOptions {
   emit(event: SpeechEvent): void;
   readCommittedMessages(sessionId: string): Promise<Message[]>;
+  summarizeReply?(text: string, signal: AbortSignal): Promise<string | undefined>;
   isBusy(sessionId: string): boolean | Promise<boolean>;
   isApprovalPending?(sessionId: string, approvalId: string): boolean | Promise<boolean>;
   submit(input: VoiceCommitRequest, reservedRunId: string): Promise<{ runId: string }>;
@@ -68,8 +69,11 @@ export class DesktopVoiceTasks {
     const service = handle.purpose === 'validation' ? this.runtime.serviceForValidation : this.runtime.service;
     if (!service) { port.close(); this.post(handle, 'failed', { errorCode: 'resource_denied', reason: 'Speech is disabled or its key is missing.' }); return; }
     const controller = new AbortController();
+    const trace = { captureId: handle.voiceTurnId, generation: handle.generation };
+    this.runtime.latency.begin(trace);
     const stream = new PcmUploadStream(port, handle, {
       onEnd: () => {
+        this.runtime.latency.mark(trace, 'record_end');
         const task = this.captures.get(handle.captureId);
         if (task?.timer) clearTimeout(task.timer);
         if (task) task.timer = setTimeout(() => stream.fail(new SpeechProviderError('timeout', 'Speech final result timed out.')), this.runtime.usesLocalAsr ? 30_000 : 15_000);
@@ -83,7 +87,7 @@ export class DesktopVoiceTasks {
   }
   private async recognize(task: CaptureTask, service: SpeechService): Promise<void> {
     const { handle, controller, stream } = task;
-    let ready = false; let requestId: string | undefined; let revision = 0;
+    let ready = false; let requestId: string | undefined; let revision = 0; let endpointSent = false;
     let final: { text: string; durationMs?: number } | undefined;
     try {
       for await (const event of service.recognize(stream, controller.signal)) {
@@ -94,6 +98,11 @@ export class DesktopVoiceTasks {
           if (task.timer) clearTimeout(task.timer);
           ready = true; stream.activate(); this.post(handle, 'ready');
           task.timer = setTimeout(() => stream.fail(new SpeechProviderError('timeout', 'Speech recording reached its time limit.')), SPEECH_LIMITS.captureMs);
+        } else if (event.type === 'endpoint') {
+          if (!ready || final || event.requestId !== requestId) throw new SpeechProviderError('protocol_error', 'Invalid ASR endpoint order.');
+          if (endpointSent || stream.finished) continue;
+          endpointSent = true;
+          this.options.emit({ type: 'endpoint', ...handle, reason: event.reason });
         } else if (event.type === 'partial') {
           if (!ready || final || event.requestId !== requestId || !Number.isSafeInteger(event.revision) || event.revision <= revision || event.text.length > 20_000) {
             throw new SpeechProviderError('protocol_error', 'Invalid ASR event order.');
@@ -105,6 +114,7 @@ export class DesktopVoiceTasks {
             throw new SpeechProviderError('protocol_error', 'Invalid ASR completion.');
           }
           final = { text: event.text.trim(), ...(event.durationMs === undefined ? {} : { durationMs: event.durationMs }) };
+          this.runtime.latency.mark({ captureId: handle.voiceTurnId, generation: handle.generation }, 'asr_final');
         }
       }
       if (!final) throw new SpeechProviderError('empty_result', 'ASR ended without a final sentence.');
@@ -212,13 +222,29 @@ export class DesktopVoiceTasks {
         throw new SpeechProviderError('resource_denied', 'Only committed assistant messages can be read.');
       }
       const text = message.content.filter((block) => block.type === 'text').map((block) => block.text).join('\n');
-      const normalized = Array.from(normalizeSpeechTextContent(text));
+      const summary = input.automatic ? await this.options.summarizeReply?.(text, controller.signal) : undefined;
+      check();
+      const normalized = Array.from(input.automatic ? projectVoiceReply(summary || text, service.replySegmentChars) : normalizeSpeechTextContent(text));
       const offset = input.offset ?? 0;
       if ((input.automatic && offset !== 0) || offset >= normalized.length) throw new SpeechProviderError('resource_denied', 'The requested speech segment is unavailable.');
-      const spokenText = normalized.slice(offset, offset + service.replySegmentChars).join('');
+      let budget = service.replySegmentChars, spokenText: string, asset: AudioAsset;
+      for (;;) {
+        spokenText = speechTextSegment(normalized, offset, budget);
+        try {
+          asset = await service.synthesize({ text: spokenText, owner: { kind: 'session', id: input.sessionId }, signal: controller.signal,
+            maxChars: service.replySegmentChars, alreadyNormalized: true });
+          break;
+        } catch (error) {
+          check();
+          // An inference failure never publishes partial audio. Retry a smaller
+          // coherent span at most twice; missing installations are not retried.
+          const chars = Array.from(spokenText).length;
+          if (!(error instanceof SpeechProviderError) || !['synthesis_failed', 'synthesis_limit'].includes(error.code) || chars <= 50) throw error;
+          budget = Math.max(50, Math.floor(chars / 2));
+        }
+      }
       const nextOffset = offset + Array.from(spokenText).length;
-      const asset = await service.synthesize({ text: spokenText, owner: { kind: 'session', id: input.sessionId }, signal: controller.signal,
-        maxChars: service.replySegmentChars, alreadyNormalized: true }); published = asset; check();
+      published = asset; check();
       const ready = await this.runtime.resolveAsset(asset.id, asset.owner); check();
       if (!ready) throw new SpeechProviderError('protocol_error', 'Speech asset is unavailable.');
       return { ...ready, spokenText, truncated: nextOffset < normalized.length, ...(nextOffset < normalized.length ? { nextOffset } : {}) };
@@ -275,7 +301,7 @@ export class DesktopVoiceTasks {
   }
   status() {
     const { validationSignature, ...validation } = this.runtime.validationStatus();
-    return { captures: Array.from(this.captureStates.values()), playbacks: [], validation, diagnostics: this.runtime.diagnostics(), ...(validationSignature ? { validationSignature } : {}) };
+    return { captures: Array.from(this.captureStates.values()), playbacks: [], validation, diagnostics: this.runtime.diagnostics(), latency: this.runtime.latencyDiagnostics(), ...(validationSignature ? { validationSignature } : {}) };
   }
   cancelReadTasks(sessionId?: string, generation?: number): void {
     for (const task of this.readTasks.values()) {

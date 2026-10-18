@@ -1,5 +1,6 @@
 import { APPLICATION_OPERATIONS } from './application/operations.js';
 import { SaveSpeechSettingsInputSchema, type SpeechSettingsSnapshot } from './speech';
+import type { VoiceOutputHandle } from './voice-output';
 import type { BeginSpeechCaptureInput, SpeechCaptureHandle, CommitVoiceTurnInput, VoiceCommitResult,
   ReadSpeechMessageInput, TestSpeechSettingsInput, StopSpeechPlaybackInput, SpeechPlaybackResult,
   SpeechStatus, SpeechEvent, ReadApprovalSpeechInput } from './speech-ui';
@@ -676,6 +677,7 @@ export type DesktopApi = {
   saveSpeechSettings(input: z.input<typeof SaveSpeechSettingsInputSchema>): Promise<SpeechSettingsSnapshot>;
   beginSpeechCapture(input: BeginSpeechCaptureInput): Promise<SpeechCaptureHandle>;
   attachSpeechCapture(input: SpeechCaptureHandle): Promise<void>;
+  attachVoiceOutput(input: VoiceOutputHandle): Promise<void>;
   cancelSpeechCapture(input: SpeechCaptureHandle): Promise<void>;
   commitVoiceTurn(input: CommitVoiceTurnInput): Promise<VoiceCommitResult>;
   readSpeechMessage(input: ReadSpeechMessageInput): Promise<SpeechPlaybackResult>;
@@ -793,6 +795,8 @@ export const IPC = {
   beginSpeechCapture: 'speech:capture:begin',
   attachSpeechCapture: 'speech:capture:attach',
   speechCapturePort: 'speech:capture:port',
+  attachVoiceOutput: 'speech:output:attach',
+  voiceOutputPort: 'speech:output:port',
   cancelSpeechCapture: 'speech:capture:cancel',
   commitVoiceTurn: 'voice:commit',
   readSpeechMessage: 'speech:read-message',

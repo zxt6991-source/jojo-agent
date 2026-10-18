@@ -2,6 +2,7 @@ import { SessionSearchQuerySchema, SessionSearchHitSchema, SessionReadWindowQuer
 import { z } from 'zod';
 import { ReplayScheduleDeliveryInputSchema, PreviewScheduleVoiceInputSchema, ScheduleVoicePreparationSchema } from '../scheduler-desktop.js';
 import { SaveSpeechSettingsInputSchema, SpeechSettingsSnapshotSchema } from '../speech.js';
+import { VoiceOutputHandleSchema } from '../voice-output.js';
 import { BeginSpeechCaptureInputSchema, SpeechCaptureHandleSchema, CommitVoiceTurnInputSchema,
   VoiceCommitResultSchema, ReadSpeechMessageInputSchema, TestSpeechSettingsInputSchema,
   StopSpeechPlaybackInputSchema, SpeechPlaybackResultSchema, SpeechStatusSchema, ReadApprovalSpeechInputSchema } from '../speech-ui.js';
@@ -40,6 +41,7 @@ export const APPLICATION_OPERATIONS = {
   'speech.settings.save': defineOperation({ kind: 'command', input: SaveSpeechSettingsInputSchema, output: SpeechSettingsSnapshotSchema, permission: 'speech:configure', idempotent: false }),
   'speech.capture.begin': defineOperation({ kind: 'command', input: BeginSpeechCaptureInputSchema, output: SpeechCaptureHandleSchema, permission: 'speech:capture', idempotent: false }),
   'speech.capture.attach': defineOperation({ kind: 'command', input: SpeechCaptureHandleSchema, output: z.void(), permission: 'speech:capture', idempotent: true }),
+  'speech.output.attach': defineOperation({ kind: 'command', input: VoiceOutputHandleSchema, output: z.void(), permission: 'speech:play', idempotent: true }),
   'speech.capture.cancel': defineOperation({ kind: 'command', input: SpeechCaptureHandleSchema, output: z.void(), permission: 'speech:capture', idempotent: true }),
   'voice.commit': defineOperation({ kind: 'command', input: CommitVoiceTurnInputSchema, output: VoiceCommitResultSchema, permission: 'runs:start', idempotent: true }),
   'speech.readMessage': defineOperation({ kind: 'command', input: ReadSpeechMessageInputSchema, output: SpeechPlaybackResultSchema, permission: 'speech:play', idempotent: false }),

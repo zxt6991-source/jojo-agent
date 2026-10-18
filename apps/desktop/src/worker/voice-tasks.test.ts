@@ -62,6 +62,36 @@ function message(role: Message['role'] = 'assistant', text = '这是已提交的
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done; }); return { promise, resolve }; }
 
 describe('Worker voice tasks', () => {
+  it('requests capture stop once, drains upload, and keeps automatic endpoint separate from commit', async () => {
+    const provider = offlineProvider();
+    provider.asr.recognize = async function* (input) {
+      yield { type: 'ready', requestId: input.requestId };
+      for await (const chunk of input.audio) {
+        expect(chunk.byteLength).toBeGreaterThan(0);
+        yield { type: 'endpoint', requestId: input.requestId, reason: 'smart_turn' };
+        yield { type: 'endpoint', requestId: input.requestId, reason: 'smart_turn' };
+      }
+      yield { type: 'final', requestId: input.requestId, text: '停顿后的最终文字' };
+    };
+    const h = await harness({}, provider), port = new Port();
+    h.tasks.attachCapture(handle, port); await h.wait('ready');
+    port.send({ type: 'audio', captureId: handle.captureId, generation: handle.generation, sequence: 1, bytes: new Uint8Array(6400) });
+    await vi.waitFor(() => expect(h.events.filter(event => event.type === 'endpoint')).toHaveLength(1));
+    expect(h.events).toContainEqual({ type: 'endpoint', ...handle, reason: 'smart_turn' });
+    expect(h.events.some(event => event.type === 'capture' && event.state === 'review')).toBe(false);
+    expect(h.callbacks.submit).not.toHaveBeenCalled();
+    port.send({ type: 'end', captureId: handle.captureId, generation: handle.generation, lastSequence: 1 });
+    expect(await h.wait('review')).toMatchObject({ text: '停顿后的最终文字' });
+    expect(h.callbacks.submit).not.toHaveBeenCalled();
+  });
+  it('reads all of a requested short poem without the two-sentence projection or summary model', async () => {
+    const poem = '春花秋月何时了？往事知多少。小楼昨夜又东风，故国不堪回首月明中。雕栏玉砌应犹在，只是朱颜改。问君能有几多愁？恰似一江春水向东流。';
+    const summary = vi.fn(async () => '这首词表达了故国之思。');
+    const h = await harness({ readCommittedMessages: async () => [message('assistant', poem)], summarizeReply: summary });
+    const result = await h.tasks.readMessage({ sessionId: 'session-a', messageId: 'message-a', generation: 1, automatic: false });
+    expect(result.spokenText).toBe(poem); expect(result.truncated).toBe(false); expect(summary).not.toHaveBeenCalled();
+    expect(h.provider.tts.synthesize).toHaveBeenCalledWith(expect.objectContaining({ text: poem }));
+  });
   it('shows actionable local setup guidance without exposing subprocess diagnostics or creating a run', async () => {
     const provider = offlineProvider();
     provider.asr.recognize = () => ({ [Symbol.asyncIterator]: () => ({
@@ -87,6 +117,54 @@ describe('Worker voice tasks', () => {
     expect(first.nextOffset).toBe(200); expect(first.asset.format).toBe('wav');
     const next = await h.tasks.readMessage({ sessionId: 'session-a', messageId: 'message-a', generation: 2, offset: first.nextOffset! });
     expect(first.spokenText + next.spokenText).toBe(text); expect(next.nextOffset).toBeUndefined();
+  });
+  it('reads long bilingual text without cutting words or losing text at sentence boundaries', async () => {
+    const text = 'Morning light returns to the quiet garden. The open road is waiting for the day. '.repeat(6)
+      + '晨光越过窗前的小树，河水带着落叶向前。我们沿着小路慢慢走，阳光落在每一朵花上。'.repeat(4);
+    const h = await harness({ readCommittedMessages: async () => [message('assistant', text)] });
+    const segments: string[] = []; let offset = 0;
+    for (;;) {
+      const result = await h.tasks.readMessage({ sessionId: 'session-a', messageId: 'message-a', generation: 1, offset });
+      segments.push(result.spokenText);
+      expect(Array.from(result.spokenText).length).toBeLessThanOrEqual(200);
+      if (result.nextOffset === undefined) break;
+      expect(result.nextOffset).toBe(offset + Array.from(result.spokenText).length);
+      expect(result.spokenText).toMatch(/[。！？!?；;，,：:\s.]$/u);
+      offset = result.nextOffset;
+    }
+    expect(segments.length).toBeGreaterThan(2);
+    expect(segments.join('')).toBe(text);
+  });
+  it.each(['synthesis_limit', 'synthesis_failed'] as const)('retries a smaller span on %s without losing the continuation boundary', async code => {
+    const provider = offlineProvider(), synthesize = provider.tts.synthesize;
+    provider.tts.synthesize = vi.fn(async function* (input) {
+      if (Array.from(input.text).length > 50) throw new SpeechProviderError(code, 'controlled synthesis failure');
+      yield* synthesize(input);
+    });
+    const h = await harness({ readCommittedMessages: async () => [message('assistant', '字'.repeat(250))] }, provider);
+    const result = await h.tasks.readMessage({ sessionId: 'session-a', messageId: 'message-a', generation: 1 });
+    expect(vi.mocked(provider.tts.synthesize).mock.calls.map(([input]) => input.text.length)).toEqual([200, 100, 50]);
+    expect(result.spokenText).toBe('字'.repeat(50)); expect(result.nextOffset).toBe(50);
+  });
+  it('does not retry an unavailable installation or retry inference failures indefinitely', async () => {
+    for (const code of ['local_unavailable', 'synthesis_failed'] as const) {
+      const provider = offlineProvider();
+      provider.tts.synthesize = vi.fn(() => ({ [Symbol.asyncIterator]: () => ({ next: async () => { throw new SpeechProviderError(code, 'controlled failure'); } }) }));
+      const h = await harness({ readCommittedMessages: async () => [message('assistant', '字'.repeat(250))] }, provider);
+      await expect(h.tasks.readMessage({ sessionId: 'session-a', messageId: 'message-a', generation: 1 })).rejects.toMatchObject({ code });
+      expect(provider.tts.synthesize).toHaveBeenCalledTimes(code === 'local_unavailable' ? 1 : 3);
+    }
+  });
+  it('actually shortens a failed final span that is already below the normal segment budget', async () => {
+    const provider = offlineProvider(), synthesize = provider.tts.synthesize;
+    provider.tts.synthesize = vi.fn(async function* (input) {
+      if (input.text.length > 50) throw new SpeechProviderError('synthesis_failed', 'controlled failure');
+      yield* synthesize(input);
+    });
+    const h = await harness({ readCommittedMessages: async () => [message('assistant', '字'.repeat(99))] }, provider);
+    const result = await h.tasks.readMessage({ sessionId: 'session-a', messageId: 'message-a', generation: 1 });
+    expect(vi.mocked(provider.tts.synthesize).mock.calls.map(([input]) => input.text.length)).toEqual([99, 50]);
+    expect(result.nextOffset).toBe(50);
   });
   it('only emits a review draft after ordered audio ends and never starts a Run for ASR', async () => {
     const h = await harness(); const port = await capture(h);

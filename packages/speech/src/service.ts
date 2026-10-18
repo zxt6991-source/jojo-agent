@@ -9,6 +9,7 @@ export async function speechCacheKey(text: string, settings: SpeechSettings): Pr
   const { tts } = settings.provider;
   const key = JSON.stringify([
     text, tts.id, tts.speakerId, tts.speechRate, tts.format, tts.sampleRate,
+    ...(tts.id === 'mlx-qwen3' ? [tts.local, 'qwen3-customvoice-4bit-v2-auto-language'] : []),
     SPEECH_TEXT_VERSION, SPEECH_PROTOCOL_VERSION
   ]);
   const bytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(key));

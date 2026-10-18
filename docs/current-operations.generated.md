@@ -9,6 +9,7 @@
 | speech.settings.save | command | speech:configure | false |
 | speech.capture.begin | command | speech:capture | false |
 | speech.capture.attach | command | speech:capture | true |
+| speech.output.attach | command | speech:play | true |
 | speech.capture.cancel | command | speech:capture | true |
 | voice.commit | command | runs:start | true |
 | speech.readMessage | command | speech:play | false |

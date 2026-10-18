@@ -1,10 +1,15 @@
 import {
   SpeechSettingsSchema, SpeechSettingsSnapshotSchema,
-  SaveSpeechSettingsInputSchema, resolveSpeechPresetSettings, createLocalSpeechSettings, ProviderSettingsSchema
+  SaveSpeechSettingsInputSchema, resolveSpeechPresetSettings, createLocalSpeechSettings, ProviderSettingsSchema, SpeechEventSchema
 } from '../src';
 import { describe, expect, it } from 'vitest';
 
 describe('speech configuration boundary', () => {
+  it('requires the exact Run identity on continuous-session terminal receipts', () => {
+    const receipt = { type: 'session_run_finished', sessionId: 'session', outcome: 'completed' };
+    expect(SpeechEventSchema.safeParse(receipt).success).toBe(false);
+    expect(SpeechEventSchema.safeParse({ ...receipt, runId: 'run' }).success).toBe(true);
+  });
   it('defaults every new configuration to local speech', () => {
     const local = createLocalSpeechSettings();
     expect(ProviderSettingsSchema.parse({}).speech).toEqual(local);
@@ -52,6 +57,15 @@ describe('speech configuration boundary', () => {
   });
   it.each([-50, 0, 100])('accepts supported integer speech rate %s', (speechRate) => {
     expect(SpeechSettingsSchema.parse({ provider: { tts: { speechRate } } }).provider.tts.speechRate).toBe(speechRate);
+  });
+
+  it('requires an explicit local neural runtime and supported voice with its real speed capabilities', () => {
+    const tts = { id: 'mlx-qwen3', local: { pythonPath: '/local/python3', modelDirectory: '/local/model' } };
+    expect(SpeechSettingsSchema.parse({ provider: { tts } }).provider.tts).toMatchObject({ ...tts, speakerId: 'default', speechRate: 0 });
+    for (const change of [{ local: undefined }, { speakerId: 'Tingting' }, { speechRate: 10 }]) {
+      expect(SpeechSettingsSchema.safeParse({ provider: { tts: { ...tts, ...change } } }).success).toBe(false);
+    }
+    expect(SpeechSettingsSchema.safeParse({ provider: { tts: { ...tts, speakerId: 'Serena' } } }).success).toBe(true);
   });
 
   it.each([

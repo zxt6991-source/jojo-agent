@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 import type { DesktopApi } from '@desktop-agent/contracts';
 import { VoiceComposer } from './VoiceComposer';
-import { SpeechActivationPanel, SpeechDiagnosticsSummary, SpeechSettingsPage, SpeechVoicePresetEditor, speechPresetTrialLabel } from './SpeechSettings';
+import { SpeechDiagnosticsSummary, SpeechSettingsPage, SpeechVoicePresetEditor, speechPresetTrialLabel } from './SpeechSettings';
 import { activeSpeechPlayback, getSpeechContinuation } from './useSpeech';
 import { ChatTranscript } from './ConversationViews';
 import { buildConversationSnapshot } from './conversation';
@@ -33,22 +33,6 @@ describe('speech product UI', () => {
     expect(html).not.toContain('<input');
     expect(html).not.toContain('保存语音设置');
   });
-  it('explains why the composer opens settings and offers activation after both saved tests pass', () => {
-    const props = { enabled: false, dirty: false, asrVerified: false, ttsVerified: false, busy: false, onEnable: () => undefined };
-    const render = (patch: Partial<typeof props> = {}) => renderToStaticMarkup(React.createElement(SpeechActivationPanel, { ...props, ...patch }));
-    expect(render()).toContain('语音尚未启用');
-    expect(render()).toContain('待完成：转写测试、试听测试');
-    expect(render()).toMatch(/<button[^>]+disabled=""[^>]*>启用语音并保存/u);
-    expect(render({ asrVerified: true })).toContain('待完成：试听测试');
-    expect(render({ ttsVerified: true })).toContain('待完成：转写测试');
-    const ready = { asrVerified: true, ttsVerified: true };
-    expect(render(ready)).toContain('转写和试听均已通过');
-    expect(render(ready)).not.toMatch(/<button[^>]+disabled=""/u);
-    expect(render({ ...ready, dirty: true })).toContain('请先保存当前修改');
-    expect(render({ ...ready, dirty: true })).toMatch(/<button[^>]+disabled=""/u);
-    expect(render({ ...ready, busy: true })).toMatch(/<button[^>]+disabled=""/u);
-    expect(render({ enabled: true })).toBe('');
-  });
   it('requires saved configuration before testing an independent voice preset', () => {
     const props = { preset: { id: 'work', name: '工作提醒', speakerId: 'Tingting', speechRate: 0 }, index: 0, dirty: true, busy: false, trialLabel: '本次试听已完成', onChange: () => undefined, onRemove: () => undefined, onTest: () => undefined };
     const dirty = renderToStaticMarkup(React.createElement(SpeechVoicePresetEditor, props));
@@ -62,7 +46,7 @@ describe('speech product UI', () => {
   it('does not treat a queued, suppressed or stale preset trial as verified playback', () => {
     const trial = { signature: 'saved-v1', playbackId: 'preview-1' };
     expect(speechPresetTrialLabel(trial, 'saved-v1', [])).toBe('正在准备试听…');
-    expect(speechPresetTrialLabel(trial, 'saved-v1', [{ playbackId: 'preview-1', generation: 1, state: 'suppressed' }])).toContain('尚未验证声音');
+    expect(speechPresetTrialLabel(trial, 'saved-v1', [{ playbackId: 'preview-1', generation: 1, state: 'suppressed' }])).toBe('本次试听已静音');
     expect(speechPresetTrialLabel(trial, 'saved-v1', [{ playbackId: 'preview-1', generation: 1, state: 'played' }])).toBe('本次试听已完成');
     expect(speechPresetTrialLabel(trial, 'saved-v2', [{ playbackId: 'preview-1', generation: 1, state: 'played' }])).toContain('尚未试听');
     expect(speechPresetTrialLabel({ signature: 'saved-v1', error: 'speaker_unavailable' }, 'saved-v1', [])).toContain('试听失败');

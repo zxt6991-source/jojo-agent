@@ -8,7 +8,10 @@ export class SpeechRpcClient {
     if (this.pending.size >= 32) return Promise.reject(new Error('语音请求过多，请稍后重试。'));
     const requestId = randomUUID();
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => { this.pending.delete(requestId); reject(new Error('语音请求超时，请查询状态或重试。')); }, 45_000);
+      // Neural cold start and at most two smaller-span retries have their own
+      // bounded process deadlines. A shorter IPC timeout must not orphan them.
+      const timeoutMs = control.action === 'readMessage' ? 550_000 : control.action === 'test' ? 185_000 : 45_000;
+      const timer = setTimeout(() => { this.pending.delete(requestId); reject(new Error('语音请求超时，请查询状态或重试。')); }, timeoutMs);
       this.pending.set(requestId, { resolve, reject, timer });
       try { this.post({ type: 'speech.control', requestId, control }); }
       catch (error) { clearTimeout(timer); this.pending.delete(requestId); reject(error); }

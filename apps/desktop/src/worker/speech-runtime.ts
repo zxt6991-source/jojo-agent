@@ -1,29 +1,37 @@
 import {
   SpeechSettingsSchema, resolveSpeechPresetSettings, type SpeechSettings, type SpeechProvider,
-  type SpeechAssetStore, type AudioAssetOwner, type AudioAsset
+  type SpeechAssetStore, type AudioAssetOwner, type AudioAsset, type SpeechAsrProvider
 } from '@desktop-agent/contracts';
 import { createSpeechProvider } from '@desktop-agent/providers';
-import { SpeechService, SpeechDiagnosticsCollector } from '@desktop-agent/speech';
+import { SpeechService, SpeechDiagnosticsCollector, VoiceLatencyRecorder, createBufferedRealtimeTtsProvider } from '@desktop-agent/speech';
 import { SqliteSpeechAssetStore, type ReadySpeechAsset } from '@desktop-agent/storage';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
+import { createBundledSpeechInput } from './bundled-speech-input';
+import { createBundledNeuralTts, type DesktopNeuralTts } from './bundled-neural-tts';
 
 interface ClosableAssets extends SpeechAssetStore { close(): void; getReadyAsset?(id: string, owner: AudioAssetOwner): Promise<ReadySpeechAsset | undefined> }
 export interface DesktopSpeechRuntimeOptions {
   assets?: ClosableAssets;
   createProvider?: (settings: SpeechSettings) => SpeechProvider;
+  createStreamingAsr?: (settings: SpeechSettings) => SpeechAsrProvider & { dispose(): void | Promise<void> };
+  createNeuralTts?: (settings: SpeechSettings) => DesktopNeuralTts;
 }
 
 /** Worker owns active requests and the asset database. Configuration does no networking. */
 export class DesktopSpeechRuntime {
   private readonly assets: ClosableAssets;
   private readonly createProvider: NonNullable<DesktopSpeechRuntimeOptions['createProvider']>;
+  private readonly createStreamingAsr: NonNullable<DesktopSpeechRuntimeOptions['createStreamingAsr']>;
+  private streamingAsr: ReturnType<NonNullable<DesktopSpeechRuntimeOptions['createStreamingAsr']>> | undefined;
+  private neuralTts: DesktopNeuralTts | undefined;
   private signature: string | undefined;
   private current: SpeechService | undefined;
   private validationCurrent: SpeechService | undefined;
   private readonly presetServices = new Map<string, SpeechService>();
   private readonly presetValidationServices = new Map<string, SpeechService>();
   private readonly metrics = new SpeechDiagnosticsCollector();
+  readonly latency = new VoiceLatencyRecorder();
   private validationConfiguration: { settings: SpeechSettings } | undefined;
   private clearing: Promise<void> | undefined;
   private verificationSignature: string | undefined;
@@ -34,13 +42,34 @@ export class DesktopSpeechRuntime {
   private closed = false;
   constructor(dataDirectory: string, options: DesktopSpeechRuntimeOptions = {}) {
     this.assets = options.assets ?? new SqliteSpeechAssetStore(path.join(dataDirectory, 'runtime', 'speech.sqlite'));
-    this.createProvider = options.createProvider ?? createSpeechProvider;
+    const lazyNeuralTts = (settings: SpeechSettings): DesktopNeuralTts => {
+      let provider: DesktopNeuralTts | undefined;
+      return {
+        async *synthesize(input) {
+          provider ??= options.createNeuralTts?.(settings) ?? createBundledNeuralTts(dataDirectory, settings);
+          yield* provider.synthesize(input);
+        },
+        async dispose() { await provider?.dispose(); }
+      };
+    };
+    this.createProvider = options.createProvider ?? (settings => createSpeechProvider(settings, settings.provider.tts.id === 'mlx-qwen3'
+      ? { neuralTts: this.neuralTts ??= lazyNeuralTts(settings) } : {}));
+    this.createStreamingAsr = options.createStreamingAsr ?? (settings => createBundledSpeechInput(dataDirectory, settings));
   }
   get service(): SpeechService | undefined { return this.current; }
   get usesLocalAsr(): boolean { return this.validationConfiguration?.settings.provider.asr.id === 'sensevoice'; }
   diagnostics() { return this.metrics.snapshot(); }
+  latencyDiagnostics() { return this.latency.snapshot(); }
+  async openRealtimeTts(input: { sessionId: string; generation: number }) {
+    const settings = this.validationConfiguration?.settings;
+    if (this.closed || !this.current || !settings?.enabled || !settings.autoReadReplies || !settings.realtimeReplies) throw new Error('realtime_speech_unavailable');
+    return createBufferedRealtimeTtsProvider(this.createProvider(settings).tts).open({ ...input,
+      speakerId: settings.provider.tts.speakerId, speechRate: settings.provider.tts.speechRate });
+  }
   private createService(settings: SpeechSettings): SpeechService {
-    return new SpeechService({ settings, assets: this.assets, provider: this.createProvider(settings), onMetric: event => this.metrics.record(event) });
+    const base = this.createProvider(settings);
+    const provider = settings.streamingInput?.enabled ? { ...base, asr: this.streamingAsr ??= this.createStreamingAsr(settings) } : base;
+    return new SpeechService({ settings, assets: this.assets, provider, onMetric: event => this.metrics.record(event) });
   }
   serviceForPreset(presetId?: string): SpeechService | undefined {
     if (!presetId) return this.current;
@@ -99,6 +128,10 @@ export class DesktopSpeechRuntime {
     for (const service of this.presetServices.values()) service.dispose();
     for (const service of this.presetValidationServices.values()) service.dispose();
     this.presetServices.clear(); this.presetValidationServices.clear();
+    const streaming = this.streamingAsr; this.streamingAsr = undefined;
+    if (streaming) void Promise.resolve(streaming.dispose()).catch(() => undefined);
+    const neural = this.neuralTts; this.neuralTts = undefined;
+    if (neural) void neural.dispose().catch(() => undefined);
   }
 
   /** Cancel in-flight synthesis before deleting its assets; the same configuration remains usable. */
@@ -137,7 +170,7 @@ export class DesktopSpeechRuntime {
     this.signature = signature;
     if (this.clearing) await this.clearing;
     if (this.closed || generation !== this.generation) return;
-    const verificationSignature = createHash('sha256').update(JSON.stringify(parsed.provider)).digest('hex');
+    const verificationSignature = createHash('sha256').update(JSON.stringify(parsed.streamingInput ? { provider: parsed.provider, streamingInput: parsed.streamingInput } : parsed.provider)).digest('hex');
     if (verificationSignature !== this.verificationSignature) {
       this.verified = { asr: false, tts: false }; for (const listener of this.validationListeners) listener({ ...this.verified });
     }

@@ -25,7 +25,7 @@ const macSign = signedRelease && process.platform === 'darwin' ? {
 
 const config: ForgeConfig = {
   packagerConfig: { asar: true, executableName: 'DesktopAgent',
-    extendInfo: { NSMicrophoneUsageDescription: 'Jojo 仅在你主动录音时使用麦克风，将语音转为可校正的文字。' },
+    extendInfo: { NSMicrophoneUsageDescription: 'Jojo 仅在你主动录音或开启连续对话期间使用麦克风，将语音转为可校正的文字；可随时静音或结束。' },
     ...macSign, ...(windowsSign ? { windowsSign } : {}) },
   rebuildConfig: {},
   makers: [

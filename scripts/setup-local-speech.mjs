@@ -86,24 +86,36 @@ except Exception:
 
 export function parseSetupArguments(args) {
   const options = { directory: join(REPOSITORY_ROOT, '.local-speech'), python: 'python3', source: 'github',
-    skipInstall: false, diagnoseDownload: false, proxy: undefined, help: false };
+    skipInstall: false, diagnoseDownload: false, proxy: undefined, help: false,
+    streamingSidecar: false, downloadStreamingModels: false, installStreamingRuntime: false, installSmartTurnRuntime: false };
   for (let index = 0; index < args.length; index++) {
     const argument = args[index];
     if (argument === '--help' || argument === '-h') options.help = true;
     else if (argument === '--skip-install') options.skipInstall = true;
     else if (argument === '--diagnose-download') options.diagnoseDownload = true;
-    else if (argument === '--directory' || argument === '--python' || argument === '--source' || argument === '--proxy') {
+    else if (argument === '--streaming-sidecar') options.streamingSidecar = true;
+    else if (argument === '--download-streaming-models') options.downloadStreamingModels = true;
+    else if (argument === '--install-streaming-runtime') options.installStreamingRuntime = true;
+    else if (argument === '--install-smart-turn-runtime') options.installSmartTurnRuntime = true;
+    else if (['--directory', '--python', '--source', '--proxy', '--vad-model', '--paraformer-dir', '--smart-turn-model'].includes(argument)) {
       const value = args[++index];
       if (!value || value.startsWith('--') || value.includes('\0')) throw new Error(`${argument} requires a value.`);
       if (argument === '--directory') options.directory = resolve(value);
       else if (argument === '--python') options.python = value;
       else if (argument === '--proxy') options.proxy = validateLocalProxy(value);
+      else if (argument === '--vad-model') options.vadModel = resolve(value);
+      else if (argument === '--paraformer-dir') options.paraformerDirectory = resolve(value);
+      else if (argument === '--smart-turn-model') options.smartTurnModel = resolve(value);
       else {
         if (!['github', 'huggingface'].includes(value)) throw new Error('--source must be github or huggingface.');
         options.source = value;
       }
     } else throw new Error(`Unknown option: ${argument}`);
   }
+  if (!options.streamingSidecar && (options.downloadStreamingModels || options.installStreamingRuntime || options.installSmartTurnRuntime || options.vadModel || options.paraformerDirectory || options.smartTurnModel)) {
+    throw new Error('Streaming model flags require --streaming-sidecar.');
+  }
+  if (options.skipInstall && (options.installStreamingRuntime || options.installSmartTurnRuntime)) throw new Error('--skip-install conflicts with runtime installation.');
   return options;
 }
 
@@ -218,7 +230,7 @@ async function downloadWithCurl(destination, { url, curlSpawn, maximumBytes, cur
 }
 
 /** Failed downloads retain .part. A native fetch transport failure gets one explicit curl attempt. */
-async function downloadFile(destination, url, options = {}) {
+export async function downloadFile(destination, url, options = {}) {
   const { fetchImpl = fetch, timeoutMs = 120_000, maximumBytes = MAX_ARCHIVE_BYTES,
     curlSpawn = spawn, curlTimeoutMs = 180_000,
     diagnoseDownload = false, curlFallback = fetchImpl === fetch || options.curlSpawn !== undefined } = options;
@@ -239,7 +251,7 @@ export function downloadArchive(destination, options = {}) {
   return downloadFile(destination, SENSEVOICE_ARCHIVE_URL, options);
 }
 
-function runProcess(executable, args, { quiet = false } = {}) {
+export function runProcess(executable, args, { quiet = false } = {}) {
   return new Promise((done, reject) => {
     const child = spawn(executable, args, { shell: false, windowsHide: true, stdio: ['ignore', quiet ? 'ignore' : 'inherit', 'inherit'] });
     child.on('error', () => reject(new Error('Could not start the selected local Python executable.')));
@@ -350,9 +362,19 @@ Does not modify Jojo settings, stored credentials, or recordings.
   --source NAME     github (default) or huggingface (author repository, pinned revision and model SHA256).
   --diagnose-download  Include controlled HTTP status and curl exit codes on download errors.
   --proxy URL       Use an existing loopback http/https/socks5h proxy for this download only; requires an explicit port.
+  --streaming-sidecar  Inspect existing local Silero / streaming Paraformer / optional Smart Turn without downloading or installing.
+  --download-streaming-models  With --streaming-sidecar, explicitly download Silero and pinned int8 Paraformer (~237 MB).
+  --install-streaming-runtime  With --streaming-sidecar, explicitly create the venv and install pinned numpy / sherpa wheels.
+  --install-smart-turn-runtime With --streaming-sidecar, also install pinned ONNX Runtime / Transformers (no PyTorch).
+  --vad-model PATH / --paraformer-dir PATH / --smart-turn-model PATH  Override local streaming model paths.
   --help            Show this help.
 
 Model source: ${SENSEVOICE_ARCHIVE_URL}`);
+    return;
+  }
+  if (options.streamingSidecar) {
+    const { setupStreamingSpeech } = await import('./setup-local-speech-streaming.mjs');
+    await setupStreamingSpeech(options);
     return;
   }
   await setupLocalSpeech(options);

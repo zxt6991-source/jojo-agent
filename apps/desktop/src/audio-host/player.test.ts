@@ -82,6 +82,10 @@ describe('the AudioHost player', () => {
     expect(isAudioHostCommand({ ...valid, format: undefined })).toBe(false);
     expect(isAudioHostCommand({ ...valid, path: '/etc/passwd' })).toBe(false);
     expect(isAudioHostCommand({ ...valid, bytes: new Uint8Array(8 * 1024 * 1024 + 1) })).toBe(false);
+    expect(isAudioHostCommand({ ...valid, bytes: new Uint8Array(8 * 1024 * 1024 + 1), format: 'wav', complete: true })).toBe(true);
+    expect(isAudioHostCommand({ ...valid, format: 'mp3', complete: true })).toBe(false);
+    expect(isAudioHostCommand({ ...valid, format: 'wav', complete: false })).toBe(false);
+    expect(isAudioHostCommand({ ...valid, bytes: new Uint8Array(64 * 1024 * 1024 + 1), format: 'wav', complete: true })).toBe(false);
     expect(isAudioHostCommand({ ...valid, bytes: 'base64' })).toBe(false);
     expect(isAudioHostAck({ type: 'ended', token: valid.token, generation: 1 })).toBe(true);
     expect(isAudioHostAck({ type: 'ended', token: valid.token, generation: 1, path: '/private/file' })).toBe(false);

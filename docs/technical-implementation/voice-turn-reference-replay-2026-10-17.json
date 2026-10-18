@@ -1,0 +1,90 @@
+{
+  "version": 1,
+  "createdAt": "2026-10-17T10:29:26.961Z",
+  "manifestSha256": "c971cbccf53dff2768258e3fc9bf51a2c643ebc0a5c81acd495ac602cf87e1a8",
+  "mode": "paced_model_replay",
+  "frameMs": 200,
+  "sampleRate": 16000,
+  "fallbackTimeoutMs": 3000,
+  "microphoneOpened": false,
+  "playbackStarted": false,
+  "transcriptsIncluded": false,
+  "models": {
+    "vad": {
+      "sha256": "9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6",
+      "bytes": 643854
+    },
+    "encoder": {
+      "sha256": "81a70226a8934e6ed92aa1d4fc486b428b5398e2f2619ed4897b7294cab90e9a",
+      "bytes": 165462184
+    },
+    "decoder": {
+      "sha256": "f3cca9f77bb9d93c8fcbfb63ae617b6b1ee96818df3aa3b151c40658fe38594f",
+      "bytes": 71664561
+    },
+    "tokens": {
+      "sha256": "59aba8873a2ed1e122c25fee421e25f283b63290efbde85c1f01a853d83cb6e6",
+      "bytes": 75756
+    },
+    "smartTurn": {
+      "sha256": "fb68d55c2d542ce79e44b12013bfd571e90df8594ab096d757198e851b0c6594",
+      "bytes": 8679180
+    }
+  },
+  "cases": [
+    {
+      "id": "official-reference",
+      "status": "measured",
+      "issues": [
+        "endpoint_annotation_missing",
+        "physical_chinese_evidence_missing"
+      ],
+      "physicalChineseEvidence": false,
+      "audioSha256": "b77f1794fe374a0ba1ee1dc458bfaf9349496cbbfc32780c50ba3c5a7ad8e373",
+      "durationMs": 5592,
+      "observation": {
+        "endpoint": {
+          "reason": "smart_turn",
+          "atMs": 5749.218167,
+          "processedAudioMs": 5592
+        },
+        "readyMs": 1232.899416,
+        "replayMs": 5781.774042,
+        "deliveredAudioMs": 5592,
+        "maxFrameDelayMs": 1.2874590000001263,
+        "finalReceived": true,
+        "emptyTranscript": false
+      },
+      "score": {
+        "outcome": "unannotated",
+        "latencyMs": null
+      }
+    }
+  ],
+  "metricsScope": "consented_target_device_chinese",
+  "metrics": {
+    "turnCases": 0,
+    "noEndpointCases": 0,
+    "premature": 0,
+    "missed": 0,
+    "late": 0,
+    "falseEndpoints": 0,
+    "prematureRate": null,
+    "missedEndpointRate": null,
+    "falseEndpointRate": null,
+    "latencyP50Ms": null,
+    "latencyP95Ms": null
+  },
+  "assessment": {
+    "status": "blocked",
+    "reasons": [
+      "required_case_unmeasured:official-reference",
+      "physical_chinese_evidence_missing:official-reference",
+      "thresholds_not_configured"
+    ],
+    "exceeded": [],
+    "manualReviewRequired": true,
+    "enablesAutoEndpoint": false,
+    "certifiesAec": false
+  }
+}

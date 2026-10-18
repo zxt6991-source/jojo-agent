@@ -44,6 +44,7 @@ describe('capture ACK window', () => {
     for (let index = 0; index < 9; index += 1) channel.send(new Uint8Array(6_400));
     expect(port.postMessage).toHaveBeenCalledTimes(8);
     expect(port.close).toHaveBeenCalledOnce(); expect(failure).toHaveBeenCalledOnce();
+    expect(failure).toHaveBeenCalledWith(expect.any(String), 'invalid_audio');
     channel.end(); expect(port.postMessage).toHaveBeenCalledTimes(8);
   });
   it('cancels on a two-second missing ACK and clears all timers', () => {

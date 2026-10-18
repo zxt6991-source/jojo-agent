@@ -62,8 +62,13 @@ import type { DesktopSchedulerRuntime } from './scheduler-runtime';
 import { InteractiveTerminalSecretBroker } from './terminal-secret-broker';
 import { TurnTaskRegistry } from './turn-task-registry';
 import { selectCommittedSpeechReply } from './committed-speech-reply';
+import { VOICE_RESPONSE_INSTRUCTIONS, withHeardVoiceContext, desktopSpeechInstructions, isExplicitReadAloudRequest, type VoiceDeliveryLedger, type VoiceLatencyRecorder } from '@desktop-agent/speech';
+import type { DesktopVoiceOutput } from './voice-output';
 
 interface Context {
+  voiceOutput: DesktopVoiceOutput;
+  voiceDeliveryLedger: VoiceDeliveryLedger;
+  speechLatency: VoiceLatencyRecorder;
   stoppingTranscripts: Set<string>;
   preparingTranscripts: Map<string, Promise<void>>;
   agentRuntimeStore: SqliteAgentRuntimeStore;
@@ -154,12 +159,17 @@ export function createTurnController(ctx: Context) {
     let runtimeBinding: { dispose(): void } | undefined;
     let failureEmitted = false;
     let terminalEvent: Extract<AgentEvent, { type: 'turn.completed' | 'turn.cancelled' | 'turn.failed' }> | undefined;
+    let realtimeSpeech = false;
+    let speechRunId = origin?.runId;
+    const requestedReadAloud = !origin?.channel && isExplicitReadAloudRequest(text);
     try {
       release = ctx.store.acquire(sessionId);
       await prepareTranscript(sessionId, true);
       await ctx.extensionReady;
       await ctx.teamReady;
       if (!ctx.runtime) throw new Error('模型配置尚未加载。');
+      realtimeSpeech = Boolean(!requestedReadAloud && origin?.voice && ctx.runtime.settings.speech.enabled && ctx.runtime.settings.speech.autoReadReplies && ctx.runtime.settings.speech.realtimeReplies);
+      if (realtimeSpeech && origin?.voice) ctx.voiceOutput.begin({ sessionId, runId: origin.runId, generation: origin.voice.generation }, origin.voice.voiceTurnId);
       const pendingLane = await ctx.agentRuntimeStore.getLane(sessionId, 'main');
       if (pendingLane?.currentOperationId) {
         const pending = await (await ctx.jojoRuntime).inspectRun(pendingLane.currentOperationId);
@@ -188,6 +198,8 @@ export function createTurnController(ctx: Context) {
       controller = new AbortController();
       ctx.controllers.set(sessionId, controller);
       const emitAgentEvent = (event: AgentEvent) => {
+        if (event.type === 'turn.started') speechRunId = event.turnId;
+        if (realtimeSpeech && origin) ctx.voiceOutput.event(origin.runId, event);
         if (event.type === 'turn.failed') failureEmitted = true;
         if (event.type === 'turn.completed' || event.type === 'turn.cancelled' || event.type === 'turn.failed') {
           terminalEvent = event;
@@ -198,6 +210,8 @@ export function createTurnController(ctx: Context) {
       const flushTerminalEvent = () => {
         if (!terminalEvent) return;
         ctx.post({ type: 'agent.event', event: terminalEvent });
+        if (!origin?.channel && speechRunId) ctx.post({ type: 'speech.event', event: { type: 'session_run_finished', sessionId, runId: speechRunId,
+          outcome: terminalEvent.type === 'turn.completed' ? 'completed' : terminalEvent.type === 'turn.cancelled' ? 'cancelled' : 'failed' } });
         terminalEvent = undefined;
       };
       let loadedHooks = await loadHookRuntime({
@@ -343,6 +357,8 @@ export function createTurnController(ctx: Context) {
         defaultTimezone: schedulerTimezone
       });
       const instructions = [
+        ...(origin?.voice ? [VOICE_RESPONSE_INSTRUCTIONS] : []),
+        ...(!origin?.channel ? desktopSpeechInstructions(ctx.runtime.settings.speech.enabled, requestedReadAloud) : []),
         'You may delegate self-contained tasks to registered leaf-agent profiles: explore for read-only investigation, code-review for focused review, synthesize for tool-free synthesis, and general for broader tasks. Profile and request tool policies are enforced by the runtime; request policies may tighten but never loosen profile restrictions. Background agents cannot approve interactive high-risk operations or spawn more agents. For parallel work, start all independent sub-agents first, then wait for them together. A continuable agent becomes idle after a round; use sub_agent_send for contextual follow-up and sub_agent_close when finished. Treat INCOMPLETE results as partial evidence.',
         'Persistent teams are workspace-scoped identities with durable Runtime Lane history and inboxes. Use team_list and team_status to discover them, team_delegate to wake exactly one member, and team_wait for delegated results. team_send only writes a durable message and never wakes the recipient. Team members run serially per member while different members may run in parallel.',
         'For repeatable multi-step analysis, you may start a declarative workflow DAG with workflow_start, then use workflow_wait once. Prefer a saved workflow name from workflow_list when one matches; otherwise pass an inline definition. Workflow agent steps use registered profiles under the same runtime tool-policy and non-interactive permission boundaries. Dependencies, timeouts, and maxConcurrency must be explicit. Prefer outputSchema plus inputs.valueFrom for reliable step-to-step data; supported references are $steps.<id>.output, $steps.<id>.outputs.<name>, $steps.<id>.structuredResult.<path>, and $workflow.args.<name>. Agent tasks may interpolate {{inputs.<name>}} from workflow args. A step with explicit inputs receives only those values instead of every dependency output. Do not assume a background workflow can approve file modification, terminal, browser, or MCP operations.',
@@ -400,7 +416,8 @@ export function createTurnController(ctx: Context) {
       assertPersistableInstructions([...instructions, ...instructionBlocks.map(block => block.content)], Object.values(ctx.runtime.apiKeys));
       runtimeBinding = ctx.runtimeEnvironments.bind(sessionId, 'main', {
         providerConfig,
-        provider: ctx.e2eMode ? ctx.createE2eProvider() : createProvider(providerConfig, apiKey),
+        provider: origin?.voice ? withHeardVoiceContext(ctx.e2eMode ? ctx.createE2eProvider() : createProvider(providerConfig, apiKey), ctx.voiceDeliveryLedger)
+          : ctx.e2eMode ? ctx.createE2eProvider() : createProvider(providerConfig, apiKey),
         models: providerConfig.models,
         tools: {
           snapshot: (context) => {
@@ -465,17 +482,24 @@ export function createTurnController(ctx: Context) {
         } } : { actor: { kind: 'main' as const }, trigger: { kind: 'user' as const } }),
         signal: controller.signal
       });
+      speechRunId = handle.id;
       origin?.onStarted?.();
+      if (origin?.voice) ctx.speechLatency.mark({ captureId: origin.voice.voiceTurnId, generation: origin.voice.generation }, 'run_started');
       const result = await handle.result;
       ctx.agentRuntimeStore.flushConversationMessages(sessionId);
       if (result.status === 'completed' && !origin?.channel) {
         const operation = await ctx.agentRuntimeStore.loadOperation(handle.id);
         const final = operation?.meta.id === handle.id && operation.meta.sessionId === sessionId && operation.meta.lane === 'main'
           && operation.state.phase === 'completed' ? selectCommittedSpeechReply(result, operation.state.finalEntryId) : undefined;
-        if (final) ctx.post({ type: 'speech.event', event: { type: 'reply', sessionId, messageId: final.id, runId: handle.id } });
+        if (realtimeSpeech) ctx.voiceOutput.finish(handle.id, final?.id, Boolean(final));
+        else if (final) ctx.post({ type: 'speech.event', event: { type: 'reply', sessionId, messageId: final.id, runId: handle.id,
+          ...(origin?.voice ? { voiceInput: true } : {}),
+          ...(requestedReadAloud ? { requestedReadAloud: true } : {}) } });
       }
+      else if (realtimeSpeech) ctx.voiceOutput.finish(handle.id, undefined, false);
       flushTerminalEvent();
     } catch (error) {
+      if (realtimeSpeech && origin) ctx.voiceOutput.finish(origin.runId, undefined, false);
       origin?.onFailed?.(error);
       if (!failureEmitted) {
         ctx.post({
@@ -484,6 +508,7 @@ export function createTurnController(ctx: Context) {
           }
         });
       }
+      if (!origin?.channel && speechRunId) ctx.post({ type: 'speech.event', event: { type: 'session_run_finished', sessionId, runId: speechRunId, outcome: 'failed' } });
     } finally {
       runtimeBinding?.dispose();
       if (controller && ctx.controllers.get(sessionId) === controller) ctx.controllers.delete(sessionId);
@@ -500,6 +525,7 @@ export function createTurnController(ctx: Context) {
   }
 
   async function stopSession(sessionId: string): Promise<void> {
+    ctx.voiceOutput.stop(sessionId);
     ctx.stoppingTranscripts.add(sessionId);
     try {
       await ctx.preparingTranscripts.get(sessionId)?.catch(() => undefined);

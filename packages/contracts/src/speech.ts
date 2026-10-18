@@ -2,6 +2,8 @@ import { z } from 'zod';
 
 export const SPEECH_PROTOCOL_VERSION = 1;
 export const SPEECH_TEXT_VERSION = 1;
+/** Built-in Qwen voices. Default is the same gentle Chinese voice as Serena. */
+export const LOCAL_NEURAL_VOICES = ['Serena', 'Vivian', 'Uncle_Fu', 'Dylan', 'Eric', 'Ryan', 'Aiden', 'Ono_Anna', 'Sohee'] as const;
 export const SPEECH_LIMITS = {
   captureMs: 60_000, captureBytes: 1_926_400, pcmChunkBytes: 6_400,
   maxChunkBytes: 256 * 1024, asrMessageBytes: 1024 * 1024,
@@ -29,6 +31,16 @@ export const SpeechSettingsSchema = z.object({
   enabled: z.boolean().default(false),
   inputMode: z.enum(['review', 'auto_send']).default('review'),
   autoReadReplies: z.boolean().default(false),
+  realtimeReplies: z.boolean().default(false),
+  streamingInput: z.object({
+    enabled: z.boolean().default(false),
+    vadModel: z.string().trim().max(4096).refine(value => !value.includes('\0')).default(''),
+    paraformerDirectory: z.string().trim().max(4096).refine(value => !value.includes('\0')).default(''),
+    smartTurnModel: z.string().trim().max(4096).refine(value => !value.includes('\0')).optional(),
+    autoEndpoint: z.boolean().optional(),
+    fallbackTimeoutMs: z.number().int().min(500).max(10_000).optional()
+  }).strict().optional(),
+  voiceResponseModel: z.object({ providerId: z.string().min(1).max(256), model: z.string().min(1).max(512) }).strict().optional(),
   backgroundRunning: z.boolean().default(false),
   voicePresets: z.array(SpeechVoicePresetSchema).max(20).default([]).refine(
     presets => new Set(presets.map(preset => preset.id)).size === presets.length, 'Voice preset ids must be unique.'),
@@ -48,11 +60,21 @@ export const SpeechSettingsSchema = z.object({
       }).strict().prefault({})
     }).strict().prefault({}),
     tts: z.object({
-      id: z.literal('macos').default('macos'),
+      id: z.enum(['macos', 'mlx-qwen3']).default('macos'),
       speakerId: z.string().trim().min(1).max(256).default('default'),
       format: z.literal('wav').default('wav'), sampleRate: z.literal(24000).default(24000),
-      speechRate: z.number().int().min(-50).max(100).default(0)
-    }).strict().prefault({})
+      speechRate: z.number().int().min(-50).max(100).default(0),
+      local: z.object({
+        pythonPath: z.string().trim().min(1).max(4096).refine(value => !value.includes('\0')),
+        modelDirectory: z.string().trim().max(4096).refine(value => !value.includes('\0'))
+      }).strict().optional()
+    }).strict().superRefine((tts, ctx) => {
+      if (tts.id === 'mlx-qwen3') {
+        if (!tts.local) ctx.addIssue({ code: 'custom', path: ['local'], message: 'Choose the local neural voice runtime and model.' });
+        if (tts.speechRate !== 0) ctx.addIssue({ code: 'custom', path: ['speechRate'], message: 'This neural voice uses its original speaking rate.' });
+        if (tts.speakerId !== 'default' && !LOCAL_NEURAL_VOICES.includes(tts.speakerId as typeof LOCAL_NEURAL_VOICES[number])) ctx.addIssue({ code: 'custom', path: ['speakerId'], message: 'Choose a supported neural voice.' });
+      }
+    }).prefault({})
   }).strict().prefault({}),
   playback: z.object({
     volume: z.number().min(0).max(1).default(1), muteWhenLocked: z.boolean().default(true),
@@ -82,8 +104,11 @@ export const PcmInputFormatSchema = z.object({
   codec: z.literal('pcm16le'), sampleRate: z.literal(16000), channels: z.literal(1)
 }).strict();
 export type PcmInputFormat = z.infer<typeof PcmInputFormatSchema>;
+export const SpeechEndpointReasonSchema = z.enum(['smart_turn', 'silence_timeout']);
+export type SpeechEndpointReason = z.infer<typeof SpeechEndpointReasonSchema>;
 export type AsrEvent =
   | { type: 'ready'; requestId: string }
+  | { type: 'endpoint'; requestId: string; reason: SpeechEndpointReason }
   | { type: 'partial'; requestId: string; revision: number; text: string }
   | { type: 'final'; requestId: string; text: string; durationMs?: number };
 export interface SpeechAsrProvider {
@@ -99,7 +124,8 @@ export interface SpeechProvider { asr: SpeechAsrProvider; tts: SpeechTtsProvider
 
 export const SpeechErrorCodeSchema = z.enum([
   'auth_failed', 'resource_denied', 'speaker_unavailable', 'invalid_audio', 'empty_result',
-  'rate_limited', 'timeout', 'network_error', 'protocol_error', 'cancelled', 'local_unavailable'
+  'rate_limited', 'timeout', 'network_error', 'protocol_error', 'cancelled', 'local_unavailable',
+  'synthesis_failed', 'synthesis_limit'
 ]);
 export type SpeechErrorCode = z.infer<typeof SpeechErrorCodeSchema>;
 export interface SpeechErrorDetails {

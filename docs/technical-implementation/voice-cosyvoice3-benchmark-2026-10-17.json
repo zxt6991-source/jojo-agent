@@ -1,0 +1,24 @@
+{
+  "version": 3,
+  "benchmarkStatus": "failed",
+  "measuredAt": "2026-10-17T22:16:04.170Z",
+  "provider": "cosyvoice3",
+  "device": {
+    "platform": "darwin",
+    "arch": "arm64",
+    "cpu": "Apple M4 Pro"
+  },
+  "failure": {
+    "code": "protocol_error",
+    "category": null
+  },
+  "verified": {
+    "model": true,
+    "sources": true
+  },
+  "modelRevision": "29e01c4e8d000f4bcd70751be16fa94bf3d85a18",
+  "partialNativeMeasurements": [],
+  "aggregateMeasurements": null,
+  "productionTtsChanged": false,
+  "acousticReleaseGate": "not_accepted"
+}

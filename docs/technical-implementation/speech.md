@@ -1,8 +1,192 @@
 # Speech 实现
 
-文档状态：2026-10-17。语音仅保留本地 SenseVoice ASR 与 macOS 系统 TTS；云端语音适配器、网络协议、语音密钥存储 / 传递和云端测试脚本已删除。早期[语音对话与定时语音提醒设计](../jojo-voice-conversation-and-scheduled-reminders-design.md)中的云端章节仅为历史方案，当前接口以本文和代码为准。
+文档状态：2026-10-18。语音使用本地 SenseVoice（默认）或显式配置的 Streaming Paraformer + Silero，以及系统 TTS 或可选的本机 Qwen3 神经音色；云端语音适配器、网络协议、语音密钥存储 / 传递和云端测试脚本已删除。早期[语音对话与定时语音提醒设计](../jojo-voice-conversation-and-scheduled-reminders-design.md)中的云端章节仅为历史方案，当前接口以本文和代码为准。
 
-桌面链路包含按键录音、转写校正 / 自动发送、Run 去重、最终助手正文朗读、独立 AudioHost、音色预设及试听、审批固定短句、长回复继续朗读、缓存清理和本次启动统计。Scheduler 支持纯提醒 Target、持久 Delivery Outbox、任务结果播报、系统通知和显式托盘常驻，详见 [Durable Scheduler](./scheduler.md)。连续监听 / 插话以及硬件、通知与签名包实机验收仍待完成。
+## v2 实施状态与入口
+
+本轮按[实时语音最终优化方案 v2](../jojo-agent_voice_optimization_final_v2.md)实现了可运行的首批桌面链路。默认仍是主动录音与本地系统声音；不会自动开启麦克风、下载模型或切换生产 TTS。
+
+| 阶段 | 本轮落地 | 发布边界 |
+|---|---|---|
+| P0 | 有界分段延迟统计、事件 replay harness、13 类录音清单、真实 Mac TTS 基准、中文录音接入与模型回放评测脚本 | 实体中文、回声与重叠录音尚缺；事件夹具不能作为声学验收 |
+| P1 | 语音 Run 口语指令、自动朗读短摘要、代码 / diff / 路径过滤、真实工具进度限流、可选口语摘要模型 | 摘要模型只处理已完成回答，任务执行仍使用原模型；摘要失败 / 超时回退本地投影 |
+| P2 | 同 Renderer / AudioContext 的采集与 PCM 播放、Worklet ring、cursor、pause / duck / resume / flush、可选 reference tap、AEC Gate | 实验开关内启用，未通过实体 AEC，不开放扬声器插话 |
+| P3 | 会话级 open / append / finish / cancel、完整 WAV 到 PCM、有界背压与取消；MeloTTS / CosyVoice3 CPU 候选；可选 Qwen3 MLX 神经音色及 Mac 实测 | 系统声音仍兼容旧配置；设置页可显式选择本机自然声音。公开会话仍为完整 WAV 适配；原生 PCM 到达时间单独记录。Gate C 主观听感 / 设备验收未签发 |
+| P4 | 语音 Run delta → 状态化投影 → 消费驱动分句 → 会话 TTS → 独立 PCM MessagePort → Worklet；持久交付账本、final 对账、已听上下文投影 | 设置页显式启用“实验：语音提问后边生成边朗读”，同时需启用自动朗读；文字 Run 仍用完成回执 |
+| P5 | 常驻 stdio Speech Sidecar 已接 Desktop SpeechService；逐帧 ACK、实时字幕、单次 online final、跨轮模型复用、断链 / 取消清理 | 需在设置页显式选择 Paraformer 并验证本地模型；SenseVoice 默认保留。运行时不下载，不隐式重识别 |
+| P6 | Smart Turn 真实 CPU 推理、短 VAD pause、complete / incomplete / 失败超时回退、自动端点已接桌面、模型与手动结束可并用；按实时速度回放、标注哈希校验、提前截断 / 漏端点 / 延迟评测 | 默认手动；设置页可显式选择“实验：停顿后自动结束”。中文实录语料未验收，不作为默认发布能力 |
+| P7 | 桌面连续对话入口、每轮校正 / 自动提交、回复播放后重新收音、静音 / 恢复 / 结束、窗口快捷键、空闲超时、锁屏 / 睡眠 / 设备切换终止；损坏或空白轮次有限重录恢复 | 半双工：播放期间关闭麦克风；音频中断丢弃本轮并重录，尚非允许单帧缺失后保留当前 ASR 的无限流 |
+| P8 | 两阶段打断分类、duck / resume / flush、backchannel 与旧 generation 隔离、已听上下文 | 真实 AEC 与重叠语音 Gate 未过，扬声器自然插话不开放 |
+| P9 | 未实施 | 自适应阈值、逐字对齐、native AEC 与 speech-native 后端仍是后续研究 |
+
+新配置 `realtimeReplies` 默认 false，兼容旧配置。`voiceResponseModel` 是可选的已配置文字模型，仅用于普通完成回复的短口语摘要，最多等待 5 秒；实验流式输出使用原任务模型及语音指令。语音设置页可手动刷新 ASR final、模型首字、首个可朗读短句、首 PCM 和播放启动等 P50 / P95，未观测到的阶段不虚填数值。停止语音、切换会话、锁屏、睡眠、撤销自动朗读或断开输出设备都会终止相应语音 delivery，不调用 Agent Run 的取消入口。
+
+实时分段会合并已投影的相邻短句，在 180 字预算内共享一次合成与韵律上下文；首个短回应最多等 400 ms 收集后续句子，后续短片段最多等 200 ms，final 可立即释放。保留缓冲高低水位、源范围、已听确认与取消语义；无源范围的工具进度不能并入回答。这样避免“好的。”等极短句反复启动独立合成。
+
+## 本机自然声音：Qwen3 MLX
+
+针对系统基础音色的机械感，新增 `provider.tts.id = mlx-qwen3`。设置页“输入与声音 → 朗读方式 → 自然声音 · 本机离线”可选 Serena（默认）、Vivian 等内置声音；保存后即可使用新配置，试听仅用于可选的音色预览。音色预设沿用当前引擎；切换引擎不覆盖旧预设，需重新选择可用声音。模型不支持已验证的语速控制，因此界面保持原速，非零语速在配置 / 进程边界拒绝，避免假装支持。
+
+```bash
+pnpm speech:setup:neural                       # 只做离线校验
+pnpm speech:setup:neural --download --install-runtime
+pnpm speech:benchmark --provider mlx-qwen3 --iterations 1 --report /absolute/new-report.json
+pnpm --filter @desktop-agent/providers exec tsx ../../scripts/neural-voice-preview.ts /absolute/new-listening-directory
+```
+
+模型固定为 [Qwen3-TTS-12Hz-0.6B-CustomVoice-4bit](https://huggingface.co/mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-4bit/tree/08c72cad5e2fd0f41730c8bd1f28149585e46361)，13 个必需 / 描述文件共 **1,693,603,219 bytes**，权重 / speech codec 使用 LFS SHA256，其余使用 Git blob 摘要。沿用有界大文件续传，校验通过才发布文件。`scripts/mlx-tts-macos-py311.lock.txt` 固定独立运行依赖（MLX-Audio 0.5.9、MLX 0.32.4、Transformers 5.20.1）；当前锁针对 Apple Silicon / macOS 26 / Python 3.11。它与默认 ASR 及 CosyVoice 的 venv 分离。推理环境强制 Hub / Transformers 离线，不传应用密钥，不启用远程模型代码；无需克隆个人声音。
+
+`createBundledNeuralTts` 将经过审查的 Python 与二进制协议源码打包到 Worker，首次明确合成时物化，模型在请求间复用。普通回复、实时回复、手动朗读与提醒共享同一 GPU 模型；最多排队 8 个请求，排队取消不会中断正在播报的另一个请求。正在生成时取消会等待子进程退出，后续请求重新加载。配置变更、清缓存及退出均释放模型；任何失败都不暗中换回系统或云端声音。语言使用模型的 `auto`，避免英文和中英混读被强制按中文生成；缓存键包含引擎、音色、本地模型位置及生成策略版本，不复用旧的固定中文策略音频。
+
+Apple M4 Pro 的 [8 类文本实测报告](./voice-qwen3-mlx-benchmark-2026-10-18.json)包含取消与重载。首次导入 / 加载 / 首次 GPU 编译包含在首次请求中；未清空 OS 文件与 Metal 缓存。warm 来自之后 7 个不同类别；RTF 表内单独统计 warm，原报告汇总则包含首次请求。
+
+| 指标 | 实测 |
+|---|---:|
+| 首次完整 WAV 首 PCM（含首次运行开销） | 40,023 ms |
+| warm 完整 WAV 首 PCM P50 / P95 | 1,992 / 6,126 ms |
+| warm 原生 PCM P50 / P95 | 193 / 197 ms |
+| warm 生成耗时 / 音频时长中位比值 | 约 0.226 |
+| 正在生成时取消 / 取消后重新加载并合成 | 34 / 2,122 ms |
+| 直接子进程峰值 RSS | 约 1.93 GB（不等于全系统 GPU 占用） |
+
+约 193 ms 的原生批次目前只是二进制管道观测，仍经过完整 WAV 会话适配后才交给 Renderer，不能宣称已实现 193 ms 首音播放或上下文连续的原生流式合成。固定日常对话样音保存于忽略目录 `.local-speech/voice-previews/natural-v1`，含同文 Tingting / Serena / Vivian / Uncle_Fu；Serena 与 Vivian 的自动 SenseVoice 回转写与原句一致（忽略标点），这仅检查内容，不证明自然度。中文 MOS、人工偏好及实体设备 / AEC 仍需独立验收。
+
+本轮通过 296 项相关 TypeScript 回归、11 项下载 / 校验测试、3 项 Python 神经语音协议测试，以及类型、Lint、架构、生成文档与桌面构建检查。5 项静音桌面回归覆盖自然音色选择 / 保存 / 试听、既有配置重启、PCM 实时回复及连续对话；另通过真实 Qwen 模型的 Worker → AudioHost 集成（7.6 秒），未注入模拟 TTS，也未打开麦克风或实际发声。可显式复现：`JOJO_E2E_NEURAL_REAL=1 pnpm --filter @desktop-agent/desktop exec playwright test -c playwright.electron.config.ts e2e/neural-voice-local.spec.ts`。它验证开发构建的真实运行链路，不替代签名安装包与实体扬声器验收。
+
+明确的“请朗读 / 读给我听 / 给我念一首英文诗和一首中文诗 / 念两首诗 / 开始念 / 继续念 / 念吧 / read aloud”属于独立的本轮授权，文字输入与语音输入都适用。Worker 只检查顶层用户请求，忽略引用示例、翻译、功能讨论、第一人称叙述、否定及定时朗读请求；不依赖 `autoReadReplies`，也不修改它。客户端会在精确 final 回执上携带 `requestedReadAloud`，按完整正文朗读，跳过两句摘要与可选摘要模型。全文请求、手动“朗读”及“继续朗读”统一使用 `complete: true`：先准备好剩余全文音频，再合并为一个 WAV 连续播放，不在前段播放结束后等待下一段合成。首次出声会更晚，等待集中在开头；停止、切换会话、禁用语音或开始录音可取消准备和播放。语音未启用时打开开关并保存即可，不要求先录音或试听。模型在每个 Desktop Run 得到当前 TTS 启用状态，以本轮状态覆盖历史中的“未启用”说明；明确朗读时按请求顺序输出各篇原文，省去开场白、结束点评及“已交给客户端播放”的说明，也不能提前宣称播放成功。远程 Channel 不注入本机播放能力。
+
+普通文字提问保持文字回复，启用语音或保存 `autoReadReplies=true` 都不会自动展开朗读状态或发起合成。设置中的开关明确标为“语音输入后自动朗读回复”；Worker 仅为来自语音输入的最终回执附加 `voiceInput`，Renderer 在此标记与开关同时成立时才自动朗读。缺失来源标记时保持静默。文字输入明确要求朗读、手动点击“朗读”以及主动启动的语音交流仍按原授权执行；普通文字任务的审批也不自动播报。正常取消朗读时清空停止提示，空闲输入框不保留“朗读已停止。”；模型不可用或合成失败等实际错误仍可见。
+
+离线 Electron 用例 `e2e/explicit-read-aloud.spec.ts` 同时使用短词和“给我念一首英文诗和一首中文诗”复验：关闭自动朗读时仍完整读取正文；多次合成全部结束后只有一次 playing / played，成功准备的 `preparedChars` 覆盖规范化正文，出声时与结束时的合成请求数一致。随后在设置中开启语音输入后的自动朗读，文字输入“今天天气”，确认没有新增合成、播放或语音状态。`voice-conversation.spec.ts` 覆盖手动一键朗读、重复段落缓存复用及文字任务审批保持静默；`neural-voice-local.spec.ts` 显式使用真实 Serena 模型和静音 AudioHost 验证相同链路；`speech-read-failure.spec.ts` 使用实际缺失的运行环境验证开播前失败，并显示干净的神经语音提示。本次来源策略变更通过 275 项相关 TypeScript 测试、6 项隔离 Electron 流程，以及类型、Lint、架构、生成文档和桌面构建检查。
+
+全文准备期间，神经模型的受控生成失败或生成超限会将当前实际文本长度减半重试，最小 50 字、最多两次；缺失环境和取消不重试，也不换声音或引擎。失败片段不会发布为 ready。错误区分模型加载、生成超限、推理失败及系统音色问题，不再向神经音色用户提示安装 macOS 系统声音，也不显示 Electron 的 remote-method 包装。`requestedChars` 包含失败尝试，不能作为成功覆盖的证据；完整朗读另按成功 ready 的正文长度累计 `preparedChars`，核对偏移连续后才允许播放。真实 Serena 复验曾遇到一次生成失败并在开播前恢复，仍只播放一个完整音频。上述时延表是此前中文单段的基准，不作为本次多语言长文的时延指标。
+
+最终通过 15 个文件 / 396 项相关 TypeScript 测试、5 项 Python 协议测试、类型、Lint、架构、生成文档与桌面构建检查。8 项隔离 Electron 流程全部通过，覆盖明确请求、多语言全文、手动一键朗读、实时语音、自动端点、录音恢复、缺失模型的错误提示及真实 Serena 模型。真实模型末次复验准备 467 个规范化字符、3 个源音频片段，正文音频共约 73.84 秒；合并后只有一次 played，播放开始与结束时合成请求数相同。真实模型未用模拟 TTS，AudioHost 音量为零，未打开麦克风或实际发声；这证明完整播放链路，不作为主观自然度验收。
+
+`VoiceDeliveryLedger` 通过 Worker 的 `SqliteVoiceDeliveryStore` 写入 `speech.sqlite` 的独立表，保留最近有界记录。TTS ready / PCM 入队不等于听完；完整 segment 的 Worklet ACK 才计入 heard prefix。重启后未确认的片段标记 cancelled / interrupted，不自动重播。下一轮语音请求在 Provider 边界投影被打断的 assistant 正文，屏幕上的完整历史不变。手动全文朗读只在整段 AudioHost ended 后标记 played，中途停止不会假称已听完；自动摘要没有指向完整正文的伪续读偏移。
+
+实验实时对话占用输出期间，排队的提醒等待交互结束并继续遵守有效期；已经播放的普通资产若被更高优先级语音打断，只能记 interrupted。审批仍使用固定安全短句，不能因为声音已播放就授权业务操作。提醒音频继续使用现有持久 Outbox / AudioHost，不把流式 TTS 的生成完成误作提醒投递成功。
+
+本机基准执行：
+
+```bash
+pnpm speech:benchmark --iterations 2
+```
+
+该命令不播放、不录音、不下载、不改设置，固定文本只在合成内存 / 私有临时 WAV 中使用。2026-10-17 Apple M4 Pro / macOS arm64 的 16 次请求测得 warm first PCM P50 **1017 ms**、P95 **1244 ms**，RTF P95 **0.516**，取消约 **1.34 ms**。这是 say 完整句合成后输出 PCM 的耗时，不能当成整条 TTFA。子进程资源按 50 ms 采样，可能漏掉瞬时峰值。中文 MOS、韵律连续性、混合发音评分、M1 Pro 及主要输入输出设备组合均待实测；生产 TTS 保持 macOS say。[完整数值报告](./voice-benchmark-2026-10-17.json)。
+
+### P3：本地 TTS 候选实测
+
+新增 `SherpaTtsCandidate` 与 `speech-sidecar/tts_candidate.py`，仅由评测 CLI 显式使用，尚未接入生产 Provider 工厂或设置页。复用已有 NumPy / sherpa-onnx 环境，以 CPU、2 个 ONNX 推理线程运行 [MeloTTS 中文 / 英文 int8 作者模型](https://huggingface.co/csukuangfj/vits-melo-tts-zh_en/tree/a0d5c6a264c0ef92d70d8661d8cc502d79627cd6)。19 份模型、词典和规则文件固定在同一提交，逐份验证长度及作者 SHA256 / Git blob 摘要后原子发布；重跑离线检查复用完整目录，下载失败保留原目录。总计 **74,334,003 bytes**，模型文件 **53,517,430 bytes**，不安装 PyTorch。
+
+```bash
+pnpm speech:setup:tts
+pnpm speech:setup:tts --download
+pnpm speech:setup:tts --install-runtime
+pnpm speech:benchmark --provider sherpa-melo --iterations 2 --report /absolute/new-melo-report.json
+pnpm speech:benchmark --provider say --iterations 2 --report /absolute/new-say-report.json
+```
+
+第一条只离线校验；下载和安装须分别显式选择，需要时加 `--proxy http://127.0.0.1:PORT`。下载针对中断至多重试一次，每次传输有大小和时间上限，最终仍须精确摘要一致。评测前重新核验全部文件，可用 `--python` / `--model-dir` 指向已有路径；`--report` 只创建新文件，不覆盖已有报告。输出只含固定语料的类别、数值和模型摘要，不保留合成音频或用户正文，不采集麦克风、不播放、不改用户配置。
+
+Python 模型进程跨轮复用。文字通过有界 stdio 二进制协议送入，不放在进程参数或环境变量中；模型原生 44.1 kHz 音频通过 48-tap windowed-sinc 重采样成 24 kHz PCM16 mono。当前适配等待完整音频再交给既有会话 API，因此 `textStreaming`、`audioStreaming`、`wordTimings` 均为 false。[sherpa 1.13.8 VITS 实现](https://github.com/k2-fsa/sherpa-onnx/blob/v1.13.8/sherpa-onnx/csrc/offline-tts-vits-impl.h)中的回调按句子批次产生；回调时刻单独记录，不能作为客户端首 PCM 或播放启动。取消等待实际推理子进程退出、丢弃未交付音频，下一轮重新加载模型；崩溃、错误帧和超时不返回伪完成。
+
+2026-10-17 在 Apple M4 Pro / macOS arm64 上，同一套 8 类固定文本各跑两轮，首次请求包含进程启动与模型加载；warm 分位数使用其余 15 次，RTF 使用 16 次请求的生成耗时 / 实际音频时长，无单位。随后在长句提交 50 ms 后取消，并验证取消后无残余 PCM、下一轮可重新合成。以下是当前完整句适配器的实测，并非模型所有运行方式的性能结论：
+
+| 指标 | macOS say | sherpa MeloTTS int8 |
+|---|---:|---:|
+| 首次请求到首 PCM | 1174 ms | 2351 ms |
+| warm 首 PCM P50 / P95 | 1033 / 1129 ms | 4904 / 16708 ms |
+| RTF P50 / P95 | 0.134 / 0.545 | 0.809 / 1.198 |
+| 取消耗时 | 0.94 ms | 6.92 ms（实际推理中取消） |
+| 取消后下一次首 PCM | 1040 ms | 2278 ms（重新加载） |
+| 采样子进程峰值 RSS | 38,010,880 bytes | 591,167,488 bytes |
+| 外置模型与词典大小 | 0 bytes | 74,334,003 bytes |
+
+[Melo 实测报告](./voice-melo-benchmark-2026-10-17.json)记录固定版本全部文件的 SHA256、原生句子回调及两个实际模型进程；[say 同脚本复测报告](./voice-say-comparison-2026-10-17.json)保留对应请求数值。资源仅采样直接子进程，不包括 macOS 共享语音服务；CPU 可超过 100%，也可能漏掉瞬时峰值。Melo 尚未打入应用，应用安装包增量为 null；外置模型大小不等同于应用增量。RTF 会受两种声音语速差异影响，应结合首 PCM 和总耗时判断。
+
+当前 Melo 完整句适配在本机的延迟更高，**不替换生产 say**。中文 MOS、混读发音、跨段韵律及实体设备听感仍为 null，Gate C 尚未验收；后续 CosyVoice 准备与评测见下节。Melo 阶段的 18 个文件 / 234 项相关 TypeScript 测试、14 项离线安装回归及 venv 中全部 21 项 Python 协议 / DSP 回归通过，覆盖跨轮复用、取消等待退出、重启恢复、帧乱序 / 身份校验、无音频失败、校验失败保留旧目录、重采样时长与混叠抑制。
+
+共用协议增加二进制输出 body 后，现有中文参考 WAV 的 Paraformer / Smart Turn 两轮真实回放仍正常，每轮均有 7 次 partial、唯一非空 final 和真实自动端点；这是非实时参考样本，不能作为中文实录验收。3 项隔离 Electron 回归覆盖紧凑语音菜单、实时 PCM 回复、自动端点及损坏轮次恢复，均通过。TypeScript、ESLint、架构、文档一致性、桌面构建与空白检查通过；未打开实体麦克风或修改实际用户配置。
+
+### P3：CosyVoice3 CPU 候选
+
+CosyVoice 使用独立的 `.local-speech/venv-cosyvoice`（Python 3.11），与默认 ASR / sherpa 环境分开。新增 `speech:setup:cosyvoice`、固定模型 / 源码清单、大文件续传与只提取清单内常规源码的校验器。默认只做离线摘要检查；只有显式安装才在该 venv 中安装 PyTorch，显式下载才准备约 **5.43 GB** 推理文件。失败保留 `.part`，后续运行从已有长度继续；不匹配的完整文件隔离保存，全部校验通过后才原子发布模型目录。
+
+```bash
+pnpm speech:setup:cosyvoice
+pnpm speech:setup:cosyvoice --install-runtime
+pnpm speech:setup:cosyvoice --download
+pnpm speech:benchmark --provider cosyvoice3 --iterations 1 --report /absolute/new-cosyvoice-report.json
+```
+
+需要本机代理时在准备命令后加 `--proxy http://127.0.0.1:PORT`。本次模型固定为 [Fun-CosyVoice3-0.5B-2512](https://huggingface.co/FunAudioLLM/Fun-CosyVoice3-0.5B-2512/tree/29e01c4e8d000f4bcd70751be16fa94bf3d85a18)，只取 CPU 推理需要的基础权重 / 词表 / ONNX，跳过 RL、TensorRT 和重复 batch tokenizer 权重，共 **5,427,041,134 bytes**。源码固定为 [CosyVoice 074ca6d](https://github.com/FunAudioLLM/CosyVoice/tree/074ca6dc9e80a2f424f1f74b48bdd7d3fea531cc) 及其引用的 [Matcha dd9105b](https://github.com/shivammehta25/Matcha-TTS/tree/dd9105b34bf2be2230f4aa1e4769fb586a3c824e)。源码文件逐个 SHA256 核验；大权重使用作者 LFS SHA256，普通文件使用对应 Git blob 摘要。所需版本及传递依赖记录在 `scripts/cosyvoice-macos-py311.lock.txt`；固定构建工具保留旧 Whisper 使用的 `pkg_resources`，Diffusers 使用经导入验证的 0.31.0 以兼容当前 Transformers / Hub 组合。
+
+`cosyvoice_candidate.py` 显式选择 CPU / FP32、2 个推理线程，禁用 TensorRT / vLLM；Matplotlib 使用无界面后端与私有评测缓存。参考声音由系统 say 合成固定中文句子并保存在忽略目录，报告记录其 SHA256；不采集个人录音。模型及参考提示在同一进程中复用，取消等待进程退出，下一次请求重新加载。模型实际生成的 24 kHz PCM 批次立即送入二进制管道，同时记录客户端收到首批 PCM 的时刻。
+
+当前公开会话仍通过完整 WAV 适配器消费，因此会话的三项 streaming / word timing capability 继续为 false。报告分开提供原生批次的 `firstNativePcmMs` / `nativePcmWarmFirstMs` 和 WAV 适配后的 `firstPcmMs`，不把原生输出能力标成已经接入 Renderer 的流式播放。单次准备或合成失败输出明确失败状态、失败类别及已有数值观察，聚合指标为 null；报告仍不保存文字或音频，不覆盖已有文件。
+
+模型与源码已通过本机完整校验、CPU 架构导入及配置加载。Apple M4 Pro / macOS arm64 下，以 CPU / FP32 / 2 线程完成同一套 8 类文本各一次，再在长句提交 50 ms 后取消并验证重载恢复。warm 指标来自首次请求以外的 7 次；RTF 来自全部 8 次请求，包含首次加载。首次请求在校验文件后启动新模型进程，不代表清空系统文件缓存的冷机测试。
+
+| 指标 | 本次 CosyVoice3 CPU 实测 |
+|---|---:|
+| 首次原生 PCM / WAV 适配后首 PCM | 17,379 / 23,035 ms |
+| warm 原生首 PCM P50 / P95 | 9,962 / 11,911 ms |
+| warm WAV 适配首 PCM P50 / P95 | 19,241 / 149,352 ms |
+| RTF P50 / P95 | 2.780 / 8.595 |
+| 取消并等待进程退出 | 154.8 ms |
+| 取消后重载到 WAV 首 PCM | 21,048 ms |
+| 直接子进程采样峰值 RSS | 7,298,875,392 bytes |
+
+[完整成功报告](./voice-cosyvoice3-cpu-benchmark-2026-10-18.json)包含全部请求、原生批次到达、模型与 93 份源码文件的摘要、参考声音摘要及实际启动的两个模型进程。`nativeSentenceCallbacks` 是沿用 Melo 报告的字段名，在 CosyVoice 中记录的是生成音频批次；不代表句子或逐词对齐。取消发生在当前推理请求进行中，确认取消后无音频交付；未播放声音，因此不是声学停播或自然插话验收。最初一轮在创建参考声音时因 UUID 请求校验失败而中止，[预备失败记录](./voice-cosyvoice3-benchmark-2026-10-17.json)保留为独立报告，没有模型推理指标；已修正并增加真实 macOS Provider 校验路径的离线回归。
+
+当前 CPU 配置的原生首音较慢，RTF 大于 1；即使直接消费原生批次，也尚不满足实时对话要求，**不替换系统 say**。这是本次配置的结果，不外推为所有 Apple Silicon / MPS / MLX 后端的性能。主观中文 MOS、混读、跨段韵律与实体设备听感仍为 null；候选尚未打入应用，应用包增量仍为 null，Gate C 未验收。CosyVoice 的 PyTorch、依赖与模型均留在独立忽略目录，默认 ASR 环境、用户配置和输入框交互不变。
+
+本轮 19 个文件 / 241 项 TypeScript 相关回归、21 项 Node 安装 / 续传回归、24 项 Python 协议 / DSP 回归与 3 项源码提取测试通过，覆盖逐批 PCM 交付、空结果 / 异常不伪完成、取消 / 重载、请求 UUID 与引用音频完成性、断点恢复、摘要失败保留旧输出、源码路径 / 链接 / 重复项拒绝。准备与 benchmark 的默认路径均不录音、不播放、不改设置。
+
+Sidecar 的本地入口是 `apps/desktop/src/worker/speech-sidecar/main.py`，参数包括 `--vad-model`、`--paraformer-dir`、`--smart-turn-model`、`--vad-stop-secs 0.2` 和 `--pre-roll-ms 400`。Worker 将审核过的 Python 资源随构建打包，只在主动录音时写入私有、按内容版本隔离的运行目录并启动。stdout 是二进制协议，所有库日志重定向 stderr；可用 `createSpeechSidecarHost()` → `start()` 读取 capabilities。Smart Turn 仅在提供本地模型后加载 ONNX Runtime / WhisperFeatureExtractor，缺依赖时能力不可用，未引入默认 PyTorch/FunASR 路线。
+
+`streamingInput` 为可选配置：`enabled`、`vadModel`、`paraformerDirectory`、可选 `smartTurnModel`、`autoEndpoint`（缺省 false）与 `fallbackTimeoutMs`（缺省 3000，配置范围 500–10000），共用 `provider.asr.local.pythonPath`。改变输入引擎或模型配置会撤销先前验证；保存禁用配置、主动测试转写和试听后才能重新启用。`StreamingSpeechAsr` 把每个请求绑定独立 capture / turn / generation；只有上游 EOF、PCM 消费完成、sidecar finish 和唯一 final 全部成立才创建草稿。partial 不调用 Agent。Sidecar ACK 到达后才释放上传信用，取消不会等待卡住的上游；断链或关闭超时会弃用进程，后续显式录音可重新构造。
+
+自动端点是显式实验选项：须有可加载的 Smart Turn，缺失时在 ready 前报不可用，不静默改成另一套识别器。VAD stop 基线 0.2 秒后直接做 Smart Turn 判定；complete 立即发送带本轮句柄的 endpoint 请求，不叠加固定等待；incomplete 继续收音并启动超时，恢复说话取消超时。推理异常仅报告 `turn.unavailable`，保留 ASR 并允许静音超时或手动结束。Worker → Main → Renderer 层层核对身份；Renderer stop Capture Worklet、排空残余 PCM 并发 end；Worker 看到 EOF 后才调用 sidecar finish 并发布最终草稿。停止和旧 generation 均清理端点计时器，重复 endpoint 不重复停麦或提交。`autoEndpointVerified` 发布验收标记仍为 false；实验开关不替代中文实录验收。
+
+连续对话通过输入框工具栏麦克风旁的“语音选项”菜单，选择“开始连续对话”显式开启，不持久化启动授权。普通文字交流时不显示连续对话控制行和录音操作说明，启用语音配置也不会展开它们；菜单打开不会开始录音，支持方向键导航和 Esc 收起。开始连续对话后才展示静音、结束和操作提示，结束后恢复紧凑工具栏。
+
+每轮最多 60 秒；默认点击“结束录音”，实验自动端点开启时可由模型结束。校正模式等待用户发送，自动发送模式仅提交 final。只有当前录音对应的 Run 完成、所有声音及全文续读片段结束后才重开麦克风。提交回执核对 voiceTurnId / generation，终结与回复核对 runId，传统播放再绑定 reply.messageId；旧任务的延迟事件不能结束新录音或触发重新收音。静音释放麦克风，恢复需用户点击；Esc 结束，Cmd/Ctrl+Shift+M 切换静音，120 秒空闲结束。切换会话、关闭语音、打开设置、锁屏、睡眠、设备变化和页面离开都会终止会话，解锁不自动恢复。结束或静音时保留输入框文字并解除已取消的语音草稿关联，之后仍可作为文字发送。任何停止声音或收音动作均不取消 Agent Run。
+
+连续对话的单轮 `invalid_audio` / `empty_result` 现会进入可见的重新收音状态：立即释放麦克风并丢弃本轮，在 1 秒后重新检查当前会话、语音开关、任务和输入草稿，再创建新的 capture / generation。只允许连续自动重录两次，再失败就静音，须点击“恢复收音”才继续。有效 final 或显式恢复会重置次数；重录不延长原有空闲期限，也不把 partial 或损坏录音提交为任务。授权、模型不可用、设备故障、初始化 / 识别超时及其他协议错误停止会话，不自动重试。普通主动录音仍显示本轮错误，由用户重录。
+
+收音创建和失败通过本地回调携带完整 captureId / voiceTurnId / generation；结束后的旧错误、旧 final 和旧 start Promise 不能影响新一轮。连续控制器先绑定 capture，再接受 final；进入校正或等待 Run 后，识别器的延迟清理不会结束当前任务。通道错误沿普通 Recorder 和共享 AudioGraph 保留 `invalid_audio` 代码，设备断开等未分类故障不会误入重录流程。停止、静音、会话 / 设置 / 设备变化、锁屏和睡眠都会撤销待重录计时器。用户在等待重录时主动点麦克风，则由新录音接管，不会再被自动计时器替换。
+
+`e2e/voice-recovery.spec.ts` 在真实二进制通道制造三轮序号中断，验证 Main / Worker 返回正常失败、麦克风全部释放、前两次自动重录、第三次静音、三轮均无 final 草稿和 Agent Run，以及显式恢复后正常识别、发送、播放并开始下一轮。没有注入伪造的 Renderer 成功事件。本次恢复相关 18 项新增单测与既有身份 / 生命周期测试通过；Speech、Renderer 音频 / 连续会话、Worker 和 Main 共 21 个文件 / 360 项相关回归通过。5 项隔离 Electron 用例通过，包括恢复、自动端点、完整朗读、实时输出和传统语音对话。TypeScript、ESLint、架构检查和桌面构建通过；未使用实体麦克风或改写实际用户设置。该恢复策略提升半双工连续会话的可恢复性，仍不替代 P7 中更长期音频流的细粒度 gap tolerance，也不开放 AEC / 扬声器插话 Gate。
+
+模型准备与检查：
+
+```bash
+pnpm speech:setup --streaming-sidecar
+pnpm speech:setup --streaming-sidecar --download-streaming-models
+pnpm speech:setup --streaming-sidecar --install-smart-turn-runtime
+pnpm speech:smoke:streaming --wav /absolute/fixture.wav --python /absolute/python3 --vad /absolute/silero_vad.onnx --paraformer /absolute/StreamingParaformer
+pnpm speech:smoke:streaming --wav /absolute/fixture.wav --auto-endpoint --smart-turn /absolute/smart-turn-v3.1.onnx
+```
+
+第一条只做离线真实进程 probe，不安装、不下载、不改配置。第二条显式下载约 237 MB 的 Silero 和固定作者版本 int8 Paraformer，校验 encoder / decoder SHA256 后才原子发布；可用 `--install-streaming-runtime` 显式准备 Python 依赖。`--install-smart-turn-runtime` 额外安装已验证 Python 3.9 的固定 `onnxruntime==1.19.2` / `transformers==4.49.0`，不引入 PyTorch。模型仍仅使用本地文件；有代理时可追加 `--proxy http://127.0.0.1:PORT`。两条 smoke 命令按 ACK 回放 16 kHz mono PCM16 WAV，默认同一 provider 两轮并输出数值耗时；`--auto-endpoint` 追加至多 2 秒静音并等待真实端点，未产生端点则有界超时报错。默认不打印转写，`--expected-text` 仅报告匹配布尔值，`--show-text` 才打印全文。这是非实时样本回放，不代表现场 TTFA。
+
+2026-10-17 已通过本机系统代理完成 Paraformer / Silero 官方模型下载，两份 int8 ONNX 的 SHA256 与固定版本一致，真实进程 probe 的 `vad` 与 `streamingAsr` 均为 available。此前直连超时由下载脚本未使用系统代理导致；需要代理时显式追加 `--proxy http://127.0.0.1:PORT`，端口取本机实际配置。随后以现有 5.592 秒中文 WAV 完成同一 provider 两轮真实识别，每轮均返回 7 次 partial 和唯一非空 final；首次与复用轮总耗时约 879 / 183 ms。[输入模型校验与数值记录](./voice-input-smoke-2026-10-17.json)保留了当时尚无 Smart Turn 运行依赖的历史状态。与当前代码匹配的 [Smart Turn v3.1 CPU 固定版本](https://huggingface.co/pipecat-ai/smart-turn-v3/blob/16c8130e06d3af59663be3fd7c9ac80624850e6c/smart-turn-v3.1-cpu.onnx)已下载，8,679,180 字节且官方 SHA256 校验一致。
+
+本轮补齐了 ONNX Runtime / Transformers，三项 capability 均真实可用；未安装 PyTorch。两轮真实自动端点回放中，Smart Turn 均输出 complete，分数约 0.985，模型推理分别约 131 / 104 ms，端点后只有排空音频才返回唯一 final。该测试没有按实时速度回放，只有一个中文样本，也未核对人工转写，因此不能当成现场 TTFA、中文停顿准确率或 AEC 验收。实验自动端点可显式选择，默认仍手动，自动端点发布验收与扬声器插话 Gate 仍为 false。[自动端点真实测试记录](./voice-endpoint-smoke-2026-10-17.json)。依赖安装和测试没有更改用户的语音配置。
+
+中文语料入口现为 `pnpm speech:eval:turns --check` 和 `pnpm speech:eval:turns --run`，使用与桌面相同的输入 Provider；支持私有目录清单、完整 WAV SHA256 绑定人工标注、真实速度 200 ms 帧回放、停止后的 PCM 排空，以及提前截断率、漏端点率、端点延迟 P50 / P95 和负例误端点率。模型启动不计入音频时钟，推理 / 背压计入；模型错误不会记作漏端点。仅聚合已同意、环境信息完整的中文目标设备实录，参考或合成声音不进入发布指标。配置门槛为 null 时明确阻止验收，数值满足也只返回待人工核验的结果，不改任何发布开关。操作、标注与统计定义见[语料说明](../../tests/fixtures/speech/README.md)。
+
+2026-10-17 已实跑[缺项检查](./voice-turn-corpus-check-2026-10-17.json)：13 条实录仍缺失，六类提问场景必需，门槛未配置。另以已有 5.592 秒官方中文参考录音完成[真实速度模型回放](./voice-turn-reference-replay-2026-10-17.json)，Smart Turn 端点在音频时钟约 5.749 秒到达，随后得到唯一 final，最大帧迟到约 1.3 ms。该样本没有人工端点标注，故端点延迟和准确率均为 null；不是本机实录，不进入实录分母。这两个报告的 blocked 是缺少验收材料的预期结果，不代表模型进程失败。本次新增 31 项离线测试通过，覆盖计分边界、来源隔离、标注漂移、观察窗不足、中文文件名、符号链接越界、排空和错误分类；Speech 包与桌面输入 / voice tasks / smoke 共 15 个文件、256 项回归通过。TypeScript、ESLint、架构检查及文档一致性检查通过。
+
+`e2e/realtime-voice.spec.ts` 以合成麦克风和静音 WAV 验证生产 Main / Worker / Preload / Renderer / Worklet 链路及已听 ACK。新增 `e2e/auto-endpoint.spec.ts` 验证录音无需点击结束便自动停麦、endpoint → 排空 / recognizing → review 的事件顺序、校正模式不隐式提交、播放后下一轮，以及结束会话后保留文字可继续发送。模型在 E2E 中由显式离线 Provider 代替；它证明控制和数据路径，不替代上面的真实模型测试、实体 AEC 或主观音质验收。Gate A–E 仍应按 v2 文档在实际设备与中文录音集上完成验收后再扩大默认配置。
+
+2026-10-17 本轮验证：全仓 Vitest **264 个文件 / 2164 项通过，3 项按既有条件跳过**，包含连续会话身份 / 乱序 / 生命周期 13 项及自动端点协议回归；需要本机端口的用例在沙箱外执行。4 项 Electron 用例通过，其中自动端点用例覆盖两轮、停麦与排空顺序、校正与发送、结束后文字发送；实时语音用例继续验证 track 释放、静音 / 恢复及 Esc 结束。离线 setup 23 项及 Python 协议 / 生命周期 14 项通过。此前语音 / AudioHost / 历史兼容用例的验证记录保留。TypeScript、ESLint、架构约束、38 项操作绑定、生成文档一致性及 diff 空白检查通过。验证期间没有打开实体麦克风、播放真实合成声音或改写用户的实际语音配置；端到端用例使用隔离数据目录。
+
+streaming smoke 的 14 项离线回归单独通过，新增自动端点截取与无端点超时用例；缺失模型场景实测明确返回 `local_unavailable`，真实 Paraformer / VAD / Smart Turn 冒烟结果见上文。默认链路真实冒烟也通过：官方本地中文 WAV 经 SenseVoice 得到 14 字 final，系统 TTS 生成完整 24 kHz WAV（149850 字节），未播放。两条链路的样本冒烟不能代替真实中文端点评测。
+
+桌面链路包含按键录音、实验自动端点、半双工连续对话、转写校正 / 自动发送、Run 去重、最终助手正文朗读、独立 AudioHost、音色预设及试听、审批固定短句、长回复继续朗读、缓存清理和本次启动统计。Scheduler 支持纯提醒 Target、持久 Delivery Outbox、任务结果播报、系统通知和显式托盘常驻，详见 [Durable Scheduler](./scheduler.md)。中文端点默认发布 / 自然插话以及硬件、通知与签名包实机验收仍待完成。
 
 ## 包和公共接口
 
@@ -29,17 +213,17 @@ macOS TTS 通过 `/usr/bin/say` 从 stdin 接收文字，合成为私有临时 W
 
 语音设置仅包含本地识别参数、系统声音、音色预设、输入设备与播放偏好。ASR 的 `local` 保存 `pythonPath`、`modelDirectory`、`language`；TTS 的 `speakerId` 为 `default` 或已安装的系统声音名，`speechRate` 为 -50…100 的整数。录音 PCM 固定 16 kHz，合成 WAV 固定 24 kHz。语音配置、快照和保存接口不包含密钥字段：快照为 `{ settings }`，保存输入为 `{ settings }`。
 
-旧语音配置在持久配置读取边界归一化：全本地配置保留开关、模型路径、语言、系统声音和偏好，并清除旧协议 / 资源字段；使用旧云端服务的配置转为禁用的本地配置，需要重新完成测试后显式启用。切换到系统朗读时，旧云端音色恢复为 `default`。文字模型、权限、记忆及其他配置继续保留。新语音 Schema 严格拒绝云端服务、Key 和任意 endpoint；兼容迁移不开放新的云端运行入口。
+旧语音配置在持久配置读取边界归一化：全本地配置保留开关、模型路径、语言、系统声音和偏好，并清除旧协议 / 资源字段；使用旧云端服务的配置转为禁用的本地配置，可在语音设置中重新开启并保存。切换到系统朗读时，旧云端音色恢复为 `default`。文字模型、权限、记忆及其他配置继续保留。新语音 Schema 严格拒绝云端服务、Key 和任意 endpoint；兼容迁移不开放新的云端运行入口。
 
-主输入框的麦克风在语音未启用时进入设置页，顶部说明缺少的转写 / 试听验证。首次配置需保存 Python 与模型路径，主动完成两项测试，再点击“启用语音并保存”；此后麦克风直接开始录音。更改服务参数后需重新验证；已启用配置仅修改音量、输入方式等偏好无需每次重启重测。安装脚本和命令行 smoke 不会自动启用 Desktop 语音。
+语音设置页移除“显式验证”及启用前置说明。填写 Python 与模型路径、勾选“启用语音”后保存即可生效；Main 不再要求录音和试听证明，切换音色或引擎也保留启用状态。保存不会打开麦克风、运行识别、加载神经模型或播放音频；模型与依赖不可用时，在实际使用时显示错误。“试听声音”和预设试听均为可选操作。主输入框的麦克风仍需主动点击才开始录音。 本次取消前置验证后，通过 180 项相关回归、7 项静音桌面流程及 1 项真实离线模型集成；首次启用保存后的 ASR / TTS 请求数均保持 0，配置在重启后保留。
 
-`voicePresets` 最多 20 项，ID 唯一；每项保存 `id`、`name`、`speakerId`、`speechRate`，只覆盖系统声音与语速。预设修改后先保存再试听，预设试听不替代默认声音的全局 TTS 验证。删除预设后，关联任务须重新选择并保存。
+`voicePresets` 最多 20 项，ID 唯一；每项保存 `id`、`name`、`speakerId`、`speechRate`，只覆盖系统声音与语速。预设修改后先保存再试听，试听不作为启用语音或保存配置的前置条件。删除预设后，关联任务须重新选择并保存。
 
 ## 音频缓存和所有权
 
 `SpeechService` 先规范化可朗读文字，再计算缓存键。键包含文字 hash、实际 `tts.id`、speakerId、speechRate、format、sampleRate、文字规范化版本和适配器协议版本；不同系统声音参数不能复用彼此的音频。音频事件及缓存资产的格式、采样率必须匹配当前 TTS 配置。账号凭据不进入缓存键，也不落入音频 manifest。
 
-设置中的显式语音试听验证使用 `forceProvider=true`，每次都跳过 ready 缓存查询并调用当前所选 TTS 服务。本地试听验证当前系统音色与合成能力。只有当前请求正常完成才授予验证状态。普通消息朗读继续复用缓存。
+可选“试听声音”使用 `forceProvider=true`，每次跳过 ready 缓存查询并调用当前所选 TTS 服务；页面不展示“已验证 / 待验证”状态，也不据此阻止启用或保存。底层仍记录真实成功请求供诊断使用，普通消息朗读继续复用缓存。
 
 `SqliteSpeechAssetStore` 由 Worker 独占写入 `runtime/speech.sqlite` 和音频目录。SQLite 内区分可复用音频实体与 session / schedule / test 的 owner 引用。同一个缓存实体可以对应不同授权引用；读取 ready 资产必须匹配引用 ID 与 owner。Main 不能把任意本地路径作为播放授权，也不并行修改该数据库。
 
@@ -65,9 +249,13 @@ ASR final 默认回填编辑框，用户可校正后发送；`auto_send` 仅在�
 
 ## 独立播放宿主
 
-单条“朗读”接受 sessionId / messageId 和可选规范化正文 offset；Worker 重新从持久会话读取助手纯文本，排除 tool_call / internal 消息，确定性整理 Markdown，本地 WAV 每段最多 200 个 Unicode 码点，避免慢语速时超出共享音频大小限制及截断代理对；继续朗读的 offset 按实际已读长度计算。返回 `nextOffset` 后，界面提供“继续朗读”下一段；每段由用户主动触发，自动朗读不能传入非零 offset。全文仍在原会话中，不另存一份语音对话正文。自动朗读只消费本轮 operation 的最终已提交消息 ID，跳过空正文、其他会话、录音期间和重复事件；不监听全局文本 delta。停止声音不取消 Agent Run。
+单条“朗读”接受 sessionId / messageId、可选规范化正文 offset 和 `complete`。Worker 重新读取持久会话中的助手纯文本，排除 tool_call / internal 消息，确定性整理 Markdown。本地合成每段最多 200 个 Unicode 码点，预算内优先在句末、短句或词间结束；续读 offset 按实际成功长度计算，包含分隔符，不丢失或重复正文。`complete: true` 时 Main 在准备阶段遍历所有 offset、核对正文长度及资产归属，全部完成后才入队；任一段失败则整篇不出声。语音输入后的自动回复仍只读短摘要，禁止传入 complete 或非零 offset。全文仍在原会话，不另存语音正文；自动朗读只消费本轮 operation 的最终已提交消息 ID，跳过其他会话、录音期间和重复事件。停止声音不取消 Agent Run。
 
-用户主动开启“自动朗读已完成的助手回复”后，当前会话出现待审批操作时可播报一次固定短句“需要你确认一项操作，请在界面中查看并确认。”。Worker 在合成前后核对 sessionId / approvalId 仍待审批，关闭或切换审批会取消旧声音。播报不包含命令、文件差异或审批正文，也不会调用批准入口；授权仍由原审批 UI 和 Permission Governance 决定。
+完整朗读最多 128 个源资产、合计 64 MiB，每个源资产仍遵守 8 MiB 上限。Broker 在开播前重新核对每个文件的归属、期限、大小和规范路径，严格解析 mono / 24 kHz / PCM16 WAV，再按顺序合并 PCM、重写唯一 WAV 头，经显式 complete 标记送入私有 AudioHost。普通声音桥仍限 8 MiB；合并后的声音只使用一个 Blob 和播放器，中途没有新的合成、IPC 接续或解码器切换。播放期限按实际音频时长计算，避免超过 5 分钟的正文被普通短句期限截断。取消准备不会在稍后出声；旧播放的延迟停止回执不会中断新的准备。连续对话也不把正在准备或播放的长文算作 120 秒空闲。
+
+神经语音单次生成有 180 秒进程期限；Worker RPC 的 readMessage 期限为 550 秒，以覆盖最多三次实际尝试，试听为 185 秒，状态等普通请求仍为 45 秒。进程失败、关闭和用户取消均有明确结束路径；完整阅读的 Renderer 等待上限为一小时，未用无限等待掩盖失败。
+
+用户主动开启“语音输入后自动朗读回复”后，仅在当前会话由用户提交的语音任务出现待审批操作时，播报一次固定短句“需要你确认一项操作，请在界面中查看并确认。”。普通文字任务保持静默；提交文字、任务结束或切换会话会清除本轮语音交互状态。Worker 在合成前后核对 sessionId / approvalId 仍待审批，关闭或切换审批会取消旧声音。播报不包含命令、文件差异或审批正文，也不会调用批准入口；授权仍由原审批 UI 和 Permission Governance 决定。
 
 提交文字或转写草稿时，明确的“不要自动朗读”“不要自己读”“只用文字回复”等停读指令会先阻断自动回复 / 审批播报、停止当前会话声音，并持久保存 `autoReadReplies=false`，随后原文继续作为普通任务输入。停读规则跳过引号、代码及翻译 / 示例中的指令，不会据此自动开启朗读。手动点击“朗读”和独立语音提醒不受自动回复开关影响。
 
@@ -145,7 +333,7 @@ pnpm speech:smoke:local -- \
 
 `--tts-only` 不依赖 Python 或 ASR 模型；完整 smoke 先测试固定短句的系统 TTS，再读取指定 WAV 并去除容器头，将 16 kHz / mono / PCM16LE 原始音频送给本地 ASR。脚本不播放声音、不下载资源、不读取云端 Key、不保存转写正文或合成音频，也不改变 Desktop 设置；只输出完成状态、格式、字节数和识别字符数。省略 Python / 模型参数时使用仓库默认 `.local-speech` 路径。
 
-在 Jojo「语音设置」中填写安装器输出路径并先保存。主动完成录音转写与合成试听两项验证后，点击“启用语音并保存”。缺少模型、Python 依赖或系统音色会显示不可用。
+在 Jojo「语音设置」中填写安装器输出路径，勾选“启用语音”并保存即可使用。可按需点击“试听声音”，不再要求录音和试听测试。缺少模型、Python 依赖或系统音色时，在实际使用时显示不可用。
 
 ## 离线验证
 

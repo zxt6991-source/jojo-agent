@@ -19,6 +19,29 @@ export function createDesktopTestProvider(ctx: Context) {
     return {
       async *stream(request) {
         const prompt = latestUserText(request);
+        if (prompt === '给我念一首英文诗和一首中文诗') {
+          const complete = request.instructions?.some(value => value.includes('用户在本轮明确请求出声朗读') && value.includes('保留原文全部句子'));
+          yield { type: 'text_delta', text: complete ? [
+            '# Morning Light',
+            'The morning light returns to every window. A quiet river carries leaves away.',
+            'Across the fields a little bird is calling. The open road is waiting for the day.',
+            'We walk beside the water in the sunlight. We watch the clouds move slowly through the blue.',
+            'The trees are waking gently in the garden. Another morning brings a path anew.',
+            '# 晨光',
+            '晨光越过窗前的小树，清风翻开安静的书页。河水带着落叶向前，远山披着淡淡的云。',
+            '我们沿着小路慢慢走，看见草尖闪亮的露珠。鸟儿唱起今天的歌，阳光落在每一朵花上。',
+            '不必急着追赶远方，也不必数昨天的脚步。把这一路的微光收好，让新的清晨陪我们出发。'
+          ].join('\n\n') : '离线断言失败：没有收到本轮全文朗读指令。' };
+          yield { type: 'response_completed', stopReason: 'stop' }; return;
+        }
+        if (prompt === '你给我朗读春花秋月何时了这首词' || prompt === '开始念') {
+          const enabled = request.instructions?.some(value => value.includes('客户端已启用本地 TTS 朗读'));
+          const complete = request.instructions?.some(value => value.includes('用户在本轮明确请求出声朗读') && value.includes('保留原文全部句子'));
+          yield { type: 'text_delta', text: enabled && complete
+            ? '春花秋月何时了？往事知多少。\n小楼昨夜又东风，故国不堪回首月明中。\n雕栏玉砌应犹在，只是朱颜改。\n问君能有几多愁？恰似一江春水向东流。'
+            : '离线断言失败：没有收到启用状态或本轮全文朗读指令。' };
+          yield { type: 'response_completed', stopReason: 'stop' }; return;
+        }
         const workflow = e2eToolWorkflow(request);
         if (workflow) {
           if (workflow.call) yield { type: 'tool_call_completed', call: workflow.call };

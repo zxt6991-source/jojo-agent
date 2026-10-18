@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { MessageChannelMain, systemPreferences, type BrowserWindow, type MessagePortMain, type UtilityProcess } from 'electron';
 import { IPC, SpeechCaptureHandleSchema, SpeechEventSchema, SpeechReadyAssetSchema, SpeechStatusSchema,
@@ -9,6 +9,8 @@ import { ScheduleDesktopDeliverySchema, ScheduleVoicePreparationSchema, type Pre
 import { ElectronAudioHost } from './audio-host';
 import { PlaybackBroker, type PlaybackEvent } from './playback-broker';
 import { SpeechStreamBridge } from './speech-stream';
+import { VoiceOutputHandleSchema, type VoiceOutputHandle } from '@desktop-agent/contracts';
+import { AUDIO_HOST_MAX_COMPLETE_BYTES, AUDIO_HOST_MAX_SEGMENTS } from '../audio-host/ipc';
 
 export interface DesktopSpeechHostOptions {
   dataDirectory: string; buildDirectory: string;
@@ -29,11 +31,16 @@ function sameDeliveryIdentity(a: SchedulePlaybackIdentity, b: SchedulePlaybackId
 
 export class DesktopSpeechHost {
   private readonly captures = new Map<string, Capture>();
+  private readonly realtimeOutputs = new Map<string, VoiceOutputHandle>();
+  private readonly attachedOutputs = new Set<string>();
+  private readonly realtimeCommitEpochs = new Map<string, { generation: number; global: number; session: number }>();
   private readonly playbacks = new Map<string, SpeechPlaybackState>();
   private readonly epochs = new Map<string, number>();
   private readonly automaticReads = new Map<string, { sessionId: string; generation: number; epoch: number }>();
   private automaticReadEpoch = 0;
   private readonly preparingReads = new Map<string, string>();
+  private readonly completeReads = new Map<string, string>();
+  private readonly readCancellations = new Map<string, { cancelled: boolean }>();
   private readonly broker: PlaybackBroker;
   private readonly deliveries = new Map<string, { identity: SchedulePlaybackIdentity; resolve(outcome: ScheduleDesktopOutcome): void; timer: ReturnType<typeof setInterval>; failure?: string }>();
   private readonly manualDeliveries = new Map<string, number>();
@@ -77,6 +84,7 @@ export class DesktopSpeechHost {
       ...(event.owner.kind === 'session' ? { sessionId: event.owner.id } : {}),
       ...(previous?.messageId ? { messageId: previous.messageId } : {}),
       ...(previous?.nextOffset !== undefined ? { nextOffset: previous.nextOffset } : {}),
+      ...(previous?.preparedChars !== undefined ? { preparedChars: previous.preparedChars } : {}),
       state: event.state === 'started' ? 'playing' : event.state === 'stopped' ? 'interrupted' : event.state,
       ...(event.reason ? { reason: event.reason } : {})
     };
@@ -196,8 +204,18 @@ export class DesktopSpeechHost {
     const next = settings ?? await this.options.readSettings();
     if (this.closed || epoch !== this.configEpoch) return;
     if (this.settings && (JSON.stringify(this.settings.provider) !== JSON.stringify(next.provider)
+      || JSON.stringify(this.settings.streamingInput) !== JSON.stringify(next.streamingInput)
       || (this.settings.enabled && !next.enabled))) this.stop({});
+    if (this.settings && (JSON.stringify(this.settings.provider.asr) !== JSON.stringify(next.provider.asr)
+      || JSON.stringify(this.settings.streamingInput) !== JSON.stringify(next.streamingInput)
+      || this.settings.inputDeviceId !== next.inputDeviceId || (this.settings.enabled && !next.enabled))) {
+      this.beginEpoch++; this.cancelAll(); this.options.emit({ type: 'input_invalidated', reason: 'configuration' });
+    }
     this.settings = next;
+    if (!next.autoReadReplies || !next.realtimeReplies || !next.enabled || !this.realtimePolicyAllows()) {
+      for (const handle of this.realtimeOutputs.values()) void this.options.request({ action: 'stopRealtime', sessionId: handle.sessionId }).catch(() => undefined);
+      this.realtimeOutputs.clear(); this.attachedOutputs.clear(); this.broker.setInteractiveActive(false);
+    }
     if (!next.autoReadReplies) this.stopAutomaticReads();
     if (!this.settings.enabled) this.broker.stop();
     this.broker.setPolicy({ enabled: this.settings.enabled, recording: this.captures.size > 0, locked: this.locked,
@@ -216,7 +234,7 @@ export class DesktopSpeechHost {
       callback(permission === 'media' && audioOnly && allowed(contents, details.isMainFrame, details.requestingUrl));
     });
     window.webContents.on('did-start-navigation', (_event, _url, inPlace, mainFrame) => {
-      if (!inPlace && mainFrame) { this.beginEpoch++; this.cancelAll(); this.stop({}); }
+      if (!inPlace && mainFrame) { this.beginEpoch++; this.cancelAll(); this.stop({}); this.options.emit({ type: 'input_invalidated', reason: 'navigation' }); }
     });
     window.webContents.on('render-process-gone', () => { this.beginEpoch++; this.cancelAll(); this.stop({}); });
   }
@@ -273,13 +291,55 @@ export class DesktopSpeechHost {
     void this.configure().catch(() => undefined);
   }
   accept(event: SpeechEvent): void {
-    if (event.type === 'capture') {
+    if (event.type === 'playback') this.rememberPlayback(event);
+    if (event.type === 'output_available') {
+      if (this.closed) return;
+      const commit = this.realtimeCommitEpochs.get(event.sessionId);
+      if (!commit || commit.generation !== event.generation || commit.global !== this.globalEpoch || commit.session !== (this.epochs.get(event.sessionId) ?? 0)) return;
+      if (this.realtimeOutputs.size >= 100) return;
+      this.realtimeOutputs.set(event.runId, VoiceOutputHandleSchema.parse({ sessionId: event.sessionId, runId: event.runId, generation: event.generation }));
+      const state: SpeechPlaybackState = { playbackId: event.runId, sessionId: event.sessionId, generation: event.generation, state: 'preparing' };
+      this.rememberPlayback(state); this.options.emit({ type: 'playback', ...state });
+    }
+    if (event.type === 'output_closed') {
+      this.realtimeOutputs.delete(event.runId); this.attachedOutputs.delete(event.runId);
+      this.broker.setInteractiveActive(this.attachedOutputs.size > 0);
+      const state: SpeechPlaybackState = { playbackId: event.runId, sessionId: event.sessionId, generation: event.generation,
+        state: event.outcome };
+      this.rememberPlayback(state); this.options.emit({ type: 'playback', ...state });
+    }
+    if (event.type === 'capture' || event.type === 'endpoint') {
       const capture = this.captures.get(event.captureId);
       if (!capture || capture.handle.generation !== event.generation || capture.handle.voiceTurnId !== event.voiceTurnId
         || capture.handle.sessionId !== event.sessionId || capture.handle.purpose !== event.purpose) return;
-      if (['review', 'failed', 'cancelled'].includes(event.state)) this.closeCapture(event.captureId);
+      if (event.type === 'capture' && ['review', 'failed', 'cancelled'].includes(event.state)) this.closeCapture(event.captureId);
     }
     this.options.emit(SpeechEventSchema.parse(event));
+  }
+  async attachOutput(handle: VoiceOutputHandle): Promise<void> {
+    handle = VoiceOutputHandleSchema.parse(handle);
+    const available = this.realtimeOutputs.get(handle.runId);
+    if (!available || JSON.stringify(available) !== JSON.stringify(handle) || this.attachedOutputs.has(handle.runId)) throw new Error('语音输出轮次已过期。');
+    await this.options.assertSession(handle.sessionId);
+    await this.configure();
+    const worker = this.options.worker(), window = this.options.window();
+    if (this.closed || this.locked || this.captures.size || !worker || !window || window.isDestroyed()
+      || !this.settings?.enabled || !this.settings.autoReadReplies || !this.settings.realtimeReplies || !this.realtimePolicyAllows()
+      || this.realtimeOutputs.get(handle.runId) !== available) throw new Error('实时语音输出不可用。');
+    const { port1, port2 } = new MessageChannelMain();
+    this.attachedOutputs.add(handle.runId);
+    this.broker.setInteractiveActive(true);
+    worker.postMessage({ type: 'voice.output.attach', handle }, [port1]);
+    window.webContents.postMessage(IPC.voiceOutputPort, handle, [port2]);
+  }
+  private realtimePolicyAllows(): boolean {
+    if (!this.settings || this.settings.playback.volume <= 0) return false;
+    const hours = this.settings.playback.quietHours;
+    if (!hours) return true;
+    const parts = new Intl.DateTimeFormat('en-GB', { timeZone: hours.timezone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(Date.now());
+    const time = `${parts.find(item => item.type === 'hour')?.value}:${parts.find(item => item.type === 'minute')?.value}`;
+    const quiet = hours.start <= hours.end ? time >= hours.start && time < hours.end : time >= hours.start || time < hours.end;
+    return !quiet;
   }
   async cancel(handle: SpeechCaptureHandle): Promise<void> {
     const current = this.captures.get(handle.captureId);
@@ -292,43 +352,75 @@ export class DesktopSpeechHost {
   }
   async commit(input: CommitVoiceTurnInput) {
     await this.options.assertSession(input.sessionId);
+    this.realtimeCommitEpochs.set(input.sessionId, { generation: input.generation, global: this.globalEpoch, session: this.epochs.get(input.sessionId) ?? 0 });
     const result = VoiceCommitResultSchema.parse(await this.options.request({ action: 'commit', input }));
     this.options.emit({ type: 'commit', ...result }); return result;
   }
   async read(input: ReadSpeechMessageInput) {
+    if (this.closed || this.locked) throw new Error('设备已锁屏或语音服务已关闭。');
     const automaticEpoch = this.automaticReadEpoch;
     await this.options.assertSession(input.sessionId);
     const settings = await this.options.readSettings();
-    if (!settings.enabled || (input.automatic && (!settings.autoReadReplies || automaticEpoch !== this.automaticReadEpoch))) throw new Error('自动朗读已关闭。');
+    if (this.closed || this.locked) throw new Error('设备已锁屏或语音服务已关闭。');
+    if (!settings.enabled) throw new Error('请在语音设置中开启语音并保存。');
+    if (input.automatic && (!settings.autoReadReplies || automaticEpoch !== this.automaticReadEpoch)) throw new Error('自动朗读已关闭。');
     const epoch = this.epochs.get(input.sessionId) ?? 0;
     this.epochs.set(input.sessionId, epoch);
     const globalEpoch = this.globalEpoch;
     const playbackId = randomUUID();
+    const complete = input.complete === true && !input.automatic;
+    const cancellation = { cancelled: false }; this.readCancellations.set(playbackId, cancellation);
+    if (complete) this.completeReads.set(input.sessionId, playbackId); else this.completeReads.delete(input.sessionId);
     const identity = { sessionId: input.sessionId, messageId: input.messageId, generation: input.generation };
     if (input.automatic) this.automaticReads.set(playbackId, { sessionId: input.sessionId, generation: input.generation, epoch: automaticEpoch });
-    const alive = () => !this.closed && globalEpoch === this.globalEpoch && epoch === (this.epochs.get(input.sessionId) ?? 0)
+    const alive = () => !cancellation.cancelled && !this.closed && !this.locked && globalEpoch === this.globalEpoch && epoch === (this.epochs.get(input.sessionId) ?? 0)
+      && (!complete || this.completeReads.get(input.sessionId) === playbackId)
       && (!input.automatic || automaticEpoch === this.automaticReadEpoch);
     this.rememberPlayback({ playbackId, ...identity, state: 'preparing' });
     this.options.emit({ type: 'playback', ...this.playbacks.get(playbackId)! });
     try {
       if (!alive()) throw new Error('朗读已停止。');
-      const ready = SpeechReadyAssetSchema.parse(await this.prepareReadAsset(playbackId, { action: 'readMessage', input }));
-      if (ready.asset.owner.kind !== 'session' || ready.asset.owner.id !== input.sessionId) throw new Error('语音资产归属不匹配。');
+      const segments: ReturnType<typeof SpeechReadyAssetSchema.parse>[] = [];
+      let offset = input.offset ?? 0, bytes = 0, preparedChars = 0;
+      for (;;) {
+        const segment = SpeechReadyAssetSchema.parse(await this.prepareReadAsset(playbackId, { action: 'readMessage', input: complete ? { ...input, offset } : input }));
+        if (segment.asset.owner.kind !== 'session' || segment.asset.owner.id !== input.sessionId) throw new Error('语音资产归属不匹配。');
+        if (!alive()) throw new Error('朗读已停止。');
+        if (complete) {
+          const chars = Array.from(segment.spokenText ?? '').length;
+          if (!chars || (segment.nextOffset !== undefined && segment.nextOffset !== offset + chars)) throw new Error('朗读正文信息不完整，请重试。');
+          preparedChars += chars;
+        }
+        segments.push(segment); bytes += segment.asset.bytes;
+        if (complete && (segments.length > AUDIO_HOST_MAX_SEGMENTS || bytes > AUDIO_HOST_MAX_COMPLETE_BYTES)) throw new Error('正文过长，无法一次准备完整朗读，请分成较短的篇章。');
+        if (!complete || segment.nextOffset === undefined) break;
+        if (segment.nextOffset <= offset) throw new Error('朗读位置无效，请重试。');
+        offset = segment.nextOffset;
+        // Publish preparation heartbeats, never a partial played receipt.
+        const preparing: SpeechPlaybackState = { playbackId, ...identity, state: 'preparing', preparedChars };
+        this.rememberPlayback(preparing); this.options.emit({ type: 'playback', ...preparing });
+      }
+      const ready = segments[0]!;
+      const nextOffset = complete ? undefined : ready.nextOffset;
       if (!alive()) throw new Error('朗读已停止。');
       await this.configure(); if (!input.automatic) this.broker.resumeOutput();
       if (!alive() || (input.automatic && !this.automaticReadAllowed(playbackId))) throw new Error('朗读已停止。');
       // A long-running preparation may have been evicted from bounded history.
       // Restore its public identity before Broker emits its synchronous ACKs.
-      this.rememberPlayback({ playbackId, ...identity, state: 'preparing', ...(ready.nextOffset !== undefined ? { nextOffset: ready.nextOffset } : {}) });
+      this.rememberPlayback({ playbackId, ...identity, state: 'preparing', ...(nextOffset !== undefined ? { nextOffset } : {}), ...(complete ? { preparedChars } : {}) });
       this.broker.enqueue({ playbackId, assetId: ready.asset.id, owner: { kind: 'session', id: input.sessionId },
+        ...(complete ? { remainingAssetIds: segments.slice(1).map(segment => segment.asset.id) } : {}),
         generation: ++this.playbackGeneration, manual: !input.automatic });
-      return { playbackId, generation: input.generation, ...(ready.nextOffset !== undefined ? { nextOffset: ready.nextOffset } : {}) };
+      return { playbackId, generation: input.generation, ...(nextOffset !== undefined ? { nextOffset } : {}), ...(complete ? { preparedChars } : {}) };
     } catch (error) {
       this.automaticReads.delete(playbackId);
       const state: SpeechPlaybackState = { playbackId, ...identity,
         state: alive() ? 'failed' : 'interrupted',
         reason: '朗读未完成，请重试。' };
       this.rememberPlayback(state); this.options.emit({ type: 'playback', ...state }); throw error;
+    } finally {
+      this.readCancellations.delete(playbackId);
+      if (this.completeReads.get(input.sessionId) === playbackId) this.completeReads.delete(input.sessionId);
     }
   }
   readApproval(input: ReadApprovalSpeechInput): Promise<{ playbackId: string; generation: number }> {
@@ -342,6 +434,11 @@ export class DesktopSpeechHost {
     return operation;
   }
   private async prepareApproval(input: ReadApprovalSpeechInput): Promise<{ playbackId: string; generation: number }> {
+    // The fixed approval cue has priority over interactive speech. It still
+    // cannot approve a business operation or cancel its Run.
+    if ([...this.realtimeOutputs.values()].some(handle => handle.sessionId === input.sessionId)) {
+      await this.options.request({ action: 'stopRealtime', sessionId: input.sessionId });
+    }
     const globalEpoch = this.globalEpoch, epoch = this.epochs.get(input.sessionId) ?? 0, automaticEpoch = this.automaticReadEpoch;
     const alive = () => !this.closed && globalEpoch === this.globalEpoch && epoch === (this.epochs.get(input.sessionId) ?? 0)
       && automaticEpoch === this.automaticReadEpoch;
@@ -407,10 +504,29 @@ export class DesktopSpeechHost {
     return { playbackId, generation };
   }
   stop(input: StopSpeechPlaybackInput): void {
+    if (input.playbackId) {
+      const state = this.playbacks.get(input.playbackId);
+      const realtime = this.realtimeOutputs.get(input.playbackId);
+      if (realtime) { this.stop({ sessionId: realtime.sessionId, generation: realtime.generation }); return; }
+      const cancellation = this.readCancellations.get(input.playbackId); if (cancellation) cancellation.cancelled = true;
+      this.broker.stop(input.playbackId);
+      // A late receipt for an already stopped reading must not cancel the newer
+      // preparation that replaced it, or stop audio in another conversation.
+      const sessionId = [...this.preparingReads].find(([, id]) => id === input.playbackId)?.[0];
+      if (sessionId) {
+        if (this.completeReads.get(sessionId) === input.playbackId) this.completeReads.delete(sessionId);
+        void this.options.request({ action: 'stopRead', sessionId, ...(state ? { generation: state.generation } : {}) }).catch(() => undefined);
+      }
+      return;
+    }
+    if (input.sessionId) this.realtimeCommitEpochs.delete(input.sessionId); else this.realtimeCommitEpochs.clear();
+    for (const [runId, handle] of this.realtimeOutputs) if (!input.sessionId || handle.sessionId === input.sessionId) {
+      this.realtimeOutputs.delete(runId); this.attachedOutputs.delete(runId);
+    }
+    this.broker.setInteractiveActive(this.attachedOutputs.size > 0);
     if (input.sessionId) this.epochs.set(input.sessionId, (this.epochs.get(input.sessionId) ?? 0) + 1);
     else this.globalEpoch++;
-    if (input.playbackId) this.broker.stop(input.playbackId);
-    else if (input.sessionId) {
+    if (input.sessionId) {
       for (const state of this.playbacks.values()) if (state.sessionId === input.sessionId) this.broker.stop(state.playbackId);
     }
     else this.broker.stop();
@@ -419,16 +535,11 @@ export class DesktopSpeechHost {
   }
   async status() {
     const raw = await this.options.request({ action: 'status' });
-    const value = raw as { captures: unknown; validation: unknown; diagnostics?: unknown };
-    return SpeechStatusSchema.parse({ captures: value.captures, validation: value.validation, diagnostics: value.diagnostics, playbacks: [...this.playbacks.values()] });
+    const value = raw as { captures: unknown; validation: unknown; diagnostics?: unknown; latency?: unknown };
+    return SpeechStatusSchema.parse({ captures: value.captures, validation: value.validation, diagnostics: value.diagnostics, latency: value.latency, playbacks: [...this.playbacks.values()] });
   }
-  async validateEnabled(settings: SpeechSettings): Promise<void> {
-    const raw = await this.options.request({ action: 'status' }) as { validation?: { asr: boolean; tts: boolean }; validationSignature?: string };
-    const signature = createHash('sha256').update(JSON.stringify(settings.provider)).digest('hex');
-    if (!raw.validation?.asr || !raw.validation.tts || raw.validationSignature !== signature) throw new Error('语音资源与音色尚未验证，请先使用当前配置完成录音转写测试与语音试听。');
-  }
-  lockedState(locked: boolean): void { this.locked = locked; if (locked) { this.beginEpoch++; this.cancelAll(); this.stop({}); } void this.configure().catch(() => undefined); }
-  suspend(): void { this.beginEpoch++; this.cancelAll(); this.stop({}); }
+  lockedState(locked: boolean): void { this.locked = locked; if (locked) { this.beginEpoch++; this.cancelAll(); this.stop({}); this.options.emit({ type: 'input_invalidated', reason: 'locked' }); } void this.configure().catch(() => undefined); }
+  suspend(): void { this.beginEpoch++; this.cancelAll(); this.stop({}); this.options.emit({ type: 'input_invalidated', reason: 'suspended' }); }
   releaseSession(sessionId: string): void {
     this.stop({ sessionId });
     for (const key of this.approvalRequests.keys()) if ((JSON.parse(key) as string[])[0] === sessionId) this.approvalRequests.delete(key);
@@ -437,6 +548,6 @@ export class DesktopSpeechHost {
   }
   close(): void {
     if (this.closed) return;
-    this.closed = true; this.beginEpoch++; this.pendingDeliveries.clear(); this.cancelAll(); this.stop({}); this.broker.close(); this.approvalBindings.clear(); this.approvalRequests.clear(); this.automaticReads.clear(); this.preparingReads.clear();
+    this.closed = true; this.beginEpoch++; this.pendingDeliveries.clear(); this.cancelAll(); this.stop({}); this.broker.close(); this.approvalBindings.clear(); this.approvalRequests.clear(); this.automaticReads.clear(); this.preparingReads.clear(); this.completeReads.clear(); this.readCancellations.clear();
   }
 }

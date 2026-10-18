@@ -3,10 +3,11 @@ import { randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
 import { lstat, open, realpath } from 'node:fs/promises';
 import path from 'node:path';
-import type { AudioHostAck, AudioHostError } from '../audio-host/ipc';
+import { AUDIO_HOST_MAX_COMPLETE_BYTES, AUDIO_HOST_MAX_SEGMENTS, type AudioHostAck, type AudioHostError, type AudioHostPlayInput } from '../audio-host/ipc';
+import { completeReadingAudio } from './complete-reading';
 
 export interface AudioHostPort {
-  play(input: { token: string; generation: number; bytes: Uint8Array; volume: number; format?: AudioAsset['format'] }): Promise<void>;
+  play(input: AudioHostPlayInput): Promise<void>;
   stop(token: string): void;
   onAck(listener: (ack: AudioHostAck) => void): () => void;
   close(): void;
@@ -14,6 +15,8 @@ export interface AudioHostPort {
 export interface PlaybackRequest {
   playbackId: string; assetId: string; owner: AudioAssetOwner; generation: number;
   expiresAt?: number; manual?: boolean; volume?: number;
+  /** A complete, fully prepared reading; never a queue of future synthesis jobs. */
+  remainingAssetIds?: string[];
 }
 export type PlaybackFailure = AudioHostError | 'asset_unavailable' | 'queue_full' | 'expired' | 'stale_generation';
 export interface PlaybackEvent {
@@ -84,6 +87,7 @@ export class PlaybackBroker {
     enabled: true, recording: false, locked: false, playback: { volume: 1, muteWhenLocked: true }
   };
   private outputBlocked = false;
+  private interactiveActive = false;
   private blockedReason: AudioHostError | undefined;
   private closed = false;
   constructor(private readonly options: PlaybackBrokerOptions) {
@@ -93,6 +97,8 @@ export class PlaybackBroker {
   enqueue(input: PlaybackRequest): void {
     if (this.closed) throw new Error('playback_broker_closed');
     const owner = AudioAssetOwnerSchema.parse(input.owner);
+    if (input.remainingAssetIds !== undefined && (!input.manual || owner.kind !== 'session' || !Array.isArray(input.remainingAssetIds)
+      || input.remainingAssetIds.length >= AUDIO_HOST_MAX_SEGMENTS || !input.remainingAssetIds.every(id => UUID.test(id)))) throw new Error('invalid_reading_audio');
     if (!UUID.test(input.assetId) || !input.playbackId || input.playbackId.length > 256 ||
       !Number.isSafeInteger(input.generation) || input.generation < 0 ||
       (input.expiresAt !== undefined && (!Number.isSafeInteger(input.expiresAt) || input.expiresAt < 0)) ||
@@ -140,6 +146,13 @@ export class PlaybackBroker {
     if (this.outputBlocked) this.removeQueued(() => true, 'cancelled');
     this.outputBlocked = false; this.blockedReason = undefined; void this.pump();
   }
+  setInteractiveActive(active: boolean): void {
+    this.interactiveActive = active;
+    // Queued reminders keep their durable claim/expiry; an asset that was
+    // already sounding is interrupted, never falsely acknowledged as played.
+    if (active && this.active) this.finish('stopped', 'cancelled');
+    void this.pump();
+  }
   close(): void {
     this.closed = true; this.stop(); this.unsubscribe(); this.options.host.close(); this.generations.clear();
   }
@@ -170,6 +183,7 @@ export class PlaybackBroker {
   }
   private async pump(): Promise<void> {
     if (this.closed || this.active || this.policy.recording || this.outputBlocked || (this.policy.locked && this.policy.playback.muteWhenLocked)) return;
+    if (this.interactiveActive) return;
     const request = this.queue.shift();
     if (!request) return;
     if (request.expiresAt !== undefined && request.expiresAt <= this.now()) { this.emit(request, 'failed', 'expired'); void this.pump(); return; }
@@ -187,7 +201,22 @@ export class PlaybackBroker {
       const resolved = await this.options.resolveAsset(request.assetId, request.owner);
       if (this.active !== active) return;
       if (!resolved) throw new Error('asset_unavailable');
-      const bytes = await readAuthorizedPlaybackAsset(this.options.assetsDirectory, resolved, request, this.now());
+      let bytes = await readAuthorizedPlaybackAsset(this.options.assetsDirectory, resolved, request, this.now());
+      let expiresAt = resolved.asset.expiresAt;
+      let durationMs: number | undefined;
+      if (request.remainingAssetIds !== undefined) {
+        const segments = [bytes]; let total = bytes.byteLength;
+        for (const assetId of request.remainingAssetIds) {
+          const segmentRequest = { ...request, assetId };
+          const ready = await this.options.resolveAsset(assetId, request.owner);
+          if (this.active !== active) return;
+          if (!ready || total + ready.asset.bytes > AUDIO_HOST_MAX_COMPLETE_BYTES) throw new Error('asset_unavailable');
+          const segment = await readAuthorizedPlaybackAsset(this.options.assetsDirectory, ready, segmentRequest, this.now());
+          if (this.active !== active) return;
+          segments.push(segment); total += segment.byteLength; expiresAt = Math.min(expiresAt, ready.asset.expiresAt);
+        }
+        const complete = completeReadingAudio(segments); bytes = complete.bytes; durationMs = complete.durationMs;
+      }
       if (this.active !== active) return;
       // A durable reminder must persist permission to start before AudioHost can emit sound.
       if (this.options.beforePlay && !await this.options.beforePlay(request)) {
@@ -195,7 +224,8 @@ export class PlaybackBroker {
         return;
       }
       if (this.active !== active) return;
-      active.deadline = Math.min(active.deadline, resolved.asset.expiresAt, request.expiresAt ?? Infinity);
+      const deadline = durationMs !== undefined && this.options.maxPlaybackMs === undefined ? this.now() + durationMs + 30_000 : active.deadline;
+      active.deadline = Math.min(deadline, expiresAt, request.expiresAt ?? Infinity);
       if (active.deadline <= this.now()) { this.finish('failed', 'expired'); void this.pump(); return; }
       clearTimeout(active.timer);
       active.timer = setTimeout(() => {
@@ -203,6 +233,7 @@ export class PlaybackBroker {
         this.finish('failed', 'playback_timeout'); void this.pump();
       }, active.deadline - this.now());
       await this.options.host.play({ token: active.token, generation: request.generation, bytes, format: resolved.asset.format,
+        ...(request.remainingAssetIds !== undefined ? { complete: true } : {}),
         volume: request.volume ?? this.policy.playback.volume });
     } catch {
       if (this.active !== active) return;

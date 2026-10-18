@@ -3,15 +3,19 @@ import { createSilentWavFixture } from '../testing/speech-audio-fixture';
 
 /** Deliberate offline test injection. Production callers must never select this
  * as a fallback for a missing model, failed subprocess, or invalid response. */
-export function createE2eSpeechProvider(): SpeechProvider {
+export function createE2eSpeechProvider(options: { autoEndpoint?: boolean } = {}): SpeechProvider {
   return {
     asr: { async *recognize(input) {
       if (input.signal.aborted) throw new SpeechProviderError('cancelled', 'Offline speech recognition cancelled.');
       yield { type: 'ready', requestId: input.requestId };
-      let bytes = 0;
+      let bytes = 0, endpointSent = false;
       for await (const chunk of input.audio) {
         if (input.signal.aborted) throw new SpeechProviderError('cancelled', 'Offline speech recognition cancelled.');
         bytes += chunk.byteLength;
+        if (options.autoEndpoint && !endpointSent && bytes >= 32_000) {
+          endpointSent = true;
+          yield { type: 'endpoint', requestId: input.requestId, reason: 'smart_turn' };
+        }
       }
       if (!bytes) throw new SpeechProviderError('invalid_audio', 'Offline speech recognition requires audio.');
       if (input.signal.aborted) throw new SpeechProviderError('cancelled', 'Offline speech recognition cancelled.');

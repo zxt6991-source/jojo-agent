@@ -28,8 +28,10 @@ import { SchedulerSettingsPage } from './SchedulerSettings';
 import { TeamSettingsPage } from './TeamSettings';
 import { ChannelsSettingsPage } from './ChannelsSettings';
 import { SpeechSettingsPage } from './SpeechSettings';
-import { VoiceCaptureButton, VoiceCaptureStatus } from './VoiceComposer';
+import { VoiceCaptureButton, VoiceCaptureStatus, VoiceInputOptions } from './VoiceComposer';
 import { activeSpeechPlayback, getSpeechContinuation, nextSpeechGeneration, useSpeechAutoRead, useSpeechCapture, useSpeechStatus } from './useSpeech';
+import { useContinuousVoice } from './voice/useContinuousVoice';
+import { useRealtimeVoiceOutput } from './voice/useRealtimeVoiceOutput';
 import { shouldDisableAutoRead } from './speech-output-policy';
 import type { SpeechCaptureState } from '@desktop-agent/contracts';
 import { ChatTranscript, ConversationViewTabs, Markdown, TrajectoryView } from './ConversationViews';
@@ -329,7 +331,11 @@ function App() {
   const [compactions, setCompactions] = useState<SessionCompactionRecord[]>([]);
   const [draft, setDraft] = useState('');
   const [voiceDraft, setVoiceDraft] = useState<SpeechCaptureState | undefined>();
-  const [voiceNotice, setVoiceNotice] = useState('');
+  const [voiceNotice, updateVoiceNotice] = useState('');
+  const setVoiceNotice = useCallback((notice: string) => {
+    // Stopping a reading is a normal idle state, not an error to keep in the composer.
+    updateVoiceNotice(notice === '朗读已停止。' ? '' : notice);
+  }, []);
   const [attachments, setAttachments] = useState<ImageContentBlock[]>([]);
   const [files, setFiles] = useState<FileAttachment[]>([]);
   const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
@@ -367,19 +373,34 @@ function App() {
   const [settings, setSettings] = useState<ProviderSettings>(defaultSettings);
   const [settingsDraft, setSettingsDraft] = useState<ProviderSettings>(defaultSettings);
   const autoReadAllowedRef = useRef(false);
+  const [voiceInteractionSession, setVoiceInteractionSession] = useState<string | undefined>(undefined);
   autoReadAllowedRef.current = settings.speech.autoReadReplies;
   const speechStatus = useSpeechStatus(window.desktopAgent);
   const speechCapture = useSpeechCapture({ api: window.desktopAgent, ...(activeId ? { sessionId: activeId } : {}), purpose: 'conversation',
+    realtimeAudio: settings.speech.realtimeReplies,
     ...(settings.speech.inputDeviceId ? { inputDeviceId: settings.speech.inputDeviceId } : {}),
+    onStarted: capture => continuousVoice.captureStarted(capture),
+    onFailure: failure => continuousVoice.captureFailed(failure),
     onFinal: capture => {
       if (capture.sessionId !== activeIdRef.current || !capture.text?.trim()) return;
+      continuousVoice.finalReceived(capture);
       setDraft(capture.text); setVoiceDraft(capture);
       setVoiceNotice(settings.speech.inputMode === 'review' ? '识别完成，可校正后发送。' : '');
       if (settings.speech.inputMode === 'auto_send') void submitVoice(capture, capture.text);
     }
   });
+  const continuousVoice = useContinuousVoice({ api: window.desktopAgent, ...(activeId ? { sessionId: activeId } : {}),
+    enabled: settings.speech.enabled && !settingsOpen,
+    ...(settings.speech.inputDeviceId ? { inputDeviceId: settings.speech.inputDeviceId } : {}),
+    startCapture: speechCapture.start, cancelCapture: speechCapture.cancel,
+    onCaptureDiscarded: () => setVoiceDraft(undefined),
+    canStart: () => Boolean(activeIdRef.current && !runningRef.current && !importingFilesRef.current && !draft.trim() && !voiceDraft),
+    autoRead: settings.speech.autoReadReplies, onNotice: setVoiceNotice });
   const speechPlayback = activeSpeechPlayback(speechStatus.playbacks, activeId ?? undefined);
-  useSpeechAutoRead(window.desktopAgent, { ...(activeId ? { sessionId: activeId } : {}), readSessionId: () => activeIdRef.current, enabled: settings.speech.enabled, autoReadReplies: settings.speech.autoReadReplies,
+  useRealtimeVoiceOutput({ api: window.desktopAgent, ...(activeId ? { sessionId: activeId } : {}),
+    enabled: settings.speech.enabled && settings.speech.autoReadReplies && settings.speech.realtimeReplies,
+    allowPlayback: !['connecting', 'recording', 'recognizing'].includes(speechCapture.state), volume: settings.speech.playback.volume, onError: setVoiceNotice });
+  const readSpeechMessage = useSpeechAutoRead(window.desktopAgent, { ...(activeId ? { sessionId: activeId } : {}), readSessionId: () => activeIdRef.current, enabled: settings.speech.enabled, autoReadReplies: settings.speech.autoReadReplies,
     isAutoReadAllowed: () => autoReadAllowedRef.current,
     allowPlayback: !['connecting', 'recording', 'recognizing'].includes(speechCapture.state) }, setVoiceNotice);
   const spokenApprovals = useRef(new Set<string>());
@@ -388,6 +409,7 @@ function App() {
   const approvalSpeechBlocked = ['connecting', 'recording', 'recognizing'].includes(speechCapture.state);
   useEffect(() => {
     if (!approvalSpeechSession || !approvalSpeechId || approvalSpeechSession !== activeId
+      || voiceInteractionSession !== approvalSpeechSession
       || !settings.speech.enabled || !settings.speech.autoReadReplies || !autoReadAllowedRef.current || approvalSpeechBlocked) return;
     const key = JSON.stringify([approvalSpeechSession, approvalSpeechId]);
     if (spokenApprovals.current.has(key)) return;
@@ -404,8 +426,9 @@ function App() {
       live = false;
       void window.desktopAgent.stopSpeechPlayback(playbackId ? { playbackId } : { sessionId: input.sessionId, generation: input.generation }).catch(() => undefined);
     };
-  }, [approvalSpeechSession, approvalSpeechId, activeId, settings.speech.enabled, settings.speech.autoReadReplies, approvalSpeechBlocked]);
+  }, [approvalSpeechSession, approvalSpeechId, activeId, voiceInteractionSession, settings.speech.enabled, settings.speech.autoReadReplies, approvalSpeechBlocked]);
   useEffect(() => {
+    setVoiceInteractionSession(undefined);
     setVoiceDraft(undefined); setVoiceNotice('');
     return () => { if (activeId) void window.desktopAgent.stopSpeechPlayback({ sessionId: activeId }).catch(() => undefined); };
   }, [activeId]);
@@ -1081,8 +1104,8 @@ function App() {
         && (event.event === 'memory.embedding.completed' || event.event === 'memory.embedding.failed')) {
         void window.desktopAgent.getMemoryStatus(memoryDirectoryInput()).then(setMemoryStatus).catch(() => undefined);
       }
-      else if (event.type === 'turn.failed') { setError(event.message); runningRef.current = false; setRunningSessionId(null); setTurnStartedAt(null); setApproval(null); setTerminalSecret(null); void reloadActive().catch(reportBackgroundError); }
-      else if (event.type === 'turn.completed' || event.type === 'turn.cancelled') { runningRef.current = false; setRunningSessionId(null); setTurnStartedAt(null); setApproval(null); setTerminalSecret(null); void reloadActive().catch(reportBackgroundError); }
+      else if (event.type === 'turn.failed') { setVoiceInteractionSession(undefined); setError(event.message); runningRef.current = false; setRunningSessionId(null); setTurnStartedAt(null); setApproval(null); setTerminalSecret(null); void reloadActive().catch(reportBackgroundError); }
+      else if (event.type === 'turn.completed' || event.type === 'turn.cancelled') { setVoiceInteractionSession(undefined); runningRef.current = false; setRunningSessionId(null); setTurnStartedAt(null); setApproval(null); setTerminalSecret(null); void reloadActive().catch(reportBackgroundError); }
     });
     return () => { window.removeEventListener('beforeunload', closeRequests); offSessions(); offExtensions(); offSecret(); offTerminalSecret(); offDock(); offOrchestration(); offScheduler(); offConversationMessage(); offEvents(); };
   }, []);
@@ -1417,6 +1440,7 @@ function App() {
   const submitVoice = async (capture: SpeechCaptureState, text: string) => {
     if (!activeId || capture.sessionId !== activeId || !text.trim()) return;
     if (runningRef.current || importingFilesRef.current) { setVoiceNotice('上一任务仍在运行，已保留转写草稿。任务结束后可发送。'); return; }
+    setVoiceInteractionSession(activeId);
     runningRef.current = true;
     setRunningSessionId(activeId); setError(''); setVoiceNotice('正在提交语音文字…');
     setLiveSteps(emptyLiveSteps()); setTurnStartedAt(Date.now());
@@ -1425,6 +1449,7 @@ function App() {
       const result = await window.desktopAgent.commitVoiceTurn({ voiceTurnId: capture.voiceTurnId, generation: capture.generation, sessionId: activeId, text, providerId: settings.activeProviderId, model: selectedModel });
       if (activeIdRef.current !== capture.sessionId) return;
       if (result.status !== 'committed') {
+        setVoiceInteractionSession(undefined);
         runningRef.current = false; setRunningSessionId(null); setTurnStartedAt(null);
         setDraft(text); setVoiceDraft(capture); setVoiceNotice(result.reason ?? (result.status === 'pending' ? '上一任务仍在结束中，已保留草稿。' : '语音文字未提交，请重试。')); return;
       }
@@ -1433,6 +1458,7 @@ function App() {
       setMessages((items) => [...items, { id: `pending-voice-${capture.voiceTurnId}`, role: 'user', createdAt: new Date().toISOString(), content: [{ type: 'text', text }] }]);
     } catch (cause) {
       if (activeIdRef.current !== capture.sessionId) return;
+      setVoiceInteractionSession(undefined);
       runningRef.current = false; setRunningSessionId(null); setTurnStartedAt(null);
       setDraft(text); setVoiceDraft(capture); setVoiceNotice(cause instanceof Error ? cause.message : String(cause));
     }
@@ -1455,6 +1481,7 @@ function App() {
     const images = attachments;
     if ((!text && images.length === 0 && files.length === 0) || !activeId || runningRef.current || importingFilesRef.current) return;
     if (voiceDraft && images.length === 0 && files.length === 0) { await submitVoice(voiceDraft, text); return; }
+    setVoiceInteractionSession(undefined);
     runningRef.current = true;
     setVoiceDraft(undefined); setVoiceNotice('');
     setDraft(''); setAttachments([]); setFiles([]); setAttachmentWarnings([]); setAttachmentMenuOpen(false); setError(''); setRunningSessionId(activeId); setLiveSteps(emptyLiveSteps()); setTurnStartedAt(Date.now()); setUsage({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }); setContextUsage(null); setTrajectoryExportStatus('idle'); atBottomRef.current = true; setAtBottom(true);
@@ -1711,8 +1738,8 @@ function App() {
               canReadMessage={messageId => messages.some(message => message.id === messageId && message.role === 'assistant' && !message.content.some(block => block.type === 'tool_call'))}
               speechContinuation={messageId => getSpeechContinuation(speechStatus.playbacks, activeId!, messageId)}
               {...(settings.speech.enabled ? {
-                onReadMessage: (messageId: string) => { void window.desktopAgent.readSpeechMessage({ sessionId: activeId!, messageId, generation: nextSpeechGeneration() }).catch(cause => setVoiceNotice(cause instanceof Error ? cause.message : String(cause))); },
-                onContinueMessage: (messageId: string, offset: number) => { void window.desktopAgent.readSpeechMessage({ sessionId: activeId!, messageId, offset, generation: nextSpeechGeneration() }).catch(cause => setVoiceNotice(cause instanceof Error ? cause.message : String(cause))); }
+                onReadMessage: readSpeechMessage,
+                onContinueMessage: readSpeechMessage
               } : {})}
               snapshot={snapshot}
               running={sessionBusy}
@@ -1814,10 +1841,16 @@ function App() {
           {importingFiles && <div className="attachment-status" role="status">正在读取文件…</div>}
           {attachmentWarnings.length > 0 && <div className="attachment-warnings" role="status">{attachmentWarnings.map((warning, index) => <div key={index}>{warning}</div>)}<button type="button" onClick={() => setAttachmentWarnings([])}>关闭提示</button></div>}
           {voiceNotice && <div className="voice-notice" role="status">{voiceNotice}{voiceDraft && sessionBusy && <button type="button" onClick={() => void stopTaskAndSendVoice().catch(cause => setVoiceNotice(cause instanceof Error ? cause.message : String(cause)))}>停止任务并发送</button>}</div>}
-          {speechPlayback && <div className="voice-playback-status" role="status"><span>{speechPlayback.state === 'playing' ? '正在朗读' : '正在准备朗读'} · AI 合成语音</span><button type="button" onClick={() => void window.desktopAgent.stopSpeechPlayback({ playbackId: speechPlayback.playbackId })}>停止朗读</button></div>}
+          {speechPlayback && <div className="voice-playback-status" role="status"><span>{speechPlayback.state === 'playing' ? '正在朗读' : '正在准备朗读，请稍候'} · AI 合成语音</span><button type="button" onClick={() => void window.desktopAgent.stopSpeechPlayback({ playbackId: speechPlayback.playbackId })}>停止朗读</button></div>}
           <textarea value={draft} onPaste={pasteAttachments} onChange={(event) => changeDraft(event.target.value)} placeholder="随心输入" rows={2}
             onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void send(); } }} />
-          <VoiceCaptureStatus capture={speechCapture} />
+          <VoiceCaptureStatus capture={continuousVoice.state === 'off' ? speechCapture : { ...speechCapture, cancel: continuousVoice.stop }} />
+          {settings.speech.enabled && continuousVoice.state !== 'off' && <div className="voice-session-controls" aria-label="连续语音对话">
+            <span role="status">{continuousVoice.state === 'muted' ? '连续对话已静音' : continuousVoice.state === 'recovering' ? '本轮未完成，即将重新收音' : continuousVoice.state === 'waiting' ? '回复结束后继续收音' : continuousVoice.state === 'review' ? '校正并发送后继续' : '连续对话 · 正在收音'}</span>
+            <button type="button" onClick={continuousVoice.state === 'muted' ? continuousVoice.resume : continuousVoice.mute}>{continuousVoice.state === 'muted' ? '恢复收音' : '静音'}</button>
+            <button type="button" onClick={continuousVoice.stop}>结束对话</button>
+            <small>{settings.speech.streamingInput?.enabled && settings.speech.streamingInput.autoEndpoint ? '停顿后自动结束录音' : '每轮点击结束录音'} · 播放期间停止收音 · Esc 结束</small>
+          </div>}
           <div className="composer-toolbar">
             <div className="composer-context"><span className="approval-status">⌁ 权限 {permissionModes[settings.permissions.mode].title}</span>{contextUsage && <span className={`context-status ${contextUsage.overCapacity ? 'over-capacity' : ''}`} title={contextUsage.overCapacity ? `固定指令与工具定义约 ${contextUsage.fixed} tokens，已超过可用目标 ${contextUsage.target} tokens。请提高上下文窗口或减少工具。` : contextUsage.compacted ? `已压缩 ${contextUsage.compacted} 条历史消息；消息预算 ${contextUsage.messageBudget} tokens` : `上下文估算；消息预算 ${contextUsage.messageBudget} tokens`}>{contextUsage.overCapacity ? '容量不足 · ' : ''}{Math.round(contextUsage.estimated / 1000)}k / {Math.round(contextUsage.window / 1000)}k{contextUsage.maxIterations > 0 ? ` · Loop ${contextUsage.iteration}/${contextUsage.maxIterations}${contextUsage.finalResponseOnly ? ' 收尾' : ''}` : ''}</span>}{(usage.input > 0 || usage.output > 0) && <span className="context-status" title={`缓存读取 ${usage.cacheRead} · 缓存写入 ${usage.cacheWrite}`}>↑{usage.input} ↓{usage.output}</span>}</div>
             <div className="composer-actions">
@@ -1832,8 +1865,13 @@ function App() {
               <select className="model-select" aria-label="本轮使用的模型" title="选择本轮使用的模型" value={selectedModel} disabled={sessionBusy} onChange={(event) => setSelectedModel(event.target.value)}>
                 {selectedProvider.models.map((model) => <option key={model.id} value={model.id}>{model.id}</option>)}
               </select>
-              <VoiceCaptureButton capture={speechCapture} enabled={settings.speech.enabled} disabled={importingFiles}
-                onSettings={() => { setSettingsOpen(true); setSettingsSection('speech'); }} />
+              <div className="voice-input-controls" role="group" aria-label="语音输入">
+                <VoiceCaptureButton capture={continuousVoice.state === 'off' ? speechCapture : { ...speechCapture, cancel: continuousVoice.stop }} enabled={settings.speech.enabled} disabled={importingFiles || ['muted', 'waiting', 'review'].includes(continuousVoice.state)}
+                  onSettings={() => { setSettingsOpen(true); setSettingsSection('speech'); }} />
+                {settings.speech.enabled && continuousVoice.state === 'off' && <VoiceInputOptions
+                  disabled={importingFiles || ['connecting', 'recording', 'recognizing'].includes(speechCapture.state)} canStartConversation={!runningSessionId}
+                  onStartConversation={continuousVoice.start} onSettings={() => { setSettingsOpen(true); setSettingsSection('speech'); }} />}
+              </div>
               {sessionBusy
                 ? <button className="stop" aria-label="停止生成" title="停止生成" onClick={() => activeId && window.desktopAgent.cancelTurn(activeId)}>■</button>
                 : <button className="send" aria-label="发送消息" title="发送消息" disabled={importingFiles || (!draft.trim() && attachments.length === 0 && files.length === 0)} onClick={() => void send()}>↑</button>}

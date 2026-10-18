@@ -1,6 +1,7 @@
 import { z } from 'zod';
-import { AudioAssetOwnerSchema, AudioAssetSchema, SPEECH_LIMITS, SpeechErrorCodeSchema } from './speech.js';
-import { SpeechDiagnosticsSchema } from './speech-metrics.js';
+import { AudioAssetOwnerSchema, AudioAssetSchema, SPEECH_LIMITS, SpeechErrorCodeSchema, SpeechEndpointReasonSchema } from './speech.js';
+import { SpeechDiagnosticsSchema, VoiceLatencyDiagnosticsSchema } from './speech-metrics.js';
+import { VoiceOutputHandleSchema } from './voice-output.js';
 
 const Id = z.string().min(1).max(256);
 const Generation = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
@@ -41,7 +42,8 @@ export const VoiceCommitResultSchema = z.object({
 }).strict();
 export type VoiceCommitResult = z.infer<typeof VoiceCommitResultSchema>;
 export const ReadSpeechMessageInputSchema = z.object({ sessionId: Id, messageId: Id, generation: Generation,
-  automatic: z.boolean().optional(), offset: Generation.optional() }).strict();
+  automatic: z.boolean().optional(), offset: Generation.optional(), complete: z.boolean().optional() }).strict()
+  .refine(value => !(value.automatic && value.complete), 'Automatic summaries cannot request complete reading.');
 export type ReadSpeechMessageInput = z.infer<typeof ReadSpeechMessageInputSchema>;
 export const ReadApprovalSpeechInputSchema = z.object({ sessionId: Id, approvalId: Id, generation: Generation }).strict();
 export type ReadApprovalSpeechInput = z.infer<typeof ReadApprovalSpeechInputSchema>;
@@ -51,7 +53,7 @@ export const StopSpeechPlaybackInputSchema = z.object({
   sessionId: Id.optional(), playbackId: Id.optional(), generation: Generation.optional()
 }).strict();
 export type StopSpeechPlaybackInput = z.infer<typeof StopSpeechPlaybackInputSchema>;
-export const SpeechPlaybackResultSchema = z.object({ playbackId: Id, generation: Generation, nextOffset: Generation.optional() }).strict();
+export const SpeechPlaybackResultSchema = z.object({ playbackId: Id, generation: Generation, nextOffset: Generation.optional(), preparedChars: Generation.optional() }).strict();
 export type SpeechPlaybackResult = z.infer<typeof SpeechPlaybackResultSchema>;
 export const SpeechCaptureStateSchema = z.object({ ...CaptureFields,
   state: z.enum(['connecting', 'ready', 'recording', 'recognizing', 'review', 'cancelled', 'failed']),
@@ -62,6 +64,7 @@ export type SpeechCaptureState = z.infer<typeof SpeechCaptureStateSchema>;
 export const SpeechPlaybackStateSchema = z.object({
   playbackId: Id, generation: Generation, sessionId: Id.optional(), messageId: Id.optional(),
   nextOffset: Generation.optional(),
+  preparedChars: Generation.optional(),
   state: z.enum(['queued', 'preparing', 'playing', 'played', 'interrupted', 'failed', 'suppressed']),
   reason: z.string().max(1_000).optional()
 }).strict();
@@ -70,11 +73,17 @@ export const SpeechValidationSchema = z.object({ asr: z.boolean(), tts: z.boolea
 export const SpeechStatusSchema = z.object({
   captures: z.array(SpeechCaptureStateSchema).max(100),
   playbacks: z.array(SpeechPlaybackStateSchema).max(100), validation: SpeechValidationSchema,
-  diagnostics: SpeechDiagnosticsSchema.optional()
+  diagnostics: SpeechDiagnosticsSchema.optional(),
+  latency: VoiceLatencyDiagnosticsSchema.optional()
 }).strict();
 export type SpeechStatus = z.infer<typeof SpeechStatusSchema>;
 export const SpeechEventSchema = z.discriminatedUnion('type', [
-  z.object({ type: z.literal('reply'), sessionId: Id, messageId: Id, runId: Id }).strict(),
+  SpeechCaptureHandleSchema.extend({ type: z.literal('endpoint'), reason: SpeechEndpointReasonSchema }),
+  z.object({ type: z.literal('input_invalidated'), reason: z.enum(['locked', 'suspended', 'configuration', 'navigation']) }).strict(),
+  z.object({ type: z.literal('session_run_finished'), sessionId: Id, runId: Id, outcome: z.enum(['completed', 'cancelled', 'failed']) }).strict(),
+  VoiceOutputHandleSchema.extend({ type: z.literal('output_available') }),
+  VoiceOutputHandleSchema.extend({ type: z.literal('output_closed'), outcome: z.enum(['played', 'interrupted', 'failed']) }),
+  z.object({ type: z.literal('reply'), sessionId: Id, messageId: Id, runId: Id, requestedReadAloud: z.boolean().optional(), voiceInput: z.boolean().optional() }).strict(),
   SpeechCaptureStateSchema.extend({ type: z.literal('capture') }),
   VoiceCommitResultSchema.extend({ type: z.literal('commit') }),
   SpeechPlaybackStateSchema.extend({ type: z.literal('playback') }),

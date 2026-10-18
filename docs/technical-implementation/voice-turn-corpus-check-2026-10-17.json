@@ -1,0 +1,154 @@
+{
+  "version": 1,
+  "createdAt": "2026-10-17T10:29:28.631Z",
+  "manifestSha256": "190879841b2791a647a7b6f5209c065354dbd08dc1ada62e7bc407e51d9b8d2d",
+  "mode": "check",
+  "frameMs": 200,
+  "sampleRate": 16000,
+  "fallbackTimeoutMs": 3000,
+  "microphoneOpened": false,
+  "playbackStarted": false,
+  "transcriptsIncluded": false,
+  "cases": [
+    {
+      "id": "01-normal-question",
+      "status": "missing",
+      "issues": [
+        "recording_missing"
+      ],
+      "physicalChineseEvidence": false
+    },
+    {
+      "id": "02-mid-sentence-short-pause",
+      "status": "missing",
+      "issues": [
+        "recording_missing"
+      ],
+      "physicalChineseEvidence": false
+    },
+    {
+      "id": "03-mid-sentence-long-pause",
+      "status": "missing",
+      "issues": [
+        "recording_missing"
+      ],
+      "physicalChineseEvidence": false
+    },
+    {
+      "id": "04-backchannel-en",
+      "status": "missing",
+      "issues": [
+        "recording_missing"
+      ],
+      "physicalChineseEvidence": false
+    },
+    {
+      "id": "05-backchannel-dui",
+      "status": "missing",
+      "issues": [
+        "recording_missing"
+      ],
+      "physicalChineseEvidence": false
+    },
+    {
+      "id": "06-cough",
+      "status": "missing",
+      "issues": [
+        "recording_missing"
+      ],
+      "physicalChineseEvidence": false
+    },
+    {
+      "id": "07-keyboard",
+      "status": "missing",
+      "issues": [
+        "recording_missing"
+      ],
+      "physicalChineseEvidence": false
+    },
+    {
+      "id": "08-speaker-echo",
+      "status": "missing",
+      "issues": [
+        "recording_missing"
+      ],
+      "physicalChineseEvidence": false
+    },
+    {
+      "id": "09-overlap-interruption",
+      "status": "missing",
+      "issues": [
+        "recording_missing"
+      ],
+      "physicalChineseEvidence": false
+    },
+    {
+      "id": "10-long-utterance",
+      "status": "missing",
+      "issues": [
+        "recording_missing"
+      ],
+      "physicalChineseEvidence": false
+    },
+    {
+      "id": "11-code-terms",
+      "status": "missing",
+      "issues": [
+        "recording_missing"
+      ],
+      "physicalChineseEvidence": false
+    },
+    {
+      "id": "12-path-and-url",
+      "status": "missing",
+      "issues": [
+        "recording_missing"
+      ],
+      "physicalChineseEvidence": false
+    },
+    {
+      "id": "13-background-human-speech",
+      "status": "missing",
+      "issues": [
+        "recording_missing"
+      ],
+      "physicalChineseEvidence": false
+    }
+  ],
+  "metricsScope": "consented_target_device_chinese",
+  "metrics": {
+    "turnCases": 0,
+    "noEndpointCases": 0,
+    "premature": 0,
+    "missed": 0,
+    "late": 0,
+    "falseEndpoints": 0,
+    "prematureRate": null,
+    "missedEndpointRate": null,
+    "falseEndpointRate": null,
+    "latencyP50Ms": null,
+    "latencyP95Ms": null
+  },
+  "assessment": {
+    "status": "blocked",
+    "reasons": [
+      "required_case_unmeasured:01-normal-question",
+      "physical_chinese_evidence_missing:01-normal-question",
+      "required_case_unmeasured:02-mid-sentence-short-pause",
+      "physical_chinese_evidence_missing:02-mid-sentence-short-pause",
+      "required_case_unmeasured:03-mid-sentence-long-pause",
+      "physical_chinese_evidence_missing:03-mid-sentence-long-pause",
+      "required_case_unmeasured:10-long-utterance",
+      "physical_chinese_evidence_missing:10-long-utterance",
+      "required_case_unmeasured:11-code-terms",
+      "physical_chinese_evidence_missing:11-code-terms",
+      "required_case_unmeasured:12-path-and-url",
+      "physical_chinese_evidence_missing:12-path-and-url",
+      "thresholds_not_configured"
+    ],
+    "exceeded": [],
+    "manualReviewRequired": true,
+    "enablesAutoEndpoint": false,
+    "certifiesAec": false
+  }
+}

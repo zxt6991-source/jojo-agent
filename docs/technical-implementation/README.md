@@ -7,7 +7,9 @@
 
 跨模块的个人 Agent 演进方案见 [通用个人 Agent 技术实现方案](../jojo-personal-agent-technical-implementation-plan.md)，涵盖领域上下文、资料检索、应用接入、产物交付、长期任务、事件自动化、执行收据、预算与分批验收。
 
-语音能力当前使用本地 SenseVoice 与 macOS 系统朗读，配置、PCM 采集 UI、转写校正 / 提交去重、独立 AudioHost、系统通知与显式托盘常驻见 [Speech](./speech.md)；无模型提醒、原子 Delivery Outbox 与分目的地 claim / ACK 见 [Durable Scheduler](./scheduler.md)。早期[语音对话与定时语音提醒设计](../jojo-voice-conversation-and-scheduled-reminders-design.md)保留为历史方案，云端语音适配与密钥链路已删除。设备、OS 通知与签名包验收及连续监听仍待完成。
+语音能力使用本地 SenseVoice（默认）、显式配置的常驻 Paraformer / Silero 与 macOS 系统朗读；支持流式 PCM 回复、实验自动端点、半双工连续对话、损坏轮次有限重录恢复、口语投影、交付账本及本机延迟基准，配置和阶段发布边界见 [Speech](./speech.md)。Paraformer / Silero / Smart Turn 模型及本地运行依赖已准备，并通过两轮真实中文样本的自动端点回放。新增[中文语料接入与评测](../../tests/fixtures/speech/README.md)，按实时速度回放，统计提前截断 / 漏端点 / 端点延迟；缺少实录或人工标注时保留明确缺项，不签发验收。PCM 采集 UI、转写校正 / 提交去重、独立 AudioHost、系统通知与显式托盘常驻继续保留；无模型提醒、原子 Delivery Outbox 与分目的地 claim / ACK 见 [Durable Scheduler](./scheduler.md)。早期[语音对话与定时语音提醒设计](../jojo-voice-conversation-and-scheduled-reminders-design.md)保留为历史方案，云端语音适配与密钥链路已删除。中文端点实录、扬声器插话及设备、OS 通知与签名包验收仍待完成。
+
+P3 保留 MeloTTS int8 与 CosyVoice3 CPU 候选，新增设置页可选的[本机 Qwen3 MLX 自然声音](./speech.md#本机自然声音qwen3-mlx)。已完成约 1.69 GB 固定模型校验、独立运行环境和真实 Mac 实测：warm 完整 WAV 首 PCM P50 约 1.99 秒，原生批次约 193 ms；当前 Renderer 仍使用完整 WAV 适配，不能把原生批次标作实际首音。相邻短句合并以共享合成上下文；旧配置保留系统声音。中文 MOS、实体设备与 AEC Gate 仍待验收。
 
 ## Workspace 清单
 

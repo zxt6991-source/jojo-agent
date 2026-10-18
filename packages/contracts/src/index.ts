@@ -33,3 +33,5 @@ export * from './capability-manifest';
 export * from './speech';
 export * from './speech-metrics';
 export * from './speech-ui';
+export * from './speech-output-policy';
+export * from './voice-output';

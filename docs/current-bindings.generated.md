@@ -42,3 +42,4 @@
 | speech.previewSchedule | 本地专用 | 缺口：Desktop 本地语音控制；远程播放设备协议尚未发布。 | 缺口：Desktop 本地语音控制，不通过事件广播传输音频。 | 本地专用 | previewScheduleVoice |
 | speech.schedulePreparation | 本地专用 | 缺口：Desktop 本地语音控制；远程播放设备协议尚未发布。 | 缺口：Desktop 本地语音控制，不通过事件广播传输音频。 | 本地专用 | getScheduleVoicePreparation |
 | speech.cache.clear | 本地专用 | 缺口：Desktop 本地语音控制；远程播放设备协议尚未发布。 | 缺口：Desktop 本地语音控制，不通过事件广播传输音频。 | 本地专用 | clearSpeechCache |
+| speech.output.attach | 本地专用 | 缺口：Realtime audio output is a local Desktop MessagePort capability. | 缺口：Realtime audio output is a local Desktop MessagePort capability. | 本地专用 | attachVoiceOutput |

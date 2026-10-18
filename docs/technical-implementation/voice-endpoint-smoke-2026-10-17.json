@@ -1,0 +1,30 @@
+{
+  "date": "2026-10-17",
+  "runtime": { "sherpaOnnx": "1.13.8", "numpy": "1.26.4", "onnxruntime": "1.19.2", "transformers": "4.49.0", "torchInstalled": false },
+  "model": { "name": "smart-turn-v3.1-cpu", "sha256": "fb68d55c2d542ce79e44b12013bfd571e90df8594ab096d757198e851b0c6594" },
+  "capabilities": { "vad": true, "streamingAsr": true, "smartTurn": true },
+  "completed": true,
+  "provider": "sherpa-onnx-streaming-paraformer",
+  "replay": "unpaced_ack_bounded",
+  "sampleRate": 16000,
+  "channels": 1,
+  "bitsPerSample": 16,
+  "frameMs": 200,
+  "audioMs": 5592,
+  "iterations": 2,
+  "providerInstances": 1,
+  "normalizedExpectedTextChecked": false,
+  "autoEndpoint": true,
+  "turnDecisions": [
+    { "type": "turn.complete", "score": 0.9854817390441895, "inferenceMs": 131.480042 },
+    { "type": "turn.complete", "score": 0.9854817390441895, "inferenceMs": 104.295125 }
+  ],
+  "runs": [
+    { "round": 1, "firstCapture": true, "frames": 28, "readyMs": 1112.498166, "firstPartialMs": 1160.166666, "finalMs": 1449.584958, "finalAfterInputEndMs": 36.341292, "totalMs": 1450.702833, "partialCount": 7, "recognizedChars": 12, "endpointReason": "smart_turn", "endpointMs": 1413.23625 },
+    { "round": 2, "firstCapture": false, "frames": 28, "readyMs": 0.458417, "firstPartialMs": 66.2515, "finalMs": 339.588167, "finalAfterInputEndMs": 27.670917, "totalMs": 342.210375, "partialCount": 7, "recognizedChars": 12, "endpointReason": "smart_turn", "endpointMs": 311.908958 }
+  ],
+  "autoEndpointVerified": false,
+  "speakerBargeInVerified": false,
+  "userSettingsChanged": false,
+  "limitations": ["One prerecorded Chinese fixture, repeated twice; not a human conversational corpus.", "Expected transcript was not checked.", "Unpaced fixture timing is not live microphone or end-to-end TTFA.", "No physical microphone, speaker, or AEC evaluation."]
+}

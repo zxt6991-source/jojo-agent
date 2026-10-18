@@ -793,11 +793,7 @@ export function startDesktopHost(): void {
     });
     registerSpeechIpc({
       assertTrusted, get configStore() { return configStore; }, readApiKeys, pushConfig,
-      get speechHost() { return speechHost; },
-      validateEnabled: async (settings) => {
-        if (!speechHost) throw new Error('语音运行环境尚未就绪。');
-        await speechHost.validateEnabled(settings);
-      }
+      get speechHost() { return speechHost; }
     });
     registerExtensionsIpc({
       assertTrusted, readApiKeys,

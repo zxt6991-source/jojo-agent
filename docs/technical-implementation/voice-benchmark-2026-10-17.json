@@ -1,0 +1,186 @@
+{
+  "device": {
+    "platform": "darwin",
+    "arch": "arm64",
+    "cpu": "Apple M4 Pro"
+  },
+  "provider": "macos-say",
+  "capabilities": {
+    "textStreaming": false,
+    "audioStreaming": false,
+    "wordTimings": false
+  },
+  "coldStartMs": 1111.160667,
+  "warmFirstPcmMs": {
+    "samples": 15,
+    "p50Ms": 1017.4223330000004,
+    "p95Ms": 1243.5289579999999,
+    "meanMs": 1048.6579306666667
+  },
+  "totalGenerationMs": {
+    "samples": 16,
+    "p50Ms": 1017.5443329999998,
+    "p95Ms": 1244.2699159999997,
+    "meanMs": 1052.767953125
+  },
+  "rtf": {
+    "samples": 16,
+    "p50Ms": 0.14022060381984763,
+    "p95Ms": 0.5164585398915571,
+    "meanMs": 0.18948514228523908
+  },
+  "cancelLatencyMs": 1.3363329999992857,
+  "sampledChildPeakCpuPercent": 47.6,
+  "sampledChildPeakRssBytes": 38125568,
+  "resourceSamplingMs": 50,
+  "appPackageDeltaBytes": 0,
+  "subjectiveChineseMos": null,
+  "prosodyContinuity": null,
+  "mixedPronunciation": null,
+  "candidates": [
+    {
+      "provider": "sherpa-onnx-tts",
+      "status": "not_benchmarked",
+      "reason": "candidate_model_not_selected"
+    },
+    {
+      "provider": "cosyvoice",
+      "status": "not_benchmarked",
+      "reason": "candidate_model_not_installed"
+    }
+  ],
+  "productionTtsChanged": false,
+  "acousticReleaseGate": "pending_physical_device_listening",
+  "runs": [
+    {
+      "category": "short",
+      "cold": true,
+      "firstPcmMs": 1111.160667,
+      "totalMs": 1111.2466250000002,
+      "audioMs": 2151.6666666666665,
+      "rtf": 0.5164585398915571
+    },
+    {
+      "category": "sentence",
+      "cold": false,
+      "firstPcmMs": 1172.9157500000001,
+      "totalMs": 1173.2557499999998,
+      "audioMs": 9790.916666666666,
+      "rtf": 0.11983104237771403
+    },
+    {
+      "category": "long",
+      "cold": false,
+      "firstPcmMs": 1243.5289579999999,
+      "totalMs": 1244.2699159999997,
+      "audioMs": 27967.041666666668,
+      "rtf": 0.04449058040640098
+    },
+    {
+      "category": "date",
+      "cold": false,
+      "firstPcmMs": 1086.4348339999997,
+      "totalMs": 1086.5694589999994,
+      "audioMs": 7749,
+      "rtf": 0.14022060381984763
+    },
+    {
+      "category": "model",
+      "cold": false,
+      "firstPcmMs": 1092.5010000000002,
+      "totalMs": 1092.5952080000006,
+      "audioMs": 6480.208333333333,
+      "rtf": 0.1686049509210739
+    },
+    {
+      "category": "symbols",
+      "cold": false,
+      "firstPcmMs": 1036.2401250000003,
+      "totalMs": 1036.3149170000006,
+      "audioMs": 4075.0416666666665,
+      "rtf": 0.25430780879541126
+    },
+    {
+      "category": "path",
+      "cold": false,
+      "firstPcmMs": 996.7592500000001,
+      "totalMs": 996.9194579999994,
+      "audioMs": 8433.083333333334,
+      "rtf": 0.11821529784479769
+    },
+    {
+      "category": "command",
+      "cold": false,
+      "firstPcmMs": 997.1515419999996,
+      "totalMs": 997.2408749999995,
+      "audioMs": 4811.291666666667,
+      "rtf": 0.20727092516735793
+    },
+    {
+      "category": "short",
+      "cold": false,
+      "firstPcmMs": 998.5640409999996,
+      "totalMs": 998.5994999999984,
+      "audioMs": 2151.6666666666665,
+      "rtf": 0.4641051123160334
+    },
+    {
+      "category": "sentence",
+      "cold": false,
+      "firstPcmMs": 1017.9415420000005,
+      "totalMs": 1018.1905000000006,
+      "audioMs": 9790.916666666666,
+      "rtf": 0.10399337821620386
+    },
+    {
+      "category": "long",
+      "cold": false,
+      "firstPcmMs": 1077.250750000001,
+      "totalMs": 1077.8307920000007,
+      "audioMs": 27967.041666666668,
+      "rtf": 0.03853932084939268
+    },
+    {
+      "category": "date",
+      "cold": false,
+      "firstPcmMs": 1006.6145419999993,
+      "totalMs": 1006.7790000000005,
+      "audioMs": 7749,
+      "rtf": 0.12992373209446387
+    },
+    {
+      "category": "model",
+      "cold": false,
+      "firstPcmMs": 1017.4223330000004,
+      "totalMs": 1017.5443329999998,
+      "audioMs": 6480.208333333333,
+      "rtf": 0.1570233981160585
+    },
+    {
+      "category": "symbols",
+      "cold": false,
+      "firstPcmMs": 990.0509169999987,
+      "totalMs": 990.1467079999984,
+      "audioMs": 4075.0416666666665,
+      "rtf": 0.24297830279853952
+    },
+    {
+      "category": "path",
+      "cold": false,
+      "firstPcmMs": 999.3230840000015,
+      "totalMs": 999.521834000001,
+      "audioMs": 8433.083333333334,
+      "rtf": 0.11852388912714815
+    },
+    {
+      "category": "command",
+      "cold": false,
+      "firstPcmMs": 997.1702920000007,
+      "totalMs": 997.2623750000002,
+      "audioMs": 4811.291666666667,
+      "rtf": 0.20727539382182544
+    }
+  ],
+  "measuredAt": "2026-10-17",
+  "iterations": 2
+}

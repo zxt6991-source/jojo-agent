@@ -1,0 +1,35 @@
+{
+  "date": "2026-10-17",
+  "runtime": { "sherpaOnnx": "1.13.8", "numpy": "1.26.4" },
+  "paraformerRevision": "8e40c43232a1c5c66c82111efc5820d3accca11b",
+  "models": [
+    { "file": "StreamingParaformer/encoder.int8.onnx", "bytes": 165462184, "sha256": "81a70226a8934e6ed92aa1d4fc486b428b5398e2f2619ed4897b7294cab90e9a", "matchesPinnedDigest": true },
+    { "file": "StreamingParaformer/decoder.int8.onnx", "bytes": 71664561, "sha256": "f3cca9f77bb9d93c8fcbfb63ae617b6b1ee96818df3aa3b151c40658fe38594f", "matchesPinnedDigest": true },
+    { "file": "StreamingParaformer/tokens.txt", "bytes": 75756, "sha256": "59aba8873a2ed1e122c25fee421e25f283b63290efbde85c1f01a853d83cb6e6" },
+    { "file": "silero_vad.onnx", "bytes": 643854, "sha256": "9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6" },
+    { "file": "smart-turn-v3.1.onnx", "bytes": 8679180, "sha256": "fb68d55c2d542ce79e44b12013bfd571e90df8594ab096d757198e851b0c6594", "matchesPinnedDigest": true, "source": "https://huggingface.co/pipecat-ai/smart-turn-v3/resolve/16c8130e06d3af59663be3fd7c9ac80624850e6c/smart-turn-v3.1-cpu.onnx" }
+  ],
+  "capabilities": { "vad": true, "streamingAsr": true, "smartTurn": false },
+  "smartTurnMissingRuntimeDependencies": ["onnxruntime", "transformers"],
+  "smoke": {
+    "completed": true,
+    "provider": "sherpa-onnx-streaming-paraformer",
+    "replay": "unpaced_ack_bounded",
+    "sampleRate": 16000,
+    "channels": 1,
+    "bitsPerSample": 16,
+    "frameMs": 200,
+    "audioMs": 5592,
+    "iterations": 2,
+    "providerInstances": 1,
+    "normalizedExpectedTextChecked": false,
+    "runs": [
+      { "round": 1, "firstCapture": true, "frames": 28, "readyMs": 436.472458, "firstPartialMs": 735.768708, "finalMs": 878.287875, "finalAfterInputEndMs": 17.373084, "totalMs": 878.824875, "partialCount": 7, "recognizedChars": 12 },
+      { "round": 2, "firstCapture": false, "frames": 28, "readyMs": 0.209791, "firstPartialMs": 43.094666, "finalMs": 182.702041, "finalAfterInputEndMs": 15.738625, "totalMs": 183.004541, "partialCount": 7, "recognizedChars": 12 }
+    ]
+  },
+  "autoEndpointVerified": false,
+  "speakerBargeInVerified": false,
+  "userSettingsChanged": false,
+  "limitations": ["Single prerecorded fixture; not a Chinese accuracy evaluation.", "Unpaced replay timing is not live microphone or end-to-end TTFA.", "No physical microphone, playback, or AEC evaluation."]
+}

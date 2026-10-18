@@ -1,4 +1,4 @@
-import { randomUUID, createHash } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -8,7 +8,7 @@ import { SpeechSettingsSchema, createLocalSpeechSettings, type AudioAsset, type 
   type ScheduleDeliveryControl, type ScheduleDesktopDelivery } from '@desktop-agent/contracts';
 import { ElectronAudioHost } from './audio-host';
 import { DesktopSpeechHost } from './speech-host';
-import { createSilentMp3Fixture } from '../testing/speech-audio-fixture';
+import { createSilentMp3Fixture, createSilentWavFixture } from '../testing/speech-audio-fixture';
 
 vi.mock('./audio-host', () => {
   class Host {
@@ -51,7 +51,7 @@ async function setup(deliveryControl?: (control: ScheduleDeliveryControl) => Pro
   const ready = { asset, path: filename }, testReady = { asset: testAsset, path: filename }, scheduleReady = { asset: scheduleAsset, path: filename };
   const session = { setPermissionCheckHandler: vi.fn(), setPermissionRequestHandler: vi.fn() };
   const webContents = { session, getURL: () => 'file:///app/index.html', on: vi.fn(), postMessage: vi.fn() };
-  const window = { webContents } as any;
+  const window = { webContents, isDestroyed: () => false } as any;
   const worker = { postMessage: vi.fn() } as any;
   const readSettings = vi.fn(async () => settings);
   const request = vi.fn(async (control: SpeechControl): Promise<unknown> => {
@@ -78,6 +78,121 @@ async function setup(deliveryControl?: (control: ScheduleDeliveryControl) => Pro
   return { host, audio, request, events, settings, readSettings, asset, ready, testReady, input, window, worker, scheduled };
 }
 function defer<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>((done) => { resolve = done; }); return { promise, resolve }; }
+
+async function completeReadingFixture() {
+  const h = await setup(), original = h.request.getMockImplementation()!;
+  const parts = await Promise.all([0, 1].map(async index => {
+    const asset = { ...h.asset, id: randomUUID(), format: 'wav' as const }, bytes = createSilentWavFixture();
+    bytes[44] = index + 11; asset.bytes = bytes.length;
+    const filename = path.join(path.dirname(h.ready.path), `${asset.id}.wav`); await writeFile(filename, bytes);
+    return { asset, path: filename, bytes };
+  }));
+  const last = defer<unknown>();
+  h.request.mockImplementation(async control => {
+    if (control.action === 'readMessage') return !control.input.offset ? { asset: parts[0]!.asset, path: parts[0]!.path, spokenText: '字'.repeat(150), nextOffset: 150 } : last.promise;
+    if (control.action === 'resolveAsset') { const part = parts.find(part => part.asset.id === control.input.assetId)!; return { asset: part.asset, path: part.path }; }
+    return original(control);
+  });
+  // The Worker wire contains manifests, never arbitrary bytes.
+  const finish = () => last.resolve({ asset: parts[1]!.asset, path: parts[1]!.path, spokenText: '段'.repeat(80) });
+  return { ...h, parts, last, finish };
+}
+
+it('prepares every part before one continuous playback and waits for the final real ended receipt', async () => {
+  const h = await completeReadingFixture();
+  const operation = h.host.read({ ...h.input, complete: true });
+  await vi.waitFor(() => expect(h.request.mock.calls.filter(([control]) => control.action === 'readMessage')).toHaveLength(2));
+  expect(h.audio.play).not.toHaveBeenCalled();
+  h.finish(); const result = await operation;
+  expect(result.nextOffset).toBeUndefined();
+  expect(result.preparedChars).toBe(230);
+  await vi.waitFor(() => expect(h.audio.play).toHaveBeenCalledOnce());
+  const output = h.audio.play.mock.calls[0]![0];
+  expect(output.complete).toBe(true); expect(output.format).toBe('wav');
+  expect(output.bytes.length).toBe(h.parts[0]!.bytes.length + h.parts[1]!.bytes.length - 44);
+  expect(output.bytes[44]).toBe(11); expect(output.bytes[h.parts[0]!.bytes.length]).toBe(12);
+  h.audio.receive({ type: 'started', token: output.token, generation: output.generation });
+  expect(h.events.some(event => event.type === 'playback' && event.state === 'played')).toBe(false);
+  h.audio.receive({ type: 'ended', token: output.token, generation: output.generation });
+  expect(h.events.filter(event => event.type === 'playback' && event.state === 'played')).toHaveLength(1);
+  expect(h.events.find(event => event.type === 'playback' && event.state === 'played')).toMatchObject({ preparedChars: 230 });
+  expect(h.request.mock.calls.filter(([control]) => control.action === 'readMessage')).toHaveLength(2);
+});
+
+it('never starts a partial reading if a later segment fails preparation', async () => {
+  const h = await completeReadingFixture(), original = h.request.getMockImplementation()!;
+  h.request.mockImplementation(async control => {
+    if (control.action === 'readMessage' && control.input.offset) throw new Error('本机语音生成失败，请重试。');
+    return original(control);
+  });
+  await expect(h.host.read({ ...h.input, complete: true })).rejects.toThrow('语音生成失败');
+  expect(h.audio.play).not.toHaveBeenCalled();
+  expect(h.events.some(event => event.type === 'playback' && event.state === 'played')).toBe(false);
+});
+
+it('cancels complete preparation without later playback when the user stops', async () => {
+  const h = await completeReadingFixture();
+  const operation = h.host.read({ ...h.input, complete: true });
+  const assertion = expect(operation).rejects.toThrow('朗读已停止');
+  await vi.waitFor(() => expect(h.request.mock.calls.filter(([control]) => control.action === 'readMessage')).toHaveLength(2));
+  h.host.stop({ sessionId: h.input.sessionId, generation: h.input.generation }); h.finish(); await assertion;
+  expect(h.audio.play).not.toHaveBeenCalled();
+});
+it('does not let a late stop receipt for an old reading cancel a newer complete preparation', async () => {
+  const h = await completeReadingFixture(); h.finish();
+  const old = await h.host.read({ ...h.input, complete: true });
+  await vi.waitFor(() => expect(h.audio.play).toHaveBeenCalledOnce());
+  const output = h.audio.play.mock.calls[0]![0];
+  h.audio.receive({ type: 'started', token: output.token, generation: output.generation });
+  h.audio.receive({ type: 'ended', token: output.token, generation: output.generation });
+  const next = defer<unknown>(), original = h.request.getMockImplementation()!;
+  h.request.mockImplementation(async control => control.action === 'readMessage' && control.input.offset ? next.promise : original(control));
+  const operation = h.host.read({ ...h.input, generation: 2, complete: true });
+  await vi.waitFor(() => expect(h.request.mock.calls.filter(([control]) => control.action === 'readMessage')).toHaveLength(4));
+  h.host.stop({ playbackId: old.playbackId });
+  next.resolve({ asset: h.parts[1]!.asset, path: h.parts[1]!.path, spokenText: '段'.repeat(80) });
+  await expect(operation).resolves.toMatchObject({ generation: 2, preparedChars: 230 });
+  await vi.waitFor(() => expect(h.audio.play).toHaveBeenCalledTimes(2));
+});
+it('honors stop after all audio is prepared but before its playback configuration finishes', async () => {
+  const h = await completeReadingFixture(); h.finish();
+  const settings = defer<typeof h.settings>();
+  h.readSettings.mockResolvedValueOnce(h.settings).mockImplementationOnce(() => settings.promise);
+  const operation = h.host.read({ ...h.input, complete: true });
+  const assertion = expect(operation).rejects.toThrow('朗读已停止');
+  await vi.waitFor(() => expect(h.readSettings).toHaveBeenCalledTimes(2));
+  const playback = h.events.find(event => event.type === 'playback'); if (playback?.type !== 'playback') throw new Error('missing playback identity');
+  h.host.stop({ playbackId: playback.playbackId }); settings.resolve(h.settings); await assertion;
+  expect(h.audio.play).not.toHaveBeenCalled();
+});
+
+it('binds realtime ports to a current voice commit and never reattaches a stopped generation', async () => {
+  const { host, settings, request, worker, window, events } = await setup();
+  settings.realtimeReplies = true;
+  const handle = { sessionId: 'session-one', runId: 'voice-run', generation: 5 };
+  request.mockImplementation(async control => control.action === 'commit'
+    ? { voiceTurnId: 'turn', sessionId: handle.sessionId, generation: 5, runId: handle.runId, status: 'committed' } : undefined);
+  await host.commit({ sessionId: handle.sessionId, voiceTurnId: 'turn', generation: 5, text: '看看实现', providerId: 'test', model: 'test' });
+  host.accept({ type: 'output_available', ...handle });
+  await host.attachOutput(handle);
+  expect(worker.postMessage).toHaveBeenCalledWith({ type: 'voice.output.attach', handle }, expect.any(Array));
+  expect(window.webContents.postMessage).toHaveBeenCalledWith('speech:output:port', handle, expect.any(Array));
+  await expect(host.attachOutput(handle)).rejects.toThrow('过期');
+  host.stop({ sessionId: handle.sessionId }); const before = events.length;
+  host.accept({ type: 'output_available', ...handle }); expect(events.length).toBe(before);
+  await expect(host.attachOutput(handle)).rejects.toThrow('过期');
+});
+
+it('revoking automatic voice output stops realtime delivery independently', async () => {
+  const { host, settings, request } = await setup(); settings.realtimeReplies = true;
+  const handle = { sessionId: 'session-one', runId: 'voice-run', generation: 5 };
+  request.mockImplementation(async control => control.action === 'commit'
+    ? { voiceTurnId: 'turn', sessionId: handle.sessionId, generation: 5, runId: handle.runId, status: 'committed' } : undefined);
+  await host.commit({ sessionId: handle.sessionId, voiceTurnId: 'turn', generation: 5, text: '看看实现', providerId: 'test', model: 'test' });
+  host.accept({ type: 'output_available', ...handle }); await host.attachOutput(handle);
+  settings.autoReadReplies = false; await host.configure(settings);
+  expect(request).toHaveBeenCalledWith({ action: 'stopRealtime', sessionId: handle.sessionId });
+});
 
 it('allows explicit local microphone validation while keeping disabled conversations gated', async () => {
   const { host, readSettings } = await setup();
@@ -321,6 +436,11 @@ it('blocks a session asset returned for another conversation before enqueue', as
 it('allows explicit settings试听 while disabled but requires a dedicated test-owned asset', async () => {
   const { host, audio, settings } = await setup(); settings.enabled = false;
   await host.test({ generation: 0 }); await vi.waitFor(() => expect(audio.play).toHaveBeenCalledOnce());
+});
+it('refuses a late explicit reading request while locked without preparing deferred playback', async () => {
+  const { host, request, input } = await setup(); host.lockedState(true);
+  await expect(host.read({ ...input, automatic: false })).rejects.toThrow('锁屏');
+  expect(request.mock.calls.some(([control]) => control.action === 'readMessage')).toBe(false);
 });
 it('retains continuation offsets on the public result and actual played event without automatically queuing the next segment', async () => {
   const { host, audio, ready, request, input, events } = await setup();
@@ -609,11 +729,17 @@ it('invalidates the capture and delayed朗读 when the Main frame reloads', asyn
 it('rejects mismatched capture identity and ignores late events from another voice turn', async () => {
   const { host, events, window } = await setup();
   const capture = await host.begin({ purpose: 'conversation', sessionId: 'session-one', generation: 0 });
+  host.accept({ type: 'endpoint', ...capture, voiceTurnId: randomUUID(), reason: 'smart_turn' });
+  expect(events.filter(event => event.type === 'endpoint')).toHaveLength(0);
+  host.accept({ type: 'endpoint', ...capture, reason: 'smart_turn' });
+  expect(events.filter(event => event.type === 'endpoint')).toHaveLength(1);
   await expect(host.cancel({ ...capture, voiceTurnId: randomUUID() })).rejects.toThrow();
   host.accept({ type: 'capture', ...capture, voiceTurnId: randomUUID(), state: 'review', text: 'should not be delivered' });
   expect(events.filter((event) => event.type === 'capture')).toHaveLength(0);
   host.attach(capture); expect(window.webContents.postMessage).toHaveBeenCalledOnce();
   await host.cancel(capture);
+  host.accept({ type: 'endpoint', ...capture, reason: 'smart_turn' });
+  expect(events.filter(event => event.type === 'endpoint')).toHaveLength(1);
   host.accept({ type: 'capture', ...capture, state: 'review', text: 'late event' });
   expect(events.filter((event) => event.type === 'capture')).toHaveLength(0);
 });
@@ -630,16 +756,6 @@ it('allows audio permissions only to an active Main-frame capture and never to c
   const permission = window.webContents.session.setPermissionRequestHandler.mock.calls[0][0], callback = vi.fn();
   permission(window.webContents, 'media', callback, { ...details, mediaTypes: ['audio', 'video'] }); expect(callback).toHaveBeenCalledWith(false);
   await host.cancel(capture); expect(check(window.webContents, 'media', 'file://', details)).toBe(false);
-});
-it('binds enablement to the current local recognition and synthesis configuration', async () => {
-  const { host, settings, request } = await setup();
-  request.mockResolvedValue({ captures: [], validation: { asr: true, tts: true }, validationSignature: '0'.repeat(64) });
-  await expect(host.validateEnabled(settings)).rejects.toThrow();
-  const validationSignature = createHash('sha256').update(JSON.stringify(settings.provider)).digest('hex');
-  request.mockResolvedValue({ captures: [], validation: { asr: true, tts: true }, validationSignature });
-  await expect(host.validateEnabled(settings)).resolves.toBeUndefined();
-  const changed = structuredClone(settings); changed.provider.tts.speechRate = 15;
-  await expect(host.validateEnabled(changed)).rejects.toThrow();
 });
 it('bounds both preparing and failed playback history at 100 before status schema validation', async () => {
   const { host, request, input } = await setup();

@@ -28,6 +28,7 @@ test('local speech configuration persists across preload/main/worker and restart
     await expect(form.getByRole('textbox', { name: '朗读服务', exact: true })).toHaveValue('Mac 系统朗读');
     await form.getByRole('textbox', { name: 'SenseVoice 模型目录', exact: true }).fill('/offline/local-model');
     await form.getByRole('textbox', { name: '本地语音 Python 路径', exact: true }).fill('/offline/python3');
+    await form.getByLabel('启用语音', { exact: true }).check();
     await form.getByRole('button', { name: '保存语音设置', exact: true }).click();
     await expect(form.getByText('所有设置已保存。', { exact: true })).toBeVisible();
     const selected = await launched.page.evaluate(() => window.desktopAgent.getSpeechSettings());
@@ -43,7 +44,7 @@ test('local speech configuration persists across preload/main/worker and restart
       return window.desktopAgent.saveSpeechSettings({ settings });
     });
     expect(Object.keys(saved)).toEqual(['settings']);
-    expect(saved.settings.enabled).toBe(false);
+    expect(saved.settings.enabled).toBe(true);
 
     const config = JSON.parse(await readFile(configPath, 'utf8'));
     expect(config.speech).toEqual(saved.settings);
@@ -62,11 +63,7 @@ test('local speech configuration persists across preload/main/worker and restart
     open = true;
     expect(await launched.page.evaluate(() => window.desktopAgent.getSpeechSettings())).toEqual(saved);
 
-    // Saving paths does not substitute for explicit recording and listening tests.
-    await expect(launched.page.evaluate(async () => {
-      const { settings } = await window.desktopAgent.getSpeechSettings();
-      return window.desktopAgent.saveSpeechSettings({ settings: { ...settings, enabled: true } });
-    })).rejects.toThrow('语音资源与音色尚未验证');
+    // Saved enablement survives restart without recording or listening prerequisites.
     expect(await launched.page.evaluate(() => window.desktopAgent.getSpeechSettings())).toEqual(saved);
     const status = await launched.page.evaluate(() => window.desktopAgent.getSpeechStatus());
     expect(status.diagnostics?.asr.requests).toBe(0);

@@ -24,6 +24,9 @@ export function registerSpeechIpc(ctx: Context): void {
   ipcMain.handle(IPC.attachSpeechCapture, async (event, raw) => {
     ctx.assertTrusted(event); host().attach(APPLICATION_OPERATIONS['speech.capture.attach'].input.parse(raw));
   });
+  ipcMain.handle(IPC.attachVoiceOutput, async (event, raw) => {
+    ctx.assertTrusted(event); await host().attachOutput(APPLICATION_OPERATIONS['speech.output.attach'].input.parse(raw));
+  });
   ipcMain.handle(IPC.cancelSpeechCapture, async (event, raw) => {
     ctx.assertTrusted(event); await host().cancel(APPLICATION_OPERATIONS['speech.capture.cancel'].input.parse(raw));
   });

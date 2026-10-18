@@ -37,6 +37,16 @@ async function setup(beforePlay?: (request: PlaybackRequest) => Promise<boolean>
     receive: (input: AudioHostAck) => listener(input), setNow: (value: number) => { now = value; } };
 }
 describe('Main playback broker', () => {
+  it('defers queued reminders until interactive speech is idle without falsely delivering an interrupted asset', async () => {
+    const h = await setup(); h.asset.owner = { kind: 'schedule', id: 'schedule-one' };
+    const first = { ...h.request(), owner: h.asset.owner }, second = { ...h.request(), owner: h.asset.owner };
+    h.broker.setInteractiveActive(true); h.broker.enqueue(first); h.broker.enqueue(second);
+    expect(h.host.play).not.toHaveBeenCalled(); expect(h.events.map(event => event.state)).toEqual(['queued', 'queued']);
+    h.broker.setInteractiveActive(false); await vi.waitFor(() => expect(h.host.play).toHaveBeenCalledOnce());
+    h.broker.setInteractiveActive(true); expect(h.events.some(event => event.playbackId === first.playbackId && event.state === 'played')).toBe(false);
+    h.broker.setInteractiveActive(false); await vi.waitFor(() => expect(h.host.play).toHaveBeenCalledTimes(2));
+    expect(h.events.filter(event => event.playbackId === second.playbackId).map(event => event.state)).toEqual(['queued']);
+  });
   it('forwards bounded WAV bytes and their format after exact file authorization', async () => {
     const h = await setup(); const bytes = createSilentWavFixture(); const filename = h.filename.replace(/\.mp3$/u, '.wav');
     await writeFile(filename, bytes); h.asset.format = 'wav'; h.asset.bytes = bytes.byteLength;

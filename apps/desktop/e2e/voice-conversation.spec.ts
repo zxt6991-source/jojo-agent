@@ -7,9 +7,46 @@ import { launchElectron } from './helpers/launch-electron';
 
 type VoiceFixtureWindow = Window & { voiceFixtureEvents: SpeechEvent[]; voiceFixtureMicCalls: number };
 
+test('selects and saves an offline neural voice, then explicitly previews it without opening a microphone', async () => {
+  test.setTimeout(60_000);
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'jojo-neural-voice-ui-'));
+  const previousFlag = process.env.JOJO_E2E_SPEECH;
+  process.env.JOJO_E2E_SPEECH = '1';
+  let launched: Awaited<ReturnType<typeof launchElectron>>;
+  try { launched = await launchElectron(directory); }
+  finally { if (previousFlag === undefined) delete process.env.JOJO_E2E_SPEECH; else process.env.JOJO_E2E_SPEECH = previousFlag; }
+  const { app, page } = launched;
+  try {
+    await page.evaluate(async () => {
+      const { settings } = await window.desktopAgent.getSpeechSettings();
+      await window.desktopAgent.saveSpeechSettings({ settings: { ...settings, playback: { ...settings.playback, volume: 0 } } });
+      Object.defineProperty(navigator.mediaDevices, 'getUserMedia', { configurable: true, value: () => { throw new Error('Voice selection must not open the microphone.'); } });
+    });
+    await page.getByRole('button', { name: '新建对话', exact: true }).click();
+    await page.getByRole('button', { name: '设置语音', exact: true }).click();
+    const form = page.getByRole('form', { name: '语音', exact: true });
+    await form.getByLabel('朗读方式', { exact: true }).selectOption('mlx-qwen3');
+    await expect(form.getByLabel('朗读服务', { exact: true })).toHaveValue('Qwen3 · 本机自然声音');
+    await form.getByLabel('默认声音', { exact: true }).selectOption('Serena');
+    await form.getByText('本地模型位置', { exact: true }).click();
+    await form.getByLabel('自然声音 Python 路径', { exact: true }).fill('/offline/neural/bin/python3');
+    await form.getByLabel('自然声音模型路径', { exact: true }).fill('/offline/neural/model');
+    await form.getByLabel('启用语音', { exact: true }).check();
+    await form.getByRole('button', { name: '保存语音设置', exact: true }).click();
+    await expect(form.getByText('所有设置已保存。', { exact: true })).toBeVisible();
+    const saved = await page.evaluate(() => window.desktopAgent.getSpeechSettings());
+    expect(saved.settings.provider.tts).toMatchObject({ id: 'mlx-qwen3', speakerId: 'Serena', speechRate: 0, local: { pythonPath: '/offline/neural/bin/python3', modelDirectory: '/offline/neural/model' } });
+    expect(saved.settings.enabled).toBe(true);
+    expect((await page.evaluate(() => window.desktopAgent.getSpeechStatus())).diagnostics?.tts.requests).toBe(0);
+    await form.getByRole('button', { name: '试听声音', exact: true }).click();
+    await expect.poll(async () => (await page.evaluate(() => window.desktopAgent.getSpeechStatus())).diagnostics?.tts.completed).toBe(1);
+    await form.screenshot({ path: test.info().outputPath('offline-neural-voice.png') });
+  } finally { await app.close(); }
+});
+
 async function expectSpeechSettingsLayout(settingsPage: Locator) {
   const checks = settingsPage.locator('.speech-setting-check');
-  await expect(checks).toHaveCount(5);
+  await expect(checks).toHaveCount(6);
   for (const label of await checks.all()) {
     const [input, text] = await Promise.all([label.locator('input').boundingBox(), label.locator('span').boundingBox()]);
     if (!input || !text) throw new Error('Speech preference control has no visible bounds.');
@@ -43,19 +80,13 @@ async function expectSpeechSettingsLayout(settingsPage: Locator) {
     expect(field.rightGap, `${field.name}: form control stays inside its field`).toBeGreaterThanOrEqual(-1);
     if (!field.range) expect(field.height, `${field.name}: text is not vertically clipped`).toBeGreaterThanOrEqual(field.textHeight);
   }
-  const validation = settingsPage.locator('.speech-validation-section');
-  const [record, listen] = await Promise.all([
-    validation.getByRole('button', { name: '开始录音', exact: true }).boundingBox(),
-    validation.getByRole('button', { name: '试听 AI 合成语音', exact: true }).boundingBox()
-  ]);
-  if (!record || !listen) throw new Error('Speech validation actions have no visible bounds.');
-  expect(Math.abs(record.y + record.height / 2 - (listen.y + listen.height / 2))).toBeLessThanOrEqual(2);
-  expect(record.x + record.width).toBeLessThanOrEqual(listen.x);
+  const listen = await settingsPage.getByRole('button', { name: '试听声音', exact: true }).boundingBox();
+  if (!listen) throw new Error('Optional voice preview has no visible bounds.');
+  expect(listen.height).toBeGreaterThanOrEqual(30);
 }
 
 async function screenshotSpeechSettings(settingsPage: Locator, state: string) {
   await settingsPage.locator('.speech-provider-section').screenshot({ path: test.info().outputPath(`speech-providers-${state}.png`) });
-  await settingsPage.locator('.speech-validation-section').screenshot({ path: test.info().outputPath(`speech-validation-${state}.png`) });
   await settingsPage.locator('.speech-preferences-section').screenshot({ path: test.info().outputPath(`speech-preferences-${state}.png`) });
 }
 
@@ -70,7 +101,6 @@ async function expectComposerVoiceLayout(page: Page) {
   await expect(microphone).toHaveText('');
   await expect(composer.getByRole('combobox', { name: '录音操作方式', exact: true })).toHaveCount(0);
   await expect(composer.getByRole('combobox', { name: '语音提交方式', exact: true })).toHaveCount(0);
-  expect(await microphone.evaluate(button => button.previousElementSibling?.classList.contains('model-select') && button.nextElementSibling?.classList.contains('send'))).toBe(true);
   const [modelBox, microphoneBox, sendBox] = await Promise.all([model.boundingBox(), microphone.boundingBox(), send.boundingBox()]);
   if (!modelBox || !microphoneBox || !sendBox) throw new Error('Composer voice controls have no visible bounds.');
   expect(modelBox.x + modelBox.width).toBeLessThanOrEqual(microphoneBox.x);
@@ -78,7 +108,7 @@ async function expectComposerVoiceLayout(page: Page) {
   expect(Math.abs(microphoneBox.y + microphoneBox.height / 2 - (sendBox.y + sendBox.height / 2))).toBeLessThanOrEqual(2);
 }
 
-test('explicit offline speech validation, real PCM worklet, review commit deduplication and completed message playback', async () => {
+test('saved speech settings work directly with real PCM worklet, review commit deduplication and completed message playback', async () => {
   test.setTimeout(90_000);
   const directory = await mkdtemp(path.join(os.tmpdir(), 'jojo-voice-conversation-'));
   const previousFlag = process.env.JOJO_E2E_SPEECH;
@@ -120,30 +150,27 @@ test('explicit offline speech validation, real PCM worklet, review commit dedupl
     const initialSessionId = (await page.evaluate(() => window.desktopAgent.listSessions()))[0]!.id;
     await page.getByRole('button', { name: '设置语音', exact: true }).click();
     const settingsPage = page.getByRole('form', { name: '语音', exact: true });
-    await expect(settingsPage.getByText('语音尚未启用', { exact: true })).toBeVisible();
-    await expect(settingsPage.getByRole('button', { name: '启用语音并保存', exact: true })).toBeDisabled();
-    await settingsPage.getByLabel('语音启用说明', { exact: true }).screenshot({ path: test.info().outputPath('voice-activation.png') });
-    await expect(settingsPage.getByLabel('启用语音', { exact: true })).toBeDisabled();
+    await expect(settingsPage.getByText('显式验证', { exact: true })).toHaveCount(0);
+    await expect(settingsPage.getByLabel('语音启用说明', { exact: true })).toHaveCount(0);
+    await expect(settingsPage.getByRole('button', { name: '开始录音', exact: true })).toHaveCount(0);
+    await expect(settingsPage.getByLabel('启用语音', { exact: true })).toBeEnabled();
     await expect(settingsPage.getByLabel('API Key', { exact: true })).toHaveCount(0);
     await expect(settingsPage.getByText(/原始录音不会保存/u)).toBeVisible();
     await expectSpeechSettingsLayout(settingsPage);
     await screenshotSpeechSettings(settingsPage, 'disabled');
     await expect(settingsPage.getByRole('textbox', { name: '转写服务', exact: true })).toHaveValue('SenseVoice · 本地识别');
     await expect(settingsPage.getByRole('textbox', { name: '朗读服务', exact: true })).toHaveValue('Mac 系统朗读');
-    await settingsPage.getByRole('button', { name: '开始录音', exact: true }).click();
-    await expect(settingsPage.getByText(/可以说话 · 1 \/ 60 秒/u)).toBeVisible();
-    await settingsPage.getByRole('button', { name: '结束录音', exact: true }).click();
-    await expect(settingsPage.getByText('转写：已通过')).toBeVisible();
-    await expect(settingsPage.getByRole('button', { name: '启用语音并保存', exact: true })).toBeDisabled();
-    await expect(settingsPage.locator('.speech-test-transcript')).toContainText('E2E: text');
+    await settingsPage.getByLabel('启用语音', { exact: true }).check();
+    await settingsPage.getByRole('button', { name: '保存语音设置', exact: true }).click();
+    await expect(settingsPage.getByText('所有设置已保存。', { exact: true })).toBeVisible();
+    const untested = await page.evaluate(() => window.desktopAgent.getSpeechStatus());
+    expect(untested.diagnostics?.asr.requests).toBe(0);
+    expect(untested.diagnostics?.tts.requests).toBe(0);
+    expect(await page.evaluate(() => (window as unknown as VoiceFixtureWindow).voiceFixtureMicCalls)).toBe(0);
     expect((await page.evaluate(() => window.desktopAgent.listSessions())).map(session => session.id)).toEqual([initialSessionId]);
     expect(await page.evaluate(id => window.desktopAgent.loadMessages(id), initialSessionId)).toHaveLength(0);
-    await settingsPage.getByRole('button', { name: '试听 AI 合成语音', exact: true }).click();
-    await expect(settingsPage.getByText('合成：已通过')).toBeVisible();
-    await expect(settingsPage.getByRole('button', { name: '启用语音并保存', exact: true })).toBeEnabled();
-    await expect(settingsPage.getByLabel('启用语音', { exact: true })).toBeEnabled();
     await expectSpeechSettingsLayout(settingsPage);
-    await screenshotSpeechSettings(settingsPage, 'validated');
+    await settingsPage.screenshot({ path: test.info().outputPath('speech-settings-direct-save.png') });
     const originalSize = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find(window => window.isVisible())!.getSize());
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find(window => window.isVisible())!.setSize(900, 820));
     await expect.poll(() => page.evaluate(() => window.innerWidth)).toBeLessThanOrEqual(900);
@@ -151,7 +178,6 @@ test('explicit offline speech validation, real PCM worklet, review commit dedupl
     await screenshotSpeechSettings(settingsPage, 'narrow');
     await app.evaluate(({ BrowserWindow }, size) => BrowserWindow.getAllWindows().find(window => window.isVisible())!.setSize(size[0]!, size[1]!), originalSize);
     await expect.poll(() => page.evaluate(() => window.innerWidth)).toBeGreaterThan(900);
-    await settingsPage.getByRole('button', { name: '启用语音并保存', exact: true }).click();
     await expect.poll(() => page.evaluate(async () => (await window.desktopAgent.getSpeechSettings()).settings.enabled)).toBe(true);
     await expect(settingsPage.getByLabel('语音启用说明', { exact: true })).toHaveCount(0);
     await page.getByRole('button', { name: '返回', exact: true }).click();
@@ -186,13 +212,13 @@ test('explicit offline speech validation, real PCM worklet, review commit dedupl
     const assistant = messages.find(message => message.role === 'assistant' && message.content.some(block => block.type === 'text' && block.text === 'hello from offline e2e'))!;
     await page.getByRole('button', { name: '朗读助手回复', exact: true }).click();
     await expect.poll(async () => (await page.evaluate(() => window.desktopAgent.getSpeechStatus())).playbacks.some(playback => playback.sessionId === sessionId && playback.messageId === assistant.id && playback.state === 'played')).toBe(true);
-    expect(await page.evaluate(() => (window as unknown as VoiceFixtureWindow).voiceFixtureMicCalls)).toBe(2);
+    expect(await page.evaluate(() => (window as unknown as VoiceFixtureWindow).voiceFixtureMicCalls)).toBe(1);
 
     // The second round exercises the opted-in automatic path through the same real Worklet.
     await page.getByRole('button', { name: '⚙ 设置' }).click();
     await page.getByRole('button', { name: '语音', exact: true }).click();
     await settingsPage.getByLabel('转写后').selectOption('auto_send');
-    await settingsPage.getByLabel('自动朗读已完成的助手回复', { exact: true }).check();
+    await settingsPage.getByLabel('语音输入后自动朗读回复', { exact: true }).check();
     await settingsPage.getByRole('button', { name: '保存语音设置', exact: true }).click();
     await expect.poll(async () => {
       const settings = (await page.evaluate(() => window.desktopAgent.getSpeechSettings())).settings;
@@ -222,7 +248,7 @@ test('explicit offline speech validation, real PCM worklet, review commit dedupl
     expect(automaticCommit.runId).not.toBe(commits[0]!.runId);
     expect(automaticCapture.voiceTurnId).not.toBe(receipt.voiceTurnId);
     expect(automaticUsers[1]!.metadata?.voice).toEqual({ voiceTurnId: automaticCapture.voiceTurnId, generation: automaticCapture.generation });
-    expect(await page.evaluate(() => (window as unknown as VoiceFixtureWindow).voiceFixtureMicCalls)).toBe(3);
+    expect(await page.evaluate(() => (window as unknown as VoiceFixtureWindow).voiceFixtureMicCalls)).toBe(2);
 
     // Changing the active session leaves a normal empty composer and preserves the previous transcript.
     const nextSession = await page.evaluate(() => window.desktopAgent.createSession({ title: '语音隔离测试' }));
@@ -326,32 +352,40 @@ test('explicit offline speech validation, real PCM worklet, review commit dedupl
     await settingsPage.getByText('本次启动统计', { exact: true }).click();
     await settingsPage.getByRole('button', { name: '刷新统计', exact: true }).click();
     const diagnostics = (await page.evaluate(() => window.desktopAgent.getSpeechStatus())).diagnostics!;
-    expect(diagnostics.asr.requests).toBeGreaterThanOrEqual(3);
+    expect(diagnostics.asr.requests).toBe(2);
     expect(diagnostics.tts.requests).toBeGreaterThanOrEqual(3);
     expect(JSON.stringify(diagnostics)).not.toContain('offline-voice-fixture-');
     await settingsPage.locator('.speech-presets-section').screenshot({ path: test.info().outputPath('speech-independent-presets.png') });
     await page.getByRole('button', { name: '返回', exact: true }).click();
 
-    // Automatic playback reads one segment; later segments require the visible button.
+    // Typed conversation stays silent even with automatic voice replies enabled.
+    // A manual click explicitly authorizes the complete reading.
     await page.getByPlaceholder('随心输入').fill('E2E: long speech');
     await page.getByRole('button', { name: '发送消息', exact: true }).click();
-    await expect(page.getByRole('button', { name: '继续朗读助手回复', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: '朗读助手回复', exact: true })).toBeVisible();
     const longReply = (await page.evaluate(id => window.desktopAgent.loadMessages(id), nextSession.id))
       .find(message => message.role === 'assistant' && message.content.some(block => block.type === 'text' && block.text.length > 1_000))!;
     const playedSegments = async () => (await page.evaluate(() => window.desktopAgent.getSpeechStatus())).playbacks
       .filter(playback => playback.messageId === longReply.id && playback.state === 'played');
-    expect(await playedSegments()).toHaveLength(1);
-    await page.getByRole('button', { name: '继续朗读助手回复', exact: true }).click();
-    await expect.poll(async () => (await playedSegments()).length).toBe(2);
-    await expect(page.getByRole('button', { name: '继续朗读助手回复', exact: true })).toBeVisible();
+    expect(await playedSegments()).toHaveLength(0);
+    const beforeManual = await page.evaluate(() => window.desktopAgent.getSpeechStatus());
+    await page.getByRole('button', { name: '朗读助手回复', exact: true }).click();
+    await expect.poll(async () => { const segments = await playedSegments(); return segments.length === 1 && segments.at(-1)?.nextOffset === undefined; }).toBe(true);
+    await expect(page.getByRole('button', { name: '继续朗读助手回复', exact: true })).toHaveCount(0);
+    const afterManual = await page.evaluate(() => window.desktopAgent.getSpeechStatus());
+    const syntheses = afterManual.diagnostics!.tts.requests - beforeManual.diagnostics!.tts.requests;
+    const reused = afterManual.diagnostics!.tts.cacheHits - beforeManual.diagnostics!.tts.cacheHits;
+    expect(syntheses + reused).toBeGreaterThan(1);
+    expect(reused).toBeGreaterThan(0); // Identical phrases remain eligible for audio cache reuse.
 
-    // Approval speech is fixed and cannot approve the pending write.
+    // An approval in a typed task also stays silent.
     await page.getByPlaceholder('随心输入').fill('E2E: approval deny');
     await page.getByRole('button', { name: '发送消息', exact: true }).click();
     await expect(page.getByRole('dialog')).toBeVisible();
     const beforeApproval = (await playedSegments()).length;
-    await expect.poll(async () => (await page.evaluate(() => window.desktopAgent.getSpeechStatus())).playbacks
-      .some(playback => playback.sessionId === nextSession.id && !playback.messageId && playback.state === 'played')).toBe(true);
+    expect((await page.evaluate(() => window.desktopAgent.getSpeechStatus())).playbacks
+      .some(playback => playback.sessionId === nextSession.id && !playback.messageId && playback.state === 'played')).toBe(false);
+    await expect(page.locator('.voice-playback-status')).toHaveCount(0);
     await expect(page.getByRole('dialog')).toBeVisible();
     expect(await playedSegments()).toHaveLength(beforeApproval);
     await page.getByRole('button', { name: '拒绝', exact: false }).click();
@@ -361,7 +395,7 @@ test('explicit offline speech validation, real PCM worklet, review commit dedupl
     await page.getByRole('button', { name: '⚙ 设置' }).click();
     await page.getByRole('button', { name: '语音', exact: true }).click();
     await settingsPage.getByLabel('转写后').selectOption('review');
-    await settingsPage.getByLabel('自动朗读已完成的助手回复', { exact: true }).uncheck();
+    await settingsPage.getByLabel('语音输入后自动朗读回复', { exact: true }).uncheck();
     await settingsPage.getByRole('button', { name: '保存语音设置', exact: true }).click();
     await expect.poll(() => page.evaluate(async () => (await window.desktopAgent.getSpeechSettings()).settings.inputMode)).toBe('review');
     await page.getByRole('button', { name: '返回', exact: true }).click();
@@ -398,7 +432,7 @@ test('explicit offline speech validation, real PCM worklet, review commit dedupl
     const enableAutoRead = async () => {
       await page.getByRole('button', { name: '⚙ 设置' }).click();
       await page.getByRole('button', { name: '语音', exact: true }).click();
-      await settingsPage.getByLabel('自动朗读已完成的助手回复', { exact: true }).check();
+      await settingsPage.getByLabel('语音输入后自动朗读回复', { exact: true }).check();
       await settingsPage.getByRole('button', { name: '保存语音设置', exact: true }).click();
       await expect.poll(() => page.evaluate(async () => (await window.desktopAgent.getSpeechSettings()).settings.autoReadReplies)).toBe(true);
       await page.getByRole('button', { name: '返回', exact: true }).click();

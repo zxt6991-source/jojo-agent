@@ -1,0 +1,101 @@
+{
+  "revision": "a0d5c6a264c0ef92d70d8661d8cc502d79627cd6",
+  "files": [
+    {
+      "path": "LICENSE",
+      "bytes": 1053,
+      "gitBlob": "7c49476032fa4cd6c8faa8eda042f38a31c4ea88"
+    },
+    {
+      "path": "README.md",
+      "bytes": 257,
+      "gitBlob": "146aa4632b14918d7f2212fd490d69ea010b3e4c"
+    },
+    {
+      "path": "date.fst",
+      "bytes": 59154,
+      "gitBlob": "20ec7f4c077f9ec85ca9d01c4b4f4581f6e552ee"
+    },
+    {
+      "path": "dict/README.md",
+      "bytes": 683,
+      "gitBlob": "887911898611a1032f606bdbbdd6315b7bf992f6"
+    },
+    {
+      "path": "dict/hmm_model.utf8",
+      "bytes": 519739,
+      "gitBlob": "2e1f807a0f31eeee3abe4cd1e0a0419d143af96a"
+    },
+    {
+      "path": "dict/idf.utf8",
+      "bytes": 5998717,
+      "gitBlob": "4ca9cecfc1d4108d639f06b83d42ab930a79fa92"
+    },
+    {
+      "path": "dict/jieba.dict.utf8",
+      "bytes": 5071204,
+      "gitBlob": "0015948de30f38fa97dd20adef231c1909bd8efd"
+    },
+    {
+      "path": "dict/pos_dict/char_state_tab.utf8",
+      "bytes": 327139,
+      "gitBlob": "e1e4d8d815b2938d199f14c922398714286eef95"
+    },
+    {
+      "path": "dict/pos_dict/prob_emit.utf8",
+      "bytes": 1687686,
+      "gitBlob": "cc207d11dc958a46f8f91d142bdb330f2b5d28a0"
+    },
+    {
+      "path": "dict/pos_dict/prob_start.utf8",
+      "bytes": 4347,
+      "gitBlob": "433750d56bed6affb5b1b2989044403bcef4448e"
+    },
+    {
+      "path": "dict/pos_dict/prob_trans.utf8",
+      "bytes": 124159,
+      "gitBlob": "87e5ac5ca772a625f0a0f67352e9b31d6872461c"
+    },
+    {
+      "path": "dict/stop_words.utf8",
+      "bytes": 8974,
+      "gitBlob": "32ac9e67dc44222534de99cc298dccd4b8de9907"
+    },
+    {
+      "path": "dict/user.dict.utf8",
+      "bytes": 49,
+      "gitBlob": "6a42ee4e06fb197d968d2bb39becad65e01b2e57"
+    },
+    {
+      "path": "lexicon.txt",
+      "bytes": 6837671,
+      "gitBlob": "1a1119efceca0c2dae243f84061e70e4e3d99710"
+    },
+    {
+      "path": "model.int8.onnx",
+      "bytes": 53517430,
+      "sha256": "f085f5079e05f039b800aeb542f5253c26a303211b0c6465d0d9387977855a63"
+    },
+    {
+      "path": "new_heteronym.fst",
+      "bytes": 21974,
+      "gitBlob": "478a809252067229211f7f414414f34f98314d9d"
+    },
+    {
+      "path": "number.fst",
+      "bytes": 64482,
+      "gitBlob": "66c0bd468903fc98d212cd6c3c5b2793ce8eb2c3"
+    },
+    {
+      "path": "phone.fst",
+      "bytes": 88630,
+      "gitBlob": "2eba908c27ec0767281cad25d322008b16869c5b"
+    },
+    {
+      "path": "tokens.txt",
+      "bytes": 655,
+      "gitBlob": "78ed7abf73cfa7955577a2894388dcd8f5a317c3"
+    }
+  ],
+  "repository": "https://huggingface.co/csukuangfj/vits-melo-tts-zh_en"
+}

@@ -33,6 +33,7 @@ const WorkingDirectorySchema = z.string().min(1).max(4_096);
 const ErrorSchema = z.string().max(100_000);
 
 export const SpeechControlSchema = z.discriminatedUnion('action', [
+  z.object({ action: z.literal('stopRealtime'), sessionId: IdSchema.optional() }).strict(),
   z.object({ action: z.literal('stopRead'), sessionId: IdSchema.optional(), generation: z.number().int().nonnegative().optional() }).strict(),
   z.object({ action: z.literal('cancel'), input: SpeechCaptureHandleSchema }).strict(),
   z.object({ action: z.literal('commit'), input: CommitVoiceTurnInputSchema }).strict(),

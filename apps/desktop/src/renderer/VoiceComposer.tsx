@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useId, useRef, useState } from 'react';
 import type { CaptureView } from './useSpeech';
 
 type VoiceCapture = CaptureView & { start: () => Promise<void>; stop: () => void; cancel: () => void };
@@ -53,6 +53,49 @@ export function VoiceCaptureButton({ capture, enabled, onSettings, disabled = fa
   </button>;
 }
 
+/** Keep continuous-mode discovery in the toolbar until explicitly started. */
+export function VoiceInputOptions({ disabled, canStartConversation, onStartConversation, onSettings }: {
+  disabled: boolean; canStartConversation: boolean; onStartConversation(): void; onSettings(): void;
+}) {
+  const [open, setOpen] = useState(false);
+  const root = useRef<HTMLDivElement>(null), trigger = useRef<HTMLButtonElement>(null), menu = useRef<HTMLDivElement>(null);
+  const id = useId();
+  useEffect(() => {
+    if (!open) return;
+    if (disabled) { setOpen(false); return; }
+    menu.current?.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus();
+    const outside = (event: PointerEvent) => { if (event.target instanceof Node && !root.current?.contains(event.target)) setOpen(false); };
+    document.addEventListener('pointerdown', outside);
+    return () => document.removeEventListener('pointerdown', outside);
+  }, [open, disabled]);
+  const choose = (action: () => void) => { setOpen(false); trigger.current?.focus(); action(); };
+  return <div className="voice-input-options" ref={root}
+    onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false); }}
+    onKeyDown={event => {
+      if (event.key === 'Escape' && open) {
+        event.preventDefault(); event.stopPropagation(); setOpen(false); trigger.current?.focus(); return;
+      }
+      if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+      if (!open) {
+        if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); setOpen(true); }
+        return;
+      }
+      event.preventDefault();
+      const items = [...(menu.current?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)') ?? [])];
+      const index = items.indexOf(document.activeElement as HTMLButtonElement);
+      const next = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1 : (index + (event.key === 'ArrowUp' ? -1 : 1) + items.length) % items.length;
+      items[next]?.focus();
+    }}>
+    <button type="button" className="voice-options-toggle" ref={trigger} aria-label="语音选项" title="语音选项" aria-haspopup="menu" aria-expanded={open && !disabled} aria-controls={id} disabled={disabled} onClick={() => setOpen(value => !value)}>
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4" /></svg>
+    </button>
+    {open && !disabled && <div className="voice-options-menu" ref={menu} id={id} role="menu" aria-label="语音选项">
+      <button type="button" role="menuitem" tabIndex={-1} disabled={!canStartConversation} onClick={() => choose(onStartConversation)}>开始连续对话</button>
+      <button type="button" role="menuitem" tabIndex={-1} onClick={() => choose(onSettings)}>语音设置</button>
+    </div>}
+  </div>;
+}
+
 export function VoiceCaptureStatus({ capture }: { capture: VoiceCapture }) {
   const busy = capture.state === 'recording' || capture.state === 'connecting' || capture.state === 'recognizing';
   return <>
@@ -62,6 +105,7 @@ export function VoiceCaptureStatus({ capture }: { capture: VoiceCapture }) {
       {capture.state === 'recording' && <button type="button" onClick={capture.stop}>结束录音</button>}
       <button type="button" className="voice-cancel" onClick={capture.cancel}>取消</button>
     </div>}
+    {capture.state === 'recording' && capture.text && <div className="speech-test-transcript" role="status" aria-live="polite"><span>实时转写 · {capture.text}</span></div>}
     {capture.error && <div className="voice-error" role="alert">{capture.error}</div>}
   </>;
 }

@@ -9,7 +9,7 @@ export class CaptureChannel {
   private ending = false;
   private ended = false;
   private closed = false;
-  constructor(identity: CaptureIdentity, private readonly port: CapturePort, private readonly onFailure: (message: string) => void) {
+  constructor(identity: CaptureIdentity, private readonly port: CapturePort, private readonly onFailure: (message: string, code: 'invalid_audio') => void) {
     this.identity = { captureId: identity.captureId, generation: identity.generation };
     port.onmessage = (event) => this.receive(event.data);
     port.start();
@@ -59,5 +59,5 @@ export class CaptureChannel {
     }
   }
 
-  private fail(message: string): void { if (!this.closed) { this.close(); this.onFailure(message); } }
+  private fail(message: string): void { if (!this.closed) { this.close(); this.onFailure(message, 'invalid_audio'); } }
 }

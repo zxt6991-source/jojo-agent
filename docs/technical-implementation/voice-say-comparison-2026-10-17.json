@@ -1,0 +1,207 @@
+{
+  "version": 2,
+  "measuredAt": "2026-10-17T11:29:37.288Z",
+  "device": {
+    "platform": "darwin",
+    "arch": "arm64",
+    "cpu": "Apple M4 Pro"
+  },
+  "provider": "macos-say",
+  "capabilities": {
+    "textStreaming": false,
+    "audioStreaming": false,
+    "wordTimings": false
+  },
+  "coldStartMs": 1173.578334,
+  "warmFirstPcmMs": {
+    "samples": 15,
+    "p50Ms": 1033.0243750000004,
+    "p95Ms": 1128.96025,
+    "meanMs": 1046.9138306666664
+  },
+  "totalGenerationMs": {
+    "samples": 16,
+    "p50Ms": 1033.1908749999998,
+    "p95Ms": 1173.700834,
+    "meanMs": 1055.0319923125
+  },
+  "rtf": {
+    "samples": 16,
+    "p50": 0.1342269272164151,
+    "p95": 0.5454845084430674,
+    "mean": 0.19237474848288888
+  },
+  "cancelLatencyMs": 0.9414160000014817,
+  "cancelProbeDelayMs": 50,
+  "postCancelRecovery": {
+    "firstPcmMs": 1040.1485829999983,
+    "totalMs": 1040.1827080000003,
+    "audioMs": 2151.6666666666665,
+    "rtf": 0.48343115786212254
+  },
+  "runs": [
+    {
+      "category": "short",
+      "cold": true,
+      "firstPcmMs": 1173.578334,
+      "totalMs": 1173.700834,
+      "audioMs": 2151.6666666666665,
+      "rtf": 0.5454845084430674
+    },
+    {
+      "category": "sentence",
+      "cold": false,
+      "firstPcmMs": 1099.716375,
+      "totalMs": 1100.0877499999997,
+      "audioMs": 9790.916666666666,
+      "rtf": 0.11235799337821618
+    },
+    {
+      "category": "long",
+      "cold": false,
+      "firstPcmMs": 1128.96025,
+      "totalMs": 1129.7686669999998,
+      "audioMs": 27967.041666666668,
+      "rtf": 0.040396430929859395
+    },
+    {
+      "category": "date",
+      "cold": false,
+      "firstPcmMs": 1033.0243750000004,
+      "totalMs": 1033.1908749999998,
+      "audioMs": 7749,
+      "rtf": 0.13333215576203378
+    },
+    {
+      "category": "model",
+      "cold": false,
+      "firstPcmMs": 1026.9031670000004,
+      "totalMs": 1027.0447080000004,
+      "audioMs": 6480.208333333333,
+      "rtf": 0.1584894582350105
+    },
+    {
+      "category": "symbols",
+      "cold": false,
+      "firstPcmMs": 994.2278329999999,
+      "totalMs": 994.3105000000005,
+      "audioMs": 4075.0416666666665,
+      "rtf": 0.24400008179875474
+    },
+    {
+      "category": "path",
+      "cold": false,
+      "firstPcmMs": 1009.5837499999998,
+      "totalMs": 1009.7425840000005,
+      "audioMs": 8433.083333333334,
+      "rtf": 0.11973587169580131
+    },
+    {
+      "category": "command",
+      "cold": false,
+      "firstPcmMs": 1020.0016670000005,
+      "totalMs": 1020.0919169999997,
+      "audioMs": 4811.291666666667,
+      "rtf": 0.21202038614024293
+    },
+    {
+      "category": "short",
+      "cold": false,
+      "firstPcmMs": 1018.4707909999997,
+      "totalMs": 1018.5008749999997,
+      "audioMs": 2151.6666666666665,
+      "rtf": 0.47335439581719585
+    },
+    {
+      "category": "sentence",
+      "cold": false,
+      "firstPcmMs": 1029.9397499999995,
+      "totalMs": 1030.1017499999998,
+      "audioMs": 9790.916666666666,
+      "rtf": 0.10520993948472648
+    },
+    {
+      "category": "long",
+      "cold": false,
+      "firstPcmMs": 1098.8268749999988,
+      "totalMs": 1099.2559579999997,
+      "audioMs": 27967.041666666668,
+      "rtf": 0.039305407096746306
+    },
+    {
+      "category": "date",
+      "cold": false,
+      "firstPcmMs": 1040.0138339999994,
+      "totalMs": 1040.1244590000006,
+      "audioMs": 7749,
+      "rtf": 0.1342269272164151
+    },
+    {
+      "category": "model",
+      "cold": false,
+      "firstPcmMs": 1068.3577499999992,
+      "totalMs": 1068.449708,
+      "audioMs": 6480.208333333333,
+      "rtf": 0.1648789133065424
+    },
+    {
+      "category": "symbols",
+      "cold": false,
+      "firstPcmMs": 1019.7492089999996,
+      "totalMs": 1019.8068339999991,
+      "audioMs": 4075.0416666666665,
+      "rtf": 0.25025678690401915
+    },
+    {
+      "category": "path",
+      "cold": false,
+      "firstPcmMs": 1063.2612090000002,
+      "totalMs": 1063.382125,
+      "audioMs": 8433.083333333334,
+      "rtf": 0.12609648013281027
+    },
+    {
+      "category": "command",
+      "cold": false,
+      "firstPcmMs": 1052.6706249999988,
+      "totalMs": 1052.952333000001,
+      "audioMs": 4811.291666666667,
+      "rtf": 0.21885023938478082
+    }
+  ],
+  "benchmarkSettings": {
+    "iterations": 2,
+    "inferenceProvider": "system",
+    "inferenceThreads": null,
+    "runtimeProbeTiming": "after_cancel_recovery"
+  },
+  "cancellation": {
+    "mode": "cancel_say_request",
+    "observedPhase": "say_or_buffered",
+    "noPostCancelAudio": true
+  },
+  "sampledChildPeakCpuPercent": 46.7,
+  "sampledChildPeakRssBytes": 38010880,
+  "resourceSamples": 352,
+  "resourceSamplingMs": 50,
+  "resourceScope": "direct_child_processes_only_not_os_voice_services",
+  "appPackageDeltaBytes": 0,
+  "externalModelBytes": 0,
+  "model": null,
+  "runtime": null,
+  "processesStarted": null,
+  "nativeSentenceCallbacks": null,
+  "resampler": null,
+  "subjectiveChineseMos": null,
+  "prosodyContinuity": null,
+  "mixedPronunciation": null,
+  "candidates": [
+    {
+      "provider": "cosyvoice",
+      "status": "not_benchmarked",
+      "reason": "candidate_model_not_installed"
+    }
+  ],
+  "productionTtsChanged": false,
+  "acousticReleaseGate": "pending_physical_device_listening"
+}

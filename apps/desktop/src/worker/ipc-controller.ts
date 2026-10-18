@@ -4,7 +4,7 @@ import {
   serializedIpcBytes,
   WorkerCommandSchema,
   SpeechStreamAttachSchema,
-  SpeechProviderError,
+  VoiceOutputAttachSchema,
   type ChannelSettingsSnapshot,
   type FileAttachment,
   type HookRuntime, type ImageContentBlock,
@@ -15,6 +15,7 @@ import {
 import type { ApplicationContext } from '@desktop-agent/contracts/application';
 import type { DesktopVoiceTasks } from './voice-tasks';
 import type { PcmAudioPort } from './pcm-upload-stream';
+import type { DesktopVoiceOutput } from './voice-output';
 import {
   McpManager
 } from '@desktop-agent/extensions';
@@ -38,8 +39,10 @@ import { UtilityModelBrowserHealingAdapter } from './browser-healing';
 import { BrowserToolBridge } from './browser-tools';
 import type { DesktopSchedulerRuntime } from './scheduler-runtime';
 import { InteractiveTerminalSecretBroker } from './terminal-secret-broker';
+import { speechRequestError } from './speech-request-error';
 
 interface Context {
+  voiceOutput: DesktopVoiceOutput;
   voiceTasks: DesktopVoiceTasks;
   parentPort: ParentPort;
   sessionController: { handle(command: WorkerCommand): boolean };
@@ -79,6 +82,11 @@ interface Context {
 
 export function bindWorkerIpc(ctx: Context): void {
   ctx.parentPort.on('message', (event) => {
+    if (event.data && typeof event.data === 'object' && 'type' in event.data && event.data.type === 'voice.output.attach') {
+      const attach = VoiceOutputAttachSchema.safeParse(event.data);
+      if (!attach.success || event.ports?.length !== 1) { event.ports?.forEach(port => port.close()); return; }
+      ctx.voiceOutput.attach(attach.data.handle, event.ports[0]!); return;
+    }
     if (event.data && typeof event.data === 'object' && 'type' in event.data && event.data.type === 'speech.stream.attach') {
       const attach = SpeechStreamAttachSchema.safeParse(event.data);
       if (!attach.success || event.ports?.length !== 1) { event.ports?.forEach(port => port.close()); return; }
@@ -103,8 +111,9 @@ export function bindWorkerIpc(ctx: Context): void {
       void ctx.extensionReady.then(async () => {
         const control = command.control;
         if (control.action === 'status') return ctx.voiceTasks.status();
+        if (control.action === 'stopRealtime') { ctx.voiceOutput.stop(control.sessionId); return; }
         if (control.action === 'cancel') { await ctx.voiceTasks.cancelCapture(control.input.captureId, control.input.generation); return; }
-        if (control.action === 'stopRead') { ctx.voiceTasks.cancelReadTasks(control.sessionId, control.generation); return; }
+        if (control.action === 'stopRead') { ctx.voiceOutput.stop(control.sessionId); ctx.voiceTasks.cancelReadTasks(control.sessionId, control.generation); return; }
         if (control.action === 'commit') return ctx.voiceTasks.commit(control.input);
         if (control.action === 'readMessage') return ctx.voiceTasks.readMessage(control.input);
         if (control.action === 'readApproval') return ctx.voiceTasks.readApproval(control.input);
@@ -126,11 +135,7 @@ export function bindWorkerIpc(ctx: Context): void {
         if (control.action === 'releaseSession') { await ctx.voiceTasks.releaseSession(control.sessionId); return; }
       }).then(result => ctx.post({ type: 'speech.result', requestId: command.requestId, ok: true, ...(result !== undefined ? { result } : {}) }))
         .catch((error: unknown) => ctx.post({ type: 'speech.result', requestId: command.requestId, ok: false,
-          error: error instanceof SpeechProviderError && error.code === 'local_unavailable'
-            ? '本地朗读不可用，请确认使用 macOS 且已安装所选系统声音。'
-            : error instanceof SpeechProviderError && error.code === 'speaker_unavailable'
-              ? '所选音色不可用，请检查当前朗读服务和声音设置。'
-              : '语音请求失败，请检查设置、录音或对话任务状态。' }));
+          error: speechRequestError(error, ctx.runtime?.settings.speech.provider.tts.id) }));
     }
     else if (command.type === 'config.update') {
       ctx.desktopChannelSecrets = { ...command.channelSecrets };

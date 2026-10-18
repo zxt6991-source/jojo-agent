@@ -28,3 +28,11 @@ it('rejects removed cloud providers at the runtime boundary', () => {
     expect(() => createSpeechProvider(settings as unknown as ReturnType<typeof createLocalSpeechSettings>)).toThrow();
   }
 });
+
+it('uses the explicitly supplied offline neural engine and never silently substitutes system speech', async () => {
+  const settings = SpeechSettingsSchema.parse({ provider: { tts: { id: 'mlx-qwen3', local: { pythonPath: '/local/python3', modelDirectory: '/local/model' } } } });
+  const neuralTts = { synthesize: vi.fn(async function* (input) { yield { type: 'completed' as const, requestId: input.requestId }; }) };
+  expect(createSpeechProvider(settings, { neuralTts }).tts).toBe(neuralTts);
+  const unavailable = createSpeechProvider(settings);
+  await expect(async () => { for await (const event of unavailable.tts.synthesize({ requestId: randomUUID(), text: '你好', speakerId: 'default', speechRate: 0, signal: new AbortController().signal })) void event; }).rejects.toMatchObject({ code: 'local_unavailable' });
+});

@@ -1,6 +1,7 @@
 import workletUrl from './pcm-capture.worklet.ts?worker&url';
 import { CaptureChannel } from './capture-channel';
-import type { SpeechCaptureHandle } from '@desktop-agent/contracts';
+import type { SpeechCaptureHandle, SpeechErrorCode } from '@desktop-agent/contracts';
+import { sharedRealtimeVoiceGraph, subscribeVoiceGraph } from '../voice/shared-graph';
 
 type RecorderUpdate = { durationMs: number; rms: number };
 
@@ -11,10 +12,19 @@ export class PcmRecorder {
   private channel: CaptureChannel | undefined;
   private closed = false;
   private stopped = false;
+  private shared = false;
+  private unsubscribeGraph: (() => void) | undefined;
 
-  constructor(private readonly onUpdate: (value: RecorderUpdate) => void, private readonly onStopped: () => void, private readonly onError: (message: string) => void) {}
+  constructor(private readonly onUpdate: (value: RecorderUpdate) => void, private readonly onStopped: () => void, private readonly onError: (message: string, code?: SpeechErrorCode) => void) {}
 
-  async start(handle: SpeechCaptureHandle, port: MessagePort, signal: AbortSignal, inputDeviceId?: string): Promise<void> {
+  async start(handle: SpeechCaptureHandle, port: MessagePort, signal: AbortSignal, inputDeviceId?: string, realtimeAudio = false): Promise<void> {
+    if (realtimeAudio) {
+      this.shared = true;
+      this.unsubscribeGraph = subscribeVoiceGraph({ onCaptureUpdate: this.onUpdate, onCaptureStopped: this.onStopped, onError: this.onError });
+      try { await sharedRealtimeVoiceGraph().startCapture(handle, port, signal, inputDeviceId); }
+      catch (error) { this.close(); throw error; }
+      return;
+    }
     const close = () => this.close();
     signal.addEventListener('abort', close, { once: true });
     try {
@@ -54,12 +64,14 @@ export class PcmRecorder {
   stop(): void {
     if (this.closed || this.stopped) return;
     this.stopped = true;
+    if (this.shared) { void sharedRealtimeVoiceGraph().stopCapture().catch(() => this.onError('录音停止失败，请重试。')); return; }
     this.worklet?.port.postMessage({ type: 'stop' });
   }
 
   close(): void {
     if (this.closed) return;
     this.closed = true;
+    if (this.shared) { sharedRealtimeVoiceGraph().cancelCapture(); this.unsubscribeGraph?.(); return; }
     this.worklet?.port.postMessage({ type: 'cancel' });
     this.channel?.close();
     this.releaseMicrophone();
