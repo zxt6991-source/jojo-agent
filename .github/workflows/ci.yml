@@ -31,7 +31,9 @@ jobs:
       - run: pnpm test:architecture
       - run: pnpm docs:check
       - run: pnpm typecheck
-      - run: pnpm test
+      - run: pnpm test --exclude apps/browser-test-site/src/iframe-oopif.integration.test.ts
+      - name: Chrome iframe and OOPIF integration
+        run: pnpm exec vitest run apps/browser-test-site/src/iframe-oopif.integration.test.ts
       - name: Electron E2E smoke
         run: xvfb-run -a pnpm test:e2e:electron
       - name: Package desktop app

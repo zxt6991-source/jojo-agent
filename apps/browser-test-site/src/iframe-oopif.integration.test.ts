@@ -1,8 +1,4 @@
-import { spawn, type ChildProcess } from 'node:child_process';
-import { once } from 'node:events';
 import { mkdtemp, rm } from 'node:fs/promises';
-import http from 'node:http';
-import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -19,46 +15,36 @@ import {
   type BrowserFrameSession
 } from '../../desktop/src/main/browser-frame-routing';
 import { startBrowserTestSite, type BrowserTestSite } from './server';
+import { startTestChrome, TestChromeCleanupError, type TestChrome } from './chrome-test-process';
 
 const chromeExecutable = resolveChromeExecutable();
-const suite = chromeExecutable ? describe : describe.skip;
+// Local checkouts may omit Chrome; CI must execute this coverage or fail clearly.
+const suite = chromeExecutable || process.env.CI ? describe : describe.skip;
 
 suite('iframe and OOPIF Chrome integration', () => {
   let site: BrowserTestSite;
-  let chrome: ChildProcess;
+  let chrome: TestChrome;
   let profile: string;
-  let debugPort: number;
+  let preserveProfile = false;
   let client: ChromeCdpClient;
   let pageSessionId: string;
   const sessions = new Map<string, BrowserFrameSession>();
 
   beforeAll(async () => {
+    if (!chromeExecutable) throw new Error('Chrome integration requires an installed Chrome executable; set CHROME_PATH if it is not on PATH.');
     site = await startBrowserTestSite();
-    debugPort = await allocatePort();
     profile = await mkdtemp(path.join(os.tmpdir(), 'jojo-oopif-chrome-'));
-    chrome = spawn(chromeExecutable!, [
-      '--headless=new',
-      '--disable-gpu',
-      ...(process.env.CI && process.platform === 'linux' ? [
-        '--no-sandbox',
-        '--disable-dev-shm-usage'
-      ] : []),
-      `--remote-debugging-port=${debugPort}`,
-      '--remote-allow-origins=*',
-      `--user-data-dir=${profile}`,
-      '--no-first-run',
-      '--no-default-browser-check',
-      '--site-per-process',
-      '--no-proxy-server',
-      '--host-resolver-rules=MAP jojo-top.test 127.0.0.1, MAP jojo-frame.test 127.0.0.1',
-      'about:blank'
-    ], { stdio: 'ignore' });
-    await vi.waitFor(async () => {
-      await expect(probeChromeCdp(debugPort)).resolves.toHaveProperty('webSocketDebuggerUrl');
-    }, { timeout: 15_000, interval: 100 });
-    const target = await openChromeTarget(debugPort);
-    const browser = await probeChromeCdp(debugPort);
-    client = await ChromeCdpClient.connect(browser.webSocketDebuggerUrl);
+    try {
+      chrome = await startTestChrome(chromeExecutable, profile, { probe: probeChromeCdp, extraArgs: [
+        '--site-per-process', '--no-proxy-server',
+        '--host-resolver-rules=MAP jojo-top.test 127.0.0.1, MAP jojo-frame.test 127.0.0.1'
+      ] });
+    } catch (error) {
+      preserveProfile = error instanceof TestChromeCleanupError;
+      throw error;
+    }
+    const target = await openChromeTarget(chrome.port);
+    client = await ChromeCdpClient.connect(chrome.browser.webSocketDebuggerUrl);
     const attached = await client.send('Target.attachToTarget', {
       targetId: target.id,
       flatten: true
@@ -114,16 +100,13 @@ suite('iframe and OOPIF Chrome integration', () => {
       const targets = await client.send('Target.getTargets').catch(() => undefined);
       throw new Error(`OOPIF session was not attached. frameTree=${JSON.stringify(frameTree)} targets=${JSON.stringify(targets)}`, { cause: error });
     }
-  }, 25_000);
+  }, 60_000);
 
   afterAll(async () => {
     client?.close();
-    if (chrome && chrome.exitCode === null) {
-      chrome.kill('SIGTERM');
-      await Promise.race([once(chrome, 'exit'), new Promise((resolve) => setTimeout(resolve, 2_000))]);
-    }
-    await site?.close();
-    if (profile) await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    try { await chrome?.stop(); }
+    finally { await site?.close(); }
+    if (profile && !preserveProfile) await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
 
   it('routes same-origin iframe DOM work without changing CDP sessions', async () => {
@@ -190,14 +173,3 @@ suite('iframe and OOPIF Chrome integration', () => {
     return response.result?.value;
   }
 });
-
-function allocatePort(): Promise<number> {
-  const server = http.createServer();
-  return new Promise((resolve, reject) => {
-    server.listen(0, '127.0.0.1', () => {
-      const port = (server.address() as AddressInfo).port;
-      server.close((error) => error ? reject(error) : resolve(port));
-    });
-    server.on('error', reject);
-  });
-}
