@@ -1,0 +1,205 @@
+{
+  "version": 3,
+  "benchmarkStatus": "completed",
+  "measuredAt": "2026-10-21T01:40:57.329Z",
+  "device": {
+    "platform": "darwin",
+    "arch": "arm64",
+    "cpu": "Apple M4 Pro"
+  },
+  "provider": "mlx-qwen3-4bit",
+  "capabilities": {
+    "textStreaming": false,
+    "audioStreaming": true,
+    "wordTimings": false
+  },
+  "coldStartMs": 1805.9603330000002,
+  "warmFirstPcmMs": {
+    "samples": 1,
+    "p50Ms": 181.03908300000012,
+    "p95Ms": 181.03908300000012,
+    "meanMs": 181.03908300000012
+  },
+  "totalGenerationMs": {
+    "samples": 2,
+    "p50Ms": 593.0325829999997,
+    "p95Ms": 2162.2731249999997,
+    "meanMs": 1377.6528539999997
+  },
+  "rtf": {
+    "samples": 2,
+    "p50": 0.22463355416666655,
+    "p95": 0.9009471354166666,
+    "mean": 0.5627903447916666
+  },
+  "cancelLatencyMs": 127.19591599999967,
+  "cancelProbeDelayMs": 50,
+  "postCancelRecovery": {
+    "firstPcmMs": 176.29583299999922,
+    "totalMs": 589.0946249999997,
+    "audioMs": 2640,
+    "rtf": 0.2231419034090908
+  },
+  "runs": [
+    {
+      "category": "short",
+      "cold": true,
+      "firstPcmMs": 1805.9603330000002,
+      "totalMs": 2162.2731249999997,
+      "audioMs": 2400,
+      "rtf": 0.9009471354166666
+    },
+    {
+      "category": "short",
+      "cold": false,
+      "firstPcmMs": 181.03908300000012,
+      "totalMs": 593.0325829999997,
+      "audioMs": 2640,
+      "rtf": 0.22463355416666655
+    }
+  ],
+  "benchmarkSettings": {
+    "iterations": 2,
+    "scenario": "cancel-recovery",
+    "outputMode": "native",
+    "inferenceProvider": "metal",
+    "inferenceThreads": null,
+    "runtimeProbeTiming": "after_cancel_recovery"
+  },
+  "cancellation": {
+    "mode": "cooperative_batch_boundary_with_750ms_termination_fallback",
+    "observedPhase": "native_generating",
+    "noPostCancelAudio": true
+  },
+  "sampledChildPeakCpuPercent": 99,
+  "sampledChildPeakRssBytes": 1928364032,
+  "resourceSamples": 69,
+  "resourceSamplingMs": 50,
+  "resourceScope": "direct_child_processes_only_not_os_voice_services",
+  "appPackageDeltaBytes": null,
+  "externalModelBytes": 1693603219,
+  "model": {
+    "revision": "08c72cad5e2fd0f41730c8bd1f28149585e46361",
+    "bytes": 1693603219,
+    "files": [
+      {
+        "path": "README.md",
+        "bytes": 1068,
+        "sha256": "3880953e06b74d29bd04dadd111d511a04a2a427fbeb0eb23d1db3fc91fc65e9"
+      },
+      {
+        "path": "config.json",
+        "bytes": 6058,
+        "sha256": "612cb591b44547319e5c68a78c0e93e4defb57882a4aa9ef5f06cc2f071ed036"
+      },
+      {
+        "path": "generation_config.json",
+        "bytes": 245,
+        "sha256": "f1b90b4513f3b34c62851049e2492d7b4c5940daf1276f89c82b8ef04127f3aa"
+      },
+      {
+        "path": "merges.txt",
+        "bytes": 1671839,
+        "sha256": "599bab54075088774b1733fde865d5bd747cbcc7a547c5bc12610e874e26f5e3"
+      },
+      {
+        "path": "model.safetensors",
+        "bytes": 1006772520,
+        "sha256": "4ab02a20be381700f6e73dbb5efdc424cadf9f1d0652cbffd662872ea41e296a"
+      },
+      {
+        "path": "model.safetensors.index.json",
+        "bytes": 71447,
+        "sha256": "f3b84ec5c1b38220008c3a300b8a73502f7d4ec67b232e0193d9376909fc4e3e"
+      },
+      {
+        "path": "preprocessor_config.json",
+        "bytes": 127,
+        "sha256": "efdde1022ea9d76928bf7a9cd53139138f5ba2e466e837f08f6105ab1af1c119"
+      },
+      {
+        "path": "speech_tokenizer/config.json",
+        "bytes": 2336,
+        "sha256": "ee65bb901c876664ab8707c487157aa1a6ee57c65969b28fb5ec9dc211e68167"
+      },
+      {
+        "path": "speech_tokenizer/configuration.json",
+        "bytes": 76,
+        "sha256": "6bc26d64eb5024b4d1dab5a52371958b429256d6c9d59787f1f5294a54e0cebd"
+      },
+      {
+        "path": "speech_tokenizer/model.safetensors",
+        "bytes": 682293092,
+        "sha256": "836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258"
+      },
+      {
+        "path": "speech_tokenizer/preprocessor_config.json",
+        "bytes": 234,
+        "sha256": "fcb3805e597e786d4067706e602f6688524640f8d3396790e2e09b5942fcbdfb"
+      },
+      {
+        "path": "tokenizer_config.json",
+        "bytes": 7344,
+        "sha256": "dc3c31c3bdaedd5016382bb3cbe07323026775ad51f5a4fb564505992ae4a670"
+      },
+      {
+        "path": "vocab.json",
+        "bytes": 2776833,
+        "sha256": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910"
+      }
+    ]
+  },
+  "sources": null,
+  "reference": null,
+  "runtime": {
+    "nativeSampleRate": 24000,
+    "runtimeVersion": "0.5.9",
+    "loadMs": 1542.754750000313,
+    "cooperativeCancel": true
+  },
+  "processesStarted": 1,
+  "nativeSentenceCallbacks": [
+    {
+      "category": "short",
+      "firstCallbackMs": 214.8395829135552,
+      "firstNativePcmMs": 1805.861333,
+      "callbacks": 3,
+      "completed": true
+    },
+    {
+      "category": "short",
+      "firstCallbackMs": 179.97204198036343,
+      "firstNativePcmMs": 180.998916,
+      "callbacks": 4,
+      "completed": true
+    },
+    {
+      "category": "cancel",
+      "firstCallbackMs": null,
+      "firstNativePcmMs": null,
+      "callbacks": 0,
+      "completed": false
+    },
+    {
+      "category": "recovery",
+      "firstCallbackMs": 175.3453330602497,
+      "firstNativePcmMs": 176.26574999999957,
+      "callbacks": 4,
+      "completed": true
+    }
+  ],
+  "nativePcmWarmFirstMs": {
+    "samples": 1,
+    "p50Ms": 180.998916,
+    "p95Ms": 180.998916,
+    "meanMs": 180.998916
+  },
+  "nativeOutputMode": "incremental_generated_batches_delivered_to_session_consumer",
+  "resampler": "native_24000_pcm16_quantization",
+  "subjectiveChineseMos": null,
+  "prosodyContinuity": null,
+  "mixedPronunciation": null,
+  "candidates": [],
+  "productionTtsChanged": false,
+  "acousticReleaseGate": "pending_physical_device_listening"
+}

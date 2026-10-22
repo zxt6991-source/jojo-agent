@@ -9,9 +9,10 @@ export interface TtsAudioChunk {
   sampleRate: 24000;
   channels: 1;
   pcm: Uint8Array;
-  /** Frame position and total frames within the ledger segment, never the session. */
+  /** Frame position within the ledger segment, never the session. */
   segmentFrameOffset: number;
-  segmentFrames: number;
+  /** Unknown until completion for native PCM streams. */
+  segmentFrames?: number;
   final: boolean;
 }
 export interface TtsSessionOptions {
@@ -49,14 +50,23 @@ export interface RealtimeTtsProvider {
 export function createBufferedRealtimeTtsProvider(provider: SpeechTtsProvider): RealtimeTtsProvider {
   return {
     capabilities: { textStreaming: false, audioStreaming: false, wordTimings: false },
-    async open(options) { return new BufferedTtsSession(provider, options); }
+    async open(options) { return new QueuedTtsSession(provider, options, false); }
+  };
+}
+
+/** Native audio streaming still takes complete, safely projected text phrases. */
+export function createRealtimeTtsProvider(provider: SpeechTtsProvider): RealtimeTtsProvider {
+  if (!provider.synthesizePcm) return createBufferedRealtimeTtsProvider(provider);
+  return {
+    capabilities: { textStreaming: false, audioStreaming: true, wordTimings: false },
+    async open(options) { return new QueuedTtsSession(provider, options, true); }
   };
 }
 
 interface TextSegment { id: string; text: string }
 const PCM_FRAMES_PER_CHUNK = 480; // 20 ms at 24 kHz.
 
-class BufferedTtsSession implements TtsSession {
+class QueuedTtsSession implements TtsSession {
   private readonly controller = new AbortController();
   private readonly queue: TextSegment[] = [];
   private readonly audioQueue: TtsAudioChunk[] = [];
@@ -75,7 +85,7 @@ class BufferedTtsSession implements TtsSession {
   private readonly maxChars: number;
   private readonly externalAbort: () => void;
 
-  constructor(private readonly provider: SpeechTtsProvider, private readonly options: TtsSessionOptions) {
+  constructor(private readonly provider: SpeechTtsProvider, private readonly options: TtsSessionOptions, private readonly nativeAudio: boolean) {
     if (!options.sessionId || options.sessionId.length > 256 || !Number.isSafeInteger(options.generation) || options.generation < 0
       || !options.speakerId.trim() || options.speakerId.length > 256 || !Number.isInteger(options.speechRate) || options.speechRate < -50 || options.speechRate > 100) {
       throw new SpeechProviderError('protocol_error', 'Invalid TTS session options.');
@@ -207,6 +217,12 @@ class BufferedTtsSession implements TtsSession {
   private async synthesizeQueued(): Promise<void> {
     while (this.queue.length && !this.cancelled) {
       const segment = this.queue.shift()!;
+      if (this.nativeAudio) {
+        await this.synthesizeNative(segment);
+        if (this.cancelled) return;
+        this.queuedChars -= Array.from(segment.text).length;
+        continue;
+      }
       const requestId = crypto.randomUUID();
       let wav: Uint8Array | undefined;
       let completed = false;
@@ -239,6 +255,50 @@ class BufferedTtsSession implements TtsSession {
       }
       this.queuedChars -= Array.from(segment.text).length;
     }
+  }
+  private async synthesizeNative(segment: TextSegment): Promise<void> {
+    const requestId = crypto.randomUUID();
+    let tail: Uint8Array | undefined, frames = 0, emittedFrames = 0, completed = false;
+    for await (const event of this.provider.synthesizePcm!({
+      requestId, text: segment.text, speakerId: this.options.speakerId,
+      speechRate: this.options.speechRate, signal: this.controller.signal
+    })) {
+      if (this.cancelled) return;
+      if (event.requestId !== requestId || completed) throw new SpeechProviderError('protocol_error', 'Unexpected TTS event ordering.');
+      if (event.type === 'completed') { completed = true; continue; }
+      if (event.sampleRate !== 24000 || !(event.bytes instanceof Uint8Array) || !event.bytes.length || event.bytes.length % 2
+        || frames * 2 + event.bytes.length > SPEECH_LIMITS.ttsBytes) {
+        throw new SpeechProviderError('invalid_audio', 'Expected bounded mono 24 kHz PCM16 audio.');
+      }
+      frames += event.bytes.length / 2;
+      const pcm = new Uint8Array((tail?.length ?? 0) + event.bytes.length);
+      if (tail) pcm.set(tail);
+      pcm.set(event.bytes, tail?.length ?? 0);
+      // Keep only one sample for the final receipt. The rest of the very first
+      // provider block can play before another block or completion arrives.
+      tail = pcm.slice(-2);
+      for (let offset = 0; offset < pcm.length - 2; offset += PCM_FRAMES_PER_CHUNK * 2) {
+        const bytes = pcm.slice(offset, Math.min(offset + PCM_FRAMES_PER_CHUNK * 2, pcm.length - 2));
+        await this.enqueueNative(segment.id, bytes, emittedFrames, false);
+        if (this.cancelled) return;
+        emittedFrames += bytes.length / 2;
+      }
+    }
+    if (this.cancelled) return;
+    if (!completed || !tail) throw new SpeechProviderError('protocol_error', 'Local TTS ended without complete audio.');
+    await this.enqueueNative(segment.id, tail, emittedFrames, true, frames);
+  }
+  private async enqueueNative(segmentId: string, pcm: Uint8Array, segmentFrameOffset: number, final: boolean, segmentFrames?: number): Promise<void> {
+    const count = pcm.length / 2;
+    while (!this.cancelled && this.bufferedFrames + count > this.maxFrames) await this.waitForChange();
+    if (this.cancelled) return;
+    this.audioQueue.push({
+      sessionId: this.options.sessionId, generation: this.options.generation, segmentId,
+      sequence: ++this.sequence, codec: 'pcm16le', sampleRate: 24000, channels: 1,
+      pcm, segmentFrameOffset, ...(segmentFrames === undefined ? {} : { segmentFrames }), final
+    });
+    this.bufferedFrames += count;
+    this.wake();
   }
   private wake(): void { for (const resolve of this.changed) resolve(); this.changed.clear(); }
   private waitForChange(): Promise<void> { return new Promise(resolve => { this.changed.add(resolve); }); }

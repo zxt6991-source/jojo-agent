@@ -1,0 +1,550 @@
+{
+  "measuredAt": "2026-10-22T14:19:32.548Z",
+  "status": "completed",
+  "physicalOutputPlayed": false,
+  "listeningQualityAssessed": false,
+  "scope": "request_order_determinism_and_long_read_samples",
+  "runtime": "mlx-audio-0.5.9",
+  "modelRevision": "08c72cad5e2fd0f41730c8bd1f28149585e46361",
+  "modelHashesVerified": false,
+  "sourceSha256": {
+    "baseline": "8188b9c92f34b404e16f08e39c10eec976587c1264a7f77c2f2ddaa7bc83a547",
+    "current": "ed548f16d706a2075a8013e49267f9627ffb34d251c3c4077b4e7cadaf8858a6"
+  },
+  "segmentLimits": {
+    "first": 80,
+    "subsequent": 200
+  },
+  "fixtures": [
+    {
+      "name": "chinese",
+      "textSha256": "9336cb3637cb704cbb12f02bcc6c2806a10dc22108396ae0d2f2ad9cc1169976",
+      "chars": 338,
+      "segments": [
+        67,
+        187,
+        84
+      ]
+    },
+    {
+      "name": "mixed",
+      "textSha256": "5c1f45020b9e727767f48940135daa2d01f684ca973e5308dcefcbab0c7dff62",
+      "chars": 468,
+      "segments": [
+        71,
+        200,
+        197
+      ]
+    }
+  ],
+  "rows": [
+    {
+      "profile": "baseline",
+      "category": "chinese-1",
+      "speaker": "Serena",
+      "textSha256": "8e3d737ed8a18acdeb1341c478fd623943b0273ca360ae2168a3723c5490165b",
+      "textChars": 67,
+      "status": "completed",
+      "pcmSha256": "3dcea2f948a0d7077f1730b2c91780c7f56c5c6bc7d2841f6094bfaa08ffb0cf",
+      "audioMs": 20640,
+      "firstPcmMs": 175.30424999999968,
+      "totalMs": 4241.348833,
+      "error": null
+    },
+    {
+      "profile": "baseline",
+      "category": "chinese-2",
+      "speaker": "Serena",
+      "textSha256": "e4f11f352dbaf3b2e0fc19f76272afd50909e7f0d8f72a089a8f859ecd8b4a5d",
+      "textChars": 187,
+      "status": "completed",
+      "pcmSha256": "097ba9127df9d3d6a2934601a82459de848ea64cb47a61e93bf77da566794fed",
+      "audioMs": 45520,
+      "firstPcmMs": 180.4980830000004,
+      "totalMs": 9909.655125,
+      "error": null
+    },
+    {
+      "profile": "baseline",
+      "category": "chinese-3",
+      "speaker": "Serena",
+      "textSha256": "efce3acedbea2a26d42847a6dce4bc02fb8024d888bd63648a4158a78fac35f2",
+      "textChars": 84,
+      "status": "completed",
+      "pcmSha256": "329fbc674b7f09d388fb50a0a7979ee7207fa3ba6d42cf4f5a608f4e533b8e2e",
+      "audioMs": 22800,
+      "firstPcmMs": 188.98574999999983,
+      "totalMs": 4747.790499999999,
+      "error": null
+    },
+    {
+      "profile": "baseline",
+      "category": "mixed-1",
+      "speaker": "Serena",
+      "textSha256": "72e3fcee40d911967d4f260673c80a2bf5789dc44f3a506cc16e1bf933449dea",
+      "textChars": 71,
+      "status": "completed",
+      "pcmSha256": "57b54a046d5d6e425cee7e6cc458c32f527f0b9c52c4b001b0a0c1afc25ebbf7",
+      "audioMs": 16320,
+      "firstPcmMs": 180.74195899999904,
+      "totalMs": 3445.5022919999974,
+      "error": null
+    },
+    {
+      "profile": "baseline",
+      "category": "mixed-2",
+      "speaker": "Serena",
+      "textSha256": "1959c7c1e326919f9b25ac11a55d70d893be6f1d3d522a93d53cb482d3d88758",
+      "textChars": 200,
+      "status": "completed",
+      "pcmSha256": "db13f44ba2ebdbd57d098bd4cf2fc46c6d52b9f63e964c59f7dae5c40e9f680e",
+      "audioMs": 27920,
+      "firstPcmMs": 180.45845799999734,
+      "totalMs": 5895.280457999997,
+      "error": null
+    },
+    {
+      "profile": "baseline",
+      "category": "mixed-3",
+      "speaker": "Serena",
+      "textSha256": "c20bd5e42587c9483295bb4ffb93c4747cd7e97a2f9811a677476aab472b3954",
+      "textChars": 197,
+      "status": "completed",
+      "pcmSha256": "2660999f75ce8e983f8b1af6786b3a3fe8d7030a7f2692b98713c302a77c015a",
+      "audioMs": 33520,
+      "firstPcmMs": 180.59204199999658,
+      "totalMs": 6935.130124999996,
+      "error": null
+    },
+    {
+      "profile": "baseline",
+      "category": "other-speaker",
+      "speaker": "Vivian",
+      "textSha256": "e4adf5f650d22d23d364a411d684f77fe986625899aa2c27452587e664d6cb26",
+      "textChars": 24,
+      "status": "completed",
+      "pcmSha256": "6efed110eb3880a95730294b3bb186e91239bf43f7b9cbbdd39b5f580f775227",
+      "audioMs": 5360,
+      "firstPcmMs": 180.6221250000017,
+      "totalMs": 1141.398000000001,
+      "error": null
+    },
+    {
+      "profile": "baseline",
+      "category": "chinese-after-other-voice",
+      "speaker": "Serena",
+      "textSha256": "8e3d737ed8a18acdeb1341c478fd623943b0273ca360ae2168a3723c5490165b",
+      "textChars": 67,
+      "status": "completed",
+      "pcmSha256": "021d566a39e89e1a7ad1c085eb694510698d5f53aed546aa7bf9005f3884d482",
+      "audioMs": 33760,
+      "firstPcmMs": 175.47683400000096,
+      "totalMs": 6999.061459000004,
+      "error": null
+    },
+    {
+      "profile": "baseline",
+      "category": "mixed-after-other-voice",
+      "speaker": "Serena",
+      "textSha256": "72e3fcee40d911967d4f260673c80a2bf5789dc44f3a506cc16e1bf933449dea",
+      "textChars": 71,
+      "status": "completed",
+      "pcmSha256": "e3cb217cda1e7cf47f9f04046bede2863f35df52e2003b70f4c537cb210dbf1a",
+      "audioMs": 14400,
+      "firstPcmMs": 176.22420899999997,
+      "totalMs": 2992.0994999999966,
+      "error": null
+    },
+    {
+      "profile": "baseline",
+      "category": "chinese-default-alias",
+      "speaker": "default",
+      "textSha256": "8e3d737ed8a18acdeb1341c478fd623943b0273ca360ae2168a3723c5490165b",
+      "textChars": 67,
+      "status": "completed",
+      "pcmSha256": "e694c0443d3e75f1ccd6b2bb93d8bcda01eb90d2f57a09b593e16610ba22ac89",
+      "audioMs": 17840,
+      "firstPcmMs": 176.11358300000575,
+      "totalMs": 3713.8806660000046,
+      "error": null
+    },
+    {
+      "profile": "baseline",
+      "category": "mixed-default-alias",
+      "speaker": "default",
+      "textSha256": "72e3fcee40d911967d4f260673c80a2bf5789dc44f3a506cc16e1bf933449dea",
+      "textChars": 71,
+      "status": "completed",
+      "pcmSha256": "c27c357b2af6fee20c2d3e7fff1988146ce773252f9eceefb20988ee27e67cd6",
+      "audioMs": 18640,
+      "firstPcmMs": 179.36729200000264,
+      "totalMs": 3873.3127090000053,
+      "error": null
+    },
+    {
+      "profile": "baseline",
+      "category": "cancel-after-pcm",
+      "speaker": "Serena",
+      "textSha256": "e4f11f352dbaf3b2e0fc19f76272afd50909e7f0d8f72a089a8f859ecd8b4a5d",
+      "textChars": 187,
+      "status": "cancelled",
+      "pcmSha256": null,
+      "audioMs": 0,
+      "firstPcmMs": 176.48033399999986,
+      "totalMs": 345.66354200000205,
+      "error": "cancelled"
+    },
+    {
+      "profile": "baseline",
+      "category": "chinese-after-cancel",
+      "speaker": "Serena",
+      "textSha256": "8e3d737ed8a18acdeb1341c478fd623943b0273ca360ae2168a3723c5490165b",
+      "textChars": 67,
+      "status": "completed",
+      "pcmSha256": "3809a05c2025c7f72427d1473d63f5dd3872bfb49c70473b131f991dc69280b5",
+      "audioMs": 14560,
+      "firstPcmMs": 170.72020899999916,
+      "totalMs": 3028.976042000002,
+      "error": null
+    },
+    {
+      "profile": "baseline",
+      "category": "mixed-after-cancel",
+      "speaker": "Serena",
+      "textSha256": "72e3fcee40d911967d4f260673c80a2bf5789dc44f3a506cc16e1bf933449dea",
+      "textChars": 71,
+      "status": "completed",
+      "pcmSha256": "fa4db05799e87fab4b6d217e51ad04f1e06bdcabe43acf9eca4ddb7593f22513",
+      "audioMs": 16080,
+      "firstPcmMs": 177.45824999999604,
+      "totalMs": 3369.157124999998,
+      "error": null
+    },
+    {
+      "profile": "baseline",
+      "category": "chinese-after-restart",
+      "speaker": "Serena",
+      "textSha256": "8e3d737ed8a18acdeb1341c478fd623943b0273ca360ae2168a3723c5490165b",
+      "textChars": 67,
+      "status": "completed",
+      "pcmSha256": "02c8815375a493e6f05724ae40a01f348f4a672f99e7f0fb29c88ecdb3ee4023",
+      "audioMs": 17120,
+      "firstPcmMs": 2178.2568330000067,
+      "totalMs": 5547.023749999993,
+      "error": null
+    },
+    {
+      "profile": "baseline",
+      "category": "mixed-after-restart",
+      "speaker": "Serena",
+      "textSha256": "72e3fcee40d911967d4f260673c80a2bf5789dc44f3a506cc16e1bf933449dea",
+      "textChars": 71,
+      "status": "completed",
+      "pcmSha256": "d60a20bcdaed73610500d7c9721f4f288e27778b532cbe2258505dd9150775d3",
+      "audioMs": 13280,
+      "firstPcmMs": 178.0445000000036,
+      "totalMs": 2760.551084000006,
+      "error": null
+    },
+    {
+      "profile": "current",
+      "category": "chinese-1",
+      "speaker": "Serena",
+      "textSha256": "8e3d737ed8a18acdeb1341c478fd623943b0273ca360ae2168a3723c5490165b",
+      "textChars": 67,
+      "status": "completed",
+      "pcmSha256": "50d84f22e6544ed746554b3655a8a0452963033608d94be8d8e6f39c9bed2e44",
+      "audioMs": 16400,
+      "firstPcmMs": 175.13641700000153,
+      "totalMs": 3422.399792000011,
+      "error": null
+    },
+    {
+      "profile": "current",
+      "category": "chinese-2",
+      "speaker": "Serena",
+      "textSha256": "e4f11f352dbaf3b2e0fc19f76272afd50909e7f0d8f72a089a8f859ecd8b4a5d",
+      "textChars": 187,
+      "status": "completed",
+      "pcmSha256": "9fc8c61ad113bbfad8b5ec81dd16d5ba89e026b24d2234f0127d8e9a95c2f851",
+      "audioMs": 44720,
+      "firstPcmMs": 178.00229200000467,
+      "totalMs": 9298.135500000004,
+      "error": null
+    },
+    {
+      "profile": "current",
+      "category": "chinese-3",
+      "speaker": "Serena",
+      "textSha256": "efce3acedbea2a26d42847a6dce4bc02fb8024d888bd63648a4158a78fac35f2",
+      "textChars": 84,
+      "status": "completed",
+      "pcmSha256": "b5a3a782fbe335623e99d7d466fe9bc38c6e0d90aff0855172777cef4e5fff80",
+      "audioMs": 18080,
+      "firstPcmMs": 175.97470800000883,
+      "totalMs": 3763.1479580000014,
+      "error": null
+    },
+    {
+      "profile": "current",
+      "category": "mixed-1",
+      "speaker": "Serena",
+      "textSha256": "72e3fcee40d911967d4f260673c80a2bf5789dc44f3a506cc16e1bf933449dea",
+      "textChars": 71,
+      "status": "completed",
+      "pcmSha256": "92a94a3995a41c88a8e767e7339f03c25a8cf8d9ad99ce43dba33e43cb2e3d68",
+      "audioMs": 15520,
+      "firstPcmMs": 179.13816599998972,
+      "totalMs": 3240.8187499999913,
+      "error": null
+    },
+    {
+      "profile": "current",
+      "category": "mixed-2",
+      "speaker": "Serena",
+      "textSha256": "1959c7c1e326919f9b25ac11a55d70d893be6f1d3d522a93d53cb482d3d88758",
+      "textChars": 200,
+      "status": "completed",
+      "pcmSha256": "41737dd215601f140d08fafa262fcaff60578318069ccf54a717e47034cdb4c7",
+      "audioMs": 26560,
+      "firstPcmMs": 185.94749999999476,
+      "totalMs": 5658.240458,
+      "error": null
+    },
+    {
+      "profile": "current",
+      "category": "mixed-3",
+      "speaker": "Serena",
+      "textSha256": "c20bd5e42587c9483295bb4ffb93c4747cd7e97a2f9811a677476aab472b3954",
+      "textChars": 197,
+      "status": "completed",
+      "pcmSha256": "9dac2dc8e9a43282a17a368a5c27791df223f873e44adefaf64bbeba7a5ee870",
+      "audioMs": 29280,
+      "firstPcmMs": 179.09995800000615,
+      "totalMs": 6094.255375000008,
+      "error": null
+    },
+    {
+      "profile": "current",
+      "category": "other-speaker",
+      "speaker": "Vivian",
+      "textSha256": "e4adf5f650d22d23d364a411d684f77fe986625899aa2c27452587e664d6cb26",
+      "textChars": 24,
+      "status": "completed",
+      "pcmSha256": "b484afd9659a2370fdfe051bac603a6acad1ea9a441ef5f49f928ebcfa98a937",
+      "audioMs": 5520,
+      "firstPcmMs": 180.08887499998673,
+      "totalMs": 1166.4909169999883,
+      "error": null
+    },
+    {
+      "profile": "current",
+      "category": "chinese-after-other-voice",
+      "speaker": "Serena",
+      "textSha256": "8e3d737ed8a18acdeb1341c478fd623943b0273ca360ae2168a3723c5490165b",
+      "textChars": 67,
+      "status": "completed",
+      "pcmSha256": "50d84f22e6544ed746554b3655a8a0452963033608d94be8d8e6f39c9bed2e44",
+      "audioMs": 16400,
+      "firstPcmMs": 173.19308399999863,
+      "totalMs": 3406.1328340000036,
+      "error": null
+    },
+    {
+      "profile": "current",
+      "category": "mixed-after-other-voice",
+      "speaker": "Serena",
+      "textSha256": "72e3fcee40d911967d4f260673c80a2bf5789dc44f3a506cc16e1bf933449dea",
+      "textChars": 71,
+      "status": "completed",
+      "pcmSha256": "92a94a3995a41c88a8e767e7339f03c25a8cf8d9ad99ce43dba33e43cb2e3d68",
+      "audioMs": 15520,
+      "firstPcmMs": 180.1938330000121,
+      "totalMs": 3237.433458000014,
+      "error": null
+    },
+    {
+      "profile": "current",
+      "category": "chinese-default-alias",
+      "speaker": "default",
+      "textSha256": "8e3d737ed8a18acdeb1341c478fd623943b0273ca360ae2168a3723c5490165b",
+      "textChars": 67,
+      "status": "completed",
+      "pcmSha256": "50d84f22e6544ed746554b3655a8a0452963033608d94be8d8e6f39c9bed2e44",
+      "audioMs": 16400,
+      "firstPcmMs": 176.29404100000102,
+      "totalMs": 3440.183999999994,
+      "error": null
+    },
+    {
+      "profile": "current",
+      "category": "mixed-default-alias",
+      "speaker": "default",
+      "textSha256": "72e3fcee40d911967d4f260673c80a2bf5789dc44f3a506cc16e1bf933449dea",
+      "textChars": 71,
+      "status": "completed",
+      "pcmSha256": "92a94a3995a41c88a8e767e7339f03c25a8cf8d9ad99ce43dba33e43cb2e3d68",
+      "audioMs": 15520,
+      "firstPcmMs": 179.06191700001364,
+      "totalMs": 3277.867458000008,
+      "error": null
+    },
+    {
+      "profile": "current",
+      "category": "cancel-after-pcm",
+      "speaker": "Serena",
+      "textSha256": "e4f11f352dbaf3b2e0fc19f76272afd50909e7f0d8f72a089a8f859ecd8b4a5d",
+      "textChars": 187,
+      "status": "cancelled",
+      "pcmSha256": null,
+      "audioMs": 0,
+      "firstPcmMs": 182.55295800000022,
+      "totalMs": 350.58766599999217,
+      "error": "cancelled"
+    },
+    {
+      "profile": "current",
+      "category": "chinese-after-cancel",
+      "speaker": "Serena",
+      "textSha256": "8e3d737ed8a18acdeb1341c478fd623943b0273ca360ae2168a3723c5490165b",
+      "textChars": 67,
+      "status": "completed",
+      "pcmSha256": "50d84f22e6544ed746554b3655a8a0452963033608d94be8d8e6f39c9bed2e44",
+      "audioMs": 16400,
+      "firstPcmMs": 171.98220899999433,
+      "totalMs": 3409.383249999999,
+      "error": null
+    },
+    {
+      "profile": "current",
+      "category": "mixed-after-cancel",
+      "speaker": "Serena",
+      "textSha256": "72e3fcee40d911967d4f260673c80a2bf5789dc44f3a506cc16e1bf933449dea",
+      "textChars": 71,
+      "status": "completed",
+      "pcmSha256": "92a94a3995a41c88a8e767e7339f03c25a8cf8d9ad99ce43dba33e43cb2e3d68",
+      "audioMs": 15520,
+      "firstPcmMs": 176.2312499999971,
+      "totalMs": 3257.871874999997,
+      "error": null
+    },
+    {
+      "profile": "current",
+      "category": "chinese-after-restart",
+      "speaker": "Serena",
+      "textSha256": "8e3d737ed8a18acdeb1341c478fd623943b0273ca360ae2168a3723c5490165b",
+      "textChars": 67,
+      "status": "completed",
+      "pcmSha256": "50d84f22e6544ed746554b3655a8a0452963033608d94be8d8e6f39c9bed2e44",
+      "audioMs": 16400,
+      "firstPcmMs": 1510.3187920000055,
+      "totalMs": 4741.999000000011,
+      "error": null
+    },
+    {
+      "profile": "current",
+      "category": "mixed-after-restart",
+      "speaker": "Serena",
+      "textSha256": "72e3fcee40d911967d4f260673c80a2bf5789dc44f3a506cc16e1bf933449dea",
+      "textChars": 71,
+      "status": "completed",
+      "pcmSha256": "92a94a3995a41c88a8e767e7339f03c25a8cf8d9ad99ce43dba33e43cb2e3d68",
+      "audioMs": 15520,
+      "firstPcmMs": 177.1232500000042,
+      "totalMs": 3222.598166999989,
+      "error": null
+    }
+  ],
+  "comparisons": [
+    {
+      "profile": "baseline",
+      "category": "chinese-after-other-voice",
+      "samePcmAsFirst": false
+    },
+    {
+      "profile": "baseline",
+      "category": "mixed-after-other-voice",
+      "samePcmAsFirst": false
+    },
+    {
+      "profile": "baseline",
+      "category": "chinese-default-alias",
+      "samePcmAsFirst": false
+    },
+    {
+      "profile": "baseline",
+      "category": "mixed-default-alias",
+      "samePcmAsFirst": false
+    },
+    {
+      "profile": "baseline",
+      "category": "chinese-after-cancel",
+      "samePcmAsFirst": false
+    },
+    {
+      "profile": "baseline",
+      "category": "mixed-after-cancel",
+      "samePcmAsFirst": false
+    },
+    {
+      "profile": "baseline",
+      "category": "chinese-after-restart",
+      "samePcmAsFirst": false
+    },
+    {
+      "profile": "baseline",
+      "category": "mixed-after-restart",
+      "samePcmAsFirst": false
+    },
+    {
+      "profile": "current",
+      "category": "chinese-after-other-voice",
+      "samePcmAsFirst": true
+    },
+    {
+      "profile": "current",
+      "category": "mixed-after-other-voice",
+      "samePcmAsFirst": true
+    },
+    {
+      "profile": "current",
+      "category": "chinese-default-alias",
+      "samePcmAsFirst": true
+    },
+    {
+      "profile": "current",
+      "category": "mixed-default-alias",
+      "samePcmAsFirst": true
+    },
+    {
+      "profile": "current",
+      "category": "chinese-after-cancel",
+      "samePcmAsFirst": true
+    },
+    {
+      "profile": "current",
+      "category": "mixed-after-cancel",
+      "samePcmAsFirst": true
+    },
+    {
+      "profile": "current",
+      "category": "chinese-after-restart",
+      "samePcmAsFirst": true
+    },
+    {
+      "profile": "current",
+      "category": "mixed-after-restart",
+      "samePcmAsFirst": true
+    }
+  ],
+  "processes": [
+    {
+      "profile": "baseline",
+      "count": 2
+    },
+    {
+      "profile": "current",
+      "count": 2
+    }
+  ]
+}

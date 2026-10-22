@@ -1,0 +1,293 @@
+{
+  "version": 3,
+  "benchmarkStatus": "completed",
+  "measuredAt": "2026-10-20T14:59:07.935Z",
+  "device": {
+    "platform": "darwin",
+    "arch": "arm64",
+    "cpu": "Apple M4 Pro"
+  },
+  "provider": "mlx-qwen3-4bit",
+  "capabilities": {
+    "textStreaming": false,
+    "audioStreaming": false,
+    "wordTimings": false
+  },
+  "coldStartMs": 1806.3360410000003,
+  "warmFirstPcmMs": {
+    "samples": 7,
+    "p50Ms": 1967.3239580000009,
+    "p95Ms": 6365.397583999999,
+    "meanMs": 2378.0191904285716
+  },
+  "totalGenerationMs": {
+    "samples": 8,
+    "p50Ms": 1806.452833,
+    "p95Ms": 6366.083834,
+    "meanMs": 2306.7790520000003
+  },
+  "rtf": {
+    "samples": 8,
+    "p50": 0.21573337445175447,
+    "p95": 0.7284084004032259,
+    "mean": 0.28034204333907425
+  },
+  "cancelLatencyMs": 17.22479199999725,
+  "cancelProbeDelayMs": 50,
+  "postCancelRecovery": {
+    "firstPcmMs": 1760.911415999999,
+    "totalMs": 1760.9589159999996,
+    "audioMs": 2240,
+    "rtf": 0.7861423732142855
+  },
+  "runs": [
+    {
+      "category": "short",
+      "cold": true,
+      "firstPcmMs": 1806.3360410000003,
+      "totalMs": 1806.452833,
+      "audioMs": 2480,
+      "rtf": 0.7284084004032259
+    },
+    {
+      "category": "sentence",
+      "cold": false,
+      "firstPcmMs": 2781.1760410000006,
+      "totalMs": 2781.558916,
+      "audioMs": 12960,
+      "rtf": 0.21462645956790122
+    },
+    {
+      "category": "long",
+      "cold": false,
+      "firstPcmMs": 6365.397583999999,
+      "totalMs": 6366.083834,
+      "audioMs": 29760,
+      "rtf": 0.21391410732526883
+    },
+    {
+      "category": "date",
+      "cold": false,
+      "firstPcmMs": 1967.3239580000009,
+      "totalMs": 1967.4883750000008,
+      "audioMs": 9120,
+      "rtf": 0.21573337445175447
+    },
+    {
+      "category": "model",
+      "cold": false,
+      "firstPcmMs": 2247.3708749999987,
+      "totalMs": 2247.5555000000004,
+      "audioMs": 10480,
+      "rtf": 0.21446140267175576
+    },
+    {
+      "category": "symbols",
+      "cold": false,
+      "firstPcmMs": 1185.5985,
+      "totalMs": 1185.6779999999999,
+      "audioMs": 5440,
+      "rtf": 0.21795551470588234
+    },
+    {
+      "category": "path",
+      "cold": false,
+      "firstPcmMs": 1256.5758339999993,
+      "totalMs": 1256.6656250000015,
+      "audioMs": 5760,
+      "rtf": 0.21817111545138915
+    },
+    {
+      "category": "command",
+      "cold": false,
+      "firstPcmMs": 842.6915410000001,
+      "totalMs": 842.7493329999998,
+      "audioMs": 3840,
+      "rtf": 0.2194659721354166
+    }
+  ],
+  "benchmarkSettings": {
+    "iterations": 1,
+    "outputMode": "buffered",
+    "inferenceProvider": "metal",
+    "inferenceThreads": null,
+    "runtimeProbeTiming": "after_cancel_recovery"
+  },
+  "cancellation": {
+    "mode": "terminate_process_and_reload",
+    "observedPhase": "native_generating",
+    "noPostCancelAudio": true
+  },
+  "sampledChildPeakCpuPercent": 113.5,
+  "sampledChildPeakRssBytes": 1927020544,
+  "resourceSamples": 398,
+  "resourceSamplingMs": 50,
+  "resourceScope": "direct_child_processes_only_not_os_voice_services",
+  "appPackageDeltaBytes": null,
+  "externalModelBytes": 1693603219,
+  "model": {
+    "revision": "08c72cad5e2fd0f41730c8bd1f28149585e46361",
+    "bytes": 1693603219,
+    "files": [
+      {
+        "path": "README.md",
+        "bytes": 1068,
+        "sha256": "3880953e06b74d29bd04dadd111d511a04a2a427fbeb0eb23d1db3fc91fc65e9"
+      },
+      {
+        "path": "config.json",
+        "bytes": 6058,
+        "sha256": "612cb591b44547319e5c68a78c0e93e4defb57882a4aa9ef5f06cc2f071ed036"
+      },
+      {
+        "path": "generation_config.json",
+        "bytes": 245,
+        "sha256": "f1b90b4513f3b34c62851049e2492d7b4c5940daf1276f89c82b8ef04127f3aa"
+      },
+      {
+        "path": "merges.txt",
+        "bytes": 1671839,
+        "sha256": "599bab54075088774b1733fde865d5bd747cbcc7a547c5bc12610e874e26f5e3"
+      },
+      {
+        "path": "model.safetensors",
+        "bytes": 1006772520,
+        "sha256": "4ab02a20be381700f6e73dbb5efdc424cadf9f1d0652cbffd662872ea41e296a"
+      },
+      {
+        "path": "model.safetensors.index.json",
+        "bytes": 71447,
+        "sha256": "f3b84ec5c1b38220008c3a300b8a73502f7d4ec67b232e0193d9376909fc4e3e"
+      },
+      {
+        "path": "preprocessor_config.json",
+        "bytes": 127,
+        "sha256": "efdde1022ea9d76928bf7a9cd53139138f5ba2e466e837f08f6105ab1af1c119"
+      },
+      {
+        "path": "speech_tokenizer/config.json",
+        "bytes": 2336,
+        "sha256": "ee65bb901c876664ab8707c487157aa1a6ee57c65969b28fb5ec9dc211e68167"
+      },
+      {
+        "path": "speech_tokenizer/configuration.json",
+        "bytes": 76,
+        "sha256": "6bc26d64eb5024b4d1dab5a52371958b429256d6c9d59787f1f5294a54e0cebd"
+      },
+      {
+        "path": "speech_tokenizer/model.safetensors",
+        "bytes": 682293092,
+        "sha256": "836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258"
+      },
+      {
+        "path": "speech_tokenizer/preprocessor_config.json",
+        "bytes": 234,
+        "sha256": "fcb3805e597e786d4067706e602f6688524640f8d3396790e2e09b5942fcbdfb"
+      },
+      {
+        "path": "tokenizer_config.json",
+        "bytes": 7344,
+        "sha256": "dc3c31c3bdaedd5016382bb3cbe07323026775ad51f5a4fb564505992ae4a670"
+      },
+      {
+        "path": "vocab.json",
+        "bytes": 2776833,
+        "sha256": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910"
+      }
+    ]
+  },
+  "sources": null,
+  "reference": null,
+  "runtime": {
+    "nativeSampleRate": 24000,
+    "runtimeVersion": "0.5.9",
+    "loadMs": 1191.3146659499034
+  },
+  "processesStarted": 2,
+  "nativeSentenceCallbacks": [
+    {
+      "category": "short",
+      "firstCallbackMs": 211.78550005424768,
+      "firstNativePcmMs": 1425.1027500000002,
+      "callbacks": 4,
+      "completed": true
+    },
+    {
+      "category": "sentence",
+      "firstCallbackMs": 174.79991703294218,
+      "firstNativePcmMs": 175.18620800000008,
+      "callbacks": 17,
+      "completed": true
+    },
+    {
+      "category": "long",
+      "firstCallbackMs": 181.62849999498576,
+      "firstNativePcmMs": 182.00408400000015,
+      "callbacks": 38,
+      "completed": true
+    },
+    {
+      "category": "date",
+      "firstCallbackMs": 179.57258294336498,
+      "firstNativePcmMs": 179.92170799999985,
+      "callbacks": 12,
+      "completed": true
+    },
+    {
+      "category": "model",
+      "firstCallbackMs": 179.94079203344882,
+      "firstNativePcmMs": 180.29916699999922,
+      "callbacks": 14,
+      "completed": true
+    },
+    {
+      "category": "symbols",
+      "firstCallbackMs": 183.22716699913144,
+      "firstNativePcmMs": 183.56495799999902,
+      "callbacks": 7,
+      "completed": true
+    },
+    {
+      "category": "path",
+      "firstCallbackMs": 180.29554095119238,
+      "firstNativePcmMs": 180.63750000000073,
+      "callbacks": 8,
+      "completed": true
+    },
+    {
+      "category": "command",
+      "firstCallbackMs": 182.4472500011325,
+      "firstNativePcmMs": 182.75991599999907,
+      "callbacks": 5,
+      "completed": true
+    },
+    {
+      "category": "cancel",
+      "firstCallbackMs": null,
+      "firstNativePcmMs": null,
+      "callbacks": 0,
+      "completed": false
+    },
+    {
+      "category": "recovery",
+      "firstCallbackMs": 210.4410839965567,
+      "firstNativePcmMs": 1434.151833,
+      "callbacks": 3,
+      "completed": true
+    }
+  ],
+  "nativePcmWarmFirstMs": {
+    "samples": 7,
+    "p50Ms": 180.63750000000073,
+    "p95Ms": 183.56495799999902,
+    "meanMs": 180.6247915714283
+  },
+  "nativeOutputMode": "incremental_generated_batches_observed_before_WAV_buffer",
+  "resampler": "native_24000_pcm16_quantization",
+  "subjectiveChineseMos": null,
+  "prosodyContinuity": null,
+  "mixedPronunciation": null,
+  "candidates": [],
+  "productionTtsChanged": false,
+  "acousticReleaseGate": "pending_physical_device_listening"
+}

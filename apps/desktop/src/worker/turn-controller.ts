@@ -66,6 +66,7 @@ import { VOICE_RESPONSE_INSTRUCTIONS, withHeardVoiceContext, desktopSpeechInstru
 import type { DesktopVoiceOutput } from './voice-output';
 
 interface Context {
+  warmupRequestedReadAloud?(sessionId: string, signal: AbortSignal): () => void;
   voiceOutput: DesktopVoiceOutput;
   voiceDeliveryLedger: VoiceDeliveryLedger;
   speechLatency: VoiceLatencyRecorder;
@@ -160,6 +161,7 @@ export function createTurnController(ctx: Context) {
     let failureEmitted = false;
     let terminalEvent: Extract<AgentEvent, { type: 'turn.completed' | 'turn.cancelled' | 'turn.failed' }> | undefined;
     let realtimeSpeech = false;
+    let cancelRequestedWarmup: (() => void) | undefined;
     let speechRunId = origin?.runId;
     const requestedReadAloud = !origin?.channel && isExplicitReadAloudRequest(text);
     try {
@@ -483,9 +485,13 @@ export function createTurnController(ctx: Context) {
         signal: controller.signal
       });
       speechRunId = handle.id;
+      if (requestedReadAloud && ctx.runtime.settings.speech.enabled && !controller.signal.aborted) {
+        cancelRequestedWarmup = ctx.warmupRequestedReadAloud?.(sessionId, controller.signal);
+      }
       origin?.onStarted?.();
       if (origin?.voice) ctx.speechLatency.mark({ captureId: origin.voice.voiceTurnId, generation: origin.voice.generation }, 'run_started');
       const result = await handle.result;
+      if (result.status !== 'completed') cancelRequestedWarmup?.();
       ctx.agentRuntimeStore.flushConversationMessages(sessionId);
       if (result.status === 'completed' && !origin?.channel) {
         const operation = await ctx.agentRuntimeStore.loadOperation(handle.id);
@@ -499,6 +505,7 @@ export function createTurnController(ctx: Context) {
       else if (realtimeSpeech) ctx.voiceOutput.finish(handle.id, undefined, false);
       flushTerminalEvent();
     } catch (error) {
+      cancelRequestedWarmup?.();
       if (realtimeSpeech && origin) ctx.voiceOutput.finish(origin.runId, undefined, false);
       origin?.onFailed?.(error);
       if (!failureEmitted) {

@@ -42,8 +42,10 @@ export const VoiceCommitResultSchema = z.object({
 }).strict();
 export type VoiceCommitResult = z.infer<typeof VoiceCommitResultSchema>;
 export const ReadSpeechMessageInputSchema = z.object({ sessionId: Id, messageId: Id, generation: Generation,
-  automatic: z.boolean().optional(), offset: Generation.optional(), complete: z.boolean().optional() }).strict()
-  .refine(value => !(value.automatic && value.complete), 'Automatic summaries cannot request complete reading.');
+  automatic: z.boolean().optional(), offset: Generation.optional(), complete: z.boolean().optional(),
+  maxChars: z.number().int().min(40).max(SPEECH_LIMITS.autoReadChars).optional() }).strict()
+  .refine(value => !(value.automatic && value.complete), 'Automatic summaries cannot request complete reading.')
+  .refine(value => value.maxChars === undefined || value.complete === true, 'A first-segment budget requires complete reading.');
 export type ReadSpeechMessageInput = z.infer<typeof ReadSpeechMessageInputSchema>;
 export const ReadApprovalSpeechInputSchema = z.object({ sessionId: Id, approvalId: Id, generation: Generation }).strict();
 export type ReadApprovalSpeechInput = z.infer<typeof ReadApprovalSpeechInputSchema>;

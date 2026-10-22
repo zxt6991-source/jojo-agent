@@ -62,6 +62,104 @@ function message(role: Message['role'] = 'assistant', text = '这是已提交的
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done; }); return { promise, resolve }; }
 
 describe('Worker voice tasks', () => {
+  it('uses a short first segment for rolling full reading without losing continuation text', async () => {
+    const text = '春花秋月何时了？往事知多少。'.repeat(24);
+    const h = await harness({ readCommittedMessages: async () => [message('assistant', text)] });
+    const input = { sessionId: 'session-a', messageId: 'message-a', generation: 1, complete: true };
+    const first = await h.tasks.readMessage({ ...input, maxChars: 80 });
+    expect(Array.from(first.spokenText).length).toBeLessThanOrEqual(80);
+    expect(first.nextOffset).toBe(Array.from(first.spokenText).length);
+    const spoken = [first.spokenText]; let offset = first.nextOffset;
+    while (offset !== undefined) {
+      const next = await h.tasks.readMessage({ ...input, offset });
+      spoken.push(next.spokenText); offset = next.nextOffset;
+    }
+    expect(spoken.join('')).toBe(text);
+    expect(Array.from(spoken[1]!).length).toBeGreaterThan(80);
+    await expect(h.tasks.readMessage({ ...input, complete: false, maxChars: 80 })).rejects.toThrow();
+    await expect(h.tasks.readMessage({ ...input, maxChars: 1 })).rejects.toThrow();
+  });
+  it('starts requested reading warmup in the background without emitting speech or synthesizing', async () => {
+    const h = await harness(); const pending = deferred<void>();
+    const warmup = vi.spyOn(h.runtime, 'warmupTts').mockReturnValue(pending.promise);
+    const run = new AbortController();
+    const removeListener = vi.spyOn(run.signal, 'removeEventListener');
+    const cancel = h.tasks.warmupRequestedReadAloud('session-a', run.signal);
+    expect(warmup).toHaveBeenCalledWith(expect.any(AbortSignal), 'requested_read_aloud');
+    expect(h.provider.tts.synthesize).not.toHaveBeenCalled(); expect(h.events).toEqual([]);
+    const signal = warmup.mock.calls[0]![0]; expect(signal.aborted).toBe(false);
+    pending.resolve(); await vi.waitFor(() => expect(removeListener).toHaveBeenCalledWith('abort', expect.any(Function)));
+    cancel(); expect(signal.aborted).toBe(false);
+  });
+  it.each(['run_abort', 'run_failed', 'stop_read', 'session_release', 'disable', 'dispose'] as const)('cancels requested reading warmup on %s', async reason => {
+    const h = await harness();
+    const warmup = vi.spyOn(h.runtime, 'warmupTts').mockImplementation(signal => new Promise(resolve => {
+      signal.addEventListener('abort', () => resolve(), { once: true });
+    }));
+    const run = new AbortController(); const cancel = h.tasks.warmupRequestedReadAloud('session-a', run.signal);
+    const signal = warmup.mock.calls[0]![0];
+    h.tasks.cancelReadTasks('another-session'); expect(signal.aborted).toBe(false);
+    if (reason === 'run_abort') run.abort();
+    else if (reason === 'run_failed') cancel();
+    else if (reason === 'stop_read') h.tasks.cancelReadTasks('session-a', 0);
+    else if (reason === 'session_release') await h.tasks.releaseSession('session-a');
+    else if (reason === 'disable') await h.runtime.configure(SpeechSettingsSchema.parse({ enabled: false }));
+    else h.tasks.dispose();
+    expect(signal.aborted).toBe(true); expect(h.events).toEqual([]);
+  });
+  it('keeps warmup failures silent, releases the slot, and fences an old Run cancellation', async () => {
+    const h = await harness(); const next = deferred<void>();
+    const warmup = vi.spyOn(h.runtime, 'warmupTts').mockRejectedValueOnce(new Error('local model unavailable')).mockReturnValueOnce(next.promise);
+    const oldCancel = h.tasks.warmupRequestedReadAloud('session-a', new AbortController().signal);
+    await Promise.resolve(); await Promise.resolve();
+    h.tasks.warmupRequestedReadAloud('session-a', new AbortController().signal);
+    expect(warmup).toHaveBeenCalledTimes(2); expect(h.events).toEqual([]);
+    oldCancel(); expect(warmup.mock.calls[1]![0].aborted).toBe(false); next.resolve();
+  });
+  it('does not start requested warmup for a stopped Run or disabled speech', async () => {
+    const h = await harness({}, offlineProvider(), false);
+    const warmup = vi.spyOn(h.runtime, 'warmupTts');
+    h.tasks.warmupRequestedReadAloud('session-a', new AbortController().signal);
+    await h.runtime.configure(SpeechSettingsSchema.parse({ enabled: true }));
+    const run = new AbortController(); run.abort();
+    h.tasks.warmupRequestedReadAloud('session-a', run.signal);
+    expect(warmup).not.toHaveBeenCalled(); expect(h.events).toEqual([]);
+  });
+  it('warms speech alongside explicit capture and keeps warming across a normal ASR final', async () => {
+    const h = await harness();
+    const pending = deferred<void>();
+    const warmup = vi.spyOn(h.runtime, 'warmupTts').mockReturnValue(pending.promise);
+    expect(warmup).not.toHaveBeenCalled();
+    await capture(h);
+    expect(warmup).toHaveBeenCalledOnce();
+    const signal = warmup.mock.calls[0]![0];
+    expect(signal.aborted).toBe(false);
+    h.tasks.cancelReadTasks(handle.sessionId, 0);
+    expect(signal.aborted).toBe(false);
+    h.tasks.cancelReadTasks(handle.sessionId, handle.generation);
+    expect(signal.aborted).toBe(true);
+    pending.resolve();
+  });
+  it('does not warm speech for ASR validation and releases a pending warmup with its session', async () => {
+    const h = await harness();
+    const warmup = vi.spyOn(h.runtime, 'warmupTts').mockImplementation(signal => new Promise(resolve => {
+      signal.addEventListener('abort', () => resolve(), { once: true });
+    }));
+    await capture(h, { ...handle, purpose: 'validation' });
+    expect(warmup).not.toHaveBeenCalled();
+    h.tasks.attachCapture({ ...handle, captureId: 'capture-b', voiceTurnId: 'turn-b', generation: 2 }, new Port());
+    expect(warmup).toHaveBeenCalledOnce();
+    const signal = warmup.mock.calls[0]![0];
+    await h.tasks.releaseSession(handle.sessionId!);
+    expect(signal.aborted).toBe(true);
+  });
+  it('does not fail transcription when speculative speech warmup fails', async () => {
+    const h = await harness();
+    vi.spyOn(h.runtime, 'warmupTts').mockRejectedValue(new SpeechProviderError('local_unavailable', 'Missing voice.'));
+    await capture(h);
+    expect(h.events.some(event => event.type === 'capture' && event.state === 'failed')).toBe(false);
+    expect(h.events.some(event => event.type === 'capture' && event.state === 'review')).toBe(true);
+  });
   it('requests capture stop once, drains upload, and keeps automatic endpoint separate from commit', async () => {
     const provider = offlineProvider();
     provider.asr.recognize = async function* (input) {

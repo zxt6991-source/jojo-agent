@@ -117,8 +117,16 @@ export interface SpeechAsrProvider {
 export type TtsEvent =
   | { type: 'audio'; requestId: string; bytes: Uint8Array; format: 'mp3' | 'wav'; sampleRate: 24000 }
   | { type: 'completed'; requestId: string };
+export type SpeechTtsInput = { requestId: string; text: string; speakerId: string; speechRate: number; signal: AbortSignal };
+/** Incremental mono PCM16 little-endian audio, without a container header. */
+export type TtsPcmEvent =
+  | { type: 'pcm'; requestId: string; bytes: Uint8Array; sampleRate: 24000 }
+  | { type: 'completed'; requestId: string };
 export interface SpeechTtsProvider {
-  synthesize(input: { requestId: string; text: string; speakerId: string; speechRate: number; signal: AbortSignal }): AsyncIterable<TtsEvent>;
+  synthesize(input: SpeechTtsInput): AsyncIterable<TtsEvent>;
+  synthesizePcm?(input: SpeechTtsInput): AsyncIterable<TtsPcmEvent>;
+  /** Explicit voice-use preparation; generated warmup audio must never be played. */
+  warmup?(signal: AbortSignal): Promise<void>;
 }
 export interface SpeechProvider { asr: SpeechAsrProvider; tts: SpeechTtsProvider }
 

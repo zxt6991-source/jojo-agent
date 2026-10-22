@@ -14,7 +14,7 @@ vi.mock('./audio-host', () => {
   class Host {
     static instances: Host[] = [];
     receive: (ack: unknown) => void = () => undefined;
-    play = vi.fn(async () => undefined); stop = vi.fn(); close = vi.fn();
+    play = vi.fn(async () => undefined); append = vi.fn(); finish = vi.fn(); stop = vi.fn(); close = vi.fn();
     constructor() { Host.instances.push(this); }
     onAck(listener: (ack: unknown) => void) { this.receive = listener; return () => { this.receive = () => undefined; }; }
   }
@@ -68,7 +68,7 @@ async function setup(deliveryControl?: (control: ScheduleDeliveryControl) => Pro
   const host = new DesktopSpeechHost({ dataDirectory, buildDirectory: '/test/build', window: () => window, worker: () => worker,
     readSettings, assertSession: async () => undefined, request, emit: (event) => events.push(event), e2e: true,
     ...(deliveryControl ? { deliveryControl } : {}) }); hosts.push(host);
-  const audio = (ElectronAudioHost as any).instances.at(-1) as { play: ReturnType<typeof vi.fn>; stop: ReturnType<typeof vi.fn>; receive(ack: unknown): void };
+  const audio = (ElectronAudioHost as any).instances.at(-1) as { play: ReturnType<typeof vi.fn>; append: ReturnType<typeof vi.fn>; finish: ReturnType<typeof vi.fn>; stop: ReturnType<typeof vi.fn>; receive(ack: unknown): void };
   const input = { sessionId: 'session-one', messageId: 'assistant-one', generation: 0, automatic: false };
   const scheduled: Extract<ScheduleDesktopDelivery, { kind: 'voice' }> = {
     kind: 'voice', identity: { itemId: 'delivery-one', claimToken: 'claim-one', playbackId: 'playback-one', generation: 2 },
@@ -98,64 +98,71 @@ async function completeReadingFixture() {
   return { ...h, parts, last, finish };
 }
 
-it('prepares every part before one continuous playback and waits for the final real ended receipt', async () => {
+it('starts the first short segment before later synthesis and waits for the final real receipt', async () => {
   const h = await completeReadingFixture();
-  const operation = h.host.read({ ...h.input, complete: true });
-  await vi.waitFor(() => expect(h.request.mock.calls.filter(([control]) => control.action === 'readMessage')).toHaveLength(2));
-  expect(h.audio.play).not.toHaveBeenCalled();
-  h.finish(); const result = await operation;
-  expect(result.nextOffset).toBeUndefined();
-  expect(result.preparedChars).toBe(230);
+  const result = await h.host.read({ ...h.input, complete: true });
+  expect(result.nextOffset).toBeUndefined(); expect(result.preparedChars).toBe(150);
   await vi.waitFor(() => expect(h.audio.play).toHaveBeenCalledOnce());
+  expect(h.request.mock.calls.find(([control]) => control.action === 'readMessage')?.[0]).toMatchObject({ input: { maxChars: 80 } });
   const output = h.audio.play.mock.calls[0]![0];
-  expect(output.complete).toBe(true); expect(output.format).toBe('wav');
-  expect(output.bytes.length).toBe(h.parts[0]!.bytes.length + h.parts[1]!.bytes.length - 44);
-  expect(output.bytes[44]).toBe(11); expect(output.bytes[h.parts[0]!.bytes.length]).toBe(12);
+  expect(output.stream).toBe(true); expect(output.bytes).toEqual(h.parts[0]!.bytes);
   h.audio.receive({ type: 'started', token: output.token, generation: output.generation });
+  h.audio.receive({ type: 'segment_ended', token: output.token, generation: output.generation, index: 0 });
+  h.audio.receive({ type: 'ended', token: output.token, generation: output.generation });
   expect(h.events.some(event => event.type === 'playback' && event.state === 'played')).toBe(false);
+  h.finish(); await vi.waitFor(() => expect(h.audio.finish).toHaveBeenCalledWith(output.token, output.generation, 2));
+  expect(h.audio.append).toHaveBeenCalledWith(expect.objectContaining({ index: 1, bytes: h.parts[1]!.bytes }));
+  expect(h.request.mock.calls.filter(([control]) => control.action === 'readMessage')[1]?.[0]).not.toHaveProperty('input.maxChars');
+  h.audio.receive({ type: 'segment_ended', token: output.token, generation: output.generation, index: 1 });
   h.audio.receive({ type: 'ended', token: output.token, generation: output.generation });
   expect(h.events.filter(event => event.type === 'playback' && event.state === 'played')).toHaveLength(1);
   expect(h.events.find(event => event.type === 'playback' && event.state === 'played')).toMatchObject({ preparedChars: 230 });
-  expect(h.request.mock.calls.filter(([control]) => control.action === 'readMessage')).toHaveLength(2);
 });
 
-it('never starts a partial reading if a later segment fails preparation', async () => {
+it('stops partial playback and reports failed when a later segment cannot be prepared', async () => {
   const h = await completeReadingFixture(), original = h.request.getMockImplementation()!;
   h.request.mockImplementation(async control => {
     if (control.action === 'readMessage' && control.input.offset) throw new Error('本机语音生成失败，请重试。');
     return original(control);
   });
-  await expect(h.host.read({ ...h.input, complete: true })).rejects.toThrow('语音生成失败');
-  expect(h.audio.play).not.toHaveBeenCalled();
-  expect(h.events.some(event => event.type === 'playback' && event.state === 'played')).toBe(false);
-});
-
-it('cancels complete preparation without later playback when the user stops', async () => {
-  const h = await completeReadingFixture();
-  const operation = h.host.read({ ...h.input, complete: true });
-  const assertion = expect(operation).rejects.toThrow('朗读已停止');
-  await vi.waitFor(() => expect(h.request.mock.calls.filter(([control]) => control.action === 'readMessage')).toHaveLength(2));
-  h.host.stop({ sessionId: h.input.sessionId, generation: h.input.generation }); h.finish(); await assertion;
-  expect(h.audio.play).not.toHaveBeenCalled();
-});
-it('does not let a late stop receipt for an old reading cancel a newer complete preparation', async () => {
-  const h = await completeReadingFixture(); h.finish();
-  const old = await h.host.read({ ...h.input, complete: true });
-  await vi.waitFor(() => expect(h.audio.play).toHaveBeenCalledOnce());
+  const result = await h.host.read({ ...h.input, complete: true });
+  await vi.waitFor(() => expect(h.audio.stop).toHaveBeenCalledOnce());
+  expect([...h.events].reverse().find(event => event.type === 'playback' && event.playbackId === result.playbackId)).toMatchObject({ state: 'failed' });
   const output = h.audio.play.mock.calls[0]![0];
   h.audio.receive({ type: 'started', token: output.token, generation: output.generation });
   h.audio.receive({ type: 'ended', token: output.token, generation: output.generation });
+  expect(h.events.some(event => event.type === 'playback' && event.state === 'played')).toBe(false);
+});
+
+it('cancels pending prefetch without appending late audio after the user stops', async () => {
+  const h = await completeReadingFixture();
+  const result = await h.host.read({ ...h.input, complete: true });
+  await vi.waitFor(() => expect(h.request.mock.calls.filter(([control]) => control.action === 'readMessage')).toHaveLength(2));
+  h.host.stop({ playbackId: result.playbackId }); h.finish();
+  await vi.waitFor(() => expect(h.request).toHaveBeenCalledWith({ action: 'stopRead', sessionId: h.input.sessionId, generation: h.input.generation }));
+  await Promise.resolve(); await Promise.resolve();
+  expect(h.audio.append).not.toHaveBeenCalled(); expect(h.audio.finish).not.toHaveBeenCalled();
+  expect([...h.events].reverse().find(event => event.type === 'playback')).toMatchObject({ state: 'interrupted' });
+});
+it('does not let a late stop for an old reading cancel newer prefetch', async () => {
+  const h = await completeReadingFixture(); h.finish();
+  const old = await h.host.read({ ...h.input, complete: true });
+  await vi.waitFor(() => expect(h.audio.finish).toHaveBeenCalledOnce());
+  const output = h.audio.play.mock.calls[0]![0];
+  h.audio.receive({ type: 'started', token: output.token, generation: output.generation });
+  for (const index of [0, 1]) h.audio.receive({ type: 'segment_ended', token: output.token, generation: output.generation, index });
+  h.audio.receive({ type: 'ended', token: output.token, generation: output.generation });
   const next = defer<unknown>(), original = h.request.getMockImplementation()!;
   h.request.mockImplementation(async control => control.action === 'readMessage' && control.input.offset ? next.promise : original(control));
-  const operation = h.host.read({ ...h.input, generation: 2, complete: true });
+  const current = await h.host.read({ ...h.input, generation: 2, complete: true });
   await vi.waitFor(() => expect(h.request.mock.calls.filter(([control]) => control.action === 'readMessage')).toHaveLength(4));
   h.host.stop({ playbackId: old.playbackId });
   next.resolve({ asset: h.parts[1]!.asset, path: h.parts[1]!.path, spokenText: '段'.repeat(80) });
-  await expect(operation).resolves.toMatchObject({ generation: 2, preparedChars: 230 });
-  await vi.waitFor(() => expect(h.audio.play).toHaveBeenCalledTimes(2));
+  await vi.waitFor(() => expect(h.audio.finish).toHaveBeenCalledTimes(2));
+  expect([...h.events].reverse().find(event => event.type === 'playback' && event.playbackId === current.playbackId)).not.toMatchObject({ state: 'interrupted' });
 });
-it('honors stop after all audio is prepared but before its playback configuration finishes', async () => {
-  const h = await completeReadingFixture(); h.finish();
+it('honors stop after the first segment is prepared but before playback configuration finishes', async () => {
+  const h = await completeReadingFixture();
   const settings = defer<typeof h.settings>();
   h.readSettings.mockResolvedValueOnce(h.settings).mockImplementationOnce(() => settings.promise);
   const operation = h.host.read({ ...h.input, complete: true });

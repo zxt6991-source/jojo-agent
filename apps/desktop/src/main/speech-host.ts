@@ -93,6 +93,15 @@ export class DesktopSpeechHost {
     if (['played', 'stopped', 'suppressed', 'failed'].includes(event.state)) {
       this.approvalBindings.delete(event.playbackId);
       this.automaticReads.delete(event.playbackId);
+      const cancellation = this.readCancellations.get(event.playbackId);
+      if (cancellation) cancellation.cancelled = true;
+      this.readCancellations.delete(event.playbackId);
+      if (event.owner.kind === 'session') {
+        if (this.completeReads.get(event.owner.id) === event.playbackId) this.completeReads.delete(event.owner.id);
+        if (this.preparingReads.get(event.owner.id) === event.playbackId) {
+          void this.options.request({ action: 'stopRead', sessionId: event.owner.id, generation: state.generation }).catch(() => undefined);
+        }
+      }
     }
     const delivery = this.deliveries.get(event.playbackId);
     if (delivery && ['played', 'stopped', 'suppressed', 'failed'].includes(event.state)) {
@@ -370,6 +379,8 @@ export class DesktopSpeechHost {
     const playbackId = randomUUID();
     const complete = input.complete === true && !input.automatic;
     const cancellation = { cancelled: false }; this.readCancellations.set(playbackId, cancellation);
+    const previousComplete = this.completeReads.get(input.sessionId);
+    if (previousComplete) this.stop({ playbackId: previousComplete });
     if (complete) this.completeReads.set(input.sessionId, playbackId); else this.completeReads.delete(input.sessionId);
     const identity = { sessionId: input.sessionId, messageId: input.messageId, generation: input.generation };
     if (input.automatic) this.automaticReads.set(playbackId, { sessionId: input.sessionId, generation: input.generation, epoch: automaticEpoch });
@@ -378,51 +389,61 @@ export class DesktopSpeechHost {
       && (!input.automatic || automaticEpoch === this.automaticReadEpoch);
     this.rememberPlayback({ playbackId, ...identity, state: 'preparing' });
     this.options.emit({ type: 'playback', ...this.playbacks.get(playbackId)! });
+    let delegated = false;
     try {
-      if (!alive()) throw new Error('朗读已停止。');
-      const segments: ReturnType<typeof SpeechReadyAssetSchema.parse>[] = [];
-      let offset = input.offset ?? 0, bytes = 0, preparedChars = 0;
-      for (;;) {
-        const segment = SpeechReadyAssetSchema.parse(await this.prepareReadAsset(playbackId, { action: 'readMessage', input: complete ? { ...input, offset } : input }));
+      let offset: number | undefined = input.offset ?? 0, bytes = 0, preparedChars = 0, segmentCount = 0;
+      const prepare = async (first: boolean) => {
+        if (!alive()) throw new Error('朗读已停止。');
+        const segmentInput = { ...input, offset };
+        if (complete && first) segmentInput.maxChars = 80; else delete segmentInput.maxChars;
+        const segment = SpeechReadyAssetSchema.parse(await this.prepareReadAsset(playbackId, { action: 'readMessage', input: complete ? segmentInput : input }));
         if (segment.asset.owner.kind !== 'session' || segment.asset.owner.id !== input.sessionId) throw new Error('语音资产归属不匹配。');
         if (!alive()) throw new Error('朗读已停止。');
         if (complete) {
           const chars = Array.from(segment.spokenText ?? '').length;
-          if (!chars || (segment.nextOffset !== undefined && segment.nextOffset !== offset + chars)) throw new Error('朗读正文信息不完整，请重试。');
-          preparedChars += chars;
+          if (!chars || (segment.nextOffset !== undefined && segment.nextOffset !== offset! + chars)) throw new Error('朗读正文信息不完整，请重试。');
+          preparedChars += chars; bytes += segment.asset.bytes; segmentCount++;
+          if (segmentCount > AUDIO_HOST_MAX_SEGMENTS || bytes > AUDIO_HOST_MAX_COMPLETE_BYTES) throw new Error('正文过长，请分成较短的篇章。');
+          offset = segment.nextOffset;
+          const previous = this.playbacks.get(playbackId);
+          if (previous) {
+            const progress: SpeechPlaybackState = { ...previous, preparedChars };
+            this.rememberPlayback(progress); this.options.emit({ type: 'playback', ...progress });
+          }
         }
-        segments.push(segment); bytes += segment.asset.bytes;
-        if (complete && (segments.length > AUDIO_HOST_MAX_SEGMENTS || bytes > AUDIO_HOST_MAX_COMPLETE_BYTES)) throw new Error('正文过长，无法一次准备完整朗读，请分成较短的篇章。');
-        if (!complete || segment.nextOffset === undefined) break;
-        if (segment.nextOffset <= offset) throw new Error('朗读位置无效，请重试。');
-        offset = segment.nextOffset;
-        // Publish preparation heartbeats, never a partial played receipt.
-        const preparing: SpeechPlaybackState = { playbackId, ...identity, state: 'preparing', preparedChars };
-        this.rememberPlayback(preparing); this.options.emit({ type: 'playback', ...preparing });
-      }
-      const ready = segments[0]!;
+        return segment;
+      };
+      const ready = await prepare(true);
       const nextOffset = complete ? undefined : ready.nextOffset;
       if (!alive()) throw new Error('朗读已停止。');
       await this.configure(); if (!input.automatic) this.broker.resumeOutput();
       if (!alive() || (input.automatic && !this.automaticReadAllowed(playbackId))) throw new Error('朗读已停止。');
-      // A long-running preparation may have been evicted from bounded history.
-      // Restore its public identity before Broker emits its synchronous ACKs.
       this.rememberPlayback({ playbackId, ...identity, state: 'preparing', ...(nextOffset !== undefined ? { nextOffset } : {}), ...(complete ? { preparedChars } : {}) });
+      // After this handoff the Broker owns completion and cancellation. It pulls
+      // the next asset only when the continuous player has prefetch credit.
+      delegated = complete;
       this.broker.enqueue({ playbackId, assetId: ready.asset.id, owner: { kind: 'session', id: input.sessionId },
-        ...(complete ? { remainingAssetIds: segments.slice(1).map(segment => segment.asset.id) } : {}),
+        ...(complete ? { nextAsset: async () => {
+          if (!alive()) throw new Error('朗读已停止。');
+          if (offset === undefined) return undefined;
+          return (await prepare(false)).asset.id;
+        } } : {}),
         generation: ++this.playbackGeneration, manual: !input.automatic });
       return { playbackId, generation: input.generation, ...(nextOffset !== undefined ? { nextOffset } : {}), ...(complete ? { preparedChars } : {}) };
     } catch (error) {
+      delegated = false;
       this.automaticReads.delete(playbackId);
       const state: SpeechPlaybackState = { playbackId, ...identity,
-        state: alive() ? 'failed' : 'interrupted',
-        reason: '朗读未完成，请重试。' };
+        state: alive() ? 'failed' : 'interrupted', reason: '朗读未完成，请重试。' };
       this.rememberPlayback(state); this.options.emit({ type: 'playback', ...state }); throw error;
     } finally {
-      this.readCancellations.delete(playbackId);
-      if (this.completeReads.get(input.sessionId) === playbackId) this.completeReads.delete(input.sessionId);
+      if (!delegated) {
+        this.readCancellations.delete(playbackId);
+        if (this.completeReads.get(input.sessionId) === playbackId) this.completeReads.delete(input.sessionId);
+      }
     }
   }
+
   readApproval(input: ReadApprovalSpeechInput): Promise<{ playbackId: string; generation: number }> {
     const key = JSON.stringify([input.sessionId, input.approvalId]);
     const existing = this.approvalRequests.get(key);

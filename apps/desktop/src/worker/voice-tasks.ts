@@ -40,6 +40,7 @@ export class DesktopVoiceTasks {
   private readonly drafts = new Map<string, VoiceCaptureHandle>();
   private readonly submissions = new Map<string, Promise<VoiceCommitResponse>>();
   private readonly readTasks = new Map<string, ReadTask>();
+  private ttsWarmup: { sessionId: string; generation: number | undefined; controller: AbortController; cleanup: Set<() => void> } | undefined;
   private readonly sessionEpoch = new Map<string, number>();
   private readonly unsubscribe: () => void;
   private readonly unsubscribeValidation: () => void;
@@ -83,7 +84,42 @@ export class DesktopVoiceTasks {
     const task: CaptureTask = { handle, controller, stream, done: Promise.resolve(),
       timer: setTimeout(() => stream.fail(new SpeechProviderError('timeout', 'Speech connection timed out.')), this.runtime.usesLocalAsr ? 30_000 : 10_000) };
     this.captures.set(handle.captureId, task); this.post(handle, 'connecting');
+    if (handle.purpose === 'conversation' && handle.sessionId) this.warmupTts(handle.sessionId, handle.generation);
     task.done = this.recognize(task, service);
+  }
+  /** Called only after an explicitly requested reading's Run has started.
+   * No audio asset or playback is created; the eventual read owns errors. */
+  warmupRequestedReadAloud(sessionId: string, signal: AbortSignal): () => void {
+    if (this.closed || !this.runtime.service || signal.aborted) return () => undefined;
+    return this.warmupTts(sessionId, undefined, signal);
+  }
+  private warmupTts(sessionId: string, generation?: number, requestedSignal?: AbortSignal): () => void {
+    if (this.closed || requestedSignal?.aborted) return () => undefined;
+    let warmup = this.ttsWarmup;
+    // A model is global, but one session must not cancel another's preparation.
+    if (warmup && (warmup.sessionId !== sessionId || warmup.controller.signal.aborted)) return () => undefined;
+    if (!warmup) {
+      warmup = { sessionId, generation, controller: new AbortController(), cleanup: new Set() };
+      this.ttsWarmup = warmup;
+      const current = warmup;
+      // Normal ASR/Run completion keeps compilation in progress for the reply.
+      const operation = requestedSignal
+        ? this.runtime.warmupTts(current.controller.signal, 'requested_read_aloud')
+        : this.runtime.warmupTts(current.controller.signal);
+      void operation.catch(() => undefined).finally(() => {
+        for (const cleanup of current.cleanup) cleanup();
+        current.cleanup.clear();
+        if (this.ttsWarmup === current) this.ttsWarmup = undefined;
+      });
+    }
+    const current = warmup;
+    const cancel = () => { if (this.ttsWarmup === current) current.controller.abort(); };
+    if (requestedSignal) {
+      requestedSignal.addEventListener('abort', cancel, { once: true });
+      current.cleanup.add(() => requestedSignal.removeEventListener('abort', cancel));
+      if (requestedSignal.aborted) cancel();
+    }
+    return cancel;
   }
   private async recognize(task: CaptureTask, service: SpeechService): Promise<void> {
     const { handle, controller, stream } = task;
@@ -136,9 +172,13 @@ export class DesktopVoiceTasks {
   }
   cancelCapture(captureId: string, generation: number): void {
     const task = this.captures.get(captureId);
-    if (task && task.handle.generation === generation) { task.controller.abort(); task.stream.dispose(); }
+    if (task && task.handle.generation === generation) {
+      if (this.ttsWarmup && this.ttsWarmup.sessionId === task.handle.sessionId && (this.ttsWarmup.generation === undefined || this.ttsWarmup.generation <= generation)) this.ttsWarmup.controller.abort();
+      task.controller.abort(); task.stream.dispose();
+    }
     for (const [key, handle] of this.drafts) {
       if (handle.captureId !== captureId || handle.generation !== generation) continue;
+      if (this.ttsWarmup && this.ttsWarmup.sessionId === handle.sessionId && (this.ttsWarmup.generation === undefined || this.ttsWarmup.generation <= generation)) this.ttsWarmup.controller.abort();
       this.drafts.delete(key); this.post(handle, 'cancelled', { errorCode: 'cancelled', reason: 'Speech draft cancelled.' });
       const record = this.ledger.get(handle.voiceTurnId, generation);
       if (record?.state === 'pending') this.ledger.transition(handle.voiceTurnId, generation, 'pending', 'failed', 'voice_turn_cancelled', record.revision);
@@ -227,7 +267,7 @@ export class DesktopVoiceTasks {
       const normalized = Array.from(input.automatic ? projectVoiceReply(summary || text, service.replySegmentChars) : normalizeSpeechTextContent(text));
       const offset = input.offset ?? 0;
       if ((input.automatic && offset !== 0) || offset >= normalized.length) throw new SpeechProviderError('resource_denied', 'The requested speech segment is unavailable.');
-      let budget = service.replySegmentChars, spokenText: string, asset: AudioAsset;
+      let budget = Math.min(service.replySegmentChars, input.maxChars ?? service.replySegmentChars), spokenText: string, asset: AudioAsset;
       for (;;) {
         spokenText = speechTextSegment(normalized, offset, budget);
         try {
@@ -304,6 +344,8 @@ export class DesktopVoiceTasks {
     return { captures: Array.from(this.captureStates.values()), playbacks: [], validation, diagnostics: this.runtime.diagnostics(), latency: this.runtime.latencyDiagnostics(), ...(validationSignature ? { validationSignature } : {}) };
   }
   cancelReadTasks(sessionId?: string, generation?: number): void {
+    if (this.ttsWarmup && (sessionId === undefined || this.ttsWarmup.sessionId === sessionId)
+      && (generation === undefined || (this.ttsWarmup.generation === undefined || this.ttsWarmup.generation <= generation))) this.ttsWarmup.controller.abort();
     for (const task of this.readTasks.values()) {
       if ((sessionId === undefined || task.sessionId === sessionId) && (generation === undefined || task.generation <= generation)) task.controller.abort();
     }
@@ -311,11 +353,13 @@ export class DesktopVoiceTasks {
   resolveAsset(id: string, owner: AudioAssetOwner) { return this.runtime.resolveAsset(id, owner); }
   async clearCache(): Promise<void> { this.invalidate(); await this.runtime.clearCache(); }
   invalidate(): void {
+    this.ttsWarmup?.controller.abort(); this.ttsWarmup = undefined;
     for (const task of this.captures.values()) { task.controller.abort(); task.stream.dispose(); }
     for (const task of this.readTasks.values()) task.controller.abort();
     this.drafts.clear();
   }
   async releaseSession(sessionId: string): Promise<void> {
+    if (this.ttsWarmup?.sessionId === sessionId) this.ttsWarmup.controller.abort();
     this.sessionEpoch.set(sessionId, (this.sessionEpoch.get(sessionId) ?? 0) + 1);
     for (const task of this.captures.values()) if (task.handle.sessionId === sessionId) { task.controller.abort(); task.stream.dispose(); }
     this.readTasks.get(sessionId)?.controller.abort();

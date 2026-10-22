@@ -1,0 +1,71 @@
+{
+  "scope": "real_Qwen3_MLX_Worker_MessagePort_AudioWorklet",
+  "syntheticAsr": true,
+  "syntheticLlm": true,
+  "physicalOutputMuted": true,
+  "turns": 3,
+  "outcomes": [
+    "played",
+    "interrupted",
+    "played"
+  ],
+  "latency": {
+    "activeTraces": 0,
+    "metrics": {
+      "asrFinalMs": {
+        "samples": 3,
+        "p50Ms": 0.1366249999998672,
+        "p95Ms": 0.1538749999999709,
+        "meanMs": 0.13743066666658402
+      },
+      "runDispatchMs": {
+        "samples": 3,
+        "p50Ms": 75.64924999999948,
+        "p95Ms": 83.25854200000003,
+        "meanMs": 78.16227766666618
+      },
+      "llmTtftMs": {
+        "samples": 3,
+        "p50Ms": 4.2621670000007725,
+        "p95Ms": 12.179041999999981,
+        "meanMs": 6.792125333333767
+      },
+      "assistantCommitMs": {
+        "samples": 3,
+        "p50Ms": 1.3931249999995998,
+        "p95Ms": 2.2053330000001097,
+        "meanMs": 1.6035553333335126
+      },
+      "finalToTtsMs": {
+        "samples": 3,
+        "p50Ms": 0.4650000000001455,
+        "p95Ms": 1.1423749999999018,
+        "meanMs": 0.6256529999999051
+      },
+      "ttsFirstPcmMs": {
+        "samples": 3,
+        "p50Ms": 203.35062499999913,
+        "p95Ms": 304.1452919999999,
+        "meanMs": 233.50954166666625
+      },
+      "recordToPlaybackMs": {
+        "samples": 3,
+        "p50Ms": 289.3287500000006,
+        "p95Ms": 409.1469589999997,
+        "meanMs": 326.04169466666673
+      },
+      "playbackStartMs": {
+        "samples": 3,
+        "p50Ms": 5.0202500000004875,
+        "p95Ms": 6.079749999999876,
+        "meanMs": 5.211111000000528
+      },
+      "playbackMs": {
+        "samples": 2,
+        "p50Ms": 2872.217541,
+        "p95Ms": 2876.6728329999987,
+        "meanMs": 2874.4451869999994
+      }
+    }
+  }
+}

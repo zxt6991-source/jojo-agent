@@ -1,0 +1,31 @@
+{
+  "scope": "incomplete_run_record_reconstructed_from_command_output",
+  "benchmarkStatus": "failed",
+  "provider": "mlx-qwen3",
+  "parameters": {
+    "temperature": 0.9,
+    "top_p": 1.0,
+    "top_k": 50,
+    "repetition_penalty": 1.05,
+    "max_tokens": 1500
+  },
+  "iterationsRequested": 2,
+  "observedUtteranceStarts": [
+    "short", "sentence", "long", "date", "model", "symbols", "path", "command",
+    "short", "sentence", "long"
+  ],
+  "failure": {
+    "originalCode": null,
+    "lastObservedCategory": "long",
+    "reportWriteError": "missing_parent_directory_for_relative_report_path",
+    "originalErrorUnavailable": true
+  },
+  "numericMeasurementsRecovered": false,
+  "includedInSuccessfulBenchmarkAggregates": false,
+  "notes": [
+    "The command exited with status 1 after starting the second long utterance.",
+    "The report path was relative to the providers package, whose docs directory did not exist; report writing masked the original error.",
+    "No inference error code or timing is inferred from the progress log.",
+    "The CLI now checks the report parent before synthesis; the subsequent absolute-path run is saved separately."
+  ]
+}

@@ -23,7 +23,7 @@ async function setup(beforePlay?: (request: PlaybackRequest) => Promise<boolean>
   let now = 2000;
   let listener: (ack: AudioHostAck) => void = () => undefined;
   const host: AudioHostPort = {
-    play: vi.fn(async () => undefined), stop: vi.fn(), close: vi.fn(),
+    play: vi.fn(async () => undefined), append: vi.fn(), finish: vi.fn(), stop: vi.fn(), close: vi.fn(),
     onAck(value) { listener = value; return () => { listener = () => undefined; }; }
   };
   const events: PlaybackEvent[] = [];
@@ -37,6 +37,36 @@ async function setup(beforePlay?: (request: PlaybackRequest) => Promise<boolean>
     receive: (input: AudioHostAck) => listener(input), setNow: (value: number) => { now = value; } };
 }
 describe('Main playback broker', () => {
+  it('prefetches at most three segments and requires finish plus all consumed receipts before played', async () => {
+    const h = await setup(); let remaining = 4;
+    const nextAsset = vi.fn(async () => remaining-- > 0 ? h.asset.id : undefined);
+    h.broker.enqueue({ ...h.request(), manual: true, nextAsset });
+    await vi.waitFor(() => expect(h.host.append).toHaveBeenCalledTimes(2));
+    expect(nextAsset).toHaveBeenCalledTimes(2); expect(h.active()).toMatchObject({ stream: true });
+    const consumed = (index: number) => h.receive({ type: 'segment_ended', token: h.active().token, generation: 1, index });
+    h.ack('started'); h.ack('ended'); expect(h.events.some(event => event.state === 'played')).toBe(false);
+    consumed(3); expect(nextAsset).toHaveBeenCalledTimes(2);
+    consumed(0); await vi.waitFor(() => expect(h.host.append).toHaveBeenCalledTimes(3));
+    consumed(0); expect(nextAsset).toHaveBeenCalledTimes(3);
+    consumed(1); await vi.waitFor(() => expect(h.host.append).toHaveBeenCalledTimes(4));
+    consumed(2); await vi.waitFor(() => expect(h.host.finish).toHaveBeenCalledWith(h.active().token, 1, 5));
+    h.ack('ended'); expect(h.events.some(event => event.state === 'played')).toBe(false);
+    consumed(3); consumed(4); h.ack('ended'); expect(h.events.at(-1)?.state).toBe('played');
+  });
+  it('stops an incomplete stream on producer failure and fences late consumption', async () => {
+    const h = await setup(); const nextAsset = vi.fn(async (): Promise<string | undefined> => { throw new Error('synthesis_failed'); });
+    h.broker.enqueue({ ...h.request(), manual: true, nextAsset });
+    await vi.waitFor(() => expect(h.events.at(-1)?.state).toBe('failed'));
+    expect(h.host.stop).toHaveBeenCalledOnce(); h.ack('started'); h.ack('ended');
+    expect(h.events.some(event => event.state === 'played')).toBe(false);
+  });
+  it('rejects a later stream asset belonging to another owner', async () => {
+    const h = await setup();
+    h.resolveAsset.mockResolvedValueOnce({ asset: h.asset, path: h.filename }).mockResolvedValue({ asset: { ...h.asset, owner: { kind: 'session', id: 'other' } }, path: h.filename });
+    h.broker.enqueue({ ...h.request(), manual: true, nextAsset: async () => h.asset.id });
+    await vi.waitFor(() => expect(h.events.at(-1)?.state).toBe('failed'));
+    expect(h.host.play).toHaveBeenCalledOnce(); expect(h.host.append).not.toHaveBeenCalled(); expect(h.host.stop).toHaveBeenCalledOnce();
+  });
   it('defers queued reminders until interactive speech is idle without falsely delivering an interrupted asset', async () => {
     const h = await setup(); h.asset.owner = { kind: 'schedule', id: 'schedule-one' };
     const first = { ...h.request(), owner: h.asset.owner }, second = { ...h.request(), owner: h.asset.owner };

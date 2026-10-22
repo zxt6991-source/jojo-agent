@@ -44,6 +44,67 @@ function controlledProvider() {
 afterEach(() => { vi.unstubAllGlobals(); });
 
 describe('worker-owned local speech runtime', () => {
+  it('lazily shares native PCM and warmup capabilities without synthesizing while saving settings', async () => {
+    const { assets } = assetsHarness();
+    const neural = { ...idleProvider().tts, warmup: vi.fn(async (_signal: AbortSignal) => undefined),
+      synthesizePcm: vi.fn<NonNullable<SpeechProvider['tts']['synthesizePcm']>>(async function* (request) {
+        yield { type: 'pcm', requestId: request.requestId, bytes: new Uint8Array(960), sampleRate: 24000 };
+        yield { type: 'completed', requestId: request.requestId };
+      }), dispose: vi.fn(async () => undefined) };
+    const createNeuralTts = vi.fn(() => neural);
+    const runtime = new DesktopSpeechRuntime('/unused', { assets, createNeuralTts });
+    try {
+      const configured = SpeechSettingsSchema.parse({ enabled: true, autoReadReplies: true, realtimeReplies: true,
+        provider: { tts: { id: 'mlx-qwen3', local: { pythonPath: '/local/python3', modelDirectory: '/local/model' } } } });
+      await runtime.configure(configured);
+      expect(createNeuralTts).not.toHaveBeenCalled(); expect(neural.warmup).not.toHaveBeenCalled();
+      const controller = new AbortController();
+      await runtime.warmupTts(controller.signal);
+      expect(neural.warmup).toHaveBeenCalledExactlyOnceWith(controller.signal);
+      const session = await runtime.openRealtimeTts({ sessionId: 'session', generation: 1 });
+      const audio = (async () => { const chunks = []; for await (const chunk of session.audio()) chunks.push(chunk); return chunks; })();
+      await session.append('原生语音。'); await session.finish();
+      expect((await audio).map(chunk => [chunk.pcm.length, chunk.final, chunk.segmentFrames])).toEqual([[958, false, undefined], [2, true, 480]]);
+      expect(neural.synthesize).not.toHaveBeenCalled(); expect(createNeuralTts).toHaveBeenCalledOnce();
+      await runtime.configure({ ...configured, autoReadReplies: false });
+      await runtime.warmupTts(controller.signal); expect(neural.warmup).toHaveBeenCalledOnce();
+    } finally { runtime.close(); }
+    expect(neural.dispose).toHaveBeenCalledOnce();
+  });
+  it('warms an explicitly requested reading with automatic replies disabled without creating audio or changing consent', async () => {
+    const { assets } = assetsHarness();
+    const neural = { ...idleProvider().tts, warmup: vi.fn(async (_signal: AbortSignal) => undefined), dispose: vi.fn(async () => undefined) };
+    const createNeuralTts = vi.fn(() => neural);
+    const runtime = new DesktopSpeechRuntime('/unused', { assets, createNeuralTts });
+    const configured = SpeechSettingsSchema.parse({ enabled: true, autoReadReplies: false,
+      provider: { tts: { id: 'mlx-qwen3', local: { pythonPath: '/local/python3', modelDirectory: '/local/model' } } } });
+    const signal = new AbortController().signal;
+    try {
+      await runtime.configure(configured);
+      await runtime.warmupTts(signal);
+      expect(createNeuralTts).not.toHaveBeenCalled();
+      await runtime.warmupTts(signal, 'requested_read_aloud');
+      expect(neural.warmup).toHaveBeenCalledExactlyOnceWith(signal);
+      expect(neural.synthesize).not.toHaveBeenCalled(); expect(assets.begin).not.toHaveBeenCalled();
+      expect(configured.autoReadReplies).toBe(false);
+      await runtime.warmupTts(signal); expect(neural.warmup).toHaveBeenCalledOnce();
+      await runtime.configure({ ...configured, enabled: false });
+      await runtime.warmupTts(signal, 'requested_read_aloud'); expect(neural.warmup).toHaveBeenCalledOnce();
+    } finally { runtime.close(); }
+  });
+  it('does not warm a cancelled request or a non-neural provider', async () => {
+    const { assets } = assetsHarness();
+    const provider = { ...idleProvider(), tts: { ...idleProvider().tts, warmup: vi.fn(async (_signal: AbortSignal) => undefined) } };
+    const runtime = new DesktopSpeechRuntime('/unused', { assets, createProvider: () => provider });
+    try {
+      await runtime.configure(SpeechSettingsSchema.parse({ enabled: true }));
+      await runtime.warmupTts(new AbortController().signal, 'requested_read_aloud');
+      const cancelled = new AbortController(); cancelled.abort();
+      await runtime.configure(SpeechSettingsSchema.parse({ enabled: true, provider: { tts: { id: 'mlx-qwen3', local: { pythonPath: '/local/python3', modelDirectory: '/local/model' } } } }));
+      await runtime.warmupTts(cancelled.signal, 'requested_read_aloud');
+      expect(provider.tts.warmup).not.toHaveBeenCalled(); expect(provider.tts.synthesize).not.toHaveBeenCalled();
+    } finally { runtime.close(); }
+  });
   it('accepts enabled neural settings without probing the runtime until speech is requested', async () => {
     const { assets, writer } = assetsHarness();
     const createNeuralTts = vi.fn(() => { throw new SpeechProviderError('local_unavailable', 'Local voice is not installed.'); });

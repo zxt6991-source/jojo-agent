@@ -41,10 +41,11 @@ test('real offline neural model reads bilingual text continuously through bundle
     });
     await page.reload();
     await page.evaluate(() => {
-      (window as any).ttsAtPlayback = undefined;
+      (window as any).preparedAtPlayback = undefined;
       window.desktopAgent.onSpeechEvent(event => {
-        if (event.type === 'playback' && event.state === 'playing' && event.messageId) void window.desktopAgent.getSpeechStatus()
-          .then(status => { (window as any).ttsAtPlayback = status.diagnostics!.tts.requests; });
+        if (event.type === 'playback' && event.state === 'playing' && event.messageId) {
+          (window as any).preparedAtPlayback ??= event.preparedChars;
+        }
       });
     });
     await page.getByRole('button', { name: '新建对话', exact: true }).click();
@@ -61,10 +62,11 @@ test('real offline neural model reads bilingual text continuously through bundle
     const normalizedLength = Array.from(text.replace(/^#{1,6}\s+/gmu, '').replace(/\s+/gu, ' ').trim()).length;
     expect(segments[0]!.preparedChars).toBe(normalizedLength);
     // Attempts may include a bounded recovered inference failure. Only ready
-    // segments count as prepared text, and none may be generated while playing.
+    // segments count as prepared text. Playback starts before all text is prepared.
     expect(after.diagnostics!.tts.requestedChars - status.diagnostics!.tts.requestedChars).toBeGreaterThanOrEqual(normalizedLength);
     expect(after.diagnostics!.tts.requests - status.diagnostics!.tts.requests).toBeGreaterThan(1);
-    expect(await page.evaluate(() => (window as any).ttsAtPlayback)).toBe(after.diagnostics!.tts.requests);
+    expect(await page.evaluate(() => (window as any).preparedAtPlayback)).toBeGreaterThan(0);
+    expect(await page.evaluate(() => (window as any).preparedAtPlayback)).toBeLessThan(normalizedLength);
     await expect(page.getByRole('button', { name: '继续朗读助手回复', exact: true })).toHaveCount(0);
   } finally {
     // Release the GPU model through the normal configuration boundary before exit.

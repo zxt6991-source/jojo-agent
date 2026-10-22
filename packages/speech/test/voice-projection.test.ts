@@ -62,6 +62,15 @@ describe('consumer driven scheduler', () => {
     final.append([{ text: '好的。', sourceTextRange: { start: 0, end: 3 } }], 0);
     expect(final.take(0, 0, true)?.text).toBe('好的。');
   });
+  it('counts projection time toward the first phrase deadline without forcing unsafe fragments', () => {
+    const s = new VoiceChunkScheduler(), projector = new VoiceTextProjector();
+    s.start(0);
+    s.append(projector.append('我先看看现在的实现，然后确认日期'), 0);
+    expect(s.take(399, 0)).toBeUndefined();
+    s.append(projector.flushWeakBoundary(), 400);
+    expect(s.take(400, 0)?.text).toBe('我先看看现在的实现，');
+    expect(s.take(800, 0)).toBeUndefined();
+  });
   it('bounds coalesced text and keeps progress narration separate from the reply', () => {
     const s = new VoiceChunkScheduler({ maxChars: 10 });
     s.append([{ text: '我看一下。', sourceTextRange: { start: 0, end: 0 } },

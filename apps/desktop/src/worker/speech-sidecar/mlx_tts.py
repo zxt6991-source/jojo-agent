@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Offline Apple Silicon neural voice. No microphone, playback or remote code.
 
-The model stays warm. Cancellation terminates the process so no stale GPU
-generation can enter a later request. Only bounded PCM crosses stdout.
+The model stays warm. Cooperative cancellation stops at a generated batch
+boundary and confirms cleanup before another request. Only bounded PCM crosses stdout.
 """
 import argparse
 from importlib.metadata import version
@@ -10,6 +10,7 @@ import math
 import os
 from pathlib import Path
 import sys
+import select
 import time
 
 from protocol import read_frame, write_frame
@@ -17,6 +18,13 @@ from protocol import read_frame, write_frame
 VOICES = ("Serena", "Vivian", "Uncle_Fu", "Dylan", "Eric", "Ryan", "Aiden", "Ono_Anna", "Sohee")
 MAX_FRAMES = 24000 * 120
 MAX_TOKENS = 1500
+# Sampling defaults from the pinned CustomVoice checkpoint's generation_config.
+# Keep them explicit; runtime model files must not change the generation policy.
+GENERATION_PARAMETERS = {"temperature": 0.9, "top_p": 1.0, "top_k": 50, "repetition_penalty": 1.05}
+# Each segment starts from the same sampling state. Warmup, other requests and
+# cancellation must not randomly change the selected preset's next rendering.
+# This removes request-order drift, not the model's text-dependent prosody.
+GENERATION_SEED = 0
 
 
 def load_model(directory):
@@ -38,8 +46,28 @@ def load_model(directory):
     return model, version("mlx-audio")
 
 
-def serve(model, source, emit):
+class Cancelled(Exception):
+    pass
+
+
+def serve(model, source, emit, has_control=lambda: False, cleanup_cancel=lambda: None,
+          seed_generation=lambda _seed: None):
     import numpy as np
+    last_completed = None
+
+    def check_cancel(request_id):
+        # The production source is unbuffered: select cannot miss a cancel frame
+        # that a buffered read has already prefetched from the OS pipe.
+        if not has_control():
+            return
+        frame = read_frame(source)
+        if frame is None:
+            raise BrokenPipeError("input_closed")
+        header, body = frame
+        if body or header != {"type": "tts.cancel", "requestId": request_id}:
+            raise ValueError("protocol_error")
+        raise Cancelled()
+
     while True:
         try:
             frame = read_frame(source)
@@ -48,6 +76,14 @@ def serve(model, source, emit):
             header, body = frame
             if header.get("type") == "shutdown" and not body:
                 return 0
+            if header.get("type") == "tts.cancel":
+                # Completion can cross an in-flight cancel. Acknowledge the
+                # barrier even when all audio was sent before cancellation.
+                if body or last_completed is None or header != {"type": "tts.cancel", "requestId": last_completed}:
+                    raise ValueError("protocol_error")
+                emit({"type": "tts.cancelled", "requestId": last_completed})
+                last_completed = None
+                continue
             request_id, text, speed = header.get("requestId"), header.get("text"), header.get("speed")
             voice = header.get("speakerId", "default")
             if body or header.get("type") != "tts.synthesize" or not isinstance(request_id, str) or not 1 <= len(request_id) <= 256:
@@ -61,37 +97,63 @@ def serve(model, source, emit):
             emit({"type": "tts.error", "code": "protocol_error"})
             return 2
         try:
+            last_completed = None
             started = time.monotonic()
             emit({"type": "tts.started", "requestId": request_id})
             total, sequence, batch, tokens = 0, 0, 0, 0
             # A full coherent segment shares prosody; stream only the generated
             # audio, without slicing text into independently restarted clauses.
-            for result in model.generate(text, voice="Serena" if voice == "default" else voice,
-                                         lang_code="auto", temperature=0.7, top_p=0.9,
-                                         max_tokens=MAX_TOKENS, verbose=False, stream=True,
-                                         streaming_interval=0.8):
-                samples = np.asarray(result.audio, dtype=np.float32)
-                if samples.ndim != 1 or not samples.size or result.sample_rate != 24000 or not np.isfinite(samples).all():
-                    raise ValueError("invalid_audio")
-                tokens += result.token_count
-                if tokens >= MAX_TOKENS or total + samples.size > MAX_FRAMES:
-                    raise ValueError("audio_limit")
-                batch += 1
-                if batch > 1000:
-                    raise ValueError("audio_limit")
-                emit({"type": "tts.callback", "requestId": request_id, "callback": batch,
-                      "samples": samples.size, "atMs": (time.monotonic() - started) * 1000})
-                pcm = np.rint(np.clip(samples, -1, 1) * 32767).astype("<i2").tobytes()
-                for offset in range(0, len(pcm), 65536):
-                    sequence += 1
-                    emit({"type": "tts.pcm", "requestId": request_id, "sequence": sequence, "sampleRate": 24000}, pcm[offset:offset + 65536])
-                total += samples.size
+            check_cancel(request_id)
+            seed_generation(GENERATION_SEED)
+            generation = model.generate(text, voice="Serena" if voice == "default" else voice,
+                                        lang_code="auto", **GENERATION_PARAMETERS,
+                                        max_tokens=MAX_TOKENS, verbose=False, stream=True,
+                                        streaming_interval=0.8)
+            try:
+                while True:
+                    check_cancel(request_id)
+                    try:
+                        result = next(generation)
+                    except StopIteration:
+                        break
+                    check_cancel(request_id)
+                    samples = np.asarray(result.audio, dtype=np.float32)
+                    if samples.ndim != 1 or not samples.size or result.sample_rate != 24000 or not np.isfinite(samples).all():
+                        raise ValueError("invalid_audio")
+                    tokens += result.token_count
+                    if tokens >= MAX_TOKENS or total + samples.size > MAX_FRAMES:
+                        raise ValueError("audio_limit")
+                    batch += 1
+                    if batch > 1000:
+                        raise ValueError("audio_limit")
+                    emit({"type": "tts.callback", "requestId": request_id, "callback": batch,
+                          "samples": samples.size, "atMs": (time.monotonic() - started) * 1000})
+                    pcm = np.rint(np.clip(samples, -1, 1) * 32767).astype("<i2").tobytes()
+                    for offset in range(0, len(pcm), 65536):
+                        sequence += 1
+                        emit({"type": "tts.pcm", "requestId": request_id, "sequence": sequence, "sampleRate": 24000}, pcm[offset:offset + 65536])
+                    total += samples.size
+            finally:
+                close = getattr(generation, "close", None)
+                if close:
+                    close()
+            check_cancel(request_id)
             if not total:
                 raise ValueError("empty_audio")
+            last_completed = request_id
             emit({"type": "tts.completed", "requestId": request_id, "frames": total})
+        except Cancelled:
+            try:
+                # Closing the generator alone skips the library's normal tail
+                # cleanup. Reset decoder state and synchronize GPU work first.
+                cleanup_cancel()
+                emit({"type": "tts.cancelled", "requestId": request_id})
+            except Exception:
+                emit({"type": "tts.error", "requestId": request_id, "code": "synthesis_failed"})
+                return 1
         except Exception as error:
             # Controlled categories only; library traces never enter the UI.
-            code = {"audio_limit": "synthesis_limit", "invalid_audio": "invalid_audio", "empty_audio": "empty_result"}.get(str(error), "synthesis_failed")
+            code = {"protocol_error": "protocol_error", "audio_limit": "synthesis_limit", "invalid_audio": "invalid_audio", "empty_audio": "empty_result"}.get(str(error), "synthesis_failed")
             emit({"type": "tts.error", "requestId": request_id, "code": code})
             return 1
 
@@ -108,11 +170,20 @@ def main():
     try:
         model, runtime_version = load_model(args.model_dir)
         emit({"type": "tts.ready", "protocolVersion": 1, "sampleRate": 24000,
-              "runtimeVersion": runtime_version, "loadMs": (time.monotonic() - started) * 1000})
+              "cooperativeCancel": True, "runtimeVersion": runtime_version, "loadMs": (time.monotonic() - started) * 1000})
     except Exception:
         emit({"type": "tts.error", "code": "local_unavailable"})
         return 1
-    return serve(model, sys.stdin.buffer, emit)
+    import mlx.core as mx
+
+    def cleanup_cancel():
+        mx.synchronize()
+        model.speech_tokenizer.decoder.reset_streaming_state()
+        mx.clear_cache()
+
+    source = os.fdopen(os.dup(sys.stdin.fileno()), "rb", buffering=0)
+    return serve(model, source, emit, lambda: bool(select.select([source], [], [], 0)[0]),
+                 cleanup_cancel, mx.random.seed)
 
 
 if __name__ == "__main__":

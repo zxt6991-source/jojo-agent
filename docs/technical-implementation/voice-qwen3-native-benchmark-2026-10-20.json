@@ -1,0 +1,95 @@
+{
+  "version": 3,
+  "benchmarkStatus": "failed",
+  "measuredAt": "2026-10-20T00:51:05.942Z",
+  "provider": "mlx-qwen3",
+  "device": {
+    "platform": "darwin",
+    "arch": "arm64",
+    "cpu": "Apple M4 Pro"
+  },
+  "failure": {
+    "code": "synthesis_limit",
+    "category": "sentence"
+  },
+  "verified": {
+    "model": true,
+    "sources": false
+  },
+  "modelRevision": "08c72cad5e2fd0f41730c8bd1f28149585e46361",
+  "partialNativeMeasurements": [
+    {
+      "category": "short",
+      "firstCallbackMs": 352.0112909609452,
+      "firstNativePcmMs": 2714.027166,
+      "callbacks": 13,
+      "completed": true
+    },
+    {
+      "category": "sentence",
+      "firstCallbackMs": 185.26437506079674,
+      "firstNativePcmMs": 185.79075000000012,
+      "callbacks": 12,
+      "completed": true
+    },
+    {
+      "category": "long",
+      "firstCallbackMs": 185.15416700392962,
+      "firstNativePcmMs": 185.57925000000068,
+      "callbacks": 36,
+      "completed": true
+    },
+    {
+      "category": "date",
+      "firstCallbackMs": 186.3342080032453,
+      "firstNativePcmMs": 187.23804200000086,
+      "callbacks": 11,
+      "completed": true
+    },
+    {
+      "category": "model",
+      "firstCallbackMs": 182.6552499551326,
+      "firstNativePcmMs": 183.16512500000317,
+      "callbacks": 14,
+      "completed": true
+    },
+    {
+      "category": "symbols",
+      "firstCallbackMs": 188.69149999227375,
+      "firstNativePcmMs": 189.02904200000194,
+      "callbacks": 7,
+      "completed": true
+    },
+    {
+      "category": "path",
+      "firstCallbackMs": 175.00225000549108,
+      "firstNativePcmMs": 175.33895800000028,
+      "callbacks": 6,
+      "completed": true
+    },
+    {
+      "category": "command",
+      "firstCallbackMs": 175.81500008236617,
+      "firstNativePcmMs": 176.3860420000019,
+      "callbacks": 6,
+      "completed": true
+    },
+    {
+      "category": "short",
+      "firstCallbackMs": 179.14841591846198,
+      "firstNativePcmMs": 179.56216700000004,
+      "callbacks": 4,
+      "completed": true
+    },
+    {
+      "category": "sentence",
+      "firstCallbackMs": 178.08049998711795,
+      "firstNativePcmMs": 178.47141700000066,
+      "callbacks": 149,
+      "completed": false
+    }
+  ],
+  "aggregateMeasurements": null,
+  "productionTtsChanged": false,
+  "acousticReleaseGate": "not_accepted"
+}

@@ -64,6 +64,21 @@ describe('speech cache identity', () => {
     second.provider.tts.local!.modelDirectory = '/local/model-a'; second.provider.tts.speakerId = 'Vivian';
     expect(await speechCacheKey('你好', first)).not.toBe(await speechCacheKey('你好', second));
   });
+  it.each(['qwen3-customvoice-4bit-v2-auto-language', 'qwen3-customvoice-4bit-v3-checkpoint-sampling-auto-language'])(
+    'does not reuse neural audio generated with the previous policy %s', async previousPolicy => {
+    const config = SpeechSettingsSchema.parse({ provider: { tts: { id: 'mlx-qwen3', local: { pythonPath: '/local/python3', modelDirectory: '/local/model' } } } });
+    const text = '你好。', { tts } = config.provider;
+    const previousKey = `sha256:${createHash('sha256').update(JSON.stringify([
+      text, tts.id, tts.speakerId, tts.speechRate, tts.format, tts.sampleRate,
+      tts.local, previousPolicy, SPEECH_TEXT_VERSION, SPEECH_PROTOCOL_VERSION
+    ])).digest('hex')}`;
+    const h = harness(undefined, undefined, config);
+    vi.mocked(h.assets.find).mockImplementation(async key => key === previousKey ? asset : undefined);
+    await h.service.synthesize(input(text));
+    expect(await speechCacheKey(text, config)).not.toBe(previousKey);
+    expect(h.provider.tts.synthesize).toHaveBeenCalledOnce();
+    expect(h.assets.begin).toHaveBeenCalledExactlyOnceWith(await speechCacheKey(text, config), owner, 'wav');
+  });
   it('hashes canonical text and all model/audio/version dimensions, without clear text in the key', async () => {
     const config = settings(); const text = normalizeSpeechText('**你好** Jojo'); const { tts } = config.provider;
     const expected = createHash('sha256').update(JSON.stringify([

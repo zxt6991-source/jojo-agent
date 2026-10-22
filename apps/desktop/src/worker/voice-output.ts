@@ -40,6 +40,7 @@ export class DesktopVoiceOutput {
       if (event.type === 'turn.started') this.mark(output, 'run_started');
       if (event.type === 'text.delta') {
         output.firstDeltaAt ??= performance.now();
+        output.scheduler.start(output.firstDeltaAt);
         this.mark(output, 'llm_first_token');
         const phrases = output.projector.append(event.text);
         if (phrases.length) this.mark(output, 'first_speakable');
@@ -120,7 +121,7 @@ export class DesktopVoiceOutput {
           const timer = setTimeout(() => reject(new Error('voice_output_ack_timeout')), 5000);
           output.pendingAck = { sequence: chunk.sequence, resolve, reject, timer };
           output.port!.postMessage({ type: 'pcm', ...output.handle, segmentId: chunk.segmentId, sequence: chunk.sequence,
-            pcm: chunk.pcm, sampleRate: chunk.sampleRate, segmentFrames: chunk.segmentFrames, final: chunk.final });
+            pcm: chunk.pcm, sampleRate: chunk.sampleRate, ...(chunk.segmentFrames === undefined ? {} : { segmentFrames: chunk.segmentFrames }), final: chunk.final });
         });
         if (chunk.final) output.inFlight--;
         void this.pump(output);

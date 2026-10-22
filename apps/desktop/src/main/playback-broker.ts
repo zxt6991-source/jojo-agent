@@ -3,11 +3,13 @@ import { randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
 import { lstat, open, realpath } from 'node:fs/promises';
 import path from 'node:path';
-import { AUDIO_HOST_MAX_COMPLETE_BYTES, AUDIO_HOST_MAX_SEGMENTS, type AudioHostAck, type AudioHostError, type AudioHostPlayInput } from '../audio-host/ipc';
+import { AUDIO_HOST_MAX_COMPLETE_BYTES, AUDIO_HOST_MAX_SEGMENTS, type AudioHostAck, type AudioHostAppendInput, type AudioHostError, type AudioHostPlayInput } from '../audio-host/ipc';
 import { completeReadingAudio } from './complete-reading';
 
 export interface AudioHostPort {
   play(input: AudioHostPlayInput): Promise<void>;
+  append(input: AudioHostAppendInput): void;
+  finish(token: string, generation: number, segments: number): void;
   stop(token: string): void;
   onAck(listener: (ack: AudioHostAck) => void): () => void;
   close(): void;
@@ -17,6 +19,8 @@ export interface PlaybackRequest {
   expiresAt?: number; manual?: boolean; volume?: number;
   /** A complete, fully prepared reading; never a queue of future synthesis jobs. */
   remainingAssetIds?: string[];
+  /** Main-owned producer, pulled only while the continuous player has credit. */
+  nextAsset?(): Promise<string | undefined>;
 }
 export type PlaybackFailure = AudioHostError | 'asset_unavailable' | 'queue_full' | 'expired' | 'stale_generation';
 export interface PlaybackEvent {
@@ -80,7 +84,8 @@ export async function readAuthorizedPlaybackAsset(
 export class PlaybackBroker {
   private readonly queue: PlaybackRequest[] = [];
   private readonly generations = new Map<string, number>();
-  private active: { request: PlaybackRequest; token: string; deadline: number; started: boolean; timer: ReturnType<typeof setTimeout> | undefined } | undefined;
+  private active: { request: PlaybackRequest; token: string; deadline: number; started: boolean; timer: ReturnType<typeof setTimeout> | undefined;
+    stream?: { sent: number; consumed: number; bytes: number; busy: boolean; ended: boolean; ready: boolean } } | undefined;
   private readonly unsubscribe: () => void;
   private readonly now: () => number;
   private policy: { enabled: boolean; recording: boolean; locked: boolean; playback: SpeechSettings['playback'] } = {
@@ -103,6 +108,7 @@ export class PlaybackBroker {
       !Number.isSafeInteger(input.generation) || input.generation < 0 ||
       (input.expiresAt !== undefined && (!Number.isSafeInteger(input.expiresAt) || input.expiresAt < 0)) ||
       (input.volume !== undefined && (!Number.isFinite(input.volume) || input.volume < 0 || input.volume > 1))) throw new Error('invalid_playback_request');
+    if (input.nextAsset !== undefined && (typeof input.nextAsset !== 'function' || !input.manual || owner.kind !== 'session' || input.remainingAssetIds !== undefined)) throw new Error('invalid_reading_audio');
     const request = { ...input, owner };
     if (this.active?.request.playbackId === request.playbackId || this.queue.some((item) => item.playbackId === request.playbackId)) return;
     if (this.outputBlocked && !request.manual) {
@@ -190,7 +196,7 @@ export class PlaybackBroker {
     if ((!this.policy.enabled && !explicitValidation(request)) || (!request.manual && this.inQuietHours())) {
       this.emit(request, 'suppressed', !this.policy.enabled && !explicitValidation(request) ? 'disabled' : 'quiet_hours'); void this.pump(); return;
     }
-    const active = { request, token: randomUUID(), deadline: this.now() + (this.options.maxPlaybackMs ?? 300_000), started: false,
+    const active: NonNullable<PlaybackBroker['active']> = { request, token: randomUUID(), deadline: this.now() + (this.options.maxPlaybackMs ?? (request.nextAsset ? 3_600_000 : 300_000)), started: false,
       timer: undefined as ReturnType<typeof setTimeout> | undefined };
     this.active = active;
     active.timer = setTimeout(() => {
@@ -232,21 +238,54 @@ export class PlaybackBroker {
         if (this.active !== active) return;
         this.finish('failed', 'playback_timeout'); void this.pump();
       }, active.deadline - this.now());
+      if (request.nextAsset) active.stream = { sent: 1, consumed: 0, bytes: bytes.byteLength, busy: false, ended: false, ready: false };
       await this.options.host.play({ token: active.token, generation: request.generation, bytes, format: resolved.asset.format,
         ...(request.remainingAssetIds !== undefined ? { complete: true } : {}),
+        ...(request.nextAsset ? { stream: true } : {}),
         volume: request.volume ?? this.policy.playback.volume });
+      if (this.active === active && active.stream) { active.stream.ready = true; void this.fillStream(active); }
     } catch {
       if (this.active !== active) return;
       this.finish('failed', 'asset_unavailable'); void this.pump();
     }
   }
+  private async fillStream(active: NonNullable<PlaybackBroker['active']>): Promise<void> {
+    const stream = active.stream;
+    if (this.active !== active || !stream || !stream.ready || stream.busy || stream.ended || !active.request.nextAsset) return;
+    stream.busy = true;
+    try {
+      while (this.active === active && stream.sent - stream.consumed < 3) {
+        const assetId = await active.request.nextAsset();
+        if (this.active !== active) return;
+        if (assetId === undefined) {
+          stream.ended = true;
+          this.options.host.finish(active.token, active.request.generation, stream.sent); return;
+        }
+        if (stream.sent >= AUDIO_HOST_MAX_SEGMENTS || !UUID.test(assetId)) throw new Error('asset_unavailable');
+        const request = { ...active.request, assetId };
+        const ready = await this.options.resolveAsset(assetId, request.owner);
+        if (this.active !== active) return;
+        if (!ready || stream.bytes + ready.asset.bytes > AUDIO_HOST_MAX_COMPLETE_BYTES) throw new Error('asset_unavailable');
+        const bytes = await readAuthorizedPlaybackAsset(this.options.assetsDirectory, ready, request, this.now());
+        if (this.active !== active) return;
+        stream.bytes += bytes.byteLength;
+        this.options.host.append({ token: active.token, generation: request.generation, index: stream.sent++, bytes, format: ready.asset.format });
+      }
+    } catch {
+      if (this.active === active) { this.finish('failed', 'asset_unavailable'); void this.pump(); }
+    } finally { stream.busy = false; }
+  }
   private acknowledge(ack: AudioHostAck): void {
     const active = this.active;
     if (!active || ack.token !== active.token || ack.generation !== active.request.generation || active.deadline <= this.now()) return;
-    if (ack.type === 'started') {
+    if (ack.type === 'segment_ended') {
+      const stream = active.stream;
+      if (!stream || ack.index !== stream.consumed || ack.index >= stream.sent) return;
+      stream.consumed++; void this.fillStream(active);
+    } else if (ack.type === 'started') {
       if (!active.started) { active.started = true; this.emit(active.request, 'started'); }
     } else if (ack.type === 'ended') {
-      if (!active.started) return;
+      if (!active.started || (active.stream && (!active.stream.ended || active.stream.consumed !== active.stream.sent))) return;
       this.finish('played'); void this.pump();
     } else {
       this.outputBlocked = ack.reason === 'output_device_changed' || ack.reason === 'host_crashed' || ack.reason === 'autoplay_denied';

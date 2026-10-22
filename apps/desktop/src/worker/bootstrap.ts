@@ -127,8 +127,10 @@ export function startWorkerHost(): void {
   if (!configuredDataDirectory) throw new Error('DESKTOP_AGENT_DATA_DIR is required.');
   const dataDirectory: string = configuredDataDirectory;
   const e2eMode = process.env.JOJO_E2E === '1';
+  const e2eSpeech = e2eMode ? process.env.JOJO_E2E_SPEECH : undefined;
   const speechRuntime = new DesktopSpeechRuntime(dataDirectory,
-    e2eMode && process.env.JOJO_E2E_SPEECH === '1' ? { createProvider: () => createE2eSpeechProvider(),
+    e2eSpeech === '1' || e2eSpeech === 'input' ? {
+      ...(e2eSpeech === '1' ? { createProvider: () => createE2eSpeechProvider() } : {}),
       createStreamingAsr: settings => ({ ...createE2eSpeechProvider({ autoEndpoint: settings.streamingInput?.autoEndpoint === true }).asr, dispose: () => undefined }) } : {});
   const voiceDeliveryStore = new SqliteVoiceDeliveryStore(path.join(dataDirectory, 'runtime', 'speech.sqlite'));
   const voiceDeliveryLedger = new VoiceDeliveryLedger(voiceDeliveryStore);
@@ -788,6 +790,7 @@ export function startWorkerHost(): void {
   const stoppingTranscripts = new Set<string>();
 
   const { prepareTranscript, startTurn, launchTurn, stopSession } = createTurnController({
+    warmupRequestedReadAloud: (sessionId, signal) => voiceTasks.warmupRequestedReadAloud(sessionId, signal),
     voiceOutput, voiceDeliveryLedger, speechLatency: speechRuntime.latency,
     get stoppingTranscripts() { return stoppingTranscripts; },
     get preparingTranscripts() { return preparingTranscripts; },

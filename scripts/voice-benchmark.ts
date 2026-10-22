@@ -1,19 +1,20 @@
 import { spawn, execFile, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { lstat, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { access, lstat, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { constants } from 'node:fs';
 import { arch, cpus, platform } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { createLocalSpeechSettings, SpeechProviderError } from '@desktop-agent/contracts';
 import { createSpeechProvider } from '@desktop-agent/providers';
-import { createBufferedRealtimeTtsProvider, pcm24kFromWav, summarizeVoiceLatency } from '@desktop-agent/speech';
+import { createBufferedRealtimeTtsProvider, createRealtimeTtsProvider, pcm24kFromWav, summarizeVoiceLatency } from '@desktop-agent/speech';
 import { LocalTtsCandidateProcess } from '../apps/desktop/src/worker/sherpa-tts-candidate';
 import manifest from './local-tts-models.json';
 import cosyManifest from './cosyvoice-models.json';
 import mlxManifest from './mlx-tts-models.json';
-import { runTtsBenchmark } from './tts-benchmark-runner';
+import { runTtsBenchmark, type TtsBenchmarkRun } from './tts-benchmark-runner';
 import { synthesizeBenchmarkReference } from './tts-benchmark-reference';
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url));
@@ -49,10 +50,15 @@ async function main(): Promise<void> {
   const args = process.argv.slice(2).filter(arg => arg !== '--');
   const { values } = parseArgs({ args, options: {
     provider: { type: 'string', default: 'say' }, iterations: { type: 'string' }, python: { type: 'string' },
-    'model-dir': { type: 'string' }, 'source-dir': { type: 'string' }, report: { type: 'string' }, help: { type: 'boolean', short: 'h' }
+    scenario: { type: 'string', default: 'standard' }, 'cancel-after-ms': { type: 'string' },
+    'model-dir': { type: 'string' }, 'source-dir': { type: 'string' }, output: { type: 'string', default: 'auto' }, report: { type: 'string' }, help: { type: 'boolean', short: 'h' }
   } });
-  if (values.help) { process.stdout.write('Local TTS comparison: --provider say|sherpa-melo|cosyvoice3|mlx-qwen3 --iterations 1..10 (default 3, CosyVoice/MLX 1).\n--python PATH --model-dir PATH --source-dir PATH override prepared local paths.\n--report PATH creates a new numeric-only JSON file (never overwrites).\nCosyVoice creates/reuses a fixed synthetic say reference; no playback, microphone, download or settings changes.\n'); return; }
+  if (values.help) { process.stdout.write('Local TTS comparison: --provider say|sherpa-melo|cosyvoice3|mlx-qwen3 --iterations 1..10 (default 3, CosyVoice/MLX 1).\n--scenario cancel-recovery measures short utterances and cancellation/recovery only; --cancel-after-ms 0..10000 (default 50).\n--output auto|native|buffered selects incremental PCM or the full-WAV compatibility adapter.\n--python PATH --model-dir PATH --source-dir PATH override prepared local paths.\n--report PATH creates a new numeric-only JSON file (never overwrites).\nCosyVoice creates/reuses a fixed synthetic say reference; no playback, microphone, download or settings changes.\n'); return; }
   if (!['say', 'sherpa-melo', 'cosyvoice3', 'mlx-qwen3'].includes(values.provider)) throw new Error('invalid_provider');
+  if (!['auto', 'native', 'buffered'].includes(values.output)) throw new Error('invalid_output_mode');
+  if (!['standard', 'cancel-recovery'].includes(values.scenario)) throw new Error('invalid_benchmark_scenario');
+  const cancelProbeDelayMs = Number(values['cancel-after-ms'] ?? '50');
+  if (!Number.isSafeInteger(cancelProbeDelayMs) || cancelProbeDelayMs < 0 || cancelProbeDelayMs > 10_000) throw new Error('invalid_cancel_probe_delay');
   const cosy = values.provider === 'cosyvoice3', mlx = values.provider === 'mlx-qwen3', iterations = Number(values.iterations ?? (cosy || mlx ? '1' : '3'));
   if (!Number.isInteger(iterations) || iterations < 1 || iterations > 10) throw new Error('invalid_iterations');
   if (values.report) {
@@ -61,6 +67,9 @@ async function main(): Promise<void> {
       throw error;
     });
     if (exists) throw new Error('benchmark_report_already_exists');
+    const parent = dirname(resolve(values.report));
+    if (!(await stat(parent)).isDirectory()) throw new Error('invalid_benchmark_report_directory');
+    await access(parent, constants.W_OK);
   }
   const controller = new AbortController();
   const stop = () => controller.abort();
@@ -84,6 +93,7 @@ async function main(): Promise<void> {
     });
   }, 50);
   const native: Array<{ category: string; firstCallbackMs: number | null; firstNativePcmMs: number | null; callbacks: number; completed: boolean }> = [];
+  const completedMeasurements: TtsBenchmarkRun[] = [];
   let pendingAttempt = { category: '', startMs: 0 };
   let candidate: LocalTtsCandidateProcess | undefined, phase = 'unknown';
   let modelVerified = false, sourcesVerified = false;
@@ -114,26 +124,28 @@ async function main(): Promise<void> {
     const source = candidate ?? createSpeechProvider(createLocalSpeechSettings(), { macos: { spawn: (command, argv, options) => {
       const child = spawn(command, argv, options); onProcess(child as ChildProcessWithoutNullStreams); return child;
     } } }).tts;
-    const adapter = createBufferedRealtimeTtsProvider(source);
-    const measured = await runTtsBenchmark(adapter, { iterations, signal: controller.signal, onUtteranceStart(event) {
+    if (values.output === 'native' && !source.synthesizePcm) throw new Error('native_output_unavailable');
+    const adapter = values.output === 'buffered' ? createBufferedRealtimeTtsProvider(source) : createRealtimeTtsProvider(source);
+    const measured = await runTtsBenchmark(adapter, { iterations, scenario: values.scenario as 'standard' | 'cancel-recovery', cancelProbeDelayMs, signal: controller.signal, onUtteranceStart(event) {
       pendingAttempt = event; process.stderr.write(`TTS benchmark: ${event.category}\n`);
-    }, onBeforeCancel() {
+    }, onUtteranceComplete(run) { completedMeasurements.push(run); }, onBeforeCancel() {
       phase = candidate ? (native.at(-1)?.completed === false ? 'native_generating' : 'buffered_or_not_started') : 'say_or_buffered';
     } });
     // Probe only after cold-start and recovery measurements; never warm the first run.
     const runtime = candidate ? await candidate.probe() : null;
+    const warmNativePcm = native.slice(1).filter(run => run.completed && !['cancel', 'recovery'].includes(run.category)).map(run => run.firstNativePcmMs!);
     const report = {
       version: 3, benchmarkStatus: 'completed', measuredAt: new Date().toISOString(), device: { platform: platform(), arch: arch(), cpu: cpus()[0]?.model },
       provider: mlx ? 'mlx-qwen3-4bit' : cosy ? 'cosyvoice3-cpu' : candidate ? 'sherpa-melo-int8' : 'macos-say', capabilities: adapter.capabilities, ...measured,
-      benchmarkSettings: { iterations, inferenceProvider: mlx ? 'metal' : candidate ? 'cpu' : 'system', inferenceThreads: candidate && !mlx ? 2 : null, runtimeProbeTiming: 'after_cancel_recovery' },
-      cancellation: { mode: candidate ? 'terminate_process_and_reload' : 'cancel_say_request', observedPhase: phase, noPostCancelAudio: true },
+      benchmarkSettings: { iterations, scenario: values.scenario, outputMode: adapter.capabilities.audioStreaming ? 'native' : 'buffered', inferenceProvider: mlx ? 'metal' : candidate ? 'cpu' : 'system', inferenceThreads: candidate && !mlx ? 2 : null, runtimeProbeTiming: 'after_cancel_recovery' },
+      cancellation: { mode: runtime?.cooperativeCancel ? 'cooperative_batch_boundary_with_750ms_termination_fallback' : candidate ? 'terminate_process_and_reload' : 'cancel_say_request', observedPhase: phase, noPostCancelAudio: true },
       sampledChildPeakCpuPercent: resources.samples ? resources.peakCpuPercent : null,
       sampledChildPeakRssBytes: resources.samples ? resources.peakRssBytes : null, resourceSamples: resources.samples, resourceSamplingMs: 50,
       resourceScope: 'direct_child_processes_only_not_os_voice_services', appPackageDeltaBytes: candidate ? null : 0, externalModelBytes: model?.bytes ?? 0,
       model, sources, reference: reference?.metadata ?? null, runtime, processesStarted: candidate?.processesStarted ?? null,
       nativeSentenceCallbacks: candidate ? native : null,
-      nativePcmWarmFirstMs: candidate ? summarizeVoiceLatency(native.slice(1).filter(run => run.completed && !['cancel', 'recovery'].includes(run.category)).map(run => run.firstNativePcmMs!)) : null,
-      nativeOutputMode: cosy || mlx ? 'incremental_generated_batches_observed_before_WAV_buffer' : candidate ? 'complete_utterance' : null,
+      nativePcmWarmFirstMs: candidate && warmNativePcm.length ? summarizeVoiceLatency(warmNativePcm) : null,
+      nativeOutputMode: adapter.capabilities.audioStreaming ? 'incremental_generated_batches_delivered_to_session_consumer' : cosy || mlx ? 'incremental_generated_batches_observed_before_WAV_buffer' : candidate ? 'complete_utterance' : null,
       resampler: cosy || mlx ? 'native_24000_pcm16_quantization' : candidate ? 'numpy_48_tap_windowed_sinc_44100_to_24000_complete_utterance' : null,
       subjectiveChineseMos: null, prosodyContinuity: null, mixedPronunciation: null,
       candidates: cosy || mlx ? [] : [{ provider: 'cosyvoice', status: 'not_measured_by_this_run' }],
@@ -146,7 +158,7 @@ async function main(): Promise<void> {
     const report = { version: 3, benchmarkStatus: 'failed', measuredAt: new Date().toISOString(), provider: values.provider,
       device: { platform: platform(), arch: arch(), cpu: cpus()[0]?.model },
       failure: { code: error instanceof SpeechProviderError ? error.code : 'preparation_or_report_failure', category: pendingAttempt.category || null },
-      verified: { model: modelVerified, sources: sourcesVerified },
+      verified: { model: modelVerified, sources: sourcesVerified }, completedMeasurements,
       modelRevision: mlx ? mlxManifest.revision : cosy ? cosyManifest.model.revision : values.provider === 'sherpa-melo' ? manifest.revision : null,
       partialNativeMeasurements: native, aggregateMeasurements: null,
       productionTtsChanged: false, acousticReleaseGate: 'not_accepted' };

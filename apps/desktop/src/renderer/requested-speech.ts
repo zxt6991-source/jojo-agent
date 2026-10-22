@@ -2,7 +2,7 @@ import type { DesktopApi, ReadSpeechMessageInput, SpeechPlaybackResult, SpeechPl
 type SpeechApi = Pick<DesktopApi, 'readSpeechMessage' | 'onSpeechEvent' | 'getSpeechStatus' | 'stopSpeechPlayback'>;
 const cancelled = () => new DOMException('Speech reading cancelled', 'AbortError');
 
-/** Prepare the remaining message before starting a single continuous playback.
+/** Start with the first segment and let Main prefetch the remaining message.
  * Only the real ended receipt confirms that the entire reading was heard. */
 export async function readRequestedSpeech(api: SpeechApi, input: ReadSpeechMessageInput, options: { signal: AbortSignal; isAllowed(): boolean }): Promise<void> {
   if (options.signal.aborted || !options.isAllowed()) return;

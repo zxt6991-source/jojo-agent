@@ -3,7 +3,7 @@ import {
   type SpeechAssetStore, type AudioAssetOwner, type AudioAsset, type SpeechAsrProvider
 } from '@desktop-agent/contracts';
 import { createSpeechProvider } from '@desktop-agent/providers';
-import { SpeechService, SpeechDiagnosticsCollector, VoiceLatencyRecorder, createBufferedRealtimeTtsProvider } from '@desktop-agent/speech';
+import { SpeechService, SpeechDiagnosticsCollector, VoiceLatencyRecorder, createRealtimeTtsProvider } from '@desktop-agent/speech';
 import { SqliteSpeechAssetStore, type ReadySpeechAsset } from '@desktop-agent/storage';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
@@ -44,13 +44,20 @@ export class DesktopSpeechRuntime {
     this.assets = options.assets ?? new SqliteSpeechAssetStore(path.join(dataDirectory, 'runtime', 'speech.sqlite'));
     const lazyNeuralTts = (settings: SpeechSettings): DesktopNeuralTts => {
       let provider: DesktopNeuralTts | undefined;
-      return {
+      const getProvider = () => provider ??= options.createNeuralTts?.(settings) ?? createBundledNeuralTts(dataDirectory, settings);
+      const lazy: DesktopNeuralTts = {
         async *synthesize(input) {
-          provider ??= options.createNeuralTts?.(settings) ?? createBundledNeuralTts(dataDirectory, settings);
-          yield* provider.synthesize(input);
+          yield* getProvider().synthesize(input);
         },
         async dispose() { await provider?.dispose(); }
       };
+      // Capability probing happens only when speech is used. Saving settings
+      // must neither create the local process nor assume optional support.
+      Object.defineProperties(lazy, {
+        synthesizePcm: { get() { const current = getProvider(); return current.synthesizePcm?.bind(current); } },
+        warmup: { get() { const current = getProvider(); return current.warmup?.bind(current); } }
+      });
+      return lazy;
     };
     this.createProvider = options.createProvider ?? (settings => createSpeechProvider(settings, settings.provider.tts.id === 'mlx-qwen3'
       ? { neuralTts: this.neuralTts ??= lazyNeuralTts(settings) } : {}));
@@ -63,8 +70,13 @@ export class DesktopSpeechRuntime {
   async openRealtimeTts(input: { sessionId: string; generation: number }) {
     const settings = this.validationConfiguration?.settings;
     if (this.closed || !this.current || !settings?.enabled || !settings.autoReadReplies || !settings.realtimeReplies) throw new Error('realtime_speech_unavailable');
-    return createBufferedRealtimeTtsProvider(this.createProvider(settings).tts).open({ ...input,
+    return createRealtimeTtsProvider(this.createProvider(settings).tts).open({ ...input,
       speakerId: settings.provider.tts.speakerId, speechRate: settings.provider.tts.speechRate });
+  }
+  async warmupTts(signal: AbortSignal, purpose: 'automatic_reply' | 'requested_read_aloud' = 'automatic_reply'): Promise<void> {
+    const settings = this.validationConfiguration?.settings;
+    if (this.closed || signal.aborted || !this.current || !settings?.enabled || (purpose !== 'requested_read_aloud' && !settings.autoReadReplies) || settings.provider.tts.id !== 'mlx-qwen3') return;
+    await this.createProvider(settings).tts.warmup?.(signal);
   }
   private createService(settings: SpeechSettings): SpeechService {
     const base = this.createProvider(settings);

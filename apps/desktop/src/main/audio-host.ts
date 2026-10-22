@@ -2,7 +2,7 @@ import { BrowserWindow, ipcMain, type IpcMainEvent } from 'electron';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { AUDIO_HOST_ACK, AUDIO_HOST_COMMAND, AUDIO_HOST_READY, isAudioHostAck, type AudioHostAck, type AudioHostPlayInput } from '../audio-host/ipc';
+import { AUDIO_HOST_ACK, AUDIO_HOST_COMMAND, AUDIO_HOST_READY, isAudioHostAck, type AudioHostAck, type AudioHostAppendInput, type AudioHostPlayInput } from '../audio-host/ipc';
 import type { AudioHostPort } from './playback-broker';
 
 declare const AUDIO_HOST_VITE_DEV_SERVER_URL: string | undefined;
@@ -26,7 +26,7 @@ export class ElectronAudioHost implements AudioHostPort {
   private closed = false;
   private readonly receiveAck = (event: IpcMainEvent, input: unknown) => {
     if (!this.trusted(event) || !isAudioHostAck(input) || input.token !== this.active?.token || input.generation !== this.active.generation) return;
-    if (input.type !== 'started') this.active = undefined;
+    if (input.type === 'ended' || input.type === 'error') this.active = undefined;
     this.emit(input);
   };
   constructor(private readonly options: ElectronAudioHostOptions) { ipcMain.on(AUDIO_HOST_ACK, this.receiveAck); }
@@ -45,6 +45,14 @@ export class ElectronAudioHost implements AudioHostPort {
     }
     if (this.closed || this.active?.token !== input.token || !this.window || this.window.isDestroyed()) return;
     this.window.webContents.send(AUDIO_HOST_COMMAND, { type: 'play', ...input });
+  }
+  append(input: AudioHostAppendInput): void {
+    if (this.active?.token !== input.token || this.active.generation !== input.generation || !this.window || this.window.isDestroyed()) return;
+    this.window.webContents.send(AUDIO_HOST_COMMAND, { type: 'append', ...input });
+  }
+  finish(token: string, generation: number, segments: number): void {
+    if (this.active?.token !== token || this.active.generation !== generation || !this.window || this.window.isDestroyed()) return;
+    this.window.webContents.send(AUDIO_HOST_COMMAND, { type: 'finish', token, generation, segments });
   }
   stop(token: string): void {
     if (this.active?.token !== token) return;

@@ -1,0 +1,49 @@
+{
+  "version": 3,
+  "benchmarkStatus": "failed",
+  "measuredAt": "2026-10-21T01:39:11.420Z",
+  "provider": "mlx-qwen3",
+  "device": {
+    "platform": "darwin",
+    "arch": "arm64",
+    "cpu": "Apple M4 Pro"
+  },
+  "failure": {
+    "code": "synthesis_limit",
+    "category": "sentence"
+  },
+  "verified": {
+    "model": true,
+    "sources": false
+  },
+  "completedMeasurements": [
+    {
+      "category": "short",
+      "cold": true,
+      "firstPcmMs": 2284.6507500000002,
+      "totalMs": 2697.9897090000004,
+      "audioMs": 2560,
+      "rtf": 1.0539022300781251
+    }
+  ],
+  "modelRevision": "08c72cad5e2fd0f41730c8bd1f28149585e46361",
+  "partialNativeMeasurements": [
+    {
+      "category": "short",
+      "firstCallbackMs": 276.2182909063995,
+      "firstNativePcmMs": 2284.50875,
+      "callbacks": 4,
+      "completed": true
+    },
+    {
+      "category": "sentence",
+      "firstCallbackMs": 182.84454091917723,
+      "firstNativePcmMs": 183.3568750000004,
+      "callbacks": 149,
+      "completed": false
+    }
+  ],
+  "aggregateMeasurements": null,
+  "productionTtsChanged": false,
+  "acousticReleaseGate": "not_accepted"
+}

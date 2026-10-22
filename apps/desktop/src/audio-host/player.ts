@@ -22,6 +22,7 @@ export class AudioHostPlayer {
 
   receive(command: AudioHostCommand): void {
     if (command.type === 'stop') { if (this.current?.token === command.token) this.clear(); return; }
+    if (command.type !== 'play') return;
     this.clear();
     const audio = this.dependencies.createAudio();
     const url = this.dependencies.createUrl(command.bytes, command.format ?? 'mp3');

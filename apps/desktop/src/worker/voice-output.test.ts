@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { describe, expect, it, vi } from 'vitest';
-import { createBufferedRealtimeTtsProvider, VoiceDeliveryLedger, withHeardVoiceContext } from '@desktop-agent/speech';
+import { createBufferedRealtimeTtsProvider, createRealtimeTtsProvider, VoiceDeliveryLedger, withHeardVoiceContext } from '@desktop-agent/speech';
 import { VoiceOutputFrameSchema, type Message, type ModelRequest, type SpeechEvent, type SpeechTtsProvider } from '@desktop-agent/contracts';
 import { DesktopVoiceOutput } from './voice-output';
 import { createSilentWavFixture } from '../testing/speech-audio-fixture';
@@ -31,6 +31,57 @@ function setup() {
   return { manager, ledger, events, synthesize };
 }
 describe('Desktop streaming voice output', () => {
+  it('synthesizes a safe weak boundary at the first token deadline without another coalescing wait', async () => {
+    vi.useFakeTimers();
+    const { manager, synthesize } = setup();
+    try {
+      manager.begin(handle); manager.attach(handle, new Port());
+      manager.event('run', { type: 'text.delta', text: '我先看看现在的实现，然后确认日期' });
+      await vi.advanceTimersByTimeAsync(399);
+      expect(synthesize).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(synthesize).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ text: '我先看看现在的实现，' }));
+    } finally { manager.stop(); vi.useRealTimers(); }
+  });
+  it('plays native PCM with an unknown total before synthesis completes and waits for the final played receipt', async () => {
+    const ledger = new VoiceDeliveryLedger(), events: SpeechEvent[] = [];
+    let finish!: () => void;
+    const gate = new Promise<void>(resolve => { finish = resolve; });
+    const native: SpeechTtsProvider = {
+      synthesize: vi.fn(),
+      async *synthesizePcm(input) {
+        yield { type: 'pcm', requestId: input.requestId, bytes: new Uint8Array(960), sampleRate: 24000 };
+        await gate;
+        yield { type: 'completed', requestId: input.requestId };
+      }
+    };
+    const manager = new DesktopVoiceOutput({ ledger, emit: event => events.push(event),
+      open: h => createRealtimeTtsProvider(native).open({ ...h, speakerId: 'default', speechRate: 0 }) });
+    const port = new Port();
+    try {
+      manager.begin(handle); manager.attach(handle, port);
+      manager.event('run', { type: 'text.delta', text: '第一句话。验证已通过。' });
+      manager.finish('run', 'message', true);
+      await vi.waitFor(() => expect(port.frames).toContainEqual(expect.objectContaining({ type: 'pcm', final: false })));
+      const first = VoiceOutputFrameSchema.parse(port.frames[0]);
+      expect(first).not.toHaveProperty('segmentFrames');
+      expect(ledger.heardPrefix('run')).toBe('');
+      expect(events).toContainEqual(expect.objectContaining({ type: 'playback', state: 'playing' }));
+      // Acceptance of the final PCM must not mark it heard until playback ACKs it.
+      port.autoAck = false; finish();
+      await vi.waitFor(() => expect(port.frames).toContainEqual(expect.objectContaining({ type: 'pcm', final: true, segmentFrames: 480 })));
+      expect(ledger.heardPrefix('run')).toBe('');
+      const final = VoiceOutputFrameSchema.parse(port.frames.at(-1));
+      if (final.type !== 'pcm') throw new Error('Expected final PCM');
+      port.emit('message', { data: { type: 'consumed', generation: handle.generation, sequence: final.sequence, bufferedMs: 0 } });
+      await vi.waitFor(() => expect(port.frames).toContainEqual({ type: 'finished', ...handle }));
+      expect(events.some(event => event.type === 'output_closed')).toBe(false);
+      port.emit('message', { data: { type: 'played', generation: handle.generation, segmentId: final.segmentId } });
+      expect(ledger.heardPrefix('run')).toBe('第一句话。 验证已通过。');
+      expect(events).toContainEqual({ type: 'output_closed', ...handle, outcome: 'played' });
+      expect(native.synthesize).not.toHaveBeenCalled();
+    } finally { finish(); manager.stop(); }
+  });
   it('starts synthesis from public deltas before Run final and reconciles without rereading', async () => {
     const { manager, ledger, events, synthesize } = setup();
     const port = new Port(); manager.begin(handle); manager.attach(handle, port);

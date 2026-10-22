@@ -16,15 +16,21 @@ export const TTS_BENCHMARK_CORPUS = [
 export interface TtsBenchmarkRun { category: string; cold: boolean; firstPcmMs: number; totalMs: number; audioMs: number; rtf: number }
 export interface TtsBenchmarkOptions {
   iterations: number;
+  scenario?: 'standard' | 'cancel-recovery';
+  cancelProbeDelayMs?: number;
   signal?: AbortSignal;
   now?: () => number;
   waitBeforeCancel?: () => Promise<void>;
   onBeforeCancel?: () => void;
   onUtteranceStart?: (event: { category: string; startMs: number }) => void;
+  onUtteranceComplete?: (run: TtsBenchmarkRun) => void;
 }
 
 export async function runTtsBenchmark(provider: RealtimeTtsProvider, options: TtsBenchmarkOptions) {
   if (!Number.isInteger(options.iterations) || options.iterations < 1 || options.iterations > 10) throw new Error('invalid_benchmark_iterations');
+  const cancelProbeDelayMs = options.cancelProbeDelayMs ?? 50;
+  if (!Number.isSafeInteger(cancelProbeDelayMs) || cancelProbeDelayMs < 0 || cancelProbeDelayMs > 10_000) throw new Error('invalid_cancel_probe_delay');
+  const corpus = options.scenario === 'cancel-recovery' ? TTS_BENCHMARK_CORPUS.slice(0, 1) : TTS_BENCHMARK_CORPUS;
   const now = options.now ?? (() => performance.now());
   let generation = 0;
   const measure = async (text: string, category: string, cold: boolean): Promise<TtsBenchmarkRun> => {
@@ -48,11 +54,13 @@ export async function runTtsBenchmark(provider: RealtimeTtsProvider, options: Tt
       await Promise.all([session.finish(), consume]);
       if (options.signal?.aborted || first === undefined || !frames) throw new Error('missing_benchmark_audio');
       const totalMs = now() - start, audioMs = frames / 24;
-      return { category, cold, firstPcmMs: first, totalMs, audioMs, rtf: totalMs / audioMs };
+      const run = { category, cold, firstPcmMs: first, totalMs, audioMs, rtf: totalMs / audioMs };
+      options.onUtteranceComplete?.(run);
+      return run;
     } finally { await session.cancel(); await consume.catch(() => undefined); }
   };
   const runs: TtsBenchmarkRun[] = [];
-  for (let iteration = 0; iteration < options.iterations; iteration++) for (const [category, text] of TTS_BENCHMARK_CORPUS) {
+  for (let iteration = 0; iteration < options.iterations; iteration++) for (const [category, text] of corpus) {
     runs.push(await measure(text, category, runs.length === 0));
   }
   options.onUtteranceStart?.({ category: 'cancel', startMs: now() });
@@ -60,7 +68,7 @@ export async function runTtsBenchmark(provider: RealtimeTtsProvider, options: Tt
   let cancelLatencyMs: number;
   try {
     await cancellation.append(TTS_BENCHMARK_CORPUS[2][1], { segmentId: 'cancel', endSegment: true });
-    await (options.waitBeforeCancel ?? (() => new Promise<void>(resolve => setTimeout(resolve, 50))))();
+    await (options.waitBeforeCancel ?? (() => new Promise<void>(resolve => setTimeout(resolve, cancelProbeDelayMs))))();
     options.onBeforeCancel?.();
     const start = now(); await cancellation.cancel(); cancelLatencyMs = now() - start;
     for await (const chunk of cancellation.audio()) { if (chunk) throw new Error('post_cancel_audio'); }
@@ -73,8 +81,8 @@ export async function runTtsBenchmark(provider: RealtimeTtsProvider, options: Tt
   const warm = runs.filter(run => !run.cold);
   const rtf = summarizeVoiceLatency(runs.map(run => run.rtf));
   // RTF is a dimensionless ratio; the latency helper's field names carry ms.
-  return { coldStartMs: runs[0]!.firstPcmMs, warmFirstPcmMs: summarizeVoiceLatency(warm.map(run => run.firstPcmMs)),
+  return { coldStartMs: runs[0]!.firstPcmMs, warmFirstPcmMs: warm.length ? summarizeVoiceLatency(warm.map(run => run.firstPcmMs)) : null,
     totalGenerationMs: summarizeVoiceLatency(runs.map(run => run.totalMs)),
     rtf: { samples: rtf.samples, p50: rtf.p50Ms, p95: rtf.p95Ms, mean: rtf.meanMs },
-    cancelLatencyMs, cancelProbeDelayMs: 50, postCancelRecovery, runs };
+    cancelLatencyMs, cancelProbeDelayMs, postCancelRecovery, runs };
 }

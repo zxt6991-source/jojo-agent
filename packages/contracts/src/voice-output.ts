@@ -6,7 +6,7 @@ export type VoiceOutputHandle = z.infer<typeof VoiceOutputHandleSchema>;
 export const VoiceOutputFrameSchema = z.discriminatedUnion('type', [
   VoiceOutputHandleSchema.extend({ type: z.literal('pcm'), segmentId: Id, sequence: z.number().int().positive().safe(),
     pcm: z.instanceof(Uint8Array).refine(bytes => bytes.byteLength > 0 && bytes.byteLength <= 256 * 1024 && bytes.byteLength % 2 === 0),
-    sampleRate: z.literal(24000), segmentFrames: z.number().int().positive().safe(), final: z.boolean() }),
+    sampleRate: z.literal(24000), segmentFrames: z.number().int().positive().safe().optional(), final: z.boolean() }),
   VoiceOutputHandleSchema.extend({ type: z.literal('finished') }),
   VoiceOutputHandleSchema.extend({ type: z.literal('cancelled') }),
   VoiceOutputHandleSchema.extend({ type: z.literal('failed') })

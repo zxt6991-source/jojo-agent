@@ -12,6 +12,9 @@ export class VoiceChunkScheduler {
   private firstAt: number | undefined;
   private pendingAt: number | undefined;
   constructor(private readonly options: VoiceChunkSchedulerOptions = {}) {}
+  /** Start the first phrase deadline at the first public token, including time
+   * already spent waiting for the projector to release a safe boundary. */
+  start(now: number): void { this.firstAt ??= now; }
   append(phrases: VoiceTextPhrase[], now: number): void {
     if (phrases.length && this.firstAt === undefined) this.firstAt = now;
     if (phrases.length && !this.pending.length) this.pendingAt = now;

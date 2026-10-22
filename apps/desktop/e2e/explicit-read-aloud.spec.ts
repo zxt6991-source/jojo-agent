@@ -16,11 +16,12 @@ test('typed requests read short and bilingual poems completely with automatic re
   try {
     await page.getByRole('button', { name: '新建对话', exact: true }).click();
     await page.evaluate(() => {
-      (window as any).requestedSpeechEvents = []; (window as any).ttsAtPlayback = [];
+      (window as any).requestedSpeechEvents = []; (window as any).preparedAtPlayback = {};
       window.desktopAgent.onSpeechEvent(event => {
         (window as any).requestedSpeechEvents.push(event);
-        if (event.type === 'playback' && event.state === 'playing' && event.messageId) void window.desktopAgent.getSpeechStatus()
-          .then(status => (window as any).ttsAtPlayback.push({ messageId: event.messageId, requests: status.diagnostics!.tts.requests }));
+        if (event.type === 'playback' && event.state === 'playing' && event.messageId) {
+          (window as any).preparedAtPlayback[event.messageId] ??= event.preparedChars;
+        }
       });
       Object.defineProperty(navigator.mediaDevices, 'getUserMedia', { configurable: true, value: async () => {
         const context = new AudioContext({ sampleRate: 48000 }), tone = context.createOscillator(), destination = context.createMediaStreamDestination();
@@ -55,7 +56,7 @@ test('typed requests read short and bilingual poems completely with automatic re
     await page.getByPlaceholder('随心输入').fill('开始念'); await page.getByRole('button', { name: '发送消息', exact: true }).click();
     await expect.poll(async () => page.evaluate(() => ((window as any).requestedSpeechEvents as SpeechEvent[]).filter(event => event.type === 'reply' && event.requestedReadAloud).length)).toBe(2);
     await expect.poll(async () => (await page.evaluate(() => window.desktopAgent.getSpeechStatus())).playbacks.filter(state => state.state === 'played').length).toBe(playedBeforeFollowup + 1);
-    // All segments must finish synthesis before the sole playback begins.
+    // One playback starts early and drains every generated segment in order.
     const beforeBilingual = await page.evaluate(() => window.desktopAgent.getSpeechStatus());
     await page.getByPlaceholder('随心输入').fill('给我念一首英文诗和一首中文诗');
     await page.getByRole('button', { name: '发送消息', exact: true }).click();
@@ -73,8 +74,9 @@ test('typed requests read short and bilingual poems completely with automatic re
     expect(afterBilingual.diagnostics!.tts.requestedChars - beforeBilingual.diagnostics!.tts.requestedChars).toBe(normalizedLength);
     expect((await segments())[0]!.preparedChars).toBe(normalizedLength);
     expect(afterBilingual.diagnostics!.tts.requests - beforeBilingual.diagnostics!.tts.requests).toBeGreaterThan(1);
-    await expect.poll(async () => page.evaluate(messageId => (window as any).ttsAtPlayback.find((item: any) => item.messageId === messageId)?.requests, bilingual.messageId))
-      .toBe(afterBilingual.diagnostics!.tts.requests);
+    const preparedAtPlayback = await page.evaluate(messageId => (window as any).preparedAtPlayback[messageId], bilingual.messageId);
+    expect(preparedAtPlayback).toBeGreaterThan(0);
+    expect(preparedAtPlayback).toBeLessThan(normalizedLength);
     const offsets = (await segments()).flatMap(state => state.nextOffset !== undefined ? [state.nextOffset] : []);
     expect(offsets).toEqual([...new Set(offsets)].sort((a, b) => a - b));
     expect((await page.evaluate(() => window.desktopAgent.getSpeechSettings())).settings.autoReadReplies).toBe(false);
