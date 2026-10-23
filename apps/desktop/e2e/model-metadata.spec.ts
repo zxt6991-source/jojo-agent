@@ -2,15 +2,19 @@ import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
+import { BUILD_COMPATIBILITY } from '@desktop-agent/contracts/build-compatibility';
+import { createLocalSpeechSettings } from '@desktop-agent/contracts';
 import { launchElectron } from './helpers/launch-electron';
 
-test('switches per-model context windows and preserves v4 metadata after restart', async () => {
+test('switches per-model context windows and preserves migrated v4 metadata after restart', async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'jojo-model-metadata-'));
   const models = [
     { id: 'small', discovered: { contextWindowTokens: 64_000, maxOutputTokens: 4_096, contextSource: 'provider', maxOutputSource: 'provider', discoveredAt: new Date().toISOString() }, defaultOutputTokens: 4_096 },
     { id: 'large', discovered: { contextWindowTokens: 1_000_000, maxOutputTokens: 128_000, contextSource: 'builtin', maxOutputSource: 'builtin', discoveredAt: new Date().toISOString() }, defaultOutputTokens: 8_192 }
   ];
   await writeFile(path.join(directory, 'config.json'), JSON.stringify({
+    // Keep the legacy version literal so this exercises migration, not just a
+    // round trip of whatever format the current application already writes.
     schemaVersion: 4, activeProviderId: 'openai',
     providers: [{ id: 'openai', name: 'Offline models', protocol: 'openai_chat_completions', baseUrl: 'https://example.test/v1', model: 'small', models }],
     utilityModel: { providerId: 'openai', model: 'small' }
@@ -45,8 +49,13 @@ test('switches per-model context windows and preserves v4 metadata after restart
     const saved = await launched.page.evaluate(() => window.desktopAgent.getSettings());
     expect(saved.providers[0]?.models[1]?.override).toEqual({ defaultOutputTokens: 4_096 });
     expect(saved.providers[0]?.models.map((model) => model.discovered.contextWindowTokens)).toEqual([64_000, 1_000_000]);
+    expect(saved.providers[0]?.models.map((model) => model.discovered)).toEqual(models.map((model) => model.discovered));
+    expect(saved.speech).toEqual(createLocalSpeechSettings());
     const raw = await readFile(path.join(directory, 'config.json'), 'utf8');
-    expect(JSON.parse(raw).schemaVersion).toBe(4);
+    const persisted = JSON.parse(raw);
+    expect(persisted.schemaVersion).toBe(BUILD_COMPATIBILITY.configSchema);
+    expect(persisted.providers[0].models).toEqual(saved.providers[0]?.models);
+    expect(persisted.speech).toEqual(saved.speech);
     expect(raw).not.toContain('hasApiKey');
   } finally { await launched.app.close(); }
 });
