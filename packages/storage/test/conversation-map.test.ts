@@ -1,7 +1,7 @@
 import { mkdtemp, mkdir, symlink } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createAgentRuntime } from '@desktop-agent/agent-runtime';
 import { ScriptedProvider, describeTestProvider, createTestExecutionSnapshot } from '@desktop-agent/agent-runtime/testing';
 import type { ConversationMapHistoryQuery, Message } from '@desktop-agent/contracts';
@@ -151,12 +151,16 @@ describe('conversation map bounded private history', () => {
 
   it('reads actual public-runtime Desktop user turns and rejects public-runtime channel actors', async () => {
     const f = await fixture();
-    const runtime = createAgentRuntime({ store: f.store, now: () => new Date(when), environment: {
-      host: { kind: 'test' }, providers: { describe: describeTestProvider, resolve: () => new ScriptedProvider([[
-        { type: 'text_delta', text: 'AI recommendation' }, { type: 'response_completed', stopReason: 'stop' }
-      ]]) }, tools: { resolve: () => ({ snapshot: () => [] }) }, permissions: { check: async () => ({ decision: 'allow' }) }
-    } });
+    // Runtime's injected clock timestamps session metadata, but the message
+    // factories use Date directly. Freeze Date too, without faking async timers.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date(when));
     try {
+      const runtime = createAgentRuntime({ store: f.store, now: () => new Date(when), environment: {
+        host: { kind: 'test' }, providers: { describe: describeTestProvider, resolve: () => new ScriptedProvider([[
+          { type: 'text_delta', text: 'AI recommendation' }, { type: 'response_completed', stopReason: 'stop' }
+        ]]) }, tools: { resolve: () => ({ snapshot: () => [] }) }, permissions: { check: async () => ({ decision: 'allow' }) }
+      } });
       for (const id of ['desktop', 'channel']) {
         const session = await runtime.openSession({ id, executionScope: { kind: 'workspace', workingDirectory: f.directory } });
         const lane = await session.getLane('main');
@@ -164,9 +168,15 @@ describe('conversation map bounded private history', () => {
           actor: { kind: id === 'desktop' ? 'main' : 'channel_user' }, trigger: { kind: id === 'desktop' ? 'user' : 'channel_message' } });
         await run.result;
       }
-      const page = await f.store.readConversationMapPage({ ...query, scope: { kind: 'project', workingDirectory: f.directory } }, ['desktop', 'channel']);
+      const scope = { kind: 'project' as const, workingDirectory: f.directory };
+      const page = await f.store.readConversationMapPage({ ...query, scope }, ['desktop', 'channel']);
       expect(page.turns).toHaveLength(1); expect(page.turns[0]?.sessionId).toBe('desktop');
+      expect(page.turns[0]?.user.reference.createdAt).toBe(when);
+      expect(page.turns[0]?.assistants[0]?.reference.createdAt).toBe(when);
       expect(page.turns[0]?.assistants[0]?.text).toBe('AI recommendation');
-    } finally { f.store.close(); }
+      // The reader retains its inclusive start / exclusive end date boundary.
+      expect((await f.store.readConversationMapPage({ ...query, scope, rangeStart: when }, ['desktop', 'channel'])).turns).toHaveLength(1);
+      expect((await f.store.readConversationMapPage({ ...query, scope, rangeEnd: when }, ['desktop', 'channel'])).turns).toEqual([]);
+    } finally { vi.useRealTimers(); f.store.close(); }
   });
 });
