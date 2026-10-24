@@ -19,6 +19,7 @@ export * from './scheduler-desktop';
 export * from './tools';
 export * from './verification';
 export * from './session-history';
+export * from './conversation-map';
 export * from './workspace';
 
 export * from './artifact';

@@ -1,3 +1,5 @@
+import { createConversationMapController } from './conversation-map-controller';
+import { generateConversationMap, e2eConversationMapCompletion } from './conversation-map-service';
 import { executionFingerprint } from '@desktop-agent/agent-runtime';
 import { LocalAttachmentAccessResolver } from '@desktop-agent/attachment-access/local';
 import { BrowserRecordingRegistry, FileBrowserRecordingTrustStore } from '@desktop-agent/browser-automation';
@@ -1259,8 +1261,44 @@ export function startWorkerHost(): void {
       return 'started';
     }
   });
+  const conversationMapController = createConversationMapController({
+    listSessions: () => store.list(),
+    post,
+    readSource: (input, auth) => agentRuntimeStore.readConversationMapSource({
+      sessionId: input.sessionId, entryId: input.entryId, scope: auth.scope
+    }, auth.allowedSessionIds),
+    generate: (input, context) => generateConversationMap({ range: input.range, scope: input.scope }, {
+      signal: context.signal,
+      readPage: async query => {
+        const auth = await context.authorize();
+        context.signal.throwIfAborted();
+        return agentRuntimeStore.readConversationMapPage({ ...query, scope: auth.scope }, auth.allowedSessionIds);
+      },
+      complete: async (prompt, signal, maxOutputTokens) => {
+        if (e2eMode) return e2eConversationMapCompletion(prompt);
+        if (!runtime) throw new Error('请先在模型设置中配置可用的 AI 模型。');
+        return utilityCompletion(runtime.settings.utilityModel, prompt, signal, maxOutputTokens);
+      },
+      revalidateReferences: async references => {
+        const auth = await context.authorize();
+        const valid = [];
+        for (const reference of references) {
+          context.signal.throwIfAborted();
+          const source = await agentRuntimeStore.readConversationMapSource({
+            sessionId: reference.sessionId, entryId: reference.entryId, scope: auth.scope
+          }, auth.allowedSessionIds);
+          if (source.available) valid.push(source.reference);
+        }
+        return valid;
+      },
+      onProgress: (phase, completed, total) => context.onProgress({
+        type: 'conversation-map.progress', requestId: input.requestId, phase,
+        ...(completed === undefined ? {} : { completed }), ...(total === undefined ? {} : { total })
+      })
+    })
+  });
   bindWorkerIpc({
-    parentPort, sessionController, voiceTasks, voiceOutput,
+    parentPort, sessionController, conversationMapController, voiceTasks, voiceOutput,
     get desktopChannelSecrets() { return desktopChannelSecrets; },
     set desktopChannelSecrets(value) { desktopChannelSecrets = value; },
     get extensionReady() { return extensionReady; },
@@ -1268,6 +1306,7 @@ export function startWorkerHost(): void {
     get runtime() { return runtime; }, agentRuntimeStore, utilityCompletion, browserBridge, sessionHookRuntimes, teamReady, teamManager, schedulerReady, compactScheduleInput, channelSnapshot, mutateChannel, memoryReady, memoryStatus, memoryService, memoryCandidateService
   });
   process.once('SIGTERM', () => {
+    conversationMapController.cancel();
     voiceOutput.stop(); voiceDeliveryStore.close();
     voiceTasks?.dispose();
     void Promise.allSettled([

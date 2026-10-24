@@ -340,3 +340,4 @@ export class JsonConfigStore {
 }
 
 export { ServerDataOwnership } from './server-data-ownership.js';
+export { canonicalConversationMapDirectory } from './sqlite-conversation-map.js';

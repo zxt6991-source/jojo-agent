@@ -1,3 +1,4 @@
+import { ConversationMapIpc } from './ipc/conversation-map-ipc';
 import {
   ApprovalInputSchema,
   IPC,
@@ -105,6 +106,13 @@ export function startDesktopHost(): void {
   let speechHost: DesktopSpeechHost | undefined;
   const speechRpc = new SpeechRpcClient(command => {
     if (!postWorkerCommand(command)) throw new Error('语音运行进程尚未就绪。');
+  });
+  const conversationMap = new ConversationMapIpc({ post: postWorkerCommand,
+    emit: event => sendToRenderer(IPC.conversationMapEvent, event),
+    assertTrusted: event => {
+      assertTrusted(event);
+      if (event.senderFrame !== mainWindow?.webContents.mainFrame) throw new Error('Untrusted IPC frame.');
+    }
   });
   let quitting = false;
   const deliveryRpc = new ScheduleDeliveryRpc(command => { if (!postWorkerCommand(command)) throw new Error('Worker unavailable.'); });
@@ -585,6 +593,7 @@ export function startDesktopHost(): void {
         return;
       }
       const message = parsed.data;
+      if (conversationMap.accept(message)) return;
       if (message.type === 'scheduler.delivery.result') { deliveryRpc.accept(message); return; }
       if (message.type === 'scheduler.desktop.cancel') { speechHost?.cancelScheduled(message.identity); return; }
       if (message.type === 'scheduler.desktop.delivery') {
@@ -716,6 +725,7 @@ export function startDesktopHost(): void {
       else if (message.type === 'channel.result') finishChannelRequest(message);
     });
     worker.on('exit', (code) => {
+      conversationMap.stop('分析进程已结束，请重新生成。');
       speechRpc.close(); speechHost?.suspend();
       deliveryRpc.close();
       sessionStore.close(new Error(quitting ? 'runtime_closing' : `Agent runtime exited (${code}).`), quitting);
@@ -758,6 +768,7 @@ export function startDesktopHost(): void {
   }
 
   function registerIpc(): void {
+    conversationMap.register(ipcMain);
     registerSessionMetadataIpc({
       ipc: ipcMain, assertTrusted, client: sessionStore, lifecycle: sessionLifecycle,
       changed: () => sendToRenderer(IPC.sessionsChanged),
@@ -842,9 +853,11 @@ export function startDesktopHost(): void {
     });
     speechHost.installPermissions(mainWindow);
     mainWindow.on('close', event => {
+      conversationMap.stop();
       if (!quitting && backgroundHost.enabled) { event.preventDefault(); speechHost?.suspend(); mainWindow?.hide(); }
     });
     mainWindow.on('closed', () => {
+      conversationMap.stop();
       mainWindow = null; speechHost?.close(); speechHost = undefined;
       if (process.platform !== 'darwin' && !quitting) app.quit();
     });
@@ -858,8 +871,10 @@ export function startDesktopHost(): void {
       console.error(`[renderer:load] ${code} ${description} ${url}`);
     });
     mainWindow.webContents.on('render-process-gone', (_event, details) => {
+      conversationMap.stop();
       console.error(`[renderer:gone] ${details.reason} (${details.exitCode})`);
     });
+    mainWindow.webContents.on('did-start-navigation', (_event, _url, _inPlace, isMainFrame) => { if (isMainFrame) conversationMap.stop(); });
     mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
     mainWindow.webContents.on('will-navigate', (event, url) => {
       const current = mainWindow?.webContents.getURL();

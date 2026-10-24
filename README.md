@@ -79,6 +79,8 @@ flowchart LR
 
 ## 已实现
 
+- [交流脉络（Desktop MVP）](./docs/conversation-map.md)：在设置页按最近 7 / 30 / 90 天手动分析当前项目或全部个人主对话，展示主题思维导图与交流流程，并核对、跳转原始证据；支持进度、取消与超限提示，不写入长期记忆。
+
 - Electron Main / sandboxed Preload / React Renderer / Utility Process；Desktop 与 Server 通过 `createProductRuntime()` 统一创建 Runtime、执行恢复对账并装配 App Service，Host 继续提供各自适配器；
 - OpenAI Chat Completions 兼容 Provider：自定义 Base URL、模型发现、逐轮选模型、流式输出；另有 OpenAI 兼容 Embedding，供记忆语义检索使用；
 - Agent Core：多轮工具循环、上下文估算、大结果回收、历史压缩、拒绝回填、重复调用保护；

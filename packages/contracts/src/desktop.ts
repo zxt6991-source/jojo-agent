@@ -1,3 +1,4 @@
+import type { ConversationMapGenerateInput, ConversationMapSourceInput, ConversationMapSourceResult, ConversationMapEvent } from './conversation-map';
 import { APPLICATION_OPERATIONS } from './application/operations.js';
 import { SaveSpeechSettingsInputSchema, type SpeechSettingsSnapshot } from './speech';
 import type { VoiceOutputHandle } from './voice-output';
@@ -629,6 +630,10 @@ export const DesktopChannelMutationSchema = z.discriminatedUnion('action', [
 export type DesktopChannelMutation = z.infer<typeof DesktopChannelMutationSchema>;
 
 export type DesktopApi = {
+  generateConversationMap(input: ConversationMapGenerateInput): Promise<void>;
+  cancelConversationMap(input: { requestId: string }): Promise<void>;
+  getConversationMapSource(input: ConversationMapSourceInput): Promise<ConversationMapSourceResult>;
+  onConversationMapEvent(listener: (event: ConversationMapEvent) => void): () => void;
   listSessions(): Promise<SessionMeta[]>;
   createSession(input: z.input<typeof CreateSessionInputSchema>): Promise<SessionMeta | null>;
   bindSessionProject(input: z.input<typeof BindSessionProjectInputSchema>): Promise<SessionMeta>;
@@ -744,6 +749,10 @@ export type DesktopApi = {
 };
 
 export const IPC = {
+  generateConversationMap: 'conversation-map:generate',
+  cancelConversationMap: 'conversation-map:cancel',
+  getConversationMapSource: 'conversation-map:source',
+  conversationMapEvent: 'conversation-map:event',
   listSessions: 'sessions:list',
   createSession: 'sessions:create',
   bindSessionProject: 'sessions:bind-project',

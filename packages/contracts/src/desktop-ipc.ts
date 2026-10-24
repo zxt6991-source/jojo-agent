@@ -1,3 +1,4 @@
+import { ConversationMapGenerateInputSchema, ConversationMapSourceInputSchema, ConversationMapSourceResultSchema, ConversationMapEventSchema } from './conversation-map';
 import { SessionMetadataOperationSchema, SessionMetadataResultSchema } from './application/session-metadata.js';
 import { APPLICATION_OPERATIONS } from './application/operations.js';
 import { z } from 'zod';
@@ -77,6 +78,9 @@ export const MemoryStatusSnapshotIpcSchema = z.object({
 }).strict();
 
 const WorkerCommandBaseSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('conversation-map.generate'), input: ConversationMapGenerateInputSchema }).strict(),
+  z.object({ type: z.literal('conversation-map.cancel'), requestId: IdSchema }).strict(),
+  z.object({ type: z.literal('conversation-map.source'), requestId: IdSchema, input: ConversationMapSourceInputSchema }).strict(),
   z.object({ type: z.literal('scheduler.desktop.result'), requestId: IdSchema, outcome: ScheduleDesktopOutcomeSchema }).strict(),
   z.object({ type: z.literal('scheduler.delivery.control'), requestId: IdSchema, control: ScheduleDeliveryControlSchema }).strict(),
   z.object({ type: z.literal('scheduler.resume') }).strict(),
@@ -155,6 +159,8 @@ const SizedOrchestrationEventSchema = OrchestrationEventSchema.superRefine((valu
 });
 
 const WorkerMessageBaseSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('conversation-map.event'), event: ConversationMapEventSchema }).strict(),
+  z.object({ type: z.literal('conversation-map.source.result'), requestId: IdSchema, result: ConversationMapSourceResultSchema }).strict(),
   z.object({ type: z.literal('scheduler.desktop.delivery'), requestId: IdSchema, delivery: ScheduleDesktopDeliverySchema }).strict(),
   z.object({ type: z.literal('scheduler.desktop.cancel'), identity: SchedulePlaybackIdentitySchema }).strict(),
   z.object({ type: z.literal('scheduler.delivery.result'), requestId: IdSchema, ok: z.boolean() }).strict(),

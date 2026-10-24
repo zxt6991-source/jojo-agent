@@ -1,3 +1,4 @@
+import { ConversationMapGenerateInputSchema, ConversationMapCancelInputSchema, ConversationMapSourceInputSchema, ConversationMapSourceResultSchema, ConversationMapEventSchema } from '@desktop-agent/contracts';
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import { speechPreload } from './speech-preload';
 import { ReplayScheduleDeliveryInputSchema } from '@desktop-agent/contracts';
@@ -6,6 +7,17 @@ import { parseAgentPush, parseBrowserDockPush, parseBrowserSecretPush, parseConv
 
 const api: DesktopApi = {
   ...speechPreload,
+  generateConversationMap: input => ipcRenderer.invoke(IPC.generateConversationMap, ConversationMapGenerateInputSchema.parse(input)),
+  cancelConversationMap: input => ipcRenderer.invoke(IPC.cancelConversationMap, ConversationMapCancelInputSchema.parse(input)),
+  getConversationMapSource: async input => ConversationMapSourceResultSchema.parse(await ipcRenderer.invoke(IPC.getConversationMapSource, ConversationMapSourceInputSchema.parse(input))),
+  onConversationMapEvent: listener => {
+    const handler = (_event: Electron.IpcRendererEvent, raw: unknown) => {
+      const parsed = ConversationMapEventSchema.safeParse(raw);
+      if (parsed.success) listener(parsed.data);
+    };
+    ipcRenderer.on(IPC.conversationMapEvent, handler);
+    return () => ipcRenderer.removeListener(IPC.conversationMapEvent, handler);
+  },
   listSessions: () => ipcRenderer.invoke(IPC.listSessions),
   createSession: (input) => ipcRenderer.invoke(IPC.createSession, input),
   bindSessionProject: (input) => ipcRenderer.invoke(IPC.bindSessionProject, input),

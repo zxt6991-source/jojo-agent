@@ -22,6 +22,7 @@ import { BrowserSettingsPage } from './browser/BrowserSettingsPage';
 import { BrowserRecordingsPage } from './browser/recordings/BrowserRecordingsPage';
 import { HooksSettingsPage, hookStatusErrorMessage } from './HooksSettings';
 import { MemorySettingsPage } from './MemorySettings';
+import { ConversationMapPage } from './ConversationMapPage';
 import { PermissionsSettingsPage } from './PermissionsSettings';
 import { permissionModes } from './permissions/permission-copy';
 import { SchedulerSettingsPage } from './SchedulerSettings';
@@ -43,7 +44,7 @@ import './styles.css';
 
 type DiffLine = { type: 'addition' | 'deletion' | 'context' | 'hunk' | 'meta'; oldLine?: number; newLine?: number; text: string };
 const FOLLOW_THRESHOLD = 24;
-type SettingsSection = 'models' | 'permissions' | 'memory' | 'automations' | 'channels' | 'teams' | 'browser' | 'browser-recordings' | 'mcp' | 'skills' | 'hooks' | 'speech';
+type SettingsSection = 'conversation-map' | 'models' | 'permissions' | 'memory' | 'automations' | 'channels' | 'teams' | 'browser' | 'browser-recordings' | 'mcp' | 'skills' | 'hooks' | 'speech';
 
 const defaultSettings: ProviderSettings = {
   activeProviderId: 'openai',
@@ -1992,6 +1993,7 @@ function App() {
           <button type="button" className={settingsSection === 'models' ? 'active' : ''} onClick={() => { setSettingsSection('models'); setExtensionEditorOpen(false); }}><span aria-hidden="true">◇</span> 模型</button>
           <button type="button" className={settingsSection === 'speech' ? 'active' : ''} onClick={() => { setSettingsSection('speech'); setExtensionEditorOpen(false); }}><span aria-hidden="true">♬</span> 语音</button>
           <button type="button" className={settingsSection === 'permissions' ? 'active' : ''} onClick={() => { setSettingsSection('permissions'); setExtensionEditorOpen(false); void refreshPermissionGovernance(); }}><span aria-hidden="true">⌁</span> 权限</button>
+          <button type="button" className={settingsSection === 'conversation-map' ? 'active' : ''} onClick={() => { setSettingsSection('conversation-map'); setExtensionEditorOpen(false); }}><span aria-hidden="true">⌘</span> 交流脉络</button>
           <button type="button" className={settingsSection === 'memory' ? 'active' : ''} onClick={() => { setSettingsSection('memory'); setExtensionEditorOpen(false); }}><span aria-hidden="true">◈</span> Memory</button>
           <button type="button" className={settingsSection === 'automations' ? 'active' : ''} onClick={() => { setSettingsSection('automations'); setExtensionEditorOpen(false); setSelectedScheduleId(null); selectedScheduleIdRef.current = null; setScheduleRuns([]); void refreshSchedules(); }}><span aria-hidden="true">◷</span> Automations</button>
           <button type="button" className={settingsSection === 'channels' ? 'active' : ''} onClick={() => { setSettingsSection('channels'); setExtensionEditorOpen(false); }}><span aria-hidden="true">◉</span> Channels</button>
@@ -2003,7 +2005,7 @@ function App() {
         </nav>
       </aside>}
       <main className={`settings-main ${settingsSection === 'automations' ? 'automations-settings-main' : ''}`}>
-        <header className="settings-topbar"><strong>{settingsSection === 'models' ? '模型' : settingsSection === 'speech' ? '语音' : settingsSection === 'permissions' ? '权限' : settingsSection === 'memory' ? 'Memory' : settingsSection === 'automations' ? 'Automations' : settingsSection === 'channels' ? 'Channels' : settingsSection === 'teams' ? '团队' : settingsSection === 'browser-recordings' ? '浏览器自动化' : settingsSection === 'browser' ? '浏览器' : settingsSection === 'skills' ? '技能' : settingsSection === 'hooks' ? 'Hooks' : 'MCP 服务'}</strong></header>
+        <header className="settings-topbar"><strong>{settingsSection === 'conversation-map' ? '交流脉络' : settingsSection === 'models' ? '模型' : settingsSection === 'speech' ? '语音' : settingsSection === 'permissions' ? '权限' : settingsSection === 'memory' ? 'Memory' : settingsSection === 'automations' ? 'Automations' : settingsSection === 'channels' ? 'Channels' : settingsSection === 'teams' ? '团队' : settingsSection === 'browser-recordings' ? '浏览器自动化' : settingsSection === 'browser' ? '浏览器' : settingsSection === 'skills' ? '技能' : settingsSection === 'hooks' ? 'Hooks' : 'MCP 服务'}</strong></header>
         <div className="settings-page-body">
     {settingsSection === 'models' && <form className="settings-content model-settings-page" aria-labelledby="settings-title" onSubmit={async (event) => {
       event.preventDefault();
@@ -2066,6 +2068,13 @@ function App() {
       onSave={savePermissionPolicy}
       onReset={resetWorkspacePermissionPolicy}
       onDirtyChange={setPermissionDirty}
+    />}
+    {settingsSection === 'conversation-map' && <ConversationMapPage
+      api={window.desktopAgent}
+      {...(active?.workingDirectory && active.projectBound !== false ? { workingDirectory: active.workingDirectory } : {})}
+      {...(activeId ? { currentSessionId: activeId } : {})}
+      onOpenSource={openConversationMessage}
+      onOpenModelSettings={() => setSettingsSection('models')}
     />}
     {settingsSection === 'memory' && <MemorySettingsPage
       draft={memoryDraft}

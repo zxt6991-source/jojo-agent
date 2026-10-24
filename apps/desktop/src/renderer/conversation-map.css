@@ -1,0 +1,50 @@
+.conversation-map-page { overflow-y: auto; padding: 36px clamp(20px, 4vw, 58px) 60px; }
+.conversation-map-page .settings-heading { margin-bottom: 24px; }
+.conversation-map-badge { flex-shrink: 0; padding: 6px 10px; background: #f0f3fd; color: #5366ad; border-radius: 20px; font-size: 12px; }
+.conversation-map-page button { border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; background: var(--panel-raised); font-size: 12px; }
+.conversation-map-page button:hover { background: var(--surface-hover); }
+.conversation-map-page button:disabled { opacity: .55; cursor: default; }
+.conversation-map-page button.primary { background: var(--accent); border-color: var(--accent); color: white; }
+.conversation-map-controls { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 18px; border: 1px solid var(--border); border-radius: 14px; padding: 20px; background: var(--panel); }
+.conversation-map-controls fieldset { border: 0; padding: 0; margin: 0; }
+.conversation-map-controls legend, .conversation-map-scope { color: var(--muted); font-size: 12px; }
+.conversation-map-controls legend { margin-bottom: 8px; }
+.conversation-map-range, .conversation-map-actions { display: flex; gap: 6px; }
+.conversation-map-range button[aria-pressed="true"] { border-color: #8c9cda; background: #edf1ff; color: #4156a9; }
+.conversation-map-scope { display: grid; gap: 8px; }
+.conversation-map-scope select { min-height: 34px; border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; background: white; color: var(--text); }
+.conversation-map-actions { margin-left: auto; }
+.conversation-map-consent, .conversation-map-scope-note { flex-basis: 100%; margin: 0; font-size: 12px; line-height: 1.7; color: var(--muted); overflow-wrap: anywhere; }
+.conversation-map-scope-note { margin-top: -10px; }
+.conversation-map-notice { display: grid; gap: 6px; margin: 16px 0; padding: 12px 16px; border-radius: 10px; background: #eef3fc; color: #40588e; font-size: 13px; line-height: 1.6; }
+.conversation-map-notice p { margin: 0; }
+.conversation-map-notice button { justify-self: start; }
+.conversation-map-notice.warning { background: #fff6e5; color: #806023; }
+.conversation-map-empty { padding: 60px 28px; text-align: center; color: var(--muted); }
+.conversation-map-empty > span { font-size: 36px; color: #8b99bc; }
+.conversation-map-empty h2 { color: #434a5b; font-size: 18px; font-weight: 550; }
+.conversation-map-empty p { font-size: 13px; line-height: 1.8; }
+.conversation-map-result-meta { display: flex; flex-wrap: wrap; gap: 8px 18px; margin: 24px 0 16px; font-size: 12px; color: var(--muted); }
+.conversation-map-result-meta strong { color: var(--text); }
+.conversation-map-columns { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr); gap: 18px; align-items: start; }
+.conversation-map-card { min-width: 0; padding: 20px; border: 1px solid var(--border); border-radius: 14px; background: white; }
+.conversation-map-card h2 { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 0 0 12px; font-size: 16px; }
+.conversation-map-card h2 small { color: var(--muted); font-size: 12px; font-weight: 400; }
+.conversation-map-card p, .conversation-map-card time { font-size: 12px; line-height: 1.7; color: var(--muted); }
+.conversation-map-diagram { position: relative; overflow: auto; max-height: 480px; min-height: 90px; margin: 16px 0; padding: 12px; border-radius: 10px; background: #fafbfe; }
+.conversation-map-diagram svg { display: block; width: 100%; height: auto; min-width: 260px; margin: auto; }
+.conversation-map-render-surface { position: absolute; visibility: hidden; pointer-events: none; }
+.conversation-map-topics, .conversation-map-steps { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.conversation-map-topics button, .conversation-map-steps button { display: flex; flex-direction: column; gap: 7px; width: 100%; text-align: left; line-height: 1.6; overflow-wrap: anywhere; }
+.conversation-map-topics button[aria-pressed="true"], .conversation-map-steps button[aria-pressed="true"] { border-color: #899acf; background: #f6f8ff; box-shadow: inset 3px 0 #6f85c8; }
+.conversation-map-topics button span, .conversation-map-topics small, .conversation-map-steps small { color: var(--muted); }
+.conversation-map-step-kind { font-size: 11px; border-radius: 6px; padding: 2px 7px; align-self: start; background: #edf1fc; color: #455b9b; }
+.conversation-map-step-kind.answer { color: #387358; background: #edf6f0; }
+.conversation-map-step-kind.revision { color: #7a5389; background: #f8f0fa; }
+.conversation-map-step-kind.followup { color: #856536; background: #fff5e7; }
+.conversation-map-evidence { margin-top: 18px; }
+.conversation-map-reference-buttons { display: flex; flex-wrap: wrap; gap: 8px; }
+.conversation-map-source { border-top: 1px solid var(--border); padding-top: 14px; margin-top: 18px; }
+.conversation-map-source h3 { margin: 0 0 6px; font-size: 13px; }
+.conversation-map-source pre { max-height: 340px; overflow-y: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-family: inherit; font-size: 13px; line-height: 1.8; padding: 14px; background: var(--panel); border-radius: 9px; }
+@media (max-width: 1150px) { .conversation-map-columns { grid-template-columns: minmax(0, 1fr); } .conversation-map-actions { margin-left: 0; } }

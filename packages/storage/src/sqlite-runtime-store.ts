@@ -1,5 +1,6 @@
 import { LEGACY_TRANSCRIPT_CUTOVER, LEGACY_TRANSCRIPT_MIGRATION, transcriptHash, validateLegacyTranscript, type LegacyTranscriptMigration, type LegacyTranscriptImportResult } from './legacy-transcript-migration.js';
 import { initializeSessionHistory, searchSessionMessages, readSessionMessageWindow } from './sqlite-session-history.js';
+import { readConversationMapPage, readConversationMapSource } from './sqlite-conversation-map.js';
 import { MessageSchema, type Message } from '@desktop-agent/contracts';
 import { BUILD_COMPATIBILITY } from '@desktop-agent/contracts/build-compatibility';
 import { validateOperationExecution, MAX_OPERATION_META_BYTES } from '@desktop-agent/agent-runtime/spi';
@@ -161,6 +162,14 @@ export class SqliteAgentRuntimeStore implements AgentRuntimeStore {
   }
   async readMessageWindow(query: import('@desktop-agent/contracts').SessionReadWindowQuery): Promise<import('@desktop-agent/contracts').SessionReadWindow> {
     return readSessionMessageWindow(this.database, query);
+  }
+
+  async readConversationMapPage(query: import('@desktop-agent/contracts').ConversationMapHistoryQuery, allowedSessionIds: readonly string[]): Promise<import('@desktop-agent/contracts').ConversationMapHistoryPage> {
+    return readConversationMapPage(this.database, query, allowedSessionIds);
+  }
+
+  async readConversationMapSource(query: { sessionId: string; entryId: string; scope: import('@desktop-agent/contracts').ConversationMapScope }, allowedSessionIds: readonly string[]): Promise<import('@desktop-agent/contracts').ConversationMapSourceResult> {
+    return readConversationMapSource(this.database, query, allowedSessionIds);
   }
 
   close(): void {
