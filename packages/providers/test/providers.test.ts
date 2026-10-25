@@ -272,7 +272,63 @@ describe('OpenAI-compatible provider request dialects', () => {
     await collect(provider.stream(request({ model: 'deepseek-v4-flash', maxOutputTokens: 8_192 })));
     expect(requestBody).toMatchObject({ model: 'deepseek-v4-flash', max_tokens: 8_192 });
     expect(requestBody).not.toHaveProperty('max_completion_tokens');
+    expect(requestBody).not.toHaveProperty('thinking');
+    expect(requestBody).not.toHaveProperty('response_format');
   });
+
+  it.each(['https://api.deepseek.com', 'https://api.deepseek.com/v1'])(
+    'disables DeepSeek thinking only when requested at %s', async (baseUrl) => {
+      const bodies: Array<Record<string, unknown>> = [];
+      vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+        bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+        return new Response('data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n');
+      }));
+      const provider = new OpenAICompatibleProvider({ baseUrl, apiKey: 'test-key' });
+      await collect(provider.stream(request({ model: 'deepseek-flash', reasoning: 'disabled', maxOutputTokens: 8_192 })));
+      await collect(provider.stream(request({ model: 'deepseek-flash', reasoning: 'disabled' })));
+      expect(bodies[0]).toMatchObject({ model: 'deepseek-flash', thinking: { type: 'disabled' }, max_tokens: 8_192 });
+      expect(bodies[0]).not.toHaveProperty('max_completion_tokens');
+      expect(bodies[1]).toMatchObject({ thinking: { type: 'disabled' } });
+      expect(bodies[1]).not.toHaveProperty('max_tokens');
+      expect(bodies[1]).not.toHaveProperty('max_completion_tokens');
+      expect(bodies.every(body => !('reasoning' in body))).toBe(true);
+    }
+  );
+
+  it.each(['https://api.deepseek.com', 'https://api.deepseek.com/v1'])(
+    'requests JSON output only when opted in at %s', async (baseUrl) => {
+      const bodies: Array<Record<string, unknown>> = [];
+      vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+        bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+        return new Response('data: {"choices":[{"delta":{"content":"{}"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n');
+      }));
+      const provider = new OpenAICompatibleProvider({ baseUrl, apiKey: 'test-key' });
+      await collect(provider.stream(request({ responseFormat: 'json_object' })));
+      await collect(provider.stream(request({ responseFormat: 'json_object', reasoning: 'disabled', maxOutputTokens: 8_192 })));
+      expect(bodies[0]).toMatchObject({ response_format: { type: 'json_object' } });
+      expect(bodies[0]).not.toHaveProperty('thinking');
+      expect(bodies[1]).toMatchObject({ response_format: { type: 'json_object' }, thinking: { type: 'disabled' }, max_tokens: 8_192 });
+      expect(bodies.every(body => !('responseFormat' in body))).toBe(true);
+    }
+  );
+
+  it.each(['https://api.openai.com/v1', 'https://api.deepseek.com.example.org/v1'])(
+    'does not send DeepSeek-specific request hints to %s', async (baseUrl) => {
+      let requestBody: Record<string, unknown> | undefined;
+      vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+        requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return new Response('data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n');
+      }));
+      const provider = new OpenAICompatibleProvider({ baseUrl, apiKey: 'test-key' });
+      await collect(provider.stream(request({ reasoning: 'disabled', responseFormat: 'json_object', maxOutputTokens: 8_192 })));
+      expect(requestBody).toMatchObject({ max_completion_tokens: 8_192 });
+      expect(requestBody).not.toHaveProperty('max_tokens');
+      expect(requestBody).not.toHaveProperty('thinking');
+      expect(requestBody).not.toHaveProperty('reasoning');
+      expect(requestBody).not.toHaveProperty('response_format');
+      expect(requestBody).not.toHaveProperty('responseFormat');
+    }
+  );
 });
 
 describe('Chat Completions stream parsing', () => {

@@ -1,7 +1,7 @@
 import type { ModelConfig } from '@desktop-agent/contracts';
 import {
   GetPermissionGovernanceInputSchema,
-  IPC, ListModelsInputSchema,
+  IPC, ListModelsInputSchema, modelProviderConnectionKey,
   ResetWorkspacePermissionPolicyInputSchema, SavePermissionPolicyInputSchema, SaveSettingsInputSchema,
   type PermissionGovernanceSnapshot
 } from '@desktop-agent/contracts';
@@ -71,18 +71,22 @@ export function registerSettingsIpc(ctx: Context): void {
     const configured = settings.providers.find((provider) => provider.id === input.providerId);
     const apiKey = input.apiKey || (configured ? (await ctx.readApiKeys())[configured.id] : undefined);
     if (!apiKey) throw new Error('请先填写模型 API Key。');
-    return modelRefresh.refresh(input.providerId, JSON.stringify([input.baseUrl, apiKey]), async (signal) => {
+    const connection = modelProviderConnectionKey({ ...input, id: input.providerId });
+    return modelRefresh.refresh(input.providerId, JSON.stringify([connection, apiKey]), async (signal) => {
       const remote = await createProvider({ baseUrl: input.baseUrl, protocol: input.protocol }, apiKey, 15_000).listModels(signal);
+      if (!remote.length) throw new Error('当前服务未返回可用模型，请检查连接或账户权限。');
       const keys = await ctx.readApiKeys();
       const latest = await ctx.configStore.get(keys);
       const current = latest.providers.find((provider) => provider.id === input.providerId);
       signal.throwIfAborted();
-      const models = mergeRefreshedModels(current?.models ?? [], remote);
-      if (current && current.baseUrl === input.baseUrl && keys[current.id] === apiKey) {
+      const sameConnection = current && modelProviderConnectionKey(current) === connection;
+      const previous = sameConnection ? current.models : [];
+      const models = mergeRefreshedModels(previous, remote);
+      if (current && sameConnection && keys[current.id] === apiKey) {
         await ctx.configStore.save({ ...latest, providers: latest.providers.map((provider) => provider.id === current.id ? { ...provider, models } : provider) });
         await ctx.pushConfig();
       }
-      return mergeRefreshedModels((current?.models ?? []).map((model) => {
+      return mergeRefreshedModels(previous.map((model) => {
         const automatic = { ...model }; delete automatic.override; return automatic;
       }), remote);
     });

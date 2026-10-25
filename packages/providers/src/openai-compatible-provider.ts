@@ -36,10 +36,14 @@ function rejectsImageMessageContent(status: number, detail: string): boolean {
   return status === 400 && /unknown variant [`'"]?image_url[`'"]?, expected [`'"]?text/i.test(detail);
 }
 
-function deepSeekRequestBody(body: Record<string, unknown>): Record<string, unknown> {
-  if (typeof body.max_completion_tokens !== 'number') return body;
+function deepSeekRequestBody(body: Record<string, unknown>, request: Pick<ModelRequest, 'reasoning' | 'responseFormat'>): Record<string, unknown> {
   const { max_completion_tokens: maxTokens, ...rest } = body;
-  return { ...rest, max_tokens: maxTokens };
+  return {
+    ...rest,
+    ...(typeof maxTokens === 'number' ? { max_tokens: maxTokens } : {}),
+    ...(request.reasoning === 'disabled' ? { thinking: { type: 'disabled' } } : {}),
+    ...(request.responseFormat === 'json_object' ? { response_format: { type: 'json_object' } } : {})
+  };
 }
 
 function cancellationError(): DOMException {
@@ -144,7 +148,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
       const providerUrl = new URL(this.baseUrl);
       const isDeepSeek = providerUrl.hostname === 'api.deepseek.com' || providerUrl.hostname.endsWith('.api.deepseek.com');
       let requestBody = isDeepSeek
-        ? deepSeekRequestBody(hasChatImageInputs(richBody) ? toTextOnlyChatCompletionBody(richBody) : richBody)
+        ? deepSeekRequestBody(hasChatImageInputs(richBody) ? toTextOnlyChatCompletionBody(richBody) : richBody, request)
         : richBody;
       let downgraded = false;
       for (let attempt = 1; attempt <= policy.maxAttempts; attempt++) {

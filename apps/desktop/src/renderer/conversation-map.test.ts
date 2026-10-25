@@ -1,9 +1,9 @@
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
-import type { ConversationMapGenerateInput, ConversationMapResult, ConversationTopic } from '@desktop-agent/contracts';
-import { ConversationMapPage } from './ConversationMapPage';
-import { conversationFlowchart, conversationMapReducer, conversationMapSelectionKey, conversationMindmap, mermaidLabel, orderedSteps, type ConversationMapViewState } from './conversation-map';
+import type { ConversationMapGenerateInput, ConversationMapResult, ConversationMapResultV2, ConversationTopic, ConversationTopicV2 } from '@desktop-agent/contracts';
+import { ConversationMapPage, ConversationTopicInsights } from './ConversationMapPage';
+import { conversationFlowchart, evolutionFlowchart, insightEvidence, orderedEvents, conversationMapReducer, conversationMapSelectionKey, conversationMindmap, mermaidLabel, orderedSteps, conversationPlainText, compactConversationText, eventReadingText, eventReadingTitle, type ConversationMapViewState } from './conversation-map';
 
 const reference = { sessionId: 'session-1', entryId: 'entry-1', seq: 1, createdAt: '2026-10-20T10:00:00.000Z', role: 'user' as const };
 const topic: ConversationTopic = {
@@ -47,8 +47,8 @@ describe('conversation map safe deterministic diagrams', () => {
     expect(ordered.map((step) => step.id)).toEqual(['question', 'answer']);
     expect(topic.steps.map((step) => step.id)).toEqual(before);
     const diagram = conversationFlowchart({ ...topic, links: [{ from: 'question', to: 'answer', relation: 'related' }] });
-    expect(diagram).toContain('n0["用户提出：如何安排设置界面？"]:::question');
-    expect(diagram).toContain('n1["AI 观点 / 建议：建议两栏布局"]:::answer');
+    expect(diagram).toContain('n0["如何安排设置界面？"]:::question');
+    expect(diagram).toContain('n1["建议两栏布局"]:::answer');
     expect(diagram).toContain('n0 -.-|相关讨论| n1');
     expect(diagram).not.toContain('-->');
   });
@@ -85,7 +85,7 @@ describe('conversation map lifecycle', () => {
 
   it('supports reading/extracting/merging progress and terminal empty results', () => {
     let state = start();
-    for (const phase of ['reading', 'extracting', 'merging', 'rendering'] as const) {
+    for (const phase of ['reading', 'extracting', 'merging', 'comparing', 'rendering'] as const) {
       state = conversationMapReducer(state, { type: 'event', event: { type: 'conversation-map.progress', requestId: request.requestId, phase, completed: 1, total: 3 } });
       expect(state.progress?.phase).toBe(phase);
       expect(state.status).toBe('running');
@@ -122,5 +122,102 @@ describe('conversation map entry page', () => {
     expect(html).toContain('<option value="personal_main" selected="">');
     expect(html).toContain('当前没有有效项目');
     expect(html).toContain('不包含团队、派生、定时任务或渠道对话');
+  });
+});
+
+
+const evolutionTopic: ConversationTopicV2 = {
+  id: 'topic-1', title: '生成方式', summary: '交流脉络的触发方式',
+  events: [
+    { id: 'early', topicId: 'topic-1', subjectKey: 'map', dimensionKey: 'trigger', eventType: 'position', speaker: 'user', state: 'considering', claim: '考虑自动生成', occurredAt: reference.createdAt, evidence: [{ reference, quote: '考虑自动生成' }], truncatedSource: false },
+    { id: 'detail', topicId: 'topic-1', subjectKey: 'map', dimensionKey: 'trigger', eventType: 'option', speaker: 'assistant', state: 'considering', claim: '建议设置页入口', occurredAt: '2026-10-21T10:00:00.000Z', evidence: [{ reference: { ...reference, role: 'assistant', entryId: 'detail', createdAt: '2026-10-21T10:00:00.000Z' }, quote: '建议设置页入口' }], truncatedSource: false },
+    { id: 'latest', topicId: 'topic-1', subjectKey: 'map', dimensionKey: 'trigger', eventType: 'decision', speaker: 'user', state: 'decided', claim: '改为手动生成', occurredAt: '2026-10-22T10:00:00.000Z', evidence: [{ reference: { ...reference, sessionId: 'session-2', entryId: 'latest', createdAt: '2026-10-22T10:00:00.000Z' }, quote: '改为手动生成' }], truncatedSource: false }
+  ],
+  changes: [{ id: 'change', topicId: 'topic-1', fromEventId: 'early', toEventId: 'latest', relation: 'revised', explanation: '从自动生成改为手动生成' }],
+  insights: [
+    { id: 'insight', kind: 'key_change', text: '从自动生成改为手动生成', supportingEventIds: [], supportingChangeIds: ['change'] },
+    { id: 'current', kind: 'current_state', text: '用户已决定手动生成，聊天中未确认执行', supportingEventIds: ['latest'], supportingChangeIds: [] }
+  ], visibleEventIds: ['latest', 'early']
+};
+const evolutionResult: ConversationMapResultV2 = { ...result, version: 2, topics: [evolutionTopic], modelCallCount: 2, omittedEventCount: 0 };
+
+describe('V2 evidence-backed timelines', () => {
+  it('removes display markup while preserving conditions, negation, numbers and code identifiers', () => {
+    const original = '### 买入方式\n- **如果持有 2 年以上**，才考虑 A 类；\n- 尚未买入，`route_id` 不变。见[原始分析](https://example.com)。';
+    expect(conversationPlainText(original)).toBe('买入方式 如果持有 2 年以上，才考虑 A 类； 尚未买入，route_id 不变。见原始分析。');
+    expect(compactConversationText('🙂'.repeat(80), 20)).toBe(`${'🙂'.repeat(19)}…`);
+    expect(compactConversationText('尚未买入', 20)).toBe('尚未买入');
+  });
+  it('uses short multiline reading labels and keeps full claims and exact evidence untouched', () => {
+    const claim = '- **A 类 vs C 类**：如果持有 2 年以上，才考虑 A 类；未确定持有期则考虑 C 类。'.repeat(3);
+    const event = { ...evolutionTopic.events[1]!, subjectLabel: '基金份额', dimensionLabel: '持有期', claim,
+      summary: '如果持有 2 年以上，考虑 A 类；持有期不确定则考虑 C 类。', evidence: [{ ...evolutionTopic.events[1]!.evidence[0]!, quote: claim }] };
+    const diagram = evolutionFlowchart({ ...evolutionTopic, events: [event], visibleEventIds: [event.id], changes: [] });
+    expect(eventReadingTitle(event)).toBe('基金份额');
+    expect(eventReadingText(event)).toBe(event.summary);
+    expect(diagram).toContain('n0["基金份额<br/>如果持有 2 年以上');
+    for (const metadata of ['AI ·', 'AI 摘要', '考虑中', '2026/', '持有期<br/>']) expect(diagram).not.toContain(metadata);
+    expect(diagram).toContain('如果持有 2 年以上');
+    expect(diagram).not.toContain('**');
+    expect(diagram).not.toContain('vs C');
+    const fallback = evolutionFlowchart({ ...evolutionTopic, events: [{ ...event, summary: undefined }], visibleEventIds: [event.id], changes: [] });
+    expect(fallback).not.toContain('原文摘录');
+    expect(fallback).toContain('…');
+    expect(event.evidence[0]!.quote).toBe(claim);
+    expect(event.claim).toBe(claim);
+  });
+  it('defaults to selected stages in source order and separates chronology from verified changes', () => {
+    expect(orderedEvents(evolutionTopic).map(event => event.id)).toEqual(['early', 'latest']);
+    expect(orderedEvents(evolutionTopic, true).map(event => event.id)).toEqual(['early', 'detail', 'latest']);
+    const diagram = evolutionFlowchart(evolutionTopic);
+    expect(diagram).toContain('考虑自动生成');
+    expect(diagram).toContain('改为手动生成');
+    expect(diagram).not.toContain('用户 · 观点');
+    expect(diagram).not.toContain('已决定');
+    expect(diagram).toContain('n0 -->|修订| n1');
+    expect(diagram).not.toContain('建议设置页入口');
+    const noChanges = evolutionFlowchart({ ...evolutionTopic, changes: [] });
+    expect(noChanges).toContain('n0 -.-> n1');
+    expect(noChanges).not.toContain('时间先后');
+    expect(noChanges).not.toContain('修订|');
+  });
+  it('avoids repeating object labels and keeps the ending of a full summary', () => {
+    const event = { ...evolutionTopic.events[0]!, subjectLabel: 'MCP 工具', dimensionLabel: '会话内可用性',
+      summary: `MCP 工具在会话建立时注入。${'当前会话不会加载新增工具。'.repeat(4)}需要新开会话。` };
+    expect(eventReadingTitle(event)).toBe('');
+    expect(eventReadingTitle({ ...event, subjectLabel: undefined })).toBe('');
+    const diagram = evolutionFlowchart({ ...evolutionTopic, events: [event], visibleEventIds: [event.id], changes: [] });
+    expect(diagram.replaceAll('<br/>', '')).toContain(event.summary);
+    expect(diagram).not.toContain('会话内可用性');
+  });
+  it('shows evidence from both endpoints and explicit reason evidence when selecting an insight', () => {
+    const evidence = insightEvidence(evolutionTopic, evolutionTopic.insights[0]!);
+    expect(evidence.map(item => item.quote)).toEqual(['考虑自动生成', '改为手动生成']);
+    const reason = { reference: { ...reference, entryId: 'reason' }, quote: '为了降低费用' };
+    expect(insightEvidence({ ...evolutionTopic, changes: [{ ...evolutionTopic.changes[0]!, reasonEvidence: [reason] }] }, evolutionTopic.insights[0]!)).toContainEqual(reason);
+  });
+  it('uses escaped labels and synthetic IDs for V2 diagrams and limits overview summaries', () => {
+    const poison = '"]\nclick n0 "javascript:alert(1)"<img src=x>%%{init:evil}%%';
+    const diagram = evolutionFlowchart({ ...evolutionTopic, events: evolutionTopic.events.map(event => ({ ...event, claim: poison })) });
+    expect(diagram).not.toContain('<img');
+    expect(diagram).not.toMatch(/^\s*click /mu);
+    expect(diagram).not.toContain('%%');
+    const overview = conversationMindmap(evolutionResult);
+    expect(overview).toContain('从自动生成改为手动生成');
+    expect(overview).not.toContain('建议设置页入口');
+    expect(overview.split('\n').length).toBeLessThanOrEqual(6);
+  });
+  it('renders useful insight categories without inventing a change when evidence is absent', () => {
+    const html = renderToStaticMarkup(React.createElement(ConversationTopicInsights, { topic: evolutionTopic, onSelect: vi.fn() }));
+    for (const label of ['关键变化', '当前结论', '待解决', '聊天中未确认执行', '查看变化证据']) expect(html).toContain(label);
+    const sparse = renderToStaticMarkup(React.createElement(ConversationTopicInsights, { topic: { ...evolutionTopic, changes: [], insights: [] }, onSelect: vi.fn() }));
+    expect(sparse).toContain('尚未发现具有明确原文依据的观点变化');
+    expect(sparse).not.toContain('从自动生成改为手动生成');
+  });
+  it('clears derived conclusions and ignores pending completion when sources are invalidated', () => {
+    const completed = conversationMapReducer(start(), { type: 'event', event: { type: 'conversation-map.completed', requestId: request.requestId, result: evolutionResult } });
+    const invalidated = conversationMapReducer(start(completed), { type: 'invalidate' });
+    expect(invalidated.result).toBeUndefined();
+    expect(complete(invalidated)).toBe(invalidated);
   });
 });

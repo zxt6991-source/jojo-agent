@@ -106,6 +106,11 @@ export const ProviderConfigSchema = z.object({
 });
 export type ProviderConfig = z.infer<typeof ProviderConfigSchema>;
 
+/** Model metadata belongs to an endpoint and protocol, not just a settings slot. */
+export function modelProviderConnectionKey(provider: Pick<ProviderConfig, 'id' | 'baseUrl' | 'protocol'>): string {
+  return JSON.stringify([provider.id, provider.protocol, provider.baseUrl.trim().replace(/\/+$/u, '')]);
+}
+
 export const DEFAULT_PROVIDERS: ProviderConfig[] = [
   {
     id: 'openai', name: 'OpenAI / 兼容服务', protocol: 'openai_chat_completions',

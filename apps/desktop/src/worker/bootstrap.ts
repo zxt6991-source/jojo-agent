@@ -1,4 +1,5 @@
 import { createConversationMapController } from './conversation-map-controller';
+import { assertConversationMapModel, completeConversationMap } from './conversation-map-completion';
 import { generateConversationMap, e2eConversationMapCompletion } from './conversation-map-service';
 import { executionFingerprint } from '@desktop-agent/agent-runtime';
 import { LocalAttachmentAccessResolver } from '@desktop-agent/attachment-access/local';
@@ -1268,6 +1269,7 @@ export function startWorkerHost(): void {
       sessionId: input.sessionId, entryId: input.entryId, scope: auth.scope
     }, auth.allowedSessionIds),
     generate: (input, context) => generateConversationMap({ range: input.range, scope: input.scope }, {
+      validateModel: () => { if (!e2eMode) assertConversationMapModel(runtime); },
       signal: context.signal,
       readPage: async query => {
         const auth = await context.authorize();
@@ -1276,10 +1278,9 @@ export function startWorkerHost(): void {
       },
       complete: async (prompt, signal, maxOutputTokens) => {
         if (e2eMode) return e2eConversationMapCompletion(prompt);
-        if (!runtime) throw new Error('请先在模型设置中配置可用的 AI 模型。');
-        return utilityCompletion(runtime.settings.utilityModel, prompt, signal, maxOutputTokens);
+        return completeConversationMap(runtime, prompt, signal, maxOutputTokens);
       },
-      revalidateReferences: async references => {
+      revalidateReferences: async (references, sources) => {
         const auth = await context.authorize();
         const valid = [];
         for (const reference of references) {
@@ -1287,7 +1288,8 @@ export function startWorkerHost(): void {
           const source = await agentRuntimeStore.readConversationMapSource({
             sessionId: reference.sessionId, entryId: reference.entryId, scope: auth.scope
           }, auth.allowedSessionIds);
-          if (source.available) valid.push(source.reference);
+          if (source.available && sources.filter(item => item.reference.sessionId === reference.sessionId && item.reference.entryId === reference.entryId)
+            .every(item => source.text === item.text)) valid.push(source.reference);
         }
         return valid;
       },

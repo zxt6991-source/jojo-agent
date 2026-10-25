@@ -6,6 +6,64 @@ import { BUILD_COMPATIBILITY } from '@desktop-agent/contracts/build-compatibilit
 import { createLocalSpeechSettings } from '@desktop-agent/contracts';
 import { launchElectron } from './helpers/launch-electron';
 
+test('replaces the old catalog when switching services and keeps the new default after restart', async () => {
+  const { createServer } = await import('node:http');
+  const server = createServer((_request, response) => {
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ data: [
+      { id: 'deepseek-flash', context_window: 1_048_576, max_output_tokens: 64_000 },
+      { id: 'deepseek-v4-pro', context_window: 1_048_576, max_output_tokens: 64_000 }
+    ] }));
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('Missing local server address');
+  const baseUrl = `http://127.0.0.1:${address.port}`;
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'jojo-switch-model-service-'));
+  const discovered = { contextSource: 'provider', maxOutputSource: 'provider', discoveredAt: new Date().toISOString(), contextWindowTokens: 64_000, maxOutputTokens: 4_096 };
+  await writeFile(path.join(directory, 'config.json'), JSON.stringify({
+    schemaVersion: 4, activeProviderId: 'openai',
+    providers: [{ id: 'openai', name: 'Compatible', protocol: 'openai_chat_completions', baseUrl: 'https://old.example.test/v1', model: 'z-ai/glm-5.3-flash', models: [
+      { id: 'z-ai/glm-5.3-flash', discovered, defaultOutputTokens: 4_096 },
+      { id: 'deepseek-flash', discovered, defaultOutputTokens: 4_096, override: { defaultOutputTokens: 1_024 } }
+    ] }],
+    utilityModel: { providerId: 'openai', model: 'z-ai/glm-5.3-flash' }
+  }));
+  let launched = await launchElectron(directory);
+  try {
+    await launched.page.getByRole('button', { name: '⚙ 设置' }).click();
+    await launched.page.getByLabel('API Base URL', { exact: true }).fill(baseUrl);
+    await launched.page.getByLabel('API Key', { exact: true }).fill('offline-test-key');
+    await launched.page.getByRole('button', { name: '刷新模型', exact: true }).click();
+    await expect(launched.page.locator('#default-model')).toHaveValue('deepseek-flash');
+    await expect(launched.page.locator('#default-model option')).toHaveText(['deepseek-flash', 'deepseek-v4-pro']);
+    await expect(launched.page.getByText('已配置 2 个模型', { exact: true })).toBeVisible();
+    await expect(launched.page.getByText('当前 Provider 未返回该模型', { exact: false })).toHaveCount(0);
+    await launched.page.getByText('高级模型参数', { exact: true }).click();
+    const budget = launched.page.getByRole('spinbutton', { name: '默认输出预算（tokens）' });
+    await expect(budget).toHaveValue('');
+    await budget.fill('2048');
+    await launched.page.getByRole('button', { name: '刷新模型', exact: true }).click();
+    await expect(budget).toBeEnabled();
+    await expect(budget).toHaveValue('2048');
+    // Refreshing an unsaved connection must not overwrite the running configuration.
+    const before = await launched.page.evaluate(() => window.desktopAgent.getSettings());
+    expect(before.providers[0]!.baseUrl).toBe('https://old.example.test/v1');
+    await launched.page.getByRole('button', { name: '保存模型设置', exact: true }).click();
+    await expect.poll(async () => launched.page.evaluate(async () => (await window.desktopAgent.getSettings()).providers[0]!.baseUrl)).toBe(baseUrl);
+    await launched.app.close();
+    launched = await launchElectron(directory);
+    const saved = await launched.page.evaluate(() => window.desktopAgent.getSettings());
+    expect(saved.providers[0]!.model).toBe('deepseek-flash');
+    expect(saved.providers[0]!.models.map(model => model.id)).toEqual(['deepseek-flash', 'deepseek-v4-pro']);
+    expect(saved.providers[0]!.models[0]!.override).toEqual({ defaultOutputTokens: 2_048 });
+    expect(saved.utilityModel).toEqual({ providerId: 'openai', model: 'deepseek-flash' });
+  } finally {
+    await launched.app.close();
+    await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+  }
+});
+
 test('switches per-model context windows and preserves migrated v4 metadata after restart', async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'jojo-model-metadata-'));
   const models = [

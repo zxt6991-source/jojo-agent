@@ -1,5 +1,6 @@
 import { ModelMetadataSettings } from './ModelMetadataSettings';
-import { ModelConfigSchema, SpeechSettingsSchema, isModelMetadataStale, type ModelConfig } from '@desktop-agent/contracts';
+import { ModelConfigSchema, SpeechSettingsSchema, isModelMetadataStale, modelProviderConnectionKey, type ModelConfig } from '@desktop-agent/contracts';
+import { applyRefreshedModels } from './model-settings';
 import { ArtifactPanel } from './artifacts/ArtifactPanel';
 import { detectArtifacts } from '@desktop-agent/contracts';
 import { attachmentPreviewText } from '@desktop-agent/contracts';
@@ -436,6 +437,7 @@ function App() {
   const [selectedModel, setSelectedModel] = useState(providerById(defaultSettings, defaultSettings.activeProviderId).model);
   const [apiKey, setApiKey] = useState('');
   const modelRefreshGeneration = useRef(0);
+  const modelCatalogConnection = useRef(modelProviderConnectionKey(providerById(defaultSettings, defaultSettings.activeProviderId)));
   const [modelsFresh, setModelsFresh] = useState(true);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsError, setModelsError] = useState('');
@@ -1240,29 +1242,19 @@ function App() {
     setModelsError('');
     try {
       const draftProvider = providerById(settingsDraft, settingsDraft.activeProviderId);
-      const models = await window.desktopAgent.listModels({
+      const connection = modelProviderConnectionKey(draftProvider);
+      const refreshed = await window.desktopAgent.listModels({
         providerId: draftProvider.id,
         protocol: draftProvider.protocol,
         baseUrl: draftProvider.baseUrl,
         ...(apiKey ? { apiKey } : {})
       });
       if (generation !== modelRefreshGeneration.current) return null;
-      const model = draftProvider.model;
-      // Keep draft overrides, including a reset made since the persisted snapshot.
-      const previous = new Map(draftProvider.models.map((item) => [item.id, item]));
-      for (let index = 0; index < models.length; index += 1) {
-        const next = models[index]!;
-        const old = previous.get(next.id);
-        if (!old) continue;
-        const automatic = { ...next }; delete automatic.override;
-        const merged = ModelConfigSchema.safeParse({ ...automatic, ...(old.override ? { override: old.override } : {}) });
-        models[index] = merged.success ? merged.data : old;
-      }
-      if (!models.some((item) => item.id === model)) models.push(draftProvider.models.find((item) => item.id === model)!);
+      const { models, model } = applyRefreshedModels(draftProvider, refreshed, modelCatalogConnection.current === connection);
+      modelCatalogConnection.current = connection;
       setSettingsDraft((current) => ({
         ...current,
-        providers: current.providers.map((provider) => provider.id === current.activeProviderId ? { ...provider, model, models } : provider),
-        utilityModel: current.utilityModel
+        providers: current.providers.map((provider) => provider.id === draftProvider.id ? { ...provider, model, models } : provider)
       }));
       setModelsFresh(true);
       const saved = await window.desktopAgent.getSettings();
@@ -1615,6 +1607,7 @@ function App() {
   };
 
   const openSettings = (section: SettingsSection = 'models') => {
+    modelCatalogConnection.current = modelProviderConnectionKey(providerById(settings, settings.activeProviderId));
     setSettingsDraft(settings); setApiKey(''); setModelsFresh(true); setModelsError(''); setSettingsError(''); setPermissionError('');
     setExtensionDraft(settings.extensions);
     setMcpServersJson(JSON.stringify(settings.extensions.mcpServers, null, 2));
@@ -2018,7 +2011,7 @@ function App() {
         const saved = await window.desktopAgent.saveSettings({
           activeProviderId: settingsDraft.activeProviderId,
           provider: providerInput,
-          utilityModel: settingsDraft.utilityModel,
+          utilityModel: { providerId: provider.id, model: provider.model },
           ...(apiKey ? { apiKey } : {})
         });
         setSettings(saved);
@@ -2032,7 +2025,7 @@ function App() {
       <section className="model-connection-section" aria-labelledby="model-connection-title">
       <h2 className="model-group-title" id="model-connection-title">连接</h2>
       <div className="model-preferences-group">
-        <label className="model-preference-row"><span className="model-preference-label">API 协议</span><select value={draftProvider.protocol} onChange={(event) => { updateDraftProvider({ protocol: event.target.value as 'openai_chat_completions' | 'openai_responses' }); modelRefreshGeneration.current += 1; setModelsFresh(false); }}><option value="openai_chat_completions">OpenAI Chat Completions</option><option value="openai_responses">OpenAI Responses</option></select></label>
+        <label className="model-preference-row"><span className="model-preference-label">API 协议</span><select value={draftProvider.protocol} onChange={(event) => { updateDraftProvider({ protocol: event.target.value as 'openai_chat_completions' | 'openai_responses' }); modelRefreshGeneration.current += 1; setModelsLoading(false); void window.desktopAgent.cancelModelRefresh(draftProvider.id); setModelsFresh(false); setModelsError(''); }}><option value="openai_chat_completions">OpenAI Chat Completions</option><option value="openai_responses">OpenAI Responses</option></select></label>
         <label className="model-preference-row"><span className="model-preference-label">API Base URL</span><input required value={draftProvider.baseUrl} onChange={(event) => { updateDraftProvider({ baseUrl: event.target.value }); modelRefreshGeneration.current += 1; setModelsLoading(false); void window.desktopAgent.cancelModelRefresh(draftProvider.id); setModelsFresh(false); setModelsError(''); }} /></label>
         <label className="model-preference-row"><span className="model-preference-label">API Key {draftProvider.hasApiKey && <small className="model-inline-note">已安全保存</small>}</span><input type="password" value={apiKey} placeholder={draftProvider.hasApiKey ? '留空以保留当前密钥' : '输入 API Key'} onChange={(event) => { setApiKey(event.target.value); modelRefreshGeneration.current += 1; setModelsLoading(false); void window.desktopAgent.cancelModelRefresh(draftProvider.id); setModelsFresh(false); setModelsError(''); }} /></label>
       </div>
@@ -2045,6 +2038,7 @@ function App() {
             {draftProvider.models.map((model) => <option key={model.id} value={model.id}>{model.id}</option>)}
           </select>
         </label></div>
+        <p className="model-footnote">交流脉络、标题等后台整理也使用默认模型。</p>
         <p className={`model-footnote ${modelsError ? 'model-notice' : ''}`}>{modelsError || (modelsFresh ? `已配置 ${draftProvider.models.length} 个模型` : '连接已变化，保存时将重新获取模型')}</p>
       </section>
       <section className="model-limits-section" aria-labelledby="model-limits-title">

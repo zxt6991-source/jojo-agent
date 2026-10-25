@@ -22,6 +22,10 @@ export type ModelRequest = {
   instructions?: string[];
   signal: AbortSignal;
   maxOutputTokens?: number;
+  /** Opt-in hint for providers that support disabling reasoning; omission preserves provider defaults. */
+  reasoning?: 'disabled';
+  /** Opt-in output-format hint; unsupported providers keep their default response format. */
+  responseFormat?: 'json_object';
 };
 
 export type ModelEvent =

@@ -1,7 +1,7 @@
 import {
   sessionHasProject, type ConversationMapGenerateInput, type ConversationMapEvent,
   type ConversationMapResult, type ConversationMapScope, type ConversationMapSourceInput, type ConversationMapSourceResult,
-  type SessionMeta, type WorkerCommand, type WorkerMessage
+  type MessageReference, type SessionMeta, type WorkerCommand, type WorkerMessage
 } from '@desktop-agent/contracts';
 import { createProjectIdentity } from '@desktop-agent/memory';
 
@@ -9,6 +9,12 @@ export interface ConversationMapAuthorization {
   allowedSessionIds: string[];
   projectDirectory?: string;
   scope: ConversationMapScope;
+}
+
+function resultReferences(result: ConversationMapResult): MessageReference[] {
+  return result.version === 1
+    ? result.topics.flatMap(topic => topic.steps.flatMap(step => step.references))
+    : result.topics.flatMap(topic => [...topic.events.flatMap(event => event.evidence.map(item => item.reference)), ...topic.changes.flatMap(change => change.reasonEvidence?.map(item => item.reference) ?? [])]);
 }
 
 export function createConversationMapController(deps: {
@@ -70,7 +76,7 @@ export function createConversationMapController(deps: {
       if (active !== task) return;
       // Recheck scope after the final model call; no revoked session may survive.
       const auth = await authorize(input);
-      if (result.topics.some(topic => topic.steps.some(step => step.references.some(ref => !auth.allowedSessionIds.includes(ref.sessionId))))) {
+      if (resultReferences(result).some(ref => !auth.allowedSessionIds.includes(ref.sessionId))) {
         throw new Error('原始记录或项目范围已变化，请重新生成。');
       }
       task.abort.signal.throwIfAborted();
@@ -90,13 +96,21 @@ export function createConversationMapController(deps: {
   async function source(input: ConversationMapSourceInput): Promise<ConversationMapSourceResult> {
     const snapshot = completed;
     if (!snapshot || snapshot.input.requestId !== input.requestId) return { available: false };
-    const ref = snapshot.result.topics.flatMap(t => t.steps).flatMap(s => s.references)
+    const ref = resultReferences(snapshot.result)
       .find(r => r.sessionId === input.sessionId && r.entryId === input.entryId);
     if (!ref) return { available: false };
     const auth = await authorize(snapshot.input);
     if (!auth.allowedSessionIds.includes(input.sessionId) || completed !== snapshot) return { available: false };
     const result = await deps.readSource(input, auth);
-    return completed === snapshot ? result : { available: false };
+    if (completed !== snapshot) return { available: false };
+    const quotes = snapshot.result.version === 2 ? snapshot.result.topics.flatMap(topic => [...topic.events.flatMap(event => event.evidence), ...topic.changes.flatMap(change => change.reasonEvidence ?? [])])
+      .filter(item => item.reference.sessionId === input.sessionId && item.reference.entryId === input.entryId) : [];
+    if (!result.available || result.reference.seq !== ref.seq || result.reference.createdAt !== ref.createdAt || result.reference.role !== ref.role
+      || quotes.some(item => !result.text.includes(item.quote))) {
+      completed = undefined;
+      return { available: false };
+    }
+    return result;
   }
 
   return {
