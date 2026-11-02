@@ -2,16 +2,26 @@ import { z } from 'zod';
 import { conversationMapModelError } from './conversation-map-model-errors';
 import { ConversationMapOutputError, conversationMapValidationFeedback, normalizeConversationMapExtraction, parseConversationMapJson } from './conversation-map-output';
 import {
-  ConversationMapHistoryPageSchema, ConversationMapRequestSchema, ConversationMapResultV2Schema, EventTypeSchema, IntentStateSchema,
+  ConversationMapHistoryPageSchema, ConversationMapRequestSchema, ConversationMapResultV2Schema, EvolutionEventSchema, EventTypeSchema, IntentStateSchema,
   type ConversationMapHistoryPage, type ConversationMapHistoryQuery, type ConversationMapRequest,
   type ConversationMapResultV2, type ConversationTopicV2, type EvolutionEvent, type EvolutionChange,
   type TopicInsight, type MessageReference
 } from '@desktop-agent/contracts';
 
-export const CONVERSATION_MAP_LIMITS = Object.freeze({ turns: 800, page: 100, batchTurns: 30, batchChars: 32_000, batches: 40, messageChars: 3000, turnChars: 12_000, topics: 12, steps: 20, batchEvents: 40, comparisonEvents: 40, visibleEvents: 8, summaryBatches: 16, summaryEvents: 20 });
+export const CONVERSATION_MAP_LIMITS = Object.freeze({ turns: 800, page: 100, batchTurns: 30, batchChars: 32_000, batches: 40, messageChars: 3000, turnChars: 12_000, topics: 12, steps: 20, batchEvents: 40, semanticEvents: 1600, comparisonEvents: 40, visibleEvents: 8, summaryBatches: 16, summaryEvents: 20, extractionRecoveryCalls: 20, extractionSplitDepth: 3, modelCalls: 160 });
 export class ConversationMapServiceError extends Error {
   constructor(readonly code: string, message: string) { super(message); this.name = 'ConversationMapServiceError'; }
 }
+export type ConversationExtractionIssue = {
+  code: 'INVALID_MODEL_OUTPUT' | 'MODEL_EMPTY_RESPONSE' | 'MODEL_OUTPUT_LIMIT' | 'MODEL_CONTEXT_OVERFLOW' | 'EXTRACTION_RECOVERY_LIMIT';
+  turnCount: number;
+  willRetry: boolean;
+};
+export type ConversationExtractionDiagnostics = {
+  rejectedUserCandidates: number; rejectedAssistantCandidates: number; unknownRoleCandidates: number;
+  schemaRejectedCandidates: number; evidenceRejectedCandidates: number; roleRejectedCandidates: number;
+  stateRejectedCandidates: number; otherRejectedCandidates: number; recoveredUserSourceCount: number;
+};
 export type ConversationMapDependencies = {
   validateModel?: () => void;
   readPage: (query: ConversationMapHistoryQuery) => Promise<ConversationMapHistoryPage> | ConversationMapHistoryPage;
@@ -19,6 +29,10 @@ export type ConversationMapDependencies = {
   revalidateReferences: (references: MessageReference[], sources: { reference: MessageReference; text: string }[]) => Promise<MessageReference[]> | MessageReference[];
   signal: AbortSignal;
   onProgress?: (phase: 'reading' | 'extracting' | 'merging' | 'comparing' | 'rendering', completed?: number, total?: number) => void;
+  /** Fixed diagnostic metadata only: never include provider text, prompts, or source messages. */
+  onExtractionIssue?: (issue: ConversationExtractionIssue) => void;
+  /** Fixed counts from the selected partial response; no source IDs, text or model output. */
+  onExtractionDiagnostics?: (diagnostics: ConversationExtractionDiagnostics) => void;
   now?: () => Date;
 };
 const label = z.string().trim().min(1).max(80);
@@ -36,6 +50,12 @@ const comparisonSchema = z.object({ changes: z.array(z.object({
 }).strict()).max(40) }).strict();
 const summaryReviewSchema = z.object({ reviews: z.array(z.object({ eventId: z.string().min(1).max(32), supported: z.boolean() }).strict()).max(20) }).strict();
 type Candidate = z.infer<typeof extractionSchema>['events'][number];
+type ExtractionRejectReason = 'schema' | 'evidence' | 'role' | 'state' | 'other';
+type RejectedCandidate = { userEvidenceIds: string[]; assistantEvidenceIds: string[]; unresolvedEvidence: boolean; speaker: 'user' | 'assistant' | 'unknown'; reason: ExtractionRejectReason };
+type PartialExtraction = { events: Candidate[]; omitted: number; rejected: RejectedCandidate[] };
+class ExtractionValidationError extends ConversationMapOutputError {
+  constructor(detail: string, readonly reason: ExtractionRejectReason) { super(detail); }
+}
 type Evidence = { id: string; reference: MessageReference; text: string; truncated: boolean };
 type InputTurn = { messages: Evidence[] };
 type InternalTopic = { id: string; title: string; events: EvolutionEvent[] };
@@ -76,11 +96,12 @@ function compareReferences(left: MessageReference, right: MessageReference): num
 function invalidOutput(message = '模型返回的结构或原文引用无效，请重试。'): never { throw new ConversationMapServiceError('INVALID_MODEL_OUTPUT', message); }
 
 async function structured<T>(prompt: string, schema: z.ZodType<T>, deps: ConversationMapDependencies, validate: (value: T) => void,
-  options?: { recover: (values: unknown[]) => T | undefined; normalize?: (value: unknown) => unknown }): Promise<T> {
+  options?: { recover: (values: unknown[]) => T | undefined; normalize?: (value: unknown) => unknown; maxAttempts?: number }): Promise<T> {
   let maxOutputTokens = 8192;
   let retryInstruction = '';
   const attempts: unknown[] = [];
-  for (let attempt = 0; attempt < 2; attempt++) {
+  const maxAttempts = Math.max(1, Math.min(2, options?.maxAttempts ?? 2));
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
     cancelled(deps.signal);
     let raw: string;
     const callSignal = AbortSignal.any([deps.signal, AbortSignal.timeout(120_000)]);
@@ -91,7 +112,7 @@ async function structured<T>(prompt: string, schema: z.ZodType<T>, deps: Convers
       if (callSignal.aborted) throw new ConversationMapServiceError('MODEL_TIMEOUT', '模型分析超时，请缩小范围或切换模型后重试。');
       // Provider responses may contain request bodies. Never surface those as error telemetry/UI.
       const failure = error instanceof ConversationMapServiceError ? error : conversationMapModelError(error);
-      if (attempt === 0 && ['MODEL_EMPTY_RESPONSE', 'MODEL_OUTPUT_LIMIT'].includes(failure.code)) {
+      if (attempt + 1 < maxAttempts && ['MODEL_EMPTY_RESPONSE', 'MODEL_OUTPUT_LIMIT'].includes(failure.code)) {
         // Reuse the configured model, within the same two-attempt budget as schema repair.
         // The completion adapter clamps the larger request to the model's output limit.
         if (failure.code === 'MODEL_OUTPUT_LIMIT') maxOutputTokens = 16384;
@@ -115,7 +136,7 @@ async function structured<T>(prompt: string, schema: z.ZodType<T>, deps: Convers
       return result;
     } catch (error) {
       const failure = conversationMapValidationFeedback(error);
-      if (attempt === 1) {
+      if (attempt + 1 === maxAttempts) {
         const recovered = options?.recover(attempts);
         if (recovered !== undefined) return recovered;
         invalidOutput(failure.message);
@@ -130,6 +151,8 @@ async function structured<T>(prompt: string, schema: z.ZodType<T>, deps: Convers
 function extractionPrompt(turns: InputTurn[]): string {
   return [SYSTEM_RULES,
     'TASK: EXTRACT. Extract at most 40 meaningful semantic events, NOT a question/answer summary of every message. Skip greetings, repetition, routine explanations, polite closing offers, and invitations such as "I can help you next"; events:[] is valid.',
+    'Prioritize explicit USER positions, constraints, preferences, plans and substantive choices before assistant options. A short requirement can carry a real constraint: "数据只能保存在本地" is constraint, not a completed action. Preserve a stated plan as option/planned, never decision/decided. Mere requests such as "查一下天气" or "继续" do not establish a belief, plan, tradeoff or core assumption; never invent one to fill the event budget.',
+    'Retain concrete USER analysis or information questions about a named topic as exploration/exploring, even if an assistant answered them later. They establish an inquiry target, never a user belief, preference, plan or decision. For example, "本地存储方案的长期维护成本有哪些因素？" remains an exploration. Distinguish these substantive inquiries from greetings, "继续", and routine service calls such as "查一下天气", which may be omitted. Reserve open_question for significant questions still unanswered in the selected history.',
     `JSON Schema (choose one enum value, never join alternatives): ${JSON.stringify(z.toJSONSchema(extractionSchema, { io: 'input' }))}`,
     'subjectLabel identifies the specific object; dimensionLabel identifies the comparable attribute. No extra fields. Labels <=80, each quote <=240 characters, evidence 1–4 messages of one role and session. Every cited quote must contribute. evidenceId must be the message id (e.g. e1), never reference.entryId or reference.sessionId.',
     'One event must express ONE proposition about ONE object and attribute. Split an AI recommendation list into separate meaningful events. Write claim as a concise, useful plain-text summary (prefer 40–60, at most 120 characters), not copied paragraphs or Markdown. Name the object and what was asked, proposed, constrained or decided. Preserve every material condition, negation, uncertainty and role; do not shorten these away. Exact quotes remain verbatim evidence and can be longer than the summary.',
@@ -141,31 +164,48 @@ function extractionPrompt(turns: InputTurn[]): string {
 }
 function validateExtraction(value: z.infer<typeof extractionSchema>, evidence: Map<string, Evidence>): void {
   for (const [index, event] of value.events.entries()) {
-    const invalid = (detail: string): never => { throw new ConversationMapOutputError(`events[${index}]: ${detail}`); };
+    const invalid = (detail: string, reason: ExtractionRejectReason = 'evidence'): never => { throw new ExtractionValidationError(`events[${index}]: ${detail}`, reason); };
     const refs = event.evidence.map(item => evidence.get(item.evidenceId));
     if (refs.some(ref => !ref)) invalid('evidenceId must be a listed message id, not a sessionId or entryId.');
     if (new Set(event.evidence.map(item => item.evidenceId)).size !== refs.length) invalid('evidenceId must not be repeated within an event.');
-    if (refs.some(ref => ref!.reference.role !== event.speaker)) invalid('speaker must match the role of every cited message; do not combine user and assistant evidence.');
+    if (refs.some(ref => ref!.reference.role !== event.speaker)) invalid('speaker must match the role of every cited message; do not combine user and assistant evidence.', 'role');
     if (refs.some(ref => ref!.reference.sessionId !== refs[0]!.reference.sessionId)) invalid('all evidence within an event must come from one session. Split events from different sessions.');
     if (event.evidence.some((item, index) => !refs[index]!.text.includes(item.exactQuote))) invalid('exactQuote must be a literal continuous substring of the cited message text. Do not alter whitespace, punctuation or wording.');
+    if (!normalize(event.subjectLabel) || !normalize(event.dimensionLabel)) invalid('subjectLabel and dimensionLabel must identify a meaningful object and attribute, not punctuation.', 'other');
+    if (!supportedState(event, refs as Evidence[])) invalid('eventType/state is not supported by the cited message role or full context. Preserve plans, uncertainty, negation and hypothetical conditions. Use an evidence-supported exploration, position, constraint or option with considering/planned/unknown state when appropriate; never promote assistant suggestions or hypothetical user language to decisions or completed actions. Otherwise omit the event.', 'state');
   }
 }
-function recoverExtraction(value: unknown, evidence: Map<string, Evidence>): { events: Candidate[]; omitted: number } | undefined {
+function rejectedCandidate(raw: unknown, evidence: Map<string, Evidence>, reason: ExtractionRejectReason): RejectedCandidate {
+  const item = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
+  const sources = (Array.isArray(item.evidence) ? item.evidence : []).flatMap(value => {
+    if (!value || typeof value !== 'object' || !('evidenceId' in value) || typeof value.evidenceId !== 'string') return [];
+    const source = evidence.get(value.evidenceId);
+    return source ? [source] : [];
+  });
+  const rawEvidence = Array.isArray(item.evidence) ? item.evidence : [];
+  const unresolvedEvidence = !rawEvidence.length || rawEvidence.length !== sources.length;
+  return { unresolvedEvidence, userEvidenceIds: [...new Set(sources.filter(source => source.reference.role === 'user').map(source => source.id))],
+    assistantEvidenceIds: [...new Set(sources.filter(source => source.reference.role === 'assistant').map(source => source.id))],
+    speaker: item.speaker === 'user' || item.speaker === 'assistant' ? item.speaker
+      : sources.length && sources.every(source => source.reference.role === sources[0]!.reference.role) ? sources[0]!.reference.role : 'unknown', reason };
+}
+function recoverExtraction(value: unknown, evidence: Map<string, Evidence>): PartialExtraction | undefined {
   // Only salvage individually verified events after the bounded repair failed.
   // Invalid envelopes, oversized batches, and entirely unverified output remain failures.
   const envelope = z.object({ events: z.array(z.unknown()).max(CONVERSATION_MAP_LIMITS.batchEvents) }).strict().safeParse(value);
   if (!envelope.success) return undefined;
   const events: Candidate[] = [];
+  const rejected: RejectedCandidate[] = [];
   for (const raw of envelope.data.events) {
     const candidate = extractionSchema.shape.events.element.safeParse(raw);
-    if (!candidate.success) continue;
+    if (!candidate.success) { rejected.push(rejectedCandidate(raw, evidence, 'schema')); continue; }
     try { validateExtraction({ events: [candidate.data] }, evidence); }
-    catch { continue; }
+    catch (error) { rejected.push(rejectedCandidate(raw, evidence, error instanceof ExtractionValidationError ? error.reason : 'other')); continue; }
     events.push(candidate.data);
   }
-  return events.length ? { events, omitted: envelope.data.events.length - events.length } : undefined;
+  return events.length ? { events, omitted: rejected.length, rejected } : undefined;
 }
-function bestExtractionRecovery(values: unknown[], evidence: Map<string, Evidence>): { events: Candidate[]; omitted: number } | undefined {
+function bestExtractionRecovery(values: unknown[], evidence: Map<string, Evidence>): PartialExtraction | undefined {
   // A retry can be worse than its predecessor. Choose one verified response; do not
   // combine competing classifications, double-count events, or expand the batch limit.
   let best: ReturnType<typeof recoverExtraction>;
@@ -174,6 +214,36 @@ function bestExtractionRecovery(values: unknown[], evidence: Map<string, Evidenc
     if (candidate && (!best || candidate.events.length >= best.events.length)) best = candidate;
   }
   return best;
+}
+function recoveryGroups(partial: PartialExtraction, role: 'user' | 'assistant'): Set<string>[] {
+  const idsFor = (item: RejectedCandidate) => role === 'user' ? item.userEvidenceIds : item.assistantEvidenceIds;
+  // Mixed or unknown references cannot be resolved by a single-role replay.
+  const groups = partial.rejected.filter(item => !item.unresolvedEvidence && item.speaker === role && idsFor(item).length && (role === 'user' ? !item.assistantEvidenceIds.length : !item.userEvidenceIds.length)).map(item => new Set(idsFor(item)));
+  const links = partial.events.filter(event => event.speaker === role).map(event => new Set(event.evidence.map(item => item.evidenceId)));
+  // A validated event may span several messages. Re-extract and replace the full
+  // overlapping source group so competing classifications never coexist.
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (let index = 0; index < groups.length; index++) {
+      for (let next = index + 1; next < groups.length; next++) {
+        if ([...groups[next]!].some(id => groups[index]!.has(id))) {
+          groups[next]!.forEach(id => groups[index]!.add(id)); groups.splice(next, 1); changed = true; next--;
+        }
+      }
+      for (const link of links) if ([...link].some(id => groups[index]!.has(id))) {
+        for (const id of link) if (!groups[index]!.has(id)) { groups[index]!.add(id); changed = true; }
+      }
+    }
+  }
+  return groups;
+}
+function extractionDiagnostics(partial: PartialExtraction, recoveredUserSourceCount: number): ConversationExtractionDiagnostics {
+  const count = (predicate: (candidate: RejectedCandidate) => boolean) => partial.rejected.filter(predicate).length;
+  return { rejectedUserCandidates: count(item => item.speaker === 'user'), rejectedAssistantCandidates: count(item => item.speaker === 'assistant'),
+    unknownRoleCandidates: count(item => item.speaker === 'unknown'), schemaRejectedCandidates: count(item => item.reason === 'schema'),
+    evidenceRejectedCandidates: count(item => item.reason === 'evidence'), roleRejectedCandidates: count(item => item.reason === 'role'),
+    stateRejectedCandidates: count(item => item.reason === 'state'), otherRejectedCandidates: count(item => item.reason === 'other'), recoveredUserSourceCount };
 }
 const normalize = (text: string) => text.normalize('NFKC').toLocaleLowerCase().replace(/[\s\p{P}]/gu, '');
 const uncertainLanguage = /假如|假设|如果|要是|是否|能否|打算|计划|准备|考虑|还没|尚未|没有|未曾|不要|并未|不曾|不打算|没(?:有)?(?:完成|执行|买|卖|调仓)|\b(?:if|suppose|hypothetical|plan|planning|consider|considering|intend|will|would|might|not|never|haven't|hasn't|didn't)\b|[?？]/iu;
@@ -219,22 +289,23 @@ export function selectConversationEvents(events: EvolutionEvent[], changes: Evol
   for (const event of [...ordered].sort((a, b) => weights[b.eventType] - weights[a.eventType] || Date.parse(b.occurredAt) - Date.parse(a.occurredAt))) add([event.id]);
   return ordered.filter(event => selected.has(event.id));
 }
-async function mergeTopics(topics: InternalTopic[], deps: ConversationMapDependencies): Promise<InternalTopic[]> {
-  if (topics.length < 2) return topics;
+async function mergeTopics(topics: InternalTopic[], deps: ConversationMapDependencies): Promise<{ topics: InternalTopic[]; incomplete: boolean }> {
+  if (topics.length < 2) return { topics, incomplete: false };
   const data = JSON.stringify(topics.map(topic => ({ id: topic.id, title: topic.title, subjects: [...new Set(topic.events.map(event => event.subjectKey))].slice(0, 12) })));
   // Keep the model input bounded; lexical grouping remains a valid fact-only fallback.
-  if (data.length > CONVERSATION_MAP_LIMITS.batchChars) return topics;
+  if (data.length > CONVERSATION_MAP_LIMITS.batchChars) return { topics, incomplete: true };
   const prompt = [SYSTEM_RULES, 'TASK: MERGE. Group topics about the SAME concrete user task, problem or project into a coherent theme, including related stages and dimensions; topic labels need not be synonyms. Routine implementation details belong under the task they serve. Preserve distinct assets and unrelated projects; a shared broad category alone does not justify merging. Only return membership; never rewrite events, claims or evidence. Schema: {"groups":[{"memberIds":["t1"]}]}. Every input ID appears exactly once. No other fields.', DATA_MARKER, data].join('\n');
   try {
     const output = await structured(prompt, mergeSchema, deps, value => {
       const ids = value.groups.flatMap(group => group.memberIds);
       if (ids.length !== topics.length || new Set(ids).size !== topics.length || ids.some(id => !topics.some(topic => topic.id === id))) invalidOutput();
     });
-    return output.groups.map(group => {
+    const merged = output.groups.map(group => {
       const first = topics.find(topic => topic.id === group.memberIds[0])!;
       return { ...first, events: group.memberIds.flatMap(id => topics.find(topic => topic.id === id)!.events).map(event => ({ ...event, topicId: first.id })) };
     });
-  } catch { cancelled(deps.signal); return topics; }
+    return { topics: merged, incomplete: false };
+  } catch { cancelled(deps.signal); return { topics, incomplete: true }; }
 }
 function independentEarlier(from: EvolutionEvent, to: EvolutionEvent): boolean {
   const before = from.evidence.map(item => item.reference);
@@ -348,8 +419,21 @@ function insightsFor(topicId: string, events: EvolutionEvent[], changes: Evoluti
   return insights;
 }
 
-/** Invoked only by the trusted Desktop controller, never by chat or Memory hooks. */
-export async function generateConversationMap(request: ConversationMapRequest, deps: ConversationMapDependencies): Promise<ConversationMapResultV2> {
+/** Uncropped, evidence-checked candidate events shared by on-demand insight views.
+ * Maps stay inside the worker; they are never sent to Renderer or persisted as memory.
+ */
+export type ConversationSemanticSnapshot = {
+  rangeStart: string; rangeEnd: string; topics: InternalTopic[];
+  sourceTexts: Map<string, string>; proposedSummaries: Map<string, string>;
+  sources: { reference: MessageReference; text: string }[];
+  analyzedTurnCount: number; analyzedSessionCount: number; modelCallCount: number;
+  omittedTurnCount: number; omittedEventCount: number; truncated: boolean;
+  truncatedUserMessageCount: number; truncatedAssistantMessageCount: number;
+  omittedAssistantMessageCount: number; unknownSourceTruncation: boolean;
+  topicGroupingIncomplete: boolean;
+};
+
+export async function extractConversationSemantics(request: ConversationMapRequest, deps: ConversationMapDependencies): Promise<ConversationSemanticSnapshot> {
   const parsedRequest = ConversationMapRequestSchema.parse(request);
   cancelled(deps.signal);
   deps.validateModel?.();
@@ -370,6 +454,10 @@ export async function generateConversationMap(request: ConversationMapRequest, d
   const analyzedSessions = new Set<string>();
   let cursor: ConversationMapHistoryQuery['cursor'];
   let truncated = false;
+  let truncatedUserMessageCount = 0;
+  let truncatedAssistantMessageCount = 0;
+  let omittedAssistantMessageCount = 0;
+  let unknownSourceTruncation = false;
   deps.onProgress?.('reading', 0);
   while (true) {
     cancelled(deps.signal);
@@ -385,7 +473,7 @@ export async function generateConversationMap(request: ConversationMapRequest, d
       for (const message of [turn.user, ...turn.assistants]) {
         const ref = message.reference;
         if (ref.sessionId !== turn.sessionId || Date.parse(ref.createdAt) < Date.parse(rangeStart) || Date.parse(ref.createdAt) >= Date.parse(rangeEnd)) throw new ConversationMapServiceError('INVALID_HISTORY', '原始记录不在所选范围内。');
-        if (remaining <= 0) { truncated = true; continue; }
+        if (remaining <= 0) { truncated = true; if (ref.role === 'assistant') omittedAssistantMessageCount++; continue; }
         const text = message.text.slice(0, Math.min(CONVERSATION_MAP_LIMITS.messageChars, remaining));
         remaining -= text.length;
         const evidence: Evidence = { id: `e${references.size + 1}`, reference: ref, text, truncated: message.truncated || text.length < message.text.length };
@@ -394,8 +482,15 @@ export async function generateConversationMap(request: ConversationMapRequest, d
         sourceTexts.set(referenceKey(ref), message.text);
         messages.push(evidence);
         truncated ||= evidence.truncated;
+        if (evidence.truncated) {
+          if (ref.role === 'user') truncatedUserMessageCount++;
+          else truncatedAssistantMessageCount++;
+        }
       }
       truncated ||= turn.truncated;
+      // Older readers only report an aggregate flag (e.g. an assistant count
+      // limit). Keep unexplained loss visible rather than attributing it to users.
+      unknownSourceTruncation ||= turn.truncated && !turn.user.truncated && !turn.assistants.some(message => message.truncated);
       turns.push({ messages });
     }
     deps.onProgress?.('reading', turns.length);
@@ -418,55 +513,196 @@ export async function generateConversationMap(request: ConversationMapRequest, d
   if (batches.length > CONVERSATION_MAP_LIMITS.batches) throw new ConversationMapServiceError('HISTORY_LIMIT', '对话内容过长，超过本次分析预算，请缩小时间或项目范围。');
 
 
-  let topics: InternalTopic[] = [];
+  const topics: InternalTopic[] = [];
   const proposedSummaries = new Map<string, string>();
   let eventCounter = 0;
-  for (let index = 0; index < batches.length; index++) {
-    const currentBatch = batches[index]!;
-    deps.onProgress?.('extracting', index, batches.length);
+  let recoveryModelCallCount = 0;
+  // Original batches retain their usual two attempts. Recovery has its own small
+  // shared allowance, so a difficult early batch cannot starve later history.
+  // 40 * 2 extraction calls + 20 recovery + 2 grouping + 56 map finishing <= 160.
+  async function extractBatch(currentBatch: InputTurn[], depth = 0): Promise<void> {
+    cancelled(deps.signal);
+    const maxAttempts = depth === 0 ? 2 : Math.min(2, CONVERSATION_MAP_LIMITS.extractionRecoveryCalls - recoveryModelCallCount);
+    if (maxAttempts === 0) {
+      omittedTurnCount += currentBatch.length;
+      deps.onExtractionIssue?.({ code: 'EXTRACTION_RECOVERY_LIMIT', turnCount: currentBatch.length, willRetry: false });
+      return;
+    }
+    const batchDeps = depth === 0 ? deps : { ...deps, complete: (...args: Parameters<ConversationMapDependencies['complete']>) => {
+      recoveryModelCallCount++;
+      return deps.complete(...args);
+    } };
     const evidence = new Map(currentBatch.flatMap(turn => turn.messages).map(item => [item.id, item]));
     let extracted: z.infer<typeof extractionSchema>;
+    let partialRecovery: PartialExtraction | undefined;
     try {
-      extracted = await structured(extractionPrompt(currentBatch), extractionSchema, deps, value => validateExtraction(value, evidence), {
-        normalize: normalizeConversationMapExtraction,
+      extracted = await structured(extractionPrompt(currentBatch), extractionSchema, batchDeps, value => validateExtraction(value, evidence), {
+        maxAttempts, normalize: normalizeConversationMapExtraction,
         recover: values => {
           const recovered = bestExtractionRecovery(values, evidence);
           if (!recovered) return undefined;
-          omittedEventCount += recovered.omitted;
+          partialRecovery = recovered;
           return { events: recovered.events };
         }
       });
     } catch (error) {
       cancelled(deps.signal);
-      if (!(error instanceof ConversationMapServiceError) || !['INVALID_MODEL_OUTPUT', 'MODEL_EMPTY_RESPONSE', 'MODEL_OUTPUT_LIMIT'].includes(error.code)) throw error;
+      if (!(error instanceof ConversationMapServiceError) || !['INVALID_MODEL_OUTPUT', 'MODEL_EMPTY_RESPONSE', 'MODEL_OUTPUT_LIMIT', 'MODEL_CONTEXT_OVERFLOW'].includes(error.code)) throw error;
       lastExtractionFailure = error;
-      omittedTurnCount += currentBatch.length;
-      deps.onProgress?.('extracting', index + 1, batches.length);
-      continue;
+      const willRetry = currentBatch.length > 1 && depth < CONVERSATION_MAP_LIMITS.extractionSplitDepth
+        && recoveryModelCallCount < CONVERSATION_MAP_LIMITS.extractionRecoveryCalls;
+      deps.onExtractionIssue?.({ code: error.code as ConversationExtractionIssue['code'], turnCount: currentBatch.length, willRetry });
+      cancelled(deps.signal);
+      if (willRetry) {
+        const middle = Math.ceil(currentBatch.length / 2);
+        // Retry disjoint complete turns, preserving their evidence IDs and exact
+        // source text. Parent failure does not count again when a child succeeds.
+        await extractBatch(currentBatch.slice(0, middle), depth + 1);
+        await extractBatch(currentBatch.slice(middle), depth + 1);
+      } else omittedTurnCount += currentBatch.length;
+      return;
+    }
+    if (partialRecovery) {
+      const partial = partialRecovery;
+      let remainingOmissions = partial.omitted;
+      let recoveredUserSourceCount = 0;
+      const recoveryBatches: Set<string>[] = [];
+      for (const group of recoveryGroups(partial, 'user')) {
+        const previous = recoveryBatches.at(-1);
+        if (previous && previous.size + group.size <= 4) group.forEach(id => previous.add(id));
+        else recoveryBatches.push(new Set(group));
+      }
+      for (const ids of recoveryBatches) {
+        cancelled(deps.signal);
+        const attempts = Math.min(2, CONVERSATION_MAP_LIMITS.extractionRecoveryCalls - recoveryModelCallCount);
+        if (!attempts || depth >= CONVERSATION_MAP_LIMITS.extractionSplitDepth) break;
+        const userTurns = currentBatch.map(turn => ({ messages: turn.messages.filter(message => ids.has(message.id) && message.reference.role === 'user') })).filter(turn => turn.messages.length);
+        if (!userTurns.length || JSON.stringify(userTurns).length > CONVERSATION_MAP_LIMITS.batchChars) continue;
+        const userEvidence = new Map(userTurns.flatMap(turn => turn.messages).map(message => [message.id, message]));
+        const userDeps = { ...deps, complete: (...args: Parameters<ConversationMapDependencies['complete']>) => {
+          recoveryModelCallCount++;
+          return deps.complete(...args);
+        } };
+        try {
+          const recovered = await structured([
+            'USER_EVIDENCE_RECOVERY: Re-extract only the listed user messages. Preserve explicit constraints, preferences and plans. Retain concrete analysis or information questions as exploration/exploring even if answered later: an inquiry target is not a belief, completed action or explicit decision. Reserve open_question for significant unresolved questions. Return events:[] for greetings, continue messages and routine service calls such as weather lookup when no substantive inquiry remains. Do not invent missing context or copy prior classifications.',
+            extractionPrompt(userTurns)
+          ].join('\n'), extractionSchema, userDeps, value => validateExtraction(value, userEvidence), {
+            maxAttempts: attempts, normalize: normalizeConversationMapExtraction, recover: () => undefined
+          });
+          // A structurally valid empty/subset response must not erase already
+          // verified user provenance. Keep the whole group if coverage shrank.
+          const priorSources = new Set(extracted.events.filter(event => event.speaker === 'user' && event.evidence.some(item => ids.has(item.evidenceId)))
+            .flatMap(event => event.evidence.map(item => item.evidenceId)));
+          const recoveredSources = new Set(recovered.events.flatMap(event => event.evidence.map(item => item.evidenceId)));
+          if ([...priorSources].some(id => !recoveredSources.has(id))) continue;
+          // Commit a fully validated replacement for these user sources only.
+          // Failed or incomplete replacement preserves original events/omissions.
+          extracted.events = extracted.events.filter(event => event.speaker !== 'user' || !event.evidence.some(item => ids.has(item.evidenceId)));
+          extracted.events.push(...recovered.events);
+          remainingOmissions -= partial.rejected.filter(item => !item.unresolvedEvidence && item.speaker === 'user' && !item.assistantEvidenceIds.length && item.userEvidenceIds.length > 0 && item.userEvidenceIds.every(id => ids.has(id))).length;
+          recoveredUserSourceCount += ids.size;
+        } catch (error) {
+          cancelled(deps.signal);
+          if (!(error instanceof ConversationMapServiceError) || !['INVALID_MODEL_OUTPUT', 'MODEL_EMPTY_RESPONSE', 'MODEL_OUTPUT_LIMIT', 'MODEL_CONTEXT_OVERFLOW'].includes(error.code)) throw error;
+          deps.onExtractionIssue?.({ code: error.code as ConversationExtractionIssue['code'], turnCount: userTurns.length, willRetry: false });
+        }
+      }
+      // Recover assistant-only candidates after user sources, sharing the same bounded
+      // call budget. Revalidate every quote and retain any verified prior provenance.
+      const assistantBatches: Set<string>[] = [];
+      for (const group of recoveryGroups(partial, 'assistant')) {
+        const previous = assistantBatches.at(-1);
+        if (previous && previous.size + group.size <= 4) group.forEach(id => previous.add(id));
+        else assistantBatches.push(new Set(group));
+      }
+      for (const ids of assistantBatches) {
+        cancelled(deps.signal);
+        const attempts = Math.min(2, CONVERSATION_MAP_LIMITS.extractionRecoveryCalls - recoveryModelCallCount);
+        if (!attempts || depth >= CONVERSATION_MAP_LIMITS.extractionSplitDepth) break;
+        const turns = currentBatch.map(turn => ({ messages: turn.messages.filter(message => ids.has(message.id) && message.reference.role === 'assistant') })).filter(turn => turn.messages.length);
+        if (!turns.length || JSON.stringify(turns).length > CONVERSATION_MAP_LIMITS.batchChars) continue;
+        const assistantEvidence = new Map(turns.flatMap(turn => turn.messages).map(message => [message.id, message]));
+        const recoveryDeps = { ...deps, complete: (...args: Parameters<ConversationMapDependencies['complete']>) => {
+          recoveryModelCallCount++;
+          return deps.complete(...args);
+        } };
+        try {
+          const recovered = await structured([
+            'ASSISTANT_EVIDENCE_RECOVERY: Re-extract only the listed assistant messages. Include only substantive choices, constraints or tradeoffs; omit routine explanations and offers. Assistant suggestions are not user decisions or completed actions. Return events:[] when no meaningful event remains.',
+            extractionPrompt(turns)
+          ].join('\n'), extractionSchema, recoveryDeps, value => validateExtraction(value, assistantEvidence), {
+            maxAttempts: attempts, normalize: normalizeConversationMapExtraction, recover: () => undefined
+          });
+          const priorSources = new Set(extracted.events.filter(event => event.speaker === 'assistant' && event.evidence.some(item => ids.has(item.evidenceId)))
+            .flatMap(event => event.evidence.map(item => item.evidenceId)));
+          const recoveredSources = new Set(recovered.events.flatMap(event => event.evidence.map(item => item.evidenceId)));
+          if ([...priorSources].some(id => !recoveredSources.has(id))) continue;
+          extracted.events = extracted.events.filter(event => event.speaker !== 'assistant' || !event.evidence.some(item => ids.has(item.evidenceId)));
+          extracted.events.push(...recovered.events);
+          remainingOmissions -= partial.rejected.filter(item => !item.unresolvedEvidence && item.speaker === 'assistant' && !item.userEvidenceIds.length && item.assistantEvidenceIds.length > 0 && item.assistantEvidenceIds.every(id => ids.has(id))).length;
+        } catch (error) {
+          cancelled(deps.signal);
+          if (!(error instanceof ConversationMapServiceError) || !['INVALID_MODEL_OUTPUT', 'MODEL_EMPTY_RESPONSE', 'MODEL_OUTPUT_LIMIT', 'MODEL_CONTEXT_OVERFLOW'].includes(error.code)) throw error;
+          deps.onExtractionIssue?.({ code: error.code as ConversationExtractionIssue['code'], turnCount: turns.length, willRetry: false });
+        }
+      }
+      omittedEventCount += remainingOmissions;
+      deps.onExtractionDiagnostics?.(extractionDiagnostics(partial, recoveredUserSourceCount));
     }
     for (const turn of currentBatch) for (const message of turn.messages) analyzedSessions.add(message.reference.sessionId);
     for (const candidate of extracted.events) {
+      if (eventCounter >= CONVERSATION_MAP_LIMITS.semanticEvents) { omittedEventCount++; continue; }
       const sources = candidate.evidence.map(item => evidence.get(item.evidenceId)!);
-      if (!supportedState(candidate, sources)) { omittedEventCount++; continue; }
       let topic = topics.find(item => normalize(item.title) === normalize(candidate.topicLabel));
-      if (!topic) { topic = { id: `t${topics.length + 1}`, title: candidate.topicLabel, events: [] }; topics.push(topic); }
+      const newTopic = !topic;
+      if (!topic) topic = { id: `t${topics.length + 1}`, title: candidate.topicLabel, events: [] };
       const quotes = candidate.evidence.map(item => ({ reference: evidence.get(item.evidenceId)!.reference, quote: item.exactQuote })).sort((a, b) => compareReferences(a.reference, b.reference));
       // Keep the canonical proposition verbatim. A proposed paraphrase needs a separate review.
       const claim = quotes.map(item => item.quote).join('；').slice(0, 240);
-      const event: EvolutionEvent = { id: `v${++eventCounter}`, topicId: topic.id,
+      const event: EvolutionEvent = { id: `v${eventCounter + 1}`, topicId: topic.id,
         subjectKey: normalize(candidate.subjectLabel), dimensionKey: normalize(candidate.dimensionLabel),
         subjectLabel: candidate.subjectLabel, dimensionLabel: candidate.dimensionLabel,
         eventType: candidate.eventType, speaker: candidate.speaker, state: candidate.state, claim,
         occurredAt: quotes[0]!.reference.createdAt, evidence: quotes, truncatedSource: sources.some(source => source.truncated) };
-      if (!event.subjectKey || !event.dimensionKey) { omittedEventCount++; continue; }
+      if (!event.subjectKey || !event.dimensionKey || !EvolutionEventSchema.safeParse(event).success) { omittedEventCount++; continue; }
+      eventCounter++;
+      if (newTopic) topics.push(topic);
       proposedSummaries.set(event.id, candidate.claim);
       topic.events.push(event);
     }
+  }
+  for (let index = 0; index < batches.length; index++) {
+    deps.onProgress?.('extracting', index, batches.length);
+    await extractBatch(batches[index]!);
     deps.onProgress?.('extracting', index + 1, batches.length);
   }
   if (lastExtractionFailure && omittedTurnCount === turns.length) throw lastExtractionFailure;
+  // Shared topic membership keeps related stages of the same task together,
+  // preserving the context available to every perspective before selection.
   deps.onProgress?.('merging');
-  topics = await mergeTopics(topics, deps);
+  const grouping = await mergeTopics(topics, deps);
+  return { rangeStart, rangeEnd, topics: grouping.topics, topicGroupingIncomplete: grouping.incomplete, sourceTexts, proposedSummaries,
+    sources: [...references.values()].map(item => ({ reference: item.reference, text: sourceTexts.get(referenceKey(item.reference))! })),
+    analyzedTurnCount: turns.length - omittedTurnCount, analyzedSessionCount: analyzedSessions.size,
+    modelCallCount, omittedTurnCount, omittedEventCount, truncated,
+    truncatedUserMessageCount, truncatedAssistantMessageCount, omittedAssistantMessageCount, unknownSourceTruncation };
+}
+
+/** Invoked only by the trusted Desktop controller, never by chat or Memory hooks. */
+export async function generateConversationMap(request: ConversationMapRequest, deps: ConversationMapDependencies, sharedSnapshot?: ConversationSemanticSnapshot): Promise<ConversationMapResultV2> {
+  const parsedRequest = ConversationMapRequestSchema.parse(request);
+  const snapshot = sharedSnapshot ?? await extractConversationSemantics(parsedRequest, deps);
+  const { rangeStart, rangeEnd, sourceTexts, proposedSummaries, omittedTurnCount } = snapshot;
+  let { topics, modelCallCount, omittedEventCount, truncated } = snapshot;
+  truncated ||= snapshot.topicGroupingIncomplete;
+  const complete = deps.complete;
+  deps = { ...deps, complete: (...args) => {
+    cancelled(deps.signal);
+    if (modelCallCount >= CONVERSATION_MAP_LIMITS.modelCalls) throw new ConversationMapServiceError('MODEL_CALL_LIMIT', '本次分析已达到模型调用预算。');
+    modelCallCount++; return complete(...args);
+  } };
+  const now = deps.now ?? (() => new Date());
   topics = topics.filter(topic => topic.events.length > 0);
   for (const topic of topics) {
     const distinct: EvolutionEvent[] = [];
@@ -532,7 +768,7 @@ export async function generateConversationMap(request: ConversationMapRequest, d
     return valid;
   });
   return ConversationMapResultV2Schema.parse({ version: 2, generatedAt: now().toISOString(), rangeStart, rangeEnd,
-    scopeKind: parsedRequest.scope.kind, analyzedTurnCount: turns.length - omittedTurnCount, analyzedSessionCount: analyzedSessions.size,
+    scopeKind: parsedRequest.scope.kind, analyzedTurnCount: snapshot.analyzedTurnCount, analyzedSessionCount: snapshot.analyzedSessionCount,
     modelCallCount, omittedEventCount, ...(omittedTurnCount ? { omittedTurnCount } : {}),
     truncated: truncated || omittedEventCount > 0 || omittedTurnCount > 0, topics: resultTopics });
 }

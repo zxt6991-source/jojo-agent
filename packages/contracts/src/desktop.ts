@@ -1,4 +1,5 @@
 import type { ConversationMapGenerateInput, ConversationMapSourceInput, ConversationMapSourceResult, ConversationMapEvent } from './conversation-map';
+import type { InsightGenerateInput, InsightSourceInput, InsightSourceResult, InsightEvent } from './insights';
 import { APPLICATION_OPERATIONS } from './application/operations.js';
 import { SaveSpeechSettingsInputSchema, type SpeechSettingsSnapshot } from './speech';
 import type { VoiceOutputHandle } from './voice-output';
@@ -630,6 +631,10 @@ export const DesktopChannelMutationSchema = z.discriminatedUnion('action', [
 export type DesktopChannelMutation = z.infer<typeof DesktopChannelMutationSchema>;
 
 export type DesktopApi = {
+  generateInsight(input: InsightGenerateInput): Promise<void>;
+  cancelInsight(input: { requestId: string }): Promise<void>;
+  getInsightSource(input: InsightSourceInput): Promise<InsightSourceResult>;
+  onInsightEvent(listener: (event: InsightEvent) => void): () => void;
   generateConversationMap(input: ConversationMapGenerateInput): Promise<void>;
   cancelConversationMap(input: { requestId: string }): Promise<void>;
   getConversationMapSource(input: ConversationMapSourceInput): Promise<ConversationMapSourceResult>;
@@ -749,6 +754,10 @@ export type DesktopApi = {
 };
 
 export const IPC = {
+  generateInsight: 'insight:generate',
+  cancelInsight: 'insight:cancel',
+  getInsightSource: 'insight:source',
+  insightEvent: 'insight:event',
   generateConversationMap: 'conversation-map:generate',
   cancelConversationMap: 'conversation-map:cancel',
   getConversationMapSource: 'conversation-map:source',

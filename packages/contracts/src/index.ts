@@ -20,6 +20,7 @@ export * from './tools';
 export * from './verification';
 export * from './session-history';
 export * from './conversation-map';
+export * from './insights';
 export * from './workspace';
 
 export * from './artifact';

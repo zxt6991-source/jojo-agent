@@ -1,12 +1,24 @@
 import { ConversationMapGenerateInputSchema, ConversationMapCancelInputSchema, ConversationMapSourceInputSchema, ConversationMapSourceResultSchema, ConversationMapEventSchema } from '@desktop-agent/contracts';
+import { InsightGenerateInputSchema, InsightCancelInputSchema, InsightSourceInputSchema, InsightSourceResultSchema } from '@desktop-agent/contracts';
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import { speechPreload } from './speech-preload';
 import { ReplayScheduleDeliveryInputSchema } from '@desktop-agent/contracts';
 import { ArtifactReadResponseV2Schema, ArtifactSaveResponseV2Schema, SpeechSettingsSnapshotSchema, SaveSpeechSettingsInputSchema, MAX_FILE_BYTES, IPC, type DesktopApi } from '@desktop-agent/contracts';
-import { parseAgentPush, parseBrowserDockPush, parseBrowserSecretPush, parseConversationMessageCreatedPush, parseOrchestrationPush, parseSchedulePush, parseTerminalSecretPush } from './push-validation';
+import { parseAgentPush, parseBrowserDockPush, parseBrowserSecretPush, parseConversationMessageCreatedPush, parseInsightPush, parseOrchestrationPush, parseSchedulePush, parseTerminalSecretPush } from './push-validation';
 
 const api: DesktopApi = {
   ...speechPreload,
+  generateInsight: input => ipcRenderer.invoke(IPC.generateInsight, InsightGenerateInputSchema.parse(input)),
+  cancelInsight: input => ipcRenderer.invoke(IPC.cancelInsight, InsightCancelInputSchema.parse(input)),
+  getInsightSource: async input => InsightSourceResultSchema.parse(await ipcRenderer.invoke(IPC.getInsightSource, InsightSourceInputSchema.parse(input))),
+  onInsightEvent: listener => {
+    const handler = (_event: Electron.IpcRendererEvent, raw: unknown) => {
+      const parsed = parseInsightPush(raw);
+      if (parsed) listener(parsed);
+    };
+    ipcRenderer.on(IPC.insightEvent, handler);
+    return () => ipcRenderer.removeListener(IPC.insightEvent, handler);
+  },
   generateConversationMap: input => ipcRenderer.invoke(IPC.generateConversationMap, ConversationMapGenerateInputSchema.parse(input)),
   cancelConversationMap: input => ipcRenderer.invoke(IPC.cancelConversationMap, ConversationMapCancelInputSchema.parse(input)),
   getConversationMapSource: async input => ConversationMapSourceResultSchema.parse(await ipcRenderer.invoke(IPC.getConversationMapSource, ConversationMapSourceInputSchema.parse(input))),

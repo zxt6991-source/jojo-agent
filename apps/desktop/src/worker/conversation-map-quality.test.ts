@@ -141,6 +141,9 @@ describe('conversation-map quality: adversarial candidate verification', () => {
     const events = result.topics.flatMap(topic => topic.events);
     const invalidQuote = speaker === 'assistant' ? suite.turns[0]!.assistant!.text : suite.turns[0]!.user.text;
     expect(events.some(event => event.evidence.some(item => item.quote === invalidQuote))).toBe(false);
+    expect(harness.complete).toHaveBeenCalledTimes(4);
+    expect(harness.complete.mock.calls[1]![0]).toContain('eventType/state is not supported');
+    expect(harness.complete.mock.calls.slice(2).every(([prompt]) => prompt.includes(speaker === 'user' ? 'USER_EVIDENCE_RECOVERY:' : 'ASSISTANT_EVIDENCE_RECOVERY:'))).toBe(true);
   });
 
   it('Q07 checks hypothetical context outside a cherry-picked exact quote', async () => {
@@ -151,6 +154,19 @@ describe('conversation-map quality: adversarial candidate verification', () => {
     } });
     const result = await generateConversationMap(request, harness.deps);
     expect(result.topics.flatMap(topic => topic.events).some(event => event.state === 'reported_done')).toBe(false);
+  });
+
+  it('Q07 repairs a hypothetical action back to an evidence-supported exploration', async () => {
+    let attempt = 0;
+    const harness = fixture(scenario('Q07'), { alterExtraction(events) {
+      if (++attempt !== 1) return;
+      events[0]!.eventType = 'action'; events[0]!.state = 'reported_done';
+      events[0]!.evidence[0]!.exactQuote = '我已经减仓一半';
+    } });
+    const result = await generateConversationMap(request, harness.deps);
+    expect(result).toMatchObject({ truncated: false, omittedEventCount: 0, modelCallCount: 2 });
+    const event = result.topics.flatMap(topic => topic.events).find(item => item.evidence[0]!.reference.entryId === 'Q07-0-user');
+    expect(event).toMatchObject({ eventType: 'exploration', state: 'exploring', claim: '假如我已经减仓一半，下一步应该研究什么？' });
   });
 
   it('Q06 never accepts an unsupported claim even when its quote is valid', async () => {
@@ -250,7 +266,8 @@ describe('conversation-map quality: adversarial candidate verification', () => {
     expect(events).toHaveLength(2);
     expect(events.flatMap(event => event.evidence).some(item => item.reference.entryId === 'Q14-0-user')).toBe(false);
     expect(JSON.stringify(result)).not.toMatch(/我已完成所有研究|2099-01-01|final-model-id|invented/);
-    expect(harness.complete).toHaveBeenCalledTimes(2);
+    expect(harness.complete).toHaveBeenCalledTimes(fault === 'id' || fault === 'role' ? 2 : 4);
+    if (fault === 'role') expect(harness.complete.mock.calls.every(([prompt]) => !prompt.includes('EVIDENCE_RECOVERY:'))).toBe(true);
     expect(harness.deps.revalidateReferences).toHaveBeenCalledOnce();
   });
 
@@ -259,7 +276,7 @@ describe('conversation-map quality: adversarial candidate verification', () => {
       for (const event of events) event.evidence[0]!.evidenceId = 'invented';
     } });
     await expect(generateConversationMap(request, harness.deps)).rejects.toMatchObject({ code: 'INVALID_MODEL_OUTPUT' });
-    expect(harness.complete).toHaveBeenCalledTimes(2);
+    expect(harness.complete).toHaveBeenCalledTimes(6); // Parent repair plus bounded one-turn repairs.
     expect(harness.deps.revalidateReferences).not.toHaveBeenCalled();
   });
 });

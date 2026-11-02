@@ -1,9 +1,16 @@
 import { mkdtemp } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 import { launchElectron } from './helpers/launch-electron';
 import type { ConversationMapResult, ConversationMapResultV2, SessionMeta } from '@desktop-agent/contracts';
+
+async function openConversationMap(page: Page) {
+  const navigation = page.getByRole('navigation', { name: '设置分类' });
+  await expect(navigation.getByRole('button', { name: '交流脉络', exact: true })).toHaveCount(0);
+  await navigation.getByRole('button', { name: 'AI 洞察中心', exact: true }).click();
+  await page.getByTestId('insight-center-page').getByRole('button', { name: /交流脉络/ }).click();
+}
 
 test('generates a map from durable conversations and opens the exact evidence', async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'jojo-conversation-map-'));
@@ -20,7 +27,7 @@ test('generates a map from durable conversations and opens the exact evidence', 
     await page.getByRole('button', { name: '发送消息' }).click();
     await expect(page.getByText('hello from offline e2e')).toBeVisible();
     await page.getByRole('button', { name: '⚙ 设置' }).click();
-    await page.getByRole('button', { name: '交流脉络', exact: true }).click();
+    await openConversationMap(page);
     const view = page.getByTestId('conversation-map-page');
     await expect(view.getByRole('button', { name: '最近30天', exact: true })).toHaveAttribute('aria-pressed', 'true');
     await view.getByRole('button', { name: '生成脉络图', exact: true }).click();
@@ -47,7 +54,7 @@ test('empty history does not invent topics and cancelled generation cannot publi
   const { app, page } = await launchElectron(directory);
   try {
     await page.getByRole('button', { name: '⚙ 设置' }).click();
-    await page.getByRole('button', { name: '交流脉络', exact: true }).click();
+    await openConversationMap(page);
     const view = page.getByTestId('conversation-map-page');
     await view.getByRole('button', { name: '生成脉络图', exact: true }).click();
     await expect(view.getByText(/所选范围内暂无符合条件的文本对话/)).toBeVisible();
@@ -145,7 +152,7 @@ test('V2 insights expose both endpoints, expand details and clear conclusions wh
       ipcMain.handle('conversation-map:source', () => ({ available: false }));
     }, result);
     await page.getByRole('button', { name: '⚙ 设置' }).click();
-    await page.getByRole('button', { name: '交流脉络', exact: true }).click();
+    await openConversationMap(page);
     const view = page.getByTestId('conversation-map-page');
     await expect(view.getByLabel('主题洞察')).toHaveCount(0);
     await view.getByRole('button', { name: '生成脉络图', exact: true }).click();

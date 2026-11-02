@@ -1,4 +1,5 @@
 import { ConversationMapGenerateInputSchema, ConversationMapSourceInputSchema, ConversationMapSourceResultSchema, ConversationMapEventSchema } from './conversation-map';
+import { InsightGenerateInputSchema, InsightSourceInputSchema, InsightSourceResultSchema, InsightEventSchema } from './insights';
 import { SessionMetadataOperationSchema, SessionMetadataResultSchema } from './application/session-metadata.js';
 import { APPLICATION_OPERATIONS } from './application/operations.js';
 import { z } from 'zod';
@@ -78,6 +79,9 @@ export const MemoryStatusSnapshotIpcSchema = z.object({
 }).strict();
 
 const WorkerCommandBaseSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('insight.generate'), input: InsightGenerateInputSchema }).strict(),
+  z.object({ type: z.literal('insight.cancel'), requestId: IdSchema }).strict(),
+  z.object({ type: z.literal('insight.source'), requestId: IdSchema, input: InsightSourceInputSchema }).strict(),
   z.object({ type: z.literal('conversation-map.generate'), input: ConversationMapGenerateInputSchema }).strict(),
   z.object({ type: z.literal('conversation-map.cancel'), requestId: IdSchema }).strict(),
   z.object({ type: z.literal('conversation-map.source'), requestId: IdSchema, input: ConversationMapSourceInputSchema }).strict(),
@@ -159,6 +163,8 @@ const SizedOrchestrationEventSchema = OrchestrationEventSchema.superRefine((valu
 });
 
 const WorkerMessageBaseSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('insight.event'), event: InsightEventSchema }).strict(),
+  z.object({ type: z.literal('insight.source.result'), requestId: IdSchema, result: InsightSourceResultSchema }).strict(),
   z.object({ type: z.literal('conversation-map.event'), event: ConversationMapEventSchema }).strict(),
   z.object({ type: z.literal('conversation-map.source.result'), requestId: IdSchema, result: ConversationMapSourceResultSchema }).strict(),
   z.object({ type: z.literal('scheduler.desktop.delivery'), requestId: IdSchema, delivery: ScheduleDesktopDeliverySchema }).strict(),

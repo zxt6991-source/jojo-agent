@@ -47,6 +47,7 @@ interface Context {
   parentPort: ParentPort;
   sessionController: { handle(command: WorkerCommand): boolean };
   conversationMapController: { handle(command: WorkerCommand): boolean };
+  insightController: { handle(command: WorkerCommand): boolean };
   desktopChannelSecrets: Record<string, string>;
   extensionReady: Promise<void>;
   applyRuntimeConfig: (settings: ProviderSettings, apiKeys: Record<string, string>, mcpOAuthCredentials: Record<string, unknown>, terminalSecrets: Record<string, string>) => Promise<void>;
@@ -109,6 +110,7 @@ export function bindWorkerIpc(ctx: Context): void {
     const command = parsed.data;
     if (ctx.sessionController.handle(command)) return;
     if (ctx.conversationMapController.handle(command)) return;
+    if (ctx.insightController.handle(command)) return;
     if (command.type === 'speech.control') {
       void ctx.extensionReady.then(async () => {
         const control = command.control;

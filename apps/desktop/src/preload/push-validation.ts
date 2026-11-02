@@ -3,6 +3,8 @@ import {
   BrowserDockStateSchema,
   BrowserSecretRequestSchema,
   ConversationMessageCreatedEventSchema,
+  InsightEventSchema,
+  MAX_WORKER_MESSAGE_BYTES,
   MAX_ORCHESTRATION_EVENT_BYTES,
   OrchestrationEventSchema,
   serializedIpcBytes,
@@ -11,9 +13,16 @@ import {
   type AgentEvent,
   type BrowserDockState,
   type ConversationMessageCreatedEvent,
+  type InsightEvent,
   type OrchestrationEvent,
   type ScheduleEventContract
 } from '@desktop-agent/contracts';
+
+export function parseInsightPush(raw: unknown): InsightEvent | null {
+  if (serializedIpcBytes(raw) > MAX_WORKER_MESSAGE_BYTES) return null;
+  const parsed = InsightEventSchema.safeParse(raw);
+  return parsed.success ? parsed.data : null;
+}
 
 export function parseAgentPush(raw: unknown): AgentEvent | null {
   const parsed = AgentEventSchema.safeParse(raw);

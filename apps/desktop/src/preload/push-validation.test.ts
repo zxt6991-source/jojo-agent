@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseAgentPush, parseBrowserDockPush, parseBrowserSecretPush, parseConversationMessageCreatedPush, parseSchedulePush, parseTerminalSecretPush } from './push-validation';
+import { parseAgentPush, parseBrowserDockPush, parseBrowserSecretPush, parseConversationMessageCreatedPush, parseInsightPush, parseSchedulePush, parseTerminalSecretPush } from './push-validation';
 
 describe('preload push validation', () => {
   it('drops malformed agent events', () => {
@@ -40,4 +40,12 @@ describe('preload push validation', () => {
     expect(parseConversationMessageCreatedPush(event)).toEqual(event);
     expect(parseConversationMessageCreatedPush({ ...event, sessionId: '' })).toBeNull();
   });
+});
+
+it('validates insight events before exposing them to the renderer', () => {
+  const event = { type: 'insight.progress', requestId: 'i1', phase: 'validating' };
+  expect(parseInsightPush(event)).toEqual(event);
+  expect(parseInsightPush({ ...event, phase: 'execute' })).toBeNull();
+  expect(parseInsightPush({ ...event, prompt: 'sensitive input' })).toBeNull();
+  expect(parseInsightPush({ type: 'insight.completed', requestId: 'i1', result: { cards: [] } })).toBeNull();
 });

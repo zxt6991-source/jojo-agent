@@ -1,6 +1,10 @@
 import { createConversationMapController } from './conversation-map-controller';
+import { createHistoryAnalysisTaskGate } from './history-analysis-task';
+import { createHistoryAnalysisMetrics } from './history-analysis-metrics';
+import { createInsightController } from './insights/insight-controller';
+import { createInsightService, e2eInsightCompletion } from './insights/insight-service';
 import { assertConversationMapModel, completeConversationMap } from './conversation-map-completion';
-import { generateConversationMap, e2eConversationMapCompletion } from './conversation-map-service';
+import { e2eConversationMapCompletion } from './conversation-map-service';
 import { executionFingerprint } from '@desktop-agent/agent-runtime';
 import { LocalAttachmentAccessResolver } from '@desktop-agent/attachment-access/local';
 import { BrowserRecordingRegistry, FileBrowserRecordingTrustStore } from '@desktop-agent/browser-automation';
@@ -645,6 +649,10 @@ export function startWorkerHost(): void {
     mcpOAuthCredentials: Record<string, unknown>,
     terminalSecrets: Record<string, string>
   ): Promise<void> {
+    // A provider/account or permission change revokes any in-flight analysis.
+    conversationMapController.cancel();
+    insightController.cancel();
+    insightService.clearCache();
     runtime = { settings, apiKeys };
     await speechRuntime.configure(settings.speech);
     // The scheduler may now restore persisted occurrences. Dispatch preparation
@@ -1262,45 +1270,117 @@ export function startWorkerHost(): void {
       return 'started';
     }
   });
+  const analysisTaskGate = createHistoryAnalysisTaskGate();
+  const insightService = createInsightService();
+  const recordAnalysisMetric = createHistoryAnalysisMetrics(value => console.info('History analysis metrics', value));
+  const postAnalysis = (message: WorkerMessage) => { recordAnalysisMetric(message); post(message); };
+  const analysisModelId = () => JSON.stringify([runtime?.settings.utilityModel, runtime?.settings.providers.map(provider => [provider.id, provider.baseUrl])]);
   const conversationMapController = createConversationMapController({
+    taskGate: analysisTaskGate,
     listSessions: () => store.list(),
-    post,
+    post: postAnalysis,
     readSource: (input, auth) => agentRuntimeStore.readConversationMapSource({
       sessionId: input.sessionId, entryId: input.entryId, scope: auth.scope
     }, auth.allowedSessionIds),
-    generate: (input, context) => generateConversationMap({ range: input.range, scope: input.scope }, {
-      validateModel: () => { if (!e2eMode) assertConversationMapModel(runtime); },
-      signal: context.signal,
-      readPage: async query => {
-        const auth = await context.authorize();
-        context.signal.throwIfAborted();
-        return agentRuntimeStore.readConversationMapPage({ ...query, scope: auth.scope }, auth.allowedSessionIds);
-      },
-      complete: async (prompt, signal, maxOutputTokens) => {
-        if (e2eMode) return e2eConversationMapCompletion(prompt);
-        return completeConversationMap(runtime, prompt, signal, maxOutputTokens);
-      },
-      revalidateReferences: async (references, sources) => {
-        const auth = await context.authorize();
-        const valid = [];
-        for (const reference of references) {
+    generate: async (input, context) => {
+      const auth = await context.authorize();
+      return insightService.generateConversationMap({ range: input.range, scope: auth.scope }, {
+        userDataOwner: dataDirectory, modelId: analysisModelId(),
+        onMetrics: value => console.info('History analysis usage', value),
+        onExtractionIssue: value => console.info('History extraction issue', value),
+        onExtractionDiagnostics: value => console.info('History extraction diagnostics', value),
+        historyFingerprint: async query => {
+          const auth = await context.authorize();
           context.signal.throwIfAborted();
-          const source = await agentRuntimeStore.readConversationMapSource({
-            sessionId: reference.sessionId, entryId: reference.entryId, scope: auth.scope
-          }, auth.allowedSessionIds);
-          if (source.available && sources.filter(item => item.reference.sessionId === reference.sessionId && item.reference.entryId === reference.entryId)
-            .every(item => source.text === item.text)) valid.push(source.reference);
-        }
-        return valid;
-      },
-      onProgress: (phase, completed, total) => context.onProgress({
-        type: 'conversation-map.progress', requestId: input.requestId, phase,
-        ...(completed === undefined ? {} : { completed }), ...(total === undefined ? {} : { total })
-      })
-    })
+          return agentRuntimeStore.readConversationMapFingerprint({ ...query, scope: auth.scope }, auth.allowedSessionIds);
+        },
+        validateModel: () => { if (!e2eMode) assertConversationMapModel(runtime); },
+        signal: context.signal,
+        readPage: async query => {
+          const auth = await context.authorize();
+          context.signal.throwIfAborted();
+          return agentRuntimeStore.readConversationMapPage({ ...query, scope: auth.scope }, auth.allowedSessionIds);
+        },
+        complete: async (prompt, signal, maxOutputTokens) => {
+          if (e2eMode) return e2eConversationMapCompletion(prompt);
+          return completeConversationMap(runtime, prompt, signal, maxOutputTokens);
+        },
+        revalidateReferences: async (references, sources) => {
+          const auth = await context.authorize();
+          const valid = [];
+          for (const reference of references) {
+            context.signal.throwIfAborted();
+            const source = await agentRuntimeStore.readConversationMapSource({
+              sessionId: reference.sessionId, entryId: reference.entryId, scope: auth.scope
+            }, auth.allowedSessionIds);
+            if (source.available && sources.filter(item => item.reference.sessionId === reference.sessionId && item.reference.entryId === reference.entryId)
+              .every(item => source.text === item.text)) valid.push(source.reference);
+          }
+          return valid;
+        },
+        onProgress: (phase, completed, total) => context.onProgress({
+          type: 'conversation-map.progress', requestId: input.requestId, phase,
+          ...(completed === undefined ? {} : { completed }), ...(total === undefined ? {} : { total })
+        })
+      });
+    }
+  });
+  const insightController = createInsightController({
+    taskGate: analysisTaskGate, listSessions: () => store.list(), post: postAnalysis,
+    readSource: (input, auth) => agentRuntimeStore.readConversationMapSource({
+      sessionId: input.sessionId, entryId: input.entryId, scope: auth.scope
+    }, auth.allowedSessionIds),
+    historyFingerprint: (history, auth) => agentRuntimeStore.readConversationMapFingerprint({
+      rangeStart: history.rangeStart, rangeEnd: history.rangeEnd, scope: auth.scope
+    }, auth.allowedSessionIds),
+    generate: async (input, context) => {
+      const auth = await context.authorize();
+      return insightService.generate({ ...input, scope: auth.scope }, {
+        userDataOwner: dataDirectory, modelId: analysisModelId(),
+        onMetrics: value => console.info('History analysis usage', value),
+        onExtractionIssue: value => console.info('History extraction issue', value),
+        onExtractionDiagnostics: value => console.info('History extraction diagnostics', value),
+        validateModel: () => { if (!e2eMode) assertConversationMapModel(runtime); },
+        signal: context.signal,
+        readPage: async query => {
+          const auth = await context.authorize();
+          context.signal.throwIfAborted();
+          return agentRuntimeStore.readConversationMapPage({ ...query, scope: auth.scope }, auth.allowedSessionIds);
+        },
+        historyFingerprint: async query => {
+          const auth = await context.authorize();
+          context.signal.throwIfAborted();
+          const fingerprint = await agentRuntimeStore.readConversationMapFingerprint({ ...query, scope: auth.scope }, auth.allowedSessionIds);
+          context.onHistoryValidated({ rangeStart: query.rangeStart, rangeEnd: query.rangeEnd, fingerprint });
+          return fingerprint;
+        },
+        complete: async (prompt, signal, maxOutputTokens) => {
+          if (e2eMode) return e2eInsightCompletion(prompt) ?? e2eConversationMapCompletion(prompt);
+          return completeConversationMap(runtime, prompt, signal, maxOutputTokens);
+        },
+        revalidateReferences: async (references, sources) => {
+          const auth = await context.authorize();
+          const valid = [];
+          for (const reference of references) {
+            context.signal.throwIfAborted();
+            const source = await agentRuntimeStore.readConversationMapSource({
+              sessionId: reference.sessionId, entryId: reference.entryId, scope: auth.scope
+            }, auth.allowedSessionIds);
+            if (source.available && sources.filter(item => item.reference.sessionId === reference.sessionId && item.reference.entryId === reference.entryId)
+              .every(item => source.text === item.text)) valid.push(source.reference);
+          }
+          return valid;
+        },
+        onSourcesValidated: context.onSourcesValidated,
+        onProgress: (phase, completed, total) => context.onProgress({
+          type: 'insight.progress', requestId: input.requestId, phase,
+          ...(completed === undefined ? {} : { completed }), ...(total === undefined ? {} : { total })
+        })
+      });
+    }
   });
   bindWorkerIpc({
-    parentPort, sessionController, conversationMapController, voiceTasks, voiceOutput,
+    parentPort, sessionController, conversationMapController, insightController, voiceTasks, voiceOutput,
     get desktopChannelSecrets() { return desktopChannelSecrets; },
     set desktopChannelSecrets(value) { desktopChannelSecrets = value; },
     get extensionReady() { return extensionReady; },
@@ -1309,6 +1389,8 @@ export function startWorkerHost(): void {
   });
   process.once('SIGTERM', () => {
     conversationMapController.cancel();
+    insightController.cancel();
+    insightService.clearCache();
     voiceOutput.stop(); voiceDeliveryStore.close();
     voiceTasks?.dispose();
     void Promise.allSettled([

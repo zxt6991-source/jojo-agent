@@ -14,7 +14,10 @@ export class ConversationMapIpc {
     post(command: WorkerCommand): boolean;
     emit(event: ConversationMapEvent): void;
     assertTrusted(event: IpcMainInvokeEvent): void;
+    otherAnalysisActive?(): boolean;
   }) {}
+
+  get isBusy(): boolean { return this.active !== undefined; }
 
   private post(command: WorkerCommand): boolean {
     try { return this.ctx.post(command); } catch { return false; }
@@ -24,7 +27,7 @@ export class ConversationMapIpc {
     ipc.handle(IPC.generateConversationMap, (event, raw) => {
       this.ctx.assertTrusted(event);
       const input = ConversationMapGenerateInputSchema.parse(raw);
-      if (this.active) throw new Error('已有脉络生成任务，请先取消。');
+      if (this.active || this.ctx.otherAnalysisActive?.()) throw new Error('已有脉络生成任务，请先取消。');
       const timer = setTimeout(() => this.stop('生成超时，请缩小范围后重试。'), 10 * 60_000);
       this.active = { id: input.requestId, timer };
       if (!this.post({ type: 'conversation-map.generate', input })) {

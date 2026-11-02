@@ -34,16 +34,19 @@ function EvolutionEventList({ events, selectedId, onSelect, label }: {
   </li>)}</ol>;
 }
 
-export function ConversationMapPage({ api, workingDirectory, currentSessionId, onOpenSource, onOpenModelSettings }: {
+export function ConversationMapPage({ api, workingDirectory, currentSessionId, initialRange, initialScopeKind, onSelectionChange, onOpenSource, onOpenModelSettings }: {
   api: MapApi;
   workingDirectory?: string;
   currentSessionId?: string;
+  initialRange?: ConversationMapGenerateInput['range'];
+  initialScopeKind?: 'project' | 'personal_main';
+  onSelectionChange?: (selection: { range: ConversationMapGenerateInput['range']; scopeKind: 'project' | 'personal_main' }) => void;
   onOpenSource: (sessionId: string, messageId: string) => Promise<void>;
   onOpenModelSettings: () => void;
 }) {
   const projectAvailable = Boolean(workingDirectory && currentSessionId);
-  const [range, setRange] = useState<ConversationMapGenerateInput['range']>('30d');
-  const [scopeKind, setScopeKind] = useState<'project' | 'personal_main'>(projectAvailable ? 'project' : 'personal_main');
+  const [range, setRange] = useState<ConversationMapGenerateInput['range']>(initialRange ?? '30d');
+  const [scopeKind, setScopeKind] = useState<'project' | 'personal_main'>(initialScopeKind ?? (projectAvailable ? 'project' : 'personal_main'));
   const [state, dispatch] = useReducer(conversationMapReducer, { status: 'idle' });
   const [selectedTopicId, setSelectedTopicId] = useState('');
   const [selectedStepId, setSelectedStepId] = useState('');
@@ -217,8 +220,8 @@ export function ConversationMapPage({ api, workingDirectory, currentSessionId, o
   return <section className="settings-content conversation-map-page" aria-labelledby="conversation-map-title" data-testid="conversation-map-page">
     <div className="settings-heading"><div><h1 id="conversation-map-title">交流脉络</h1><p>用原文证据回顾观点变化、当前结论与待解决的问题。</p></div><span className="conversation-map-badge">按需回顾</span></div>
     <section className="conversation-map-controls" aria-label="脉络分析选项">
-      <fieldset><legend>时间范围</legend><div className="conversation-map-range">{(['7d', '30d', '90d'] as const).map((item) => <button type="button" key={item} aria-pressed={range === item} onClick={() => setRange(item)}>最近{item.slice(0, -1)}天</button>)}</div></fieldset>
-      <label className="conversation-map-scope">数据范围<select aria-label="数据范围" value={scope.kind} onChange={(event) => setScopeKind(event.target.value as typeof scopeKind)}><option value="project" disabled={!projectAvailable}>当前项目</option><option value="personal_main">全部个人主对话</option></select></label>
+      <fieldset><legend>时间范围</legend><div className="conversation-map-range">{(['7d', '30d', '90d'] as const).map((item) => <button type="button" key={item} aria-pressed={range === item} onClick={() => { setRange(item); onSelectionChange?.({ range: item, scopeKind: scope.kind }); }}>最近{item.slice(0, -1)}天</button>)}</div></fieldset>
+      <label className="conversation-map-scope">数据范围<select aria-label="数据范围" value={scope.kind} onChange={(event) => { const next = event.target.value as typeof scopeKind; setScopeKind(next); onSelectionChange?.({ range, scopeKind: next }); }}>{projectAvailable && <option value="project">当前项目</option>}<option value="personal_main">全部个人主对话</option></select></label>
       <div className="conversation-map-actions"><button className="primary" type="button" disabled={running} onClick={() => void generate()}>{running ? '正在生成…' : state.status === 'failed' ? '重试生成' : result ? '重新生成脉络图' : '生成脉络图'}</button>{running && <button type="button" onClick={() => void cancel()}>取消生成</button>}</div>
       <p className="conversation-map-consent">仅在点击「生成脉络图」后读取所选范围的历史对话。分析可能通过当前配置的 AI 服务提供商处理并产生费用。不会修改聊天或自动写入长期记忆。</p>
       <p className="conversation-map-scope-note">{scope.kind === 'project' ? `当前项目：${workingDirectory}` : `${!projectAvailable ? '当前没有有效项目，默认使用全部个人主对话。' : ''}包括有权访问的多个项目；不包含团队、派生、定时任务或渠道对话。`}</p>

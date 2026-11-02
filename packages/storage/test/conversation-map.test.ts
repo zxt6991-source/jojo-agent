@@ -1,6 +1,7 @@
 import { mkdtemp, mkdir, symlink } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it, vi } from 'vitest';
 import { createAgentRuntime } from '@desktop-agent/agent-runtime';
 import { ScriptedProvider, describeTestProvider, createTestExecutionSnapshot } from '@desktop-agent/agent-runtime/testing';
@@ -33,6 +34,33 @@ async function fixture() {
 }
 
 describe('conversation map bounded private history', () => {
+  it('fingerprints authorized history, including edits beyond truncation, deletion and scope changes', async () => {
+    const f = await fixture();
+    const db = new DatabaseSync(path.join(f.directory, 'runtime.sqlite'));
+    const range = { rangeStart: query.rangeStart, rangeEnd: query.rangeEnd, scope: query.scope };
+    try {
+      await f.session('s'); await f.session('private');
+      await f.append('s', 'long', 'user', 'x'.repeat(3000) + 'before');
+      await f.append('private', 'private-message');
+      const fingerprint = () => f.store.readConversationMapFingerprint(range, ['s']);
+      const initial = await fingerprint();
+      expect(initial).toMatch(/^[a-f0-9]{64}$/);
+      await f.append('private', 'private-new');
+      expect(await fingerprint()).toBe(initial);
+      db.prepare("UPDATE entries SET payload_json = json_set(payload_json, '$.message.content[0].text', ?) WHERE id = ?")
+        .run('x'.repeat(3000) + 'after', 'long');
+      expect((await f.store.readConversationMapPage(query, ['s'])).turns[0]?.user.text).toBe('x'.repeat(3000));
+      const edited = await fingerprint();
+      expect(edited).not.toBe(initial);
+      db.prepare("UPDATE sessions SET metadata_json = ? WHERE id = ?").run(JSON.stringify({ source: 'channel' }), 's');
+      expect(await fingerprint()).not.toBe(edited);
+      db.prepare("UPDATE sessions SET metadata_json = '{}' WHERE id = ?").run('s');
+      expect(await fingerprint()).toBe(edited);
+      f.store.deleteSessionPermanently('s');
+      expect(await fingerprint()).not.toBe(edited);
+    } finally { db.close(); f.store.close(); }
+  });
+
   it('pairs consecutive assistants, paginates same timestamps by stable keys and rechecks authorization on every read', async () => {
     const f = await fixture();
     try {

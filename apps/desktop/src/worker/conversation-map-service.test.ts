@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { ConversationMapHistoryQuery, ConversationTurnRecord, MessageReference } from '@desktop-agent/contracts';
-import { CONVERSATION_MAP_LIMITS, ConversationMapServiceError, e2eConversationMapCompletion, generateConversationMap, type ConversationMapDependencies } from './conversation-map-service';
+import { CONVERSATION_MAP_LIMITS, ConversationMapServiceError, e2eConversationMapCompletion, extractConversationSemantics, generateConversationMap, type ConversationMapDependencies } from './conversation-map-service';
 
 const now = new Date('2026-10-23T12:00:00.000Z');
 const request = { range: '30d' as const, scope: { kind: 'personal_main' as const } };
@@ -90,17 +90,32 @@ describe('conversation map isolated analysis', () => {
     const deps = dependencies();
     alterExtraction(deps, output => { output.events[0].claim = '长'.repeat(241); });
     const result = await generateConversationMap(request, deps);
-    expect(result).toMatchObject({ truncated: true, omittedEventCount: 1, modelCallCount: 2 });
+    expect(result).toMatchObject({ truncated: true, omittedEventCount: 1, modelCallCount: 4 });
     expect(result.topics[0]!.events).toHaveLength(1);
     expect(result.topics[0]!.events[0]!.speaker).toBe('assistant');
     expect(JSON.stringify(result)).not.toContain('长'.repeat(241));
   });
 
+  it('does not allocate an event or topic for a normalized label that exceeds the event schema', async () => {
+    const deps = dependencies();
+    alterExtraction(deps, output => {
+      output.events[0].topicLabel = '无效主题';
+      // The input label fits its 80-character limit, but NFKC expands each
+      // character to four code points and exceeds the normalized key limit.
+      output.events[0].subjectLabel = '㍿'.repeat(80);
+    });
+    const snapshot = await extractConversationSemantics(request, deps);
+    expect(snapshot.omittedEventCount).toBe(1);
+    expect(snapshot.topics).toHaveLength(1);
+    expect(snapshot.topics[0]!.events).toHaveLength(1);
+    expect(snapshot.topics[0]!.events[0]).toMatchObject({ id: 'v1', topicId: 't1', speaker: 'assistant' });
+  });
+
   it('isolates an unknown events[32].eventType instead of failing the batch', async () => {
     const deps = dependencies(Array.from({ length: 17 }, (_, index) => turn(index)));
-    alterExtraction(deps, output => { output.events[32].eventType = 'invented-event-type'; });
+    alterExtraction(deps, output => { if (output.events[32]) output.events[32].eventType = 'invented-event-type'; });
     const result = await generateConversationMap(request, deps);
-    expect(result).toMatchObject({ modelCallCount: 2, truncated: true, analyzedTurnCount: 17, omittedEventCount: 14 });
+    expect(result).toMatchObject({ modelCallCount: 3, truncated: true, analyzedTurnCount: 17, omittedEventCount: 14 });
     expect(result.topics[0]!.events).toHaveLength(20);
     expect(vi.mocked(deps.complete).mock.calls[1]![0]).toContain('events[32].eventType: choose exactly one');
     expect(vi.mocked(deps.complete).mock.calls[1]![0]).toContain('["exploration","position","constraint","option","decision","revision","action","open_question"]');
@@ -127,9 +142,9 @@ describe('conversation map isolated analysis', () => {
       const output = JSON.parse(e2eConversationMapCompletion(prompt));
       for (const event of output.events) event.evidence[0].exactQuote = 'forged source';
       return JSON.stringify(output);
-    });
+    }).mockImplementation(async () => '{invalid');
     const result = await generateConversationMap(request, deps);
-    expect(result).toMatchObject({ modelCallCount: 2, truncated: true, omittedEventCount: 1 });
+    expect(result).toMatchObject({ modelCallCount: 4, truncated: true, omittedEventCount: 1 });
     expect(result.topics[0]!.events).toHaveLength(1);
     expect(result.topics[0]!.events[0]!.evidence[0]!.quote).toBe(turn(1).user.text);
     expect(vi.mocked(deps.revalidateReferences).mock.calls[0]![0].map(ref => ref.entryId)).toEqual(['user-1']);
@@ -148,7 +163,7 @@ describe('conversation map isolated analysis', () => {
       return JSON.stringify(output);
     });
     const result = await generateConversationMap(request, deps);
-    expect(result).toMatchObject({ modelCallCount: 3, truncated: true, omittedTurnCount: failedFirst ? 30 : 1,
+    expect(result).toMatchObject({ modelCallCount: failedFirst ? 23 : 3, truncated: true, omittedTurnCount: failedFirst ? 30 : 1,
       analyzedTurnCount: failedFirst ? 1 : 30, analyzedSessionCount: 1 });
     expect(result.topics.length).toBeGreaterThan(0);
     expect(onProgress).toHaveBeenCalledWith('extracting', 2, 2);
@@ -167,7 +182,7 @@ describe('conversation map isolated analysis', () => {
     const deps = dependencies(Array.from({ length: 31 }, (_, index) => turn(index)));
     alterExtraction(deps, output => { for (const event of output.events) event.eventType = 'unknown-type'; });
     await expect(generateConversationMap(request, deps)).rejects.toMatchObject({ code: 'INVALID_MODEL_OUTPUT' });
-    expect(deps.complete).toHaveBeenCalledTimes(4);
+    expect(deps.complete).toHaveBeenCalledTimes(4 + CONVERSATION_MAP_LIMITS.extractionRecoveryCalls);
     expect(deps.revalidateReferences).not.toHaveBeenCalled();
   });
 
@@ -219,6 +234,273 @@ describe('conversation map isolated analysis', () => {
     expect(prompt).toContain('"enum":["user","assistant"]');
     expect(prompt).not.toContain('"speaker":"user|assistant"');
     expect(prompt).toContain('never reference.entryId or reference.sessionId');
+  });
+
+  it('repairs an unsupported state before silently discarding the user event', async () => {
+    const deps = dependencies();
+    vi.mocked(deps.complete).mockImplementationOnce(async prompt => {
+      const output = JSON.parse(e2eConversationMapCompletion(prompt));
+      output.events[0].eventType = 'action';
+      output.events[0].state = 'reported_done';
+      return JSON.stringify(output);
+    });
+    const result = await extractConversationSemantics(request, deps);
+    expect(result).toMatchObject({ modelCallCount: 2, analyzedTurnCount: 1, omittedTurnCount: 0, omittedEventCount: 0 });
+    expect(result.topics[0]!.events[0]).toMatchObject({ speaker: 'user', eventType: 'exploration', state: 'exploring', claim: turn(1).user.text });
+    const repairPrompt = vi.mocked(deps.complete).mock.calls[1]![0];
+    expect(repairPrompt).toContain('eventType/state is not supported by the cited message role or full context');
+    expect(repairPrompt).toContain('never promote assistant suggestions or hypothetical user language');
+  });
+
+  it('does not salvage a state violation if the repair still promotes a plan to an action', async () => {
+    const deps = dependencies();
+    alterExtraction(deps, output => {
+      output.events[0].eventType = 'action';
+      output.events[0].state = 'reported_done';
+    });
+    const result = await extractConversationSemantics(request, deps);
+    expect(result).toMatchObject({ modelCallCount: 4, omittedEventCount: 1 });
+    expect(result.topics.flatMap(topic => topic.events).map(event => event.speaker)).toEqual(['assistant']);
+  });
+
+  it('recovers rejected user evidence in small user-only batches without discarding verified assistant events', async () => {
+    const inputs = Array.from({ length: 15 }, (_, index) => turn(index));
+    const deps = dependencies(inputs);
+    const diagnostics = vi.fn(); deps.onExtractionDiagnostics = diagnostics;
+    deps.complete = vi.fn(async prompt => {
+      const output = JSON.parse(e2eConversationMapCompletion(prompt));
+      for (const event of output.events) if (event.speaker === 'user') {
+        event.eventType = prompt.includes('USER_EVIDENCE_RECOVERY:') ? 'constraint' : 'action';
+        event.state = prompt.includes('USER_EVIDENCE_RECOVERY:') ? 'unknown' : 'reported_done';
+      }
+      return JSON.stringify(output);
+    });
+    const result = await extractConversationSemantics(request, deps);
+    expect(result).toMatchObject({ analyzedTurnCount: 15, omittedTurnCount: 0, omittedEventCount: 0, modelCallCount: 6 });
+    const events = result.topics.flatMap(topic => topic.events);
+    expect(events.filter(event => event.speaker === 'user')).toHaveLength(15);
+    expect(events.filter(event => event.speaker === 'assistant')).toHaveLength(15);
+    expect(events.filter(event => event.speaker === 'user').flatMap(event => event.evidence.map(item => item.reference))).toEqual(inputs.map(input => input.user.reference));
+    const retries = vi.mocked(deps.complete).mock.calls.filter(([prompt]) => prompt.includes('USER_EVIDENCE_RECOVERY:'));
+    expect(retries).toHaveLength(4);
+    for (const [prompt] of retries) {
+      const data = JSON.parse(prompt.slice(prompt.lastIndexOf('\nUNTRUSTED_CONVERSATION_DATA_JSON\n') + '\nUNTRUSTED_CONVERSATION_DATA_JSON\n'.length));
+      expect(data.length).toBeLessThanOrEqual(4);
+      expect(data.flatMap((item: { messages: { reference: MessageReference }[] }) => item.messages).every((message: { reference: MessageReference }) => message.reference.role === 'user')).toBe(true);
+    }
+    expect(diagnostics).toHaveBeenCalledWith(expect.objectContaining({ rejectedUserCandidates: 15, stateRejectedCandidates: 15, recoveredUserSourceCount: 15 }));
+  });
+
+  it.each(['valid', 'empty', 'invalid'] as const)('recovers assistant-only candidates conservatively: %s', async outcome => {
+    const deps = dependencies([turn(0)]);
+    deps.complete = vi.fn(async prompt => {
+      const output = JSON.parse(e2eConversationMapCompletion(prompt));
+      if (prompt.includes('ASSISTANT_EVIDENCE_RECOVERY:')) {
+        if (outcome === 'empty') return JSON.stringify({ events: [] });
+        if (outcome === 'invalid') output.events[0].state = 'reported_done';
+        return JSON.stringify(output);
+      }
+      const assistant = output.events.find((event: { speaker: string }) => event.speaker === 'assistant');
+      return JSON.stringify({ events: [...output.events, { ...assistant, state: 'reported_done' }] });
+    });
+    const result = await extractConversationSemantics(request, deps);
+    expect(result.omittedEventCount).toBe(outcome === 'valid' ? 0 : 1);
+    const events = result.topics.flatMap(topic => topic.events);
+    expect(events.filter(event => event.speaker === 'user')).toHaveLength(1);
+    expect(events.filter(event => event.speaker === 'assistant')).toHaveLength(1);
+    expect(events.find(event => event.speaker === 'assistant')!.state).not.toBe('reported_done');
+    const recovery = vi.mocked(deps.complete).mock.calls.filter(([prompt]) => prompt.includes('ASSISTANT_EVIDENCE_RECOVERY:'));
+    expect(recovery.length).toBe(outcome === 'invalid' ? 2 : 1);
+    const input = JSON.parse(recovery[0]![0].split('\nUNTRUSTED_CONVERSATION_DATA_JSON\n').at(-1)!);
+    expect(input.flatMap((item: { messages: { reference: MessageReference }[] }) => item.messages).every((message: { reference: MessageReference }) => message.reference.role === 'assistant')).toBe(true);
+  });
+
+  it.each([true, false])('replaces an overlapping user source group only after independent recovery succeeds: %s', async succeeds => {
+    const deps = dependencies([turn(0), turn(1), turn(2)]);
+    deps.complete = vi.fn(async prompt => {
+      const output = JSON.parse(e2eConversationMapCompletion(prompt));
+      const users = output.events.filter((event: { speaker: string }) => event.speaker === 'user');
+      if (prompt.includes('USER_EVIDENCE_RECOVERY:')) {
+        return JSON.stringify({ events: [{ ...users[0], eventType: succeeds ? 'constraint' : 'action', state: succeeds ? 'unknown' : 'reported_done',
+          evidence: users.flatMap((event: { evidence: unknown[] }) => event.evidence) }] });
+      }
+      return JSON.stringify({ events: [
+        { ...users[0], eventType: 'constraint', state: 'unknown', evidence: [...users[0].evidence, ...users[1].evidence] },
+        { ...users[1], eventType: 'action', state: 'reported_done', evidence: [...users[1].evidence, ...users[2].evidence] },
+        { ...users[2], eventType: 'constraint', state: 'unknown' },
+        output.events.find((event: { speaker: string }) => event.speaker === 'assistant')
+      ] });
+    });
+    const result = await extractConversationSemantics(request, deps);
+    expect(result).toMatchObject({ analyzedTurnCount: 3, omittedTurnCount: 0, omittedEventCount: succeeds ? 0 : 1, modelCallCount: succeeds ? 3 : 4 });
+    const users = result.topics.flatMap(topic => topic.events).filter(event => event.speaker === 'user');
+    expect(users).toHaveLength(succeeds ? 1 : 2);
+    expect(new Set(users.flatMap(event => event.evidence.map(item => item.reference.entryId)))).toEqual(new Set(['user-0', 'user-1', 'user-2']));
+    expect(users.every(event => event.eventType === 'constraint')).toBe(true);
+  });
+
+  it.each(['empty', 'subset'] as const)('preserves verified overlapping user evidence and omissions when recovery returns %s coverage', async coverage => {
+    const deps = dependencies([turn(0), turn(1)]);
+    const diagnostics = vi.fn(); deps.onExtractionDiagnostics = diagnostics;
+    deps.complete = vi.fn(async prompt => {
+      const output = JSON.parse(e2eConversationMapCompletion(prompt));
+      const users = output.events.filter((event: { speaker: string }) => event.speaker === 'user');
+      if (prompt.includes('USER_EVIDENCE_RECOVERY:')) return JSON.stringify({ events: coverage === 'empty' ? []
+        : [{ ...users[0], eventType: 'position', state: 'unknown' }] });
+      return JSON.stringify({ events: [
+        { ...users[0], eventType: 'constraint', state: 'unknown', evidence: users.flatMap((event: { evidence: unknown[] }) => event.evidence) },
+        { ...users[1], eventType: 'action', state: 'reported_done' },
+        output.events.find((event: { speaker: string }) => event.speaker === 'assistant')
+      ] });
+    });
+    const result = await extractConversationSemantics(request, deps);
+    expect(result).toMatchObject({ analyzedTurnCount: 2, omittedTurnCount: 0, omittedEventCount: 1, modelCallCount: 3 });
+    const users = result.topics.flatMap(topic => topic.events).filter(event => event.speaker === 'user');
+    expect(users).toHaveLength(1);
+    expect(users[0]).toMatchObject({ eventType: 'constraint', state: 'unknown' });
+    expect(users[0]!.evidence.map(item => item.reference.entryId)).toEqual(['user-0', 'user-1']);
+    expect(diagnostics).toHaveBeenCalledWith(expect.objectContaining({ recoveredUserSourceCount: 0 }));
+  });
+
+  it('accepts a legitimate empty recovery when the group had no verified user events', async () => {
+    const deps = dependencies();
+    deps.complete = vi.fn(async prompt => {
+      if (prompt.includes('USER_EVIDENCE_RECOVERY:')) return '{"events":[]}';
+      const output = JSON.parse(e2eConversationMapCompletion(prompt));
+      output.events[0].eventType = 'action'; output.events[0].state = 'reported_done';
+      return JSON.stringify(output);
+    });
+    const result = await extractConversationSemantics(request, deps);
+    expect(result).toMatchObject({ omittedEventCount: 0, modelCallCount: 3 });
+    expect(result.topics.flatMap(topic => topic.events).map(event => event.speaker)).toEqual(['assistant']);
+  });
+
+  it('retains concrete inquiry targets during initial extraction and recovery without treating them as beliefs or unresolved questions', async () => {
+    const input = turn(0); input.user.text = '本地存储方案的长期维护成本有哪些影响因素？';
+    const deps = dependencies([input]);
+    deps.complete = vi.fn(async prompt => {
+      const output = JSON.parse(e2eConversationMapCompletion(prompt));
+      output.events[0].eventType = prompt.includes('USER_EVIDENCE_RECOVERY:') ? 'exploration' : 'action';
+      output.events[0].state = prompt.includes('USER_EVIDENCE_RECOVERY:') ? 'exploring' : 'reported_done';
+      return JSON.stringify(output);
+    });
+    const result = await extractConversationSemantics(request, deps);
+    expect(result.topics.flatMap(topic => topic.events).find(event => event.speaker === 'user')).toMatchObject({ eventType: 'exploration', state: 'exploring' });
+    expect(result.omittedEventCount).toBe(0);
+    const initialPrompt = vi.mocked(deps.complete).mock.calls[0]![0];
+    const recoveryPrompt = vi.mocked(deps.complete).mock.calls.find(([prompt]) => prompt.includes('USER_EVIDENCE_RECOVERY:'))![0];
+    for (const prompt of [initialPrompt, recoveryPrompt]) {
+      expect(prompt).toContain('exploration/exploring');
+      expect(prompt).toContain('even if an assistant answered them later');
+      expect(prompt).toContain('never a user belief, preference, plan or decision');
+      expect(prompt).toContain('Reserve open_question for significant questions still unanswered');
+      expect(prompt).toContain('routine service calls such as "查一下天气"');
+    }
+  });
+
+  it('records only fixed rejection counts, preserving unresolved candidates with unknown sources', async () => {
+    const deps = dependencies();
+    const diagnostics = vi.fn(); deps.onExtractionDiagnostics = diagnostics;
+    deps.complete = vi.fn(async prompt => {
+      const output = JSON.parse(e2eConversationMapCompletion(prompt));
+      const user = output.events[0];
+      if (prompt.includes('USER_EVIDENCE_RECOVERY:')) return JSON.stringify({ events: [{ ...user, eventType: 'constraint', state: 'unknown' }] });
+      return JSON.stringify({ events: [output.events[1],
+        { ...user, eventType: 'action', state: 'reported_done' },
+        { ...user, evidence: [{ ...user.evidence[0], exactQuote: 'private invented quote' }] },
+        { ...user, speaker: 'assistant' }, { ...user, eventType: 'invalid' }, { privateText: 'never log this' }
+      ] });
+    });
+    const result = await extractConversationSemantics(request, deps);
+    expect(result).toMatchObject({ omittedEventCount: 2, modelCallCount: 3 });
+    expect(diagnostics).toHaveBeenCalledWith({ rejectedUserCandidates: 3, rejectedAssistantCandidates: 1, unknownRoleCandidates: 1,
+      schemaRejectedCandidates: 2, evidenceRejectedCandidates: 1, roleRejectedCandidates: 1, stateRejectedCandidates: 1,
+      otherRejectedCandidates: 0, recoveredUserSourceCount: 1 });
+    expect(Object.values(diagnostics.mock.calls[0]![0]).every(value => typeof value === 'number')).toBe(true);
+    expect(JSON.stringify(diagnostics.mock.calls)).not.toMatch(/private|never log|e1|user-1/);
+  });
+
+  it('shares the bounded recovery allowance and still processes later original batches', async () => {
+    const deps = dependencies(Array.from({ length: 61 }, (_, index) => turn(index)));
+    deps.complete = vi.fn(async prompt => {
+      const output = JSON.parse(e2eConversationMapCompletion(prompt));
+      if (prompt.includes('USER_EVIDENCE_RECOVERY:')) return '{"events":[{"invalid":true}]}';
+      if (output.events.some((event: { evidence: { evidenceId: string }[] }) => event.evidence[0]!.evidenceId === 'e121')) return JSON.stringify(output);
+      for (const event of output.events) if (event.speaker === 'user') { event.eventType = 'action'; event.state = 'reported_done'; }
+      return JSON.stringify(output);
+    });
+    const result = await extractConversationSemantics(request, deps);
+    expect(result).toMatchObject({ analyzedTurnCount: 61, omittedTurnCount: 0, omittedEventCount: 40, modelCallCount: 25 });
+    expect(vi.mocked(deps.complete).mock.calls.filter(([prompt]) => prompt.includes('USER_EVIDENCE_RECOVERY:'))).toHaveLength(CONVERSATION_MAP_LIMITS.extractionRecoveryCalls);
+    expect(result.topics.flatMap(topic => topic.events).some(event => event.evidence.some(item => item.reference.entryId === 'user-60'))).toBe(true);
+  });
+
+  it('cancels user-evidence recovery without publishing or validating late output', async () => {
+    const deps = dependencies();
+    const controller = new AbortController(); deps.signal = controller.signal;
+    let recovering = false;
+    let finish!: (value: string) => void;
+    deps.complete = vi.fn(async prompt => {
+      if (prompt.includes('USER_EVIDENCE_RECOVERY:')) { recovering = true; return new Promise<string>(resolve => { finish = resolve; }); }
+      const output = JSON.parse(e2eConversationMapCompletion(prompt));
+      output.events[0].eventType = 'action'; output.events[0].state = 'reported_done';
+      return JSON.stringify(output);
+    });
+    const operation = generateConversationMap(request, deps);
+    await vi.waitFor(() => expect(recovering).toBe(true));
+    controller.abort();
+    await expect(operation).rejects.toMatchObject({ code: 'CANCELLED' });
+    finish('{"events":[]}');
+    await Promise.resolve();
+    expect(deps.revalidateReferences).not.toHaveBeenCalled();
+  });
+
+  it.each(['INVALID_MODEL_OUTPUT', 'MODEL_EMPTY_RESPONSE', 'MODEL_OUTPUT_LIMIT', 'MODEL_CONTEXT_OVERFLOW'] as const)('retries a failed %s batch as disjoint whole turns', async code => {
+    const deps = dependencies(Array.from({ length: 4 }, (_, index) => turn(index, `session-${index}`)));
+    const issue = vi.fn(); deps.onExtractionIssue = issue;
+    const batches: string[][] = [];
+    deps.complete = vi.fn(async prompt => {
+      const marker = '\nUNTRUSTED_CONVERSATION_DATA_JSON\n';
+      const data = JSON.parse(prompt.slice(prompt.lastIndexOf(marker) + marker.length)) as { messages: { id: string }[] }[];
+      batches.push(data.map(item => item.messages[0]!.id));
+      if (data.length > 2) throw new ConversationMapServiceError(code, 'private provider failure');
+      return e2eConversationMapCompletion(prompt);
+    });
+    const result = await extractConversationSemantics(request, deps);
+    const initialCalls = ['INVALID_MODEL_OUTPUT', 'MODEL_CONTEXT_OVERFLOW'].includes(code) ? 1 : 2;
+    expect(result).toMatchObject({ analyzedTurnCount: 4, analyzedSessionCount: 4, omittedTurnCount: 0, omittedEventCount: 0, modelCallCount: initialCalls + 2 });
+    expect(batches.slice(initialCalls)).toEqual([['e1', 'e3'], ['e5', 'e7']]);
+    expect(result.topics.flatMap(topic => topic.events).flatMap(event => event.evidence).map(item => item.reference.entryId)).toEqual(
+      ['user-0', 'assistant-0', 'user-1', 'assistant-1', 'user-2', 'assistant-2', 'user-3', 'assistant-3']);
+    expect(issue).toHaveBeenCalledWith({ code, turnCount: 4, willRetry: true });
+    expect(JSON.stringify(issue.mock.calls)).not.toContain('private');
+  });
+
+  it('retries only failed branches and counts each omitted turn once', async () => {
+    const deps = dependencies(Array.from({ length: 4 }, (_, index) => turn(index, `session-${index}`)));
+    const batches: string[][] = [];
+    deps.complete = vi.fn(async prompt => {
+      const marker = '\nUNTRUSTED_CONVERSATION_DATA_JSON\n';
+      const data = JSON.parse(prompt.slice(prompt.lastIndexOf(marker) + marker.length)) as { messages: { reference: MessageReference }[] }[];
+      const ids = data.map(item => item.messages[0]!.reference.entryId);
+      batches.push(ids);
+      return ids.includes('user-0') ? 'invalid' : e2eConversationMapCompletion(prompt);
+    });
+    const result = await extractConversationSemantics(request, deps);
+    expect(result).toMatchObject({ analyzedTurnCount: 3, analyzedSessionCount: 3, omittedTurnCount: 1, modelCallCount: 8 });
+    expect(batches.filter(ids => ids.includes('user-2'))).toHaveLength(3); // Two parent attempts, then one successful right child.
+    expect(result.topics.flatMap(topic => topic.events).every(event => event.evidence.every(item => item.reference.entryId !== 'user-0'))).toBe(true);
+  });
+
+  it('caps recovery work without starving subsequent original batches', async () => {
+    const deps = dependencies(Array.from({ length: 61 }, (_, index) => turn(index, index < 60 ? 'difficult' : 'last')));
+    const issue = vi.fn(); deps.onExtractionIssue = issue;
+    deps.complete = vi.fn(async prompt => prompt.includes('"entryId":"user-60"') ? e2eConversationMapCompletion(prompt) : 'invalid');
+    const result = await extractConversationSemantics(request, deps);
+    expect(result).toMatchObject({ analyzedTurnCount: 1, analyzedSessionCount: 1, omittedTurnCount: 60,
+      modelCallCount: 5 + CONVERSATION_MAP_LIMITS.extractionRecoveryCalls });
+    expect(result.topics[0]!.events[0]!.evidence[0]!.reference.entryId).toBe('user-60');
+    expect(issue).toHaveBeenCalledWith(expect.objectContaining({ code: 'EXTRACTION_RECOVERY_LIMIT', willRetry: false }));
   });
 
   it.each([
@@ -338,6 +620,26 @@ describe('conversation map isolated analysis', () => {
     source.user.truncated = true;
     const result = await generateConversationMap(request, dependencies([source]));
     expect(result.truncated).toBe(true);
+  });
+
+  it('separates user truncation, assistant truncation and skipped replies without double counting', async () => {
+    const source = turn(1); source.user.text = '长'.repeat(3000); source.user.truncated = true; source.truncated = true;
+    source.assistants = Array.from({ length: 5 }, (_, index) => ({
+      reference: { ...source.assistants[0]!.reference, entryId: `assistant-${index}`, seq: index + 3 },
+      text: '回复'.repeat(1500), truncated: index === 0
+    }));
+    const deps = dependencies([source]); deps.complete = vi.fn(async () => '{"events":[]}');
+    const result = await extractConversationSemantics(request, deps);
+    expect(result).toMatchObject({ truncated: true, truncatedUserMessageCount: 1, truncatedAssistantMessageCount: 1,
+      omittedAssistantMessageCount: 2, unknownSourceTruncation: false });
+  });
+
+  it('retains unexplained per-turn truncation even alongside a known truncated assistant message', async () => {
+    const first = turn(1); first.assistants[0]!.truncated = true; first.truncated = true;
+    const second = turn(2); second.truncated = true;
+    const deps = dependencies([first, second]); deps.complete = vi.fn(async () => '{"events":[]}');
+    expect(await extractConversationSemantics(request, deps)).toMatchObject({ truncatedUserMessageCount: 0,
+      truncatedAssistantMessageCount: 1, unknownSourceTruncation: true });
   });
 
   it('prunes the derived topic, including its summary, if a source was deleted during analysis', async () => {
@@ -587,10 +889,15 @@ describe('conversation map readable summaries', () => {
 
   it('omits AI courtesy offers incorrectly classified as unresolved user questions', async () => {
     const deps = dependencies();
-    alterExtraction(deps, output => { output.events[1].eventType = 'open_question'; });
+    deps.complete = vi.fn(async prompt => {
+      if (prompt.includes('ASSISTANT_EVIDENCE_RECOVERY:')) return JSON.stringify({ events: [] });
+      const output = JSON.parse(e2eConversationMapCompletion(prompt));
+      output.events[1].eventType = 'open_question';
+      return JSON.stringify(output);
+    });
     const result = await generateConversationMap(request, deps);
     expect(result.topics[0]!.events.map(event => event.speaker)).toEqual(['user']);
-    expect(result.omittedEventCount).toBe(1);
+    expect(result.omittedEventCount).toBe(0);
   });
 
   it('retains a substantive user question before AI-only topics when the topic budget is full', async () => {

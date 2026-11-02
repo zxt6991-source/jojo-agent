@@ -1,15 +1,12 @@
 import {
-  sessionHasProject, type ConversationMapGenerateInput, type ConversationMapEvent,
-  type ConversationMapResult, type ConversationMapScope, type ConversationMapSourceInput, type ConversationMapSourceResult,
+  type ConversationMapGenerateInput, type ConversationMapEvent,
+  type ConversationMapResult, type ConversationMapSourceInput, type ConversationMapSourceResult,
   type MessageReference, type SessionMeta, type WorkerCommand, type WorkerMessage
 } from '@desktop-agent/contracts';
-import { createProjectIdentity } from '@desktop-agent/memory';
+import { authorizeHistoryAnalysis, type HistoryAnalysisAuthorization } from './history-analysis-authorization';
+import type { HistoryAnalysisTaskGate } from './history-analysis-task';
 
-export interface ConversationMapAuthorization {
-  allowedSessionIds: string[];
-  projectDirectory?: string;
-  scope: ConversationMapScope;
-}
+export type ConversationMapAuthorization = HistoryAnalysisAuthorization;
 
 function resultReferences(result: ConversationMapResult): MessageReference[] {
   return result.version === 1
@@ -19,6 +16,7 @@ function resultReferences(result: ConversationMapResult): MessageReference[] {
 
 export function createConversationMapController(deps: {
   listSessions(): Promise<SessionMeta[]>;
+  taskGate?: HistoryAnalysisTaskGate;
   generate(input: ConversationMapGenerateInput, context: {
     signal: AbortSignal;
     authorize(): Promise<ConversationMapAuthorization>;
@@ -27,30 +25,16 @@ export function createConversationMapController(deps: {
   readSource(input: ConversationMapSourceInput, auth: ConversationMapAuthorization): Promise<ConversationMapSourceResult>;
   post(message: WorkerMessage): void;
 }) {
-  let active: { id: string; abort: AbortController } | undefined;
+  let active: { id: string; abort: AbortController; release(): void } | undefined;
   let completed: { input: ConversationMapGenerateInput; result: ConversationMapResult } | undefined;
 
-  async function authorize(input: ConversationMapGenerateInput): Promise<ConversationMapAuthorization> {
-    const sessions = await deps.listSessions();
-    if (input.scope.kind === 'personal_main') return { allowedSessionIds: sessions.map(s => s.id), scope: input.scope };
-    const selected = sessions.find(s => s.id === input.currentSessionId);
-    if (!selected || !sessionHasProject(selected)) throw new Error('当前项目已不可用，请重新选择范围。');
-    const [identity, requested] = await Promise.all([
-      createProjectIdentity(selected.workingDirectory), createProjectIdentity(input.scope.workingDirectory)
-    ]);
-    if (!identity || identity.id !== requested?.id) throw new Error('项目范围与当前对话不匹配。');
-    const matching = await Promise.all(sessions.map(async session => {
-      if (!sessionHasProject(session)) return undefined;
-      const candidate = await createProjectIdentity(session.workingDirectory);
-      return candidate?.id === identity.id ? session.id : undefined;
-    }));
-    return { allowedSessionIds: matching.filter((id): id is string => !!id), projectDirectory: identity.canonicalPath, scope: { kind: 'project', workingDirectory: identity.canonicalPath } };
-  }
+  const authorize = (input: ConversationMapGenerateInput) => authorizeHistoryAnalysis(input, deps.listSessions);
 
   function cancel(requestId?: string) {
     if (active && (!requestId || active.id === requestId)) {
       const previous = active; active = undefined;
       previous.abort.abort();
+      previous.release();
       deps.post({ type: 'conversation-map.event', event: { type: 'conversation-map.cancelled', requestId: previous.id } });
     }
     if (!requestId || completed?.input.requestId === requestId) completed = undefined;
@@ -63,7 +47,13 @@ export function createConversationMapController(deps: {
       } });
       return;
     }
-    const task = { id: input.requestId, abort: new AbortController() };
+    const release = deps.taskGate ? deps.taskGate.acquire() : () => undefined;
+    if (!release) {
+      deps.post({ type: 'conversation-map.event', event: { type: 'conversation-map.failed', requestId: input.requestId,
+        code: 'busy', message: '已有洞察分析任务，请先取消。' } });
+      return;
+    }
+    const task = { id: input.requestId, abort: new AbortController(), release };
     active = task; completed = undefined;
     try {
       await authorize(input);
@@ -90,7 +80,7 @@ export function createConversationMapController(deps: {
           ? '可访问会话超过 1000 个，请选择当前项目缩小范围。'
           : error instanceof Error ? error.message.slice(0, 1000) : '生成失败，请重试。'
       } });
-    } finally { if (active === task) active = undefined; }
+    } finally { task.release(); if (active === task) active = undefined; }
   }
 
   async function source(input: ConversationMapSourceInput): Promise<ConversationMapSourceResult> {

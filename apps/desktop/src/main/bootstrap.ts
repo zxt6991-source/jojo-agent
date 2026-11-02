@@ -1,4 +1,5 @@
 import { ConversationMapIpc } from './ipc/conversation-map-ipc';
+import { InsightIpc } from './ipc/insight-ipc';
 import {
   ApprovalInputSchema,
   IPC,
@@ -107,8 +108,17 @@ export function startDesktopHost(): void {
   const speechRpc = new SpeechRpcClient(command => {
     if (!postWorkerCommand(command)) throw new Error('语音运行进程尚未就绪。');
   });
-  const conversationMap = new ConversationMapIpc({ post: postWorkerCommand,
+  const conversationMap: ConversationMapIpc = new ConversationMapIpc({ post: postWorkerCommand,
+    otherAnalysisActive: () => insights.isBusy,
     emit: event => sendToRenderer(IPC.conversationMapEvent, event),
+    assertTrusted: event => {
+      assertTrusted(event);
+      if (event.senderFrame !== mainWindow?.webContents.mainFrame) throw new Error('Untrusted IPC frame.');
+    }
+  });
+  const insights: InsightIpc = new InsightIpc({ post: postWorkerCommand,
+    otherAnalysisActive: () => conversationMap.isBusy,
+    emit: event => sendToRenderer(IPC.insightEvent, event),
     assertTrusted: event => {
       assertTrusted(event);
       if (event.senderFrame !== mainWindow?.webContents.mainFrame) throw new Error('Untrusted IPC frame.');
@@ -593,7 +603,7 @@ export function startDesktopHost(): void {
         return;
       }
       const message = parsed.data;
-      if (conversationMap.accept(message)) return;
+      if (conversationMap.accept(message) || insights.accept(message)) return;
       if (message.type === 'scheduler.delivery.result') { deliveryRpc.accept(message); return; }
       if (message.type === 'scheduler.desktop.cancel') { speechHost?.cancelScheduled(message.identity); return; }
       if (message.type === 'scheduler.desktop.delivery') {
@@ -726,6 +736,7 @@ export function startDesktopHost(): void {
     });
     worker.on('exit', (code) => {
       conversationMap.stop('分析进程已结束，请重新生成。');
+      insights.stop('分析进程已结束，请重新生成。');
       speechRpc.close(); speechHost?.suspend();
       deliveryRpc.close();
       sessionStore.close(new Error(quitting ? 'runtime_closing' : `Agent runtime exited (${code}).`), quitting);
@@ -769,6 +780,7 @@ export function startDesktopHost(): void {
 
   function registerIpc(): void {
     conversationMap.register(ipcMain);
+    insights.register(ipcMain);
     registerSessionMetadataIpc({
       ipc: ipcMain, assertTrusted, client: sessionStore, lifecycle: sessionLifecycle,
       changed: () => sendToRenderer(IPC.sessionsChanged),
@@ -854,10 +866,12 @@ export function startDesktopHost(): void {
     speechHost.installPermissions(mainWindow);
     mainWindow.on('close', event => {
       conversationMap.stop();
+      insights.stop();
       if (!quitting && backgroundHost.enabled) { event.preventDefault(); speechHost?.suspend(); mainWindow?.hide(); }
     });
     mainWindow.on('closed', () => {
       conversationMap.stop();
+      insights.stop();
       mainWindow = null; speechHost?.close(); speechHost = undefined;
       if (process.platform !== 'darwin' && !quitting) app.quit();
     });
@@ -872,9 +886,10 @@ export function startDesktopHost(): void {
     });
     mainWindow.webContents.on('render-process-gone', (_event, details) => {
       conversationMap.stop();
+      insights.stop();
       console.error(`[renderer:gone] ${details.reason} (${details.exitCode})`);
     });
-    mainWindow.webContents.on('did-start-navigation', (_event, _url, _inPlace, isMainFrame) => { if (isMainFrame) conversationMap.stop(); });
+    mainWindow.webContents.on('did-start-navigation', (_event, _url, _inPlace, isMainFrame) => { if (isMainFrame) { conversationMap.stop(); insights.stop(); } });
     mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
     mainWindow.webContents.on('will-navigate', (event, url) => {
       const current = mainWindow?.webContents.getURL();

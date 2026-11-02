@@ -116,12 +116,19 @@ describe('conversation map entry page', () => {
     expect(api.generateConversationMap).not.toHaveBeenCalled();
     expect(api.getConversationMapSource).not.toHaveBeenCalled();
   });
-  it('disables project scope without a bound session and explains personal-main boundaries', () => {
+  it('hides project scope without a bound session and explains personal-main boundaries', () => {
     const html = renderToStaticMarkup(React.createElement(ConversationMapPage, props));
-    expect(html).toContain('<option value="project" disabled="">');
+    expect(html).not.toContain('<option value="project"');
     expect(html).toContain('<option value="personal_main" selected="">');
     expect(html).toContain('当前没有有效项目');
     expect(html).toContain('不包含团队、派生、定时任务或渠道对话');
+  });
+  it('inherits the insight center range and scope when opened there', () => {
+    const html = renderToStaticMarkup(React.createElement(ConversationMapPage, {
+      ...props, workingDirectory: '/project', currentSessionId: 'session-1', initialRange: '7d', initialScopeKind: 'personal_main'
+    }));
+    expect(html).toContain('aria-pressed="true">最近7天');
+    expect(html).toContain('<option value="personal_main" selected="">');
   });
 });
 

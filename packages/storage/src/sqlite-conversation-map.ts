@@ -1,4 +1,5 @@
 import { realpathSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import {
@@ -143,4 +144,37 @@ export function readConversationMapSource(db: DatabaseSync, input: SourceQuery, 
     AND length(trim(${body})) > 0`).get(input.sessionId, input.sessionId, input.entryId) as Row | undefined;
   if (!row) return { available: false };
   return ConversationMapSourceResultSchema.parse({ available: true, ...message(row), messageId: String(row.message_id) });
+}
+
+/** A scope-bound digest, including edits beyond the text shown to the analyzer.
+ * Rows are streamed into the hash; raw history never leaves this repository.
+ */
+export function readConversationMapFingerprint(db: DatabaseSync,
+  input: Pick<ConversationMapHistoryQuery, 'rangeStart' | 'rangeEnd' | 'scope'>,
+  allowedSessionIds: readonly string[]): string {
+  const query = ConversationMapHistoryQuerySchema.parse({ ...input, limit: 100 });
+  const allowed = authorizedSessions(db, query.scope, allowedSessionIds).sort();
+  const hash = createHash('sha256').update(JSON.stringify([query.scope, allowed]));
+  if (!allowed.length) return hash.digest('hex');
+  for (const row of db.prepare(`SELECT id, metadata_json FROM sessions WHERE id IN (${allowed.map(() => '?').join(',')}) ORDER BY id`).iterate(...allowed)) {
+    hash.update(JSON.stringify(row));
+  }
+  const rows = db.prepare(`${mainPath(allowed)} SELECT e.id, e.session_id, e.seq, e.parent_id,
+    json_extract(e.payload_json, '$.message.id') AS message_id,
+    json_extract(e.payload_json, '$.message.createdAt') AS message_time,
+    json_extract(e.payload_json, '$.message.role') AS role, ${body} AS body
+    FROM entries e JOIN main_path p ON p.id = e.id AND p.session_id = e.session_id
+    WHERE ${visibleMessage}
+    AND julianday(json_extract(e.payload_json, '$.message.createdAt')) >= julianday(?)
+    AND julianday(json_extract(e.payload_json, '$.message.createdAt')) < julianday(?)
+    ORDER BY e.session_id, e.seq LIMIT 20001`).iterate(...allowed, query.rangeStart, query.rangeEnd);
+  let count = 0;
+  let bytes = 0;
+  for (const row of rows) {
+    const serialized = JSON.stringify(row);
+    bytes += Buffer.byteLength(serialized);
+    if (++count > 20_000 || bytes > 64 * 1024 * 1024) throw new Error('insight_history_too_large');
+    hash.update(serialized);
+  }
+  return hash.digest('hex');
 }
