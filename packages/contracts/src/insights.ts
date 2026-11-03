@@ -106,8 +106,9 @@ export const InsightResultSchema = z.object({
 export type InsightResult = z.infer<typeof InsightResultSchema>;
 export const InsightEventSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('insight.progress'), requestId: id,
-    phase: z.enum(['reading', 'extracting', 'analyzing', 'validating']),
-    completed: z.number().int().nonnegative().optional(), total: z.number().int().nonnegative().optional() }).strict(),
+    phase: z.enum(['reading', 'extracting', 'merging', 'analyzing', 'validating']),
+    completed: z.number().int().nonnegative().optional(), total: z.number().int().nonnegative().optional(),
+    detail: z.string().trim().min(1).max(500).optional() }).strict(),
   z.object({ type: z.literal('insight.completed'), requestId: id, result: InsightResultSchema }).strict(),
   z.object({ type: z.literal('insight.failed'), requestId: id, code: z.string().min(1).max(128), message: z.string().max(1000) }).strict(),
   z.object({ type: z.literal('insight.cancelled'), requestId: id }).strict()

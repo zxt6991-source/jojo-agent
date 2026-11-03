@@ -135,7 +135,7 @@ describe('insight views', () => {
         emptyReason: 'no_eligible_events', coverage },
       stale: false, running: false, onReadSource: vi.fn(), onRegenerate: vi.fn(), onOpenModelSettings: vi.fn()
     }));
-    expect(html).toContain('尚未提取到可检验的明确观点、约束或决定');
+    expect(html).toContain('尚未提取到可检验的具体问题、方案、观点或约束');
     expect(html).toContain('1 条 AI 回复仅分析了部分内容');
     expect(html).toContain('用户输入已完整读取');
     expect(html).toContain('本次未调用洞察生成模型');
@@ -201,7 +201,7 @@ describe('insight views', () => {
   });
   it.each([
     { perspective: 'second_order' as const, evidence: '可推演影响的明确方案或探讨备选方案的问题', scope: '明确方案、计划、决定、改选，或探讨备选方案的问题' },
-    { perspective: 'reverse_thinking' as const, evidence: '可检验的明确观点、约束或决定', scope: '明确观点、约束或决定' }
+    { perspective: 'reverse_thinking' as const, evidence: '可检验的具体问题、方案、观点或约束', scope: '具体问题、方案、观点、约束或决定' }
   ])('explains why $perspective skipped synthesis for the screenshot coverage', ({ perspective, evidence, scope }) => {
     const html = renderToStaticMarkup(React.createElement(InsightResultPage, {
       result: { ...result, perspective, cards: [], analyzedTurnCount: 21, analyzedSessionCount: 8, truncated: true,

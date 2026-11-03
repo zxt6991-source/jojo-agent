@@ -1,11 +1,11 @@
 import React, { useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import type { ConversationMapGenerateInput, ConversationMapSourceInput, ConversationMapSourceResult, DesktopApi, MessageReference, ConversationTopicV2, EvolutionEvent, TopicInsight } from '@desktop-agent/contracts';
 import { ConversationMapDiagram } from './ConversationMapDiagram';
+import { AnalysisProgressPanel } from './insights/AnalysisProgressPanel';
 import { conversationFlowchart, evolutionFlowchart, eventLabels, stateLabels, changeLabels, orderedEvents, insightEvidence, conversationMapReducer, conversationMapSelectionKey, conversationMindmap, orderedSteps, relationLabels, stepLabels, conversationPlainText, eventReadingText, eventReadingTitle } from './conversation-map';
 import './conversation-map.css';
 
 type MapApi = Pick<DesktopApi, 'generateConversationMap' | 'cancelConversationMap' | 'getConversationMapSource' | 'onConversationMapEvent'> & Partial<Pick<DesktopApi, 'onSessionsChanged'>>;
-const phases = { reading: '读取历史', extracting: '提取语义事件', merging: '归并主题', comparing: '比较观点变化', rendering: '校验与绘制' } as const;
 const localTime = (value: string) => new Date(value).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
 type SourceView = { input: ConversationMapSourceInput; status: 'loading' | 'ready' | 'error'; value?: ConversationMapSourceResult; error?: string };
 
@@ -227,7 +227,7 @@ export function ConversationMapPage({ api, workingDirectory, currentSessionId, i
       <p className="conversation-map-scope-note">{scope.kind === 'project' ? `当前项目：${workingDirectory}` : `${!projectAvailable ? '当前没有有效项目，默认使用全部个人主对话。' : ''}包括有权访问的多个项目；不包含团队、派生、定时任务或渠道对话。`}</p>
     </section>
     {historyNotice && <p className="conversation-map-notice" role="status">{historyNotice}</p>}
-    {running && <div className="conversation-map-notice" role="status"><div role="progressbar" aria-label="脉络生成进度" {...(state.progress?.total ? { 'aria-valuemin': 0, 'aria-valuemax': state.progress.total, 'aria-valuenow': state.progress.completed ?? 0 } : {})}>{phases[state.progress?.phase ?? 'reading']}…{state.progress?.total ? ` ${state.progress.completed ?? 0} / ${state.progress.total}` : ''}</div>{pendingChanged && <span>筛选条件已更改，正在取消原范围的任务。</span>}</div>}
+    {running && <AnalysisProgressPanel key={state.request?.requestId} perspective="conversation_map" progress={state.progress} history={state.progressHistory} />}
     {state.status === 'cancelled' && <p className="conversation-map-notice" role="status">已取消生成。可以调整范围后重新生成。</p>}
     {(state.error || cancelError) && <div className="settings-error conversation-map-notice" role="alert"><p>{state.error || cancelError}</p><button type="button" onClick={onOpenModelSettings}>检查模型配置</button></div>}
     {stale && <p className="conversation-map-notice warning" role="status">筛选条件或当前项目已更改，请重新生成。下方仍是上一次范围的结果。</p>}

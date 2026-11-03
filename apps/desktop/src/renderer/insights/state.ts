@@ -1,4 +1,5 @@
 import type { InsightEvent, InsightGenerateInput, InsightResult } from '@desktop-agent/contracts';
+import type { AnalysisProgressHistory } from './analysis-progress';
 
 export type InsightSelection = { range: InsightGenerateInput['range']; scopeKind: 'project' | 'personal_main' };
 export const defaultInsightSelection: InsightSelection = { range: '30d', scopeKind: 'personal_main' };
@@ -17,6 +18,7 @@ export type InsightViewState = {
   request?: InsightGenerateInput;
   result?: { request: InsightGenerateInput; value: InsightResult };
   progress?: Extract<InsightEvent, { type: 'insight.progress' }>;
+  progressHistory?: AnalysisProgressHistory;
   error?: string;
 };
 export type InsightViewAction = { type: 'start'; request: InsightGenerateInput } | { type: 'cancel' }
@@ -31,7 +33,8 @@ export function insightReducer(state: InsightViewState, action: InsightViewActio
   if (action.type === 'cancel') return { ...retained, status: 'cancelled' };
   if (state.status !== 'running' || !state.request || action.event.requestId !== state.request.requestId) return state;
   switch (action.event.type) {
-    case 'insight.progress': return { ...state, progress: action.event };
+    case 'insight.progress': return { ...state, progress: action.event,
+      progressHistory: { ...state.progressHistory, [action.event.phase]: action.event } };
     case 'insight.completed': return { status: 'completed', result: { request: state.request, value: action.event.result } };
     case 'insight.failed': return { ...retained, status: 'failed', error: action.event.message };
     case 'insight.cancelled': return { ...retained, status: 'cancelled' };

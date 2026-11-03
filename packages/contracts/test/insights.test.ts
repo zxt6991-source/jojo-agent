@@ -21,6 +21,17 @@ const coverage = { extractedEventCount: 2, eligibleEventCount: 0, selectedEventC
   truncatedUserMessageCount: 0, truncatedAssistantMessageCount: 1, omittedAssistantMessageCount: 0, unknownSourceTruncation: false, analysisPerformed: false };
 
 describe('insight contracts', () => {
+  it('carries bounded progress detail and topic grouping through the worker protocol', () => {
+    for (const type of ['insight', 'conversation-map']) {
+      const event = { type: `${type}.progress`, requestId: 'i1', phase: 'merging', detail: '正在归并 3 个主题。' };
+      const envelope = { type: `${type}.event`, event };
+      expect(WorkerMessageSchema.parse(envelope)).toEqual(envelope);
+      for (const detail of ['', ' '.repeat(4), 'x'.repeat(501)]) {
+        expect(WorkerMessageSchema.safeParse({ ...envelope, event: { ...event, detail } }).success).toBe(false);
+      }
+    }
+  });
+
   it('only allows the published perspectives and bounded, authorized scope requests', () => {
     expect(InsightGenerateInputSchema.parse(input)).toEqual(input);
     for (const perspective of ['conversation_map', 'value_clarification', 'custom']) {

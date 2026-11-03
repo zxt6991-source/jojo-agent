@@ -11,10 +11,19 @@ const users = (events: EvolutionEvent[]) => events.filter(event => event.speaker
 const trivialInquiry = /^(?:你好|您好|嗨|哈[啰喽]|hello|hi|hey|谢谢|感谢|多谢|thankyou|thanks|好|好的|嗯|嗯嗯|哦|哦哦|是|是的|对|对的|没错|可以|行|ok|okay|收到|明白|了解|继续|开始|执行|再试|重试|试试)$/iu;
 const isTrivialInquiry = (event: EvolutionEvent) => event.evidence.every(item => trivialInquiry.test(item.quote.normalize('NFKC').replace(/[\s\p{P}]/gu, '')));
 const reverseThinking: InsightStrategy = {
-  id: 'reverse_thinking', promptVersion: 'reverse-v2',
-  instructions: '识别用户明确观点、约束、决定或改选里的可证实假设，逐条提出可信的反面条件、可能的失败机制以及最低成本检验问题。nature 必须为 hypothesis。每条至少引用一个用户 decision、revision、position 或 constraint。revision 只依据已验证的改选原文，不推断缺失的旧方案或改变动机。随意提问不构成核心假设。反面条件仅是假设，不能写成已经发生的事实。',
-  selectEvents: events => users(events).filter(event => ['decision', 'revision', 'position', 'constraint'].includes(event.eventType))
+  id: 'reverse_thinking', promptVersion: 'reverse-v3',
+  instructions: '识别用户明确观点、约束、决定或改选里的可检验假设，提出可信的反面条件、可能的失败机制以及最低成本检验问题。nature 必须为 hypothesis。revision 只依据已验证的改选原文，不推断缺失的旧方案或改变动机。也可以围绕用户具体提问、分析请求或备选方案，提出值得检验的反向假设；提问只提供分析对象，不能据此认定用户持有某种观点、已作出决定或执行行动。每条至少引用一个用户 decision、revision、position 或 constraint；若没有，必须提供 scenarioEvidence:{eventId,exactQuote}：eventId 必须是 supportingEventIds 中的用户 exploration、open_question 或 option，exactQuote 必须逐字复制其 evidence.quote 中点名分析对象的连续片段（最多120字），不能来自 claim 的概括或 AI 回复，此类卡片仅引用同一主题。例如“有没有适合长期持有的债基”可检验“持有时间更长是否必然更合适”的假设，但不能说用户相信债基长期持有必然安全或用户已经持有。围绕分析请求可以检查评价指标是否足以支持结论，但不得编造用户的资产、收益、运动或阅读数据。没有具体对象或有价值的检验问题时返回 {"cards":[]}，不为问候、继续或纯服务指令编造假设。所有反面条件均为尚未验证的假设，不能写成既定事实，也不得以“你认为”“你忽略”等措辞归因于用户。',
+  selectEvents: events => events.filter(event => isReverseThinkingEvent(event) || isReverseThinkingInquiry(event))
 };
+
+export function isReverseThinkingEvent(event: EvolutionEvent): boolean {
+  return event.speaker === 'user' && ['decision', 'revision', 'position', 'constraint'].includes(event.eventType);
+}
+
+/** A question supplies a reflection target; a card still needs a verbatim anchor. */
+export function isReverseThinkingInquiry(event: EvolutionEvent): boolean {
+  return event.speaker === 'user' && ['exploration', 'open_question', 'option'].includes(event.eventType) && !isTrivialInquiry(event);
+}
 const secondOrder: InsightStrategy = {
   id: 'second_order', promptVersion: 'second-order-v3',
   instructions: '从用户明确方案、决定、改选，或具体提问中点名的备选方案推演可能影响。nature 必须为 hypothesis。revision 仅依据已验证的改选原文，不推断缺失的旧方案、改变动机或实施状态。exploration/open_question 可以是条件推演的起点，但提问不等于用户作出决定或执行行动。若 supportingEventIds 中没有 decision/revision/option 或 planned/decided 状态的用户事件，必须提供 scenarioEvidence:{eventId,exactQuote}：eventId 必须是 supportingEventIds 中的用户 exploration/open_question，exactQuote 必须逐字复制该事件 evidence.quote 中点名具体备选方案或行动的连续片段（最多120字），不得引用 claim 中的概括或 AI 建议；此类卡片只引用与该提问相同主题的用户事件。例如“有没有适合长期持有的债基”可用“长期持有的债基”作为假设对象，不能据此认定用户已持有；“看看最近的运动情况”等概况或纯事实提问没有具体备选行动时返回 {"cards":[]}，不得自行发明改变策略或执行方案。有明确选择事件时可省略 scenarioEvidence；若提供仍必须满足上述原文要求。explanation 按“可能的直接影响 → 随后可能的二阶影响”描述，说明受影响对象；uncertainty 写关键依赖条件和不确定性。输入仅为本次提供的用户事件片段，不代表完整聊天或全部已知信息；信息不足只能表述为“本次提供的片段无法确认”，不得断言整个历史、完整对话或用户从未提供或讨论某项信息。未确定选择时必须使用“假如选择该方案”，不能断言用户已经决定，也不能断言用户尚未决定或执行。不得声称未来结果已经实现，不虚构真实因果链。verificationQuestion 提出能检验关键依赖的具体问题。',

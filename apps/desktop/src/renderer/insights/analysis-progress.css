@@ -1,0 +1,30 @@
+.analysis-progress { margin: 22px 0; padding: 24px; border: 1px solid var(--border); border-radius: 14px; background: var(--panel-raised); color: var(--text); }
+.analysis-progress-header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }
+.analysis-progress-eyebrow { display: inline-flex; align-items: center; gap: 8px; color: var(--accent); font-size: 12px; font-weight: 600; }
+.analysis-progress-pulse { width: 7px; height: 7px; border-radius: 50%; background: currentColor; animation: analysis-pulse 1.8s ease-in-out infinite; }
+.analysis-progress-time { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.analysis-progress-current h2 { margin: 18px 0 8px; font-size: 18px; font-weight: 600; }
+.analysis-progress-current p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.8; }
+.analysis-progress-detail { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 8px 16px; margin-top: 12px; font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
+.analysis-progress-detail:empty { display: none; }
+.analysis-progress-detail strong { color: var(--accent); font-variant-numeric: tabular-nums; }
+.analysis-progress-track { overflow: hidden; height: 4px; margin: 18px 0 22px; border-radius: 4px; background: var(--border); }
+.analysis-progress-track > span { display: block; height: 100%; border-radius: inherit; background: var(--accent); }
+.analysis-progress-track .determinate { transition: width .25s ease; }
+.analysis-progress-track .indeterminate { width: 30%; animation: analysis-travel 2s ease-in-out infinite; }
+.analysis-progress-steps { display: grid; gap: 14px; list-style: none; margin: 0; padding: 0; }
+.analysis-progress-steps li { display: grid; grid-template-columns: 24px minmax(0, 1fr); align-items: start; gap: 10px; color: var(--muted); }
+.analysis-progress-marker { display: grid; place-items: center; width: 22px; height: 22px; border: 1px solid var(--border); border-radius: 50%; font-size: 11px; }
+.analysis-progress-step-heading { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 12px; padding: 2px 0; line-height: 1.6; }
+.analysis-progress-step-heading strong { font-size: 12px; font-weight: 500; }
+.analysis-progress-step-heading small { font-size: 11px; }
+.analysis-progress-steps li[data-status="active"] { color: var(--accent); }
+.analysis-progress-steps li[data-status="active"] .analysis-progress-marker { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent); }
+.analysis-progress-steps li[data-status="done"] .analysis-progress-marker { color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.analysis-progress-steps li[data-status="done"] strong { color: var(--text); }
+.analysis-progress-steps li > div > p { margin: 3px 0 0; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.analysis-progress-wait { margin: 18px 0 0; padding-top: 14px; border-top: 1px solid var(--border); color: var(--muted); font-size: 12px; line-height: 1.7; }
+@keyframes analysis-pulse { 50% { opacity: .35; } }
+@keyframes analysis-travel { from { transform: translateX(-100%); } to { transform: translateX(440%); } }
+@media (prefers-reduced-motion: reduce) { .analysis-progress-pulse, .analysis-progress-track .indeterminate { animation: none; } .analysis-progress-track .determinate { transition: none; } }
+@media (max-width: 640px) { .analysis-progress { padding: 18px; } }

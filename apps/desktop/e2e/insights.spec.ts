@@ -203,7 +203,7 @@ test('coverage distinguishes an ineligible perspective from a clipped assistant 
     const view = page.getByTestId('insight-center-page');
     await view.getByRole('button', { name: /逆向思考/ }).click();
     const output = view.getByLabel('洞察结果', { exact: true });
-    await expect(output.getByRole('heading', { name: '尚未提取到可检验的明确观点、约束或决定', exact: true })).toBeVisible();
+    await expect(output.getByRole('heading', { name: '尚未提取到可检验的具体问题、方案、观点或约束', exact: true })).toBeVisible();
     await expect(output).toContainText('已分析 21 轮 · 8 个会话');
     await expect(output).toContainText('1 条 AI 回复仅分析了部分内容');
     await expect(output).toContainText('用户输入已完整读取');

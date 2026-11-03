@@ -225,7 +225,8 @@ export type ConversationMapResult = z.infer<typeof ConversationMapResultSchema>;
 export const ConversationMapEventSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('conversation-map.progress'), requestId: id,
     phase: z.enum(['reading', 'extracting', 'merging', 'comparing', 'rendering']),
-    completed: z.number().int().nonnegative().optional(), total: z.number().int().nonnegative().optional() }).strict(),
+    completed: z.number().int().nonnegative().optional(), total: z.number().int().nonnegative().optional(),
+    detail: z.string().trim().min(1).max(500).optional() }).strict(),
   z.object({ type: z.literal('conversation-map.completed'), requestId: id, result: ConversationMapResultSchema }).strict(),
   z.object({ type: z.literal('conversation-map.failed'), requestId: id, code: z.string().min(1).max(128), message: z.string().max(1000) }).strict(),
   z.object({ type: z.literal('conversation-map.cancelled'), requestId: id }).strict()

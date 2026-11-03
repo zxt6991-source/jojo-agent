@@ -66,7 +66,9 @@ describe('second-order inquiry scenarios', () => {
       if (fault === 'not-an-inquiry') events = [inquiry({ eventType: 'constraint', state: 'unknown' })];
       if (fault === 'blank') candidate.scenarioEvidence = { ...card.scenarioEvidence, exactQuote: '   ' };
       if (fault === 'extra-field') candidate.scenarioEvidence = { ...card.scenarioEvidence, chosen: true };
-      expect(validateInsightCards({ cards: [candidate] }, events, 'second_order')).toEqual({ cards: [], omittedCardCount: 1 });
+      for (const perspective of ['second_order', 'reverse_thinking'] as const) {
+        expect(validateInsightCards({ cards: [candidate] }, events, perspective)).toEqual({ cards: [], omittedCardCount: 1 });
+      }
     });
 
   it('does not use an assistant reference disguised as user inquiry evidence', () => {
@@ -93,7 +95,7 @@ describe('second-order inquiry scenarios', () => {
     expect(validateInsightCards({ cards: [{ ...candidate, scenarioEvidence: { eventId: 'forged', exactQuote: '长期持有的债基' } }] }, [inquiry(), decision], 'second_order').cards).toEqual([]);
   });
 
-  it.each(['reverse_thinking', 'blind_spots'] as const)('does not accept scenario metadata for %s', perspective => {
+  it.each(['blind_spots'] as const)('does not accept scenario metadata for %s', perspective => {
     const sources = [inquiry(), inquiry({ id: 'position-1', eventType: 'position', state: 'unknown' })];
     const candidate = { ...card, supportingEventIds: ['question-1', 'position-1'], nature: perspective === 'blind_spots' ? 'suggestion' : 'hypothesis' };
     expect(validateInsightCards({ cards: [candidate] }, sources, perspective).cards).toEqual([]);
@@ -103,5 +105,37 @@ describe('second-order inquiry scenarios', () => {
     const event = inquiry({ claim: quote, evidence: [{ ...inquiry().evidence[0]!, quote }] });
     expect(insightStrategy('second_order').selectEvents([event])).toEqual([]);
     expect(validateInsightCards({ cards: [{ ...card, scenarioEvidence: { eventId: event.id, exactQuote: quote } }] }, [event], 'second_order').cards).toEqual([]);
+  });
+});
+
+describe('reverse-thinking inquiry grounding', () => {
+  it.each(['exploration', 'open_question', 'option'] as const)('analyzes a user %s as a model-proposed hypothesis without reclassifying the source', eventType => {
+    const event = inquiry({ eventType });
+    expect(insightStrategy('reverse_thinking').selectEvents([event])).toEqual([event]);
+    const output = validateInsightCards({ cards: [card] }, [event], 'reverse_thinking');
+    expect(output.cards).toHaveLength(1);
+    expect(output.cards[0]).toMatchObject({ nature: 'hypothesis', supportingReferences: [event.evidence[0]!.reference] });
+    expect(output.cards[0]!.explanation).toContain('「长期持有的债基」提出的反向假设（尚未验证）');
+    expect(output.cards[0]!.uncertainty).toContain('此假设由模型提出');
+    expect(output.cards[0]).not.toHaveProperty('scenarioEvidence');
+    expect(event.eventType).toBe(eventType);
+    expect(validateInsightCards({ cards: [withoutScenario()] }, [event], 'reverse_thinking').cards).toEqual([]);
+  });
+
+  it('does not combine a query with unrelated topics or accept a false role', () => {
+    const unrelated = inquiry({ id: 'other', topicId: 'other', eventType: 'decision', state: 'decided' });
+    expect(validateInsightCards({ cards: [{ ...card, supportingEventIds: ['question-1', 'other'] }] }, [inquiry(), unrelated], 'reverse_thinking').cards).toEqual([]);
+    const assistant = inquiry({ evidence: [{ ...inquiry().evidence[0]!, reference: { ...inquiry().evidence[0]!.reference, role: 'assistant' } }] });
+    expect(validateInsightCards({ cards: [card] }, [assistant], 'reverse_thinking').cards).toEqual([]);
+  });
+
+  it.each(['你认为长期持有就一定安全', '用户已持有债基', '你忽略了回撤', 'You believe holding longer is safer'])('rejects unsupported attribution: %s', explanation => {
+    expect(validateInsightCards({ cards: [{ ...card, explanation }] }, [inquiry()], 'reverse_thinking').cards).toEqual([]);
+  });
+
+  it.each(['继续', '你好！', '谢谢。', '好的', 'OK', '重试'])('does not fabricate a hypothesis for %s', quote => {
+    const event = inquiry({ claim: quote, evidence: [{ ...inquiry().evidence[0]!, quote }] });
+    expect(insightStrategy('reverse_thinking').selectEvents([event])).toEqual([]);
+    expect(validateInsightCards({ cards: [{ ...card, scenarioEvidence: { eventId: event.id, exactQuote: quote } }] }, [event], 'reverse_thinking').cards).toEqual([]);
   });
 });

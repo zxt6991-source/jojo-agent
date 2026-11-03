@@ -1318,9 +1318,10 @@ export function startWorkerHost(): void {
           }
           return valid;
         },
-        onProgress: (phase, completed, total) => context.onProgress({
+        onProgress: (phase, completed, total, detail) => context.onProgress({
           type: 'conversation-map.progress', requestId: input.requestId, phase,
-          ...(completed === undefined ? {} : { completed }), ...(total === undefined ? {} : { total })
+          ...(completed === undefined ? {} : { completed }), ...(total === undefined ? {} : { total }),
+          ...(detail === undefined ? {} : { detail })
         })
       });
     }
@@ -1372,9 +1373,10 @@ export function startWorkerHost(): void {
           return valid;
         },
         onSourcesValidated: context.onSourcesValidated,
-        onProgress: (phase, completed, total) => context.onProgress({
+        onProgress: (phase, completed, total, detail) => context.onProgress({
           type: 'insight.progress', requestId: input.requestId, phase,
-          ...(completed === undefined ? {} : { completed }), ...(total === undefined ? {} : { total })
+          ...(completed === undefined ? {} : { completed }), ...(total === undefined ? {} : { total }),
+          ...(detail === undefined ? {} : { detail })
         })
       });
     }

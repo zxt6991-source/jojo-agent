@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { InsightCardSchema, type EvolutionEvent, type InsightAnalysisPerspective, type InsightCard, type MessageReference } from '@desktop-agent/contracts';
-import { isSecondOrderEvent, isSecondOrderInquiry } from './strategies/registry';
+import { isReverseThinkingEvent, isReverseThinkingInquiry, isSecondOrderEvent, isSecondOrderInquiry } from './strategies/registry';
 
 const nonblank = (max: number) => z.string().trim().min(1).max(max);
 // A model can nominate event IDs, never construct authoritative message references.
@@ -30,11 +30,12 @@ export function validateInsightCards(value: unknown, events: EvolutionEvent[], p
     const { scenarioEvidence, ...publicCandidate } = candidate;
     if (scenarioEvidence) {
       const scenarioSource = sources.find(event => event.id === scenarioEvidence.eventId);
-      if (perspective !== 'second_order' || !scenarioSource || !isSecondOrderInquiry(scenarioSource)
+      const admitsScenario = perspective === 'reverse_thinking' ? isReverseThinkingInquiry : isSecondOrderInquiry;
+      if (perspective === 'blind_spots' || !scenarioSource || !admitsScenario(scenarioSource)
         || !scenarioSource.evidence.some(item => item.reference.role === 'user' && item.quote.includes(scenarioEvidence.exactQuote))) continue;
-      if (!sources.some(isSecondOrderEvent) && sources.some(event => event.topicId !== scenarioSource.topicId)) continue;
+      if ((perspective === 'reverse_thinking' || !sources.some(isSecondOrderEvent)) && sources.some(event => event.topicId !== scenarioSource.topicId)) continue;
     }
-    if (perspective === 'reverse_thinking' && (candidate.nature !== 'hypothesis' || !sources.some(event => ['decision', 'revision', 'position', 'constraint'].includes(event.eventType)))) continue;
+    if (perspective === 'reverse_thinking' && (candidate.nature !== 'hypothesis' || (!sources.some(isReverseThinkingEvent) && !scenarioEvidence))) continue;
     if (perspective === 'second_order' && (candidate.nature !== 'hypothesis' || (!sources.some(isSecondOrderEvent) && !scenarioEvidence))) continue;
     if (perspective === 'blind_spots' && (candidate.nature === 'hypothesis' || new Set(sources.map(event => event.topicId)).size !== 1)) continue;
     const allText = [candidate.title, candidate.explanation, candidate.uncertainty, candidate.verificationQuestion].join('\n');
@@ -44,15 +45,16 @@ export function validateInsightCards(value: unknown, events: EvolutionEvent[], p
     // Discard overconfident output instead of laundering it with a "possible" prefix.
     if (perspective === 'second_order' && /已经|已(?:实现|导致|造成|发生|达成|获得|完成|证明)|必然|必定|必将|一定(?:会|导致|造成)|确定(?:导致|造成|会)|肯定会|保证(?:会|能够)|毫无疑问|\b(?:guaranteed|certainly|definitely|inevitably|has resulted|have resulted|already achieved|already caused|will certainly)\b/iu.test(allText)) continue;
     if (perspective === 'blind_spots' && /你(?:们)?(?:从未|从来没|没有(?:考虑|意识|能力)|缺乏|总是|就是)|用户(?:从未|从来没|缺乏|没有考虑)|\b(?:you (?:have )?never|you lack|your personality)\b/iu.test(allText)) continue;
+    if (perspective === 'reverse_thinking' && scenarioEvidence && /(?:你|用户)(?:们)?(?:认为|相信|认定|忽略|已经|已(?:经)?决定|已选择|已持有)|\byou (?:believe|assume|ignore|have decided|already)\b/iu.test(allText)) continue;
     const prefix = perspective === 'blind_spots' ? '依据本次可核验的记录，仍值得补充确认：'
       : perspective === 'second_order' ? scenarioEvidence ? `假如选择用户提问中「${scenarioEvidence.exactQuote}」所指的方案，可能的影响路径（尚未验证）：`
         : sources.some(event => event.state === 'decided') ? '可能的影响路径（尚未验证）：' : '假如选择该方案，可能的影响路径（尚未验证）：'
-        : '反向假设（尚未验证）：';
+        : scenarioEvidence ? `围绕用户提问或备选方案「${scenarioEvidence.exactQuote}」提出的反向假设（尚未验证）：` : '反向假设（尚未验证）：';
     const references = [...new Map(sources.flatMap(event => event.evidence).map(item => [referenceKey(item.reference), item.reference])).values()];
     const card = InsightCardSchema.safeParse({
       ...publicCandidate, id: `insight-${cards.length + 1}`, topicId: sources[0]!.topicId,
       explanation: `${prefix}${candidate.nature === 'model_inference' ? '可能存在以下线索：' : ''}${candidate.explanation}`,
-      uncertainty: `${candidate.uncertainty}${scenarioEvidence ? ' 此推演以提问中的备选方案为条件，原文不能确定用户是否作出决定或执行。' : ''}${sources.some(event => event.truncatedSource) ? ' 原文曾被截断，仅依据已读取片段。' : ''}`,
+      uncertainty: `${candidate.uncertainty}${scenarioEvidence ? perspective === 'reverse_thinking' ? ' 此假设由模型提出，原文仅提供分析对象，不能据此认定用户持有该观点、已作出决定或执行。' : ' 此推演以提问中的备选方案为条件，原文不能确定用户是否作出决定或执行。' : ''}${sources.some(event => event.truncatedSource) ? ' 原文曾被截断，仅依据已读取片段。' : ''}`,
       supportingReferences: references
     });
     if (card.success) cards.push(card.data);

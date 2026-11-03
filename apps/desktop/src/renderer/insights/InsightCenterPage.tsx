@@ -3,6 +3,7 @@ import type { DesktopApi, InsightAnalysisPerspective, InsightGenerateInput, Insi
 import { ConversationMapPage } from '../ConversationMapPage';
 import { InsightEvidencePanel, type InsightSourceView } from './InsightEvidencePanel';
 import { InsightResultPage } from './InsightResultPage';
+import { AnalysisProgressPanel } from './AnalysisProgressPanel';
 import { insightReducer, insightSelectionKey, perspectiveLabels, type InsightSelection } from './state';
 import '../conversation-map.css';
 import './insights.css';
@@ -10,7 +11,6 @@ import './insights.css';
 type InsightApi = Pick<DesktopApi, 'generateInsight' | 'cancelInsight' | 'getInsightSource' | 'onInsightEvent'
   | 'generateConversationMap' | 'cancelConversationMap' | 'getConversationMapSource' | 'onConversationMapEvent'>
   & Partial<Pick<DesktopApi, 'onSessionsChanged'>>;
-const phases = { reading: '读取历史', extracting: '提取语义事件', analyzing: '分析所选视角', validating: '核对依据' } as const;
 const perspectives: { id: InsightPerspective; icon: string; description: string }[] = [
   { id: 'conversation_map', icon: '⌘', description: '回顾聊过的主题、观点变化与当前结论。' },
   { id: 'reverse_thinking', icon: '⇄', description: '检验核心假设，寻找反例与可能的失败条件。' },
@@ -184,7 +184,7 @@ export function InsightCenterPage({ api, workingDirectory, currentSessionId, sel
       <span className="insight-perspective-icon" aria-hidden="true">{item.icon}</span><strong>{perspectiveLabels[item.id]}</strong><span>{item.description}</span><small>{item.id === 'conversation_map' ? '查看交流脉络 →' : '开始分析 →'}</small>
     </button>)}</div>}
     {notice && <p className="conversation-map-notice" role="status">{notice}</p>}
-    {running && <div className="conversation-map-notice" role="status"><div role="progressbar" aria-label="洞察生成进度" {...(state.progress?.total ? { 'aria-valuemin': 0, 'aria-valuemax': state.progress.total, 'aria-valuenow': state.progress.completed ?? 0 } : {})}>{phases[state.progress?.phase ?? 'reading']}…{state.progress?.total ? ` ${state.progress.completed ?? 0} / ${state.progress.total}` : ''}</div></div>}
+    {running && perspective && <AnalysisProgressPanel key={state.request?.requestId} perspective={perspective} progress={state.progress} history={state.progressHistory} />}
     {perspective && state.status === 'cancelled' && <p className="conversation-map-notice" role="status">已取消生成。可以调整范围后重新生成。</p>}
     {perspective && (state.error || cancelError) && <div className="settings-error conversation-map-notice" role="alert"><p>{state.error || cancelError}</p><button type="button" onClick={onOpenModelSettings}>检查模型配置</button></div>}
     {perspective && result && <InsightResultPage result={result} stale={stale} running={running} onReadSource={reference => void readSource(reference)}

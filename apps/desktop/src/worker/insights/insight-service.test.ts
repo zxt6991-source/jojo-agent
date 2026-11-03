@@ -78,6 +78,57 @@ function dependencies(turns = [turn(1), turn(2)]): InsightDependencies {
 const extractCalls = (deps: InsightDependencies) => vi.mocked(deps.complete).mock.calls.filter(([prompt]) => prompt.includes('TASK: EXTRACT.')).length;
 
 describe('isolated insight service and shared semantic cache', () => {
+  it.each(['reverse_thinking', 'second_order', 'blind_spots'] as const)('reports actual work before model calls for %s and describes cache reuse', async perspective => {
+    const deps = dependencies();
+    const onProgress = vi.fn();
+    deps.onProgress = onProgress;
+    vi.mocked(deps.complete).mockImplementation(async prompt => {
+      const phase = prompt.includes('UNTRUSTED_INSIGHT_EVENTS_JSON') ? 'analyzing' : 'extracting';
+      expect(onProgress.mock.lastCall?.[0]).toBe(phase);
+      expect(onProgress.mock.lastCall?.[1]).toBe(0);
+      expect(onProgress.mock.lastCall?.[3]).toBeTruthy();
+      return completion(prompt);
+    });
+    vi.mocked(deps.revalidateReferences).mockImplementation(refs => {
+      expect(onProgress.mock.lastCall?.[0]).toBe('validating');
+      return refs;
+    });
+    const service = createInsightService();
+    await service.generate({ ...request, perspective }, deps);
+    expect(onProgress).toHaveBeenCalledWith('reading', 2, undefined, expect.stringContaining('已读取 2 轮对话'));
+    expect(onProgress).toHaveBeenCalledWith('merging', undefined, undefined, expect.stringContaining('已整理为 1 个主题'));
+    expect(onProgress).toHaveBeenCalledWith('analyzing', 0, 1, expect.stringContaining('2 条用户事件'));
+    onProgress.mockClear();
+    await service.generate({ ...request, perspective }, deps);
+    expect(onProgress).toHaveBeenCalledWith('reading', undefined, undefined, '已确认历史范围，找到可复用的分析记录。');
+    expect(onProgress).toHaveBeenCalledWith('extracting', undefined, undefined, expect.stringContaining('已复用 2 轮对话'));
+    expect(onProgress).toHaveBeenCalledWith('merging', undefined, undefined, expect.stringContaining('已复用 1 个主题'));
+    expect(onProgress.mock.calls.flat().join(' ')).not.toContain(turn(1).user.text);
+  });
+
+  it('announces analysis retries without surfacing invalid model output', async () => {
+    const deps = dependencies();
+    const onProgress = vi.fn(); deps.onProgress = onProgress;
+    let analysisCalls = 0;
+    vi.mocked(deps.complete).mockImplementation(async prompt => {
+      if (prompt.includes('UNTRUSTED_INSIGHT_EVENTS_JSON') && ++analysisCalls === 1) return 'private invalid provider response';
+      return completion(prompt);
+    });
+    await createInsightService().generate(request, deps);
+    expect(onProgress).toHaveBeenCalledWith('analyzing', 0, 1, expect.stringContaining('正在重试分析'));
+    expect(onProgress.mock.calls.flat().join(' ')).not.toContain('private invalid provider response');
+    expect(analysisCalls).toBe(2);
+  });
+
+  it('does not claim model analysis when no eligible history exists', async () => {
+    const deps = dependencies([]);
+    const onProgress = vi.fn(); deps.onProgress = onProgress;
+    await createInsightService().generate(request, deps);
+    expect(onProgress.mock.calls.some(([phase]) => phase === 'analyzing')).toBe(false);
+    expect(onProgress).toHaveBeenLastCalledWith('validating', undefined, undefined, expect.stringContaining('未提取到适合当前视角'));
+    expect(deps.complete).not.toHaveBeenCalled();
+  });
+
   it.each(['reverse_thinking', 'second_order', 'blind_spots'] as const)('generates %s using only program-mapped evidence and explicit uncertainty', async perspective => {
     const deps = dependencies();
     const result = await createInsightService().generate({ ...request, perspective }, deps);
@@ -405,7 +456,7 @@ describe('isolated insight service and shared semantic cache', () => {
     expect(JSON.parse(prompt.slice(prompt.lastIndexOf(marker) + marker.length))[0]).toMatchObject({ eventType: 'exploration', state: 'exploring' });
   });
 
-  it('lets synthesis decline a factual inquiry without claiming the analysis was skipped', async () => {
+  it.each(['second_order', 'reverse_thinking'] as const)('lets %s decline a factual inquiry without claiming the analysis was skipped', async perspective => {
     const input = turn(1);
     input.user.text = '看看我的阅读概况';
     const deps = dependencies([input]);
@@ -415,10 +466,43 @@ describe('isolated insight service and shared semantic cache', () => {
       Object.assign(output.events[0], { eventType: 'exploration', state: 'exploring' });
       return JSON.stringify(output);
     });
-    expect(await createInsightService().generate({ ...request, perspective: 'second_order' }, deps)).toMatchObject({
+    expect(await createInsightService().generate({ ...request, perspective }, deps)).toMatchObject({
       cards: [], emptyReason: 'no_supported_insights', modelCallCount: 2,
       coverage: { eligibleEventCount: 1, analysisPerformed: true }
     });
+  });
+
+  it.each([0, 14])('generates reverse-thinking hypotheses for the 21-turn inquiry case with %i rejected candidates', async omitted => {
+    const inputs = Array.from({ length: 21 }, (_, index) => {
+      const input = turn(index + 1);
+      input.sessionId = `session-${index % 8}`;
+      input.user.reference.sessionId = input.sessionId;
+      input.assistants[0]!.reference.sessionId = input.sessionId;
+      input.user.text = '有没有适合长期持有的债基';
+      return input;
+    });
+    inputs[13]!.assistants[0]!.truncated = true; inputs[13]!.truncated = true;
+    const deps = dependencies(inputs);
+    vi.mocked(deps.complete).mockImplementation(async prompt => {
+      const output = JSON.parse(completion(prompt));
+      if (prompt.includes('TASK: EXTRACT.')) {
+        output.events = output.events.slice(0, 12).map((event: object) => ({ ...event, eventType: 'exploration', state: 'exploring' }));
+        output.events.push(...Array.from({ length: omitted }, () => ({ invalid: true })));
+      }
+      if (prompt.includes('UNTRUSTED_INSIGHT_EVENTS_JSON')) {
+        output.cards[0] = { ...modelCard(output.cards[0].supportingEventIds),
+          title: '长期持有是否足以降低风险', explanation: '假如持有期限与资金用途不匹配，较长持有期也可能无法避免被迫赎回。',
+          scenarioEvidence: { eventId: output.cards[0].supportingEventIds[0], exactQuote: '长期持有的债基' } };
+      }
+      return JSON.stringify(output);
+    });
+    const result = await createInsightService().generate(request, deps);
+    expect(result).toMatchObject({ analyzedTurnCount: 21, analyzedSessionCount: 8,
+      coverage: { userEventCount: 12, eligibleEventCount: 12, selectedEventCount: 12, analysisPerformed: true, omittedEventCount: omitted, truncatedAssistantMessageCount: 1 } });
+    expect(result.cards).toHaveLength(1);
+    expect(result.cards[0]!.uncertainty).toContain('不能据此认定用户持有该观点');
+    expect(result.cards[0]!.supportingReferences.every(ref => ref.role === 'user')).toBe(true);
+    expect(result.emptyReason).toBeUndefined();
   });
 
   it('repairs then reports invalid output instead of treating rejected cards as a legitimate empty result', async () => {

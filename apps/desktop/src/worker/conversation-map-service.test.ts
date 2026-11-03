@@ -31,6 +31,22 @@ function alterExtraction(deps: ConversationMapDependencies, alter: (output: any)
 }
 
 describe('conversation map isolated analysis', () => {
+  it('reports extraction retries, topic comparison completion and source validation without leaking model output', async () => {
+    const deps = dependencies();
+    const onProgress = vi.fn(); deps.onProgress = onProgress;
+    vi.mocked(deps.complete).mockResolvedValueOnce('private invalid provider response');
+    vi.mocked(deps.revalidateReferences).mockImplementation(refs => {
+      expect(onProgress.mock.lastCall?.[0]).toBe('rendering');
+      expect(onProgress.mock.lastCall?.[3]).toContain('正在核对引用原文');
+      return refs;
+    });
+    await generateConversationMap(request, deps);
+    expect(onProgress).toHaveBeenCalledWith('extracting', 0, 1, expect.stringContaining('正在重试'));
+    expect(onProgress).toHaveBeenCalledWith('comparing', 1, 1, expect.stringContaining('已比较 1 / 1 个主题'));
+    expect(onProgress.mock.calls.flat().join(' ')).not.toContain('private invalid provider response');
+    expect(onProgress.mock.calls.flat().join(' ')).not.toContain(turn(1).user.text);
+  });
+
   it('returns an empty view without calling the model when there is no history', async () => {
     const deps = dependencies([]);
     const result = await generateConversationMap(request, deps);
@@ -70,6 +86,21 @@ describe('conversation map isolated analysis', () => {
     expect(result).toMatchObject({ truncated: true, omittedEventCount: 1 });
     expect(result.topics[0]!.events).toHaveLength(1);
     expect(result.topics[0]!.events[0]!.evidence[0]!.reference.entryId).toBe('user-1');
+  });
+
+  it('gives actionable role-specific repair rules for assistant execution reports', async () => {
+    const deps = dependencies();
+    vi.mocked(deps.complete).mockImplementationOnce(async prompt => {
+      expect(prompt).toContain('NEVER emit assistant action, decision, revision, open_question, planned, decided, reported_done or rejected');
+      const output = JSON.parse(e2eConversationMapCompletion(prompt));
+      Object.assign(output.events[1], { eventType: 'action', state: 'reported_done' });
+      return JSON.stringify(output);
+    });
+    const snapshot = await extractConversationSemantics(request, deps);
+    expect(snapshot.omittedEventCount).toBe(0);
+    expect(snapshot.modelCallCount).toBe(2);
+    expect(vi.mocked(deps.complete).mock.calls[1]![0]).toContain('For assistant evidence, use only eventType exploration/position/constraint/option and state exploring/considering/unknown');
+    expect(snapshot.topics[0]!.events[1]).toMatchObject({ speaker: 'assistant', eventType: 'option', state: 'considering' });
   });
 
   it('does not accept model timestamps or unexpected executable output fields', async () => {
@@ -166,7 +197,8 @@ describe('conversation map isolated analysis', () => {
     expect(result).toMatchObject({ modelCallCount: failedFirst ? 23 : 3, truncated: true, omittedTurnCount: failedFirst ? 30 : 1,
       analyzedTurnCount: failedFirst ? 1 : 30, analyzedSessionCount: 1 });
     expect(result.topics.length).toBeGreaterThan(0);
-    expect(onProgress).toHaveBeenCalledWith('extracting', 2, 2);
+    expect(onProgress).toHaveBeenCalledWith('extracting', 2, 2, expect.stringContaining('已处理 2 / 2 批'));
+    expect(onProgress.mock.calls.filter(([phase]) => phase === 'extracting').at(-1)?.[3]).toContain(`${result.omittedTurnCount} 轮未完成提取`);
     const retainedRefs = vi.mocked(deps.revalidateReferences).mock.calls[0]![0];
     expect(retainedRefs.every(ref => ref.sessionId === (failedFirst ? 'last-batch' : 'first-batch'))).toBe(true);
   });

@@ -4,7 +4,7 @@ import { InsightCard } from './InsightCard';
 import { localTime, perspectiveLabels } from './state';
 
 const perspectiveEvidence = {
-  reverse_thinking: { missing: '可检验的明确观点、约束或决定', scope: '明确观点、约束或决定' },
+  reverse_thinking: { missing: '可检验的具体问题、方案、观点或约束', scope: '具体问题、方案、观点、约束或决定' },
   second_order: { missing: '可推演影响的明确方案或探讨备选方案的问题', scope: '明确方案、计划、决定、改选，或探讨备选方案的问题' },
   blind_spots: { missing: '可分析的具体问题、观点、约束或方案', scope: '具体问题、观点、约束或方案' }
 };

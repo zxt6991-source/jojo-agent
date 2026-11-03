@@ -1,4 +1,5 @@
 import type { ConversationMapEvent, ConversationMapGenerateInput, ConversationMapResult, ConversationStep, ConversationTopic, ConversationTopicV2, EvolutionEvent, EvolutionChange, QuoteEvidence, TopicInsight } from '@desktop-agent/contracts';
+import type { AnalysisProgressHistory } from './insights/analysis-progress';
 
 export const stepLabels: Record<ConversationStep['kind'], string> = {
   question: '用户提出', answer: 'AI 观点 / 建议', followup: '进一步追问', revision: '补充 / 修订'
@@ -124,6 +125,7 @@ export type ConversationMapViewState = {
   request?: ConversationMapGenerateInput;
   result?: { request: ConversationMapGenerateInput; value: ConversationMapResult };
   progress?: Extract<ConversationMapEvent, { type: 'conversation-map.progress' }>;
+  progressHistory?: AnalysisProgressHistory;
   error?: string;
   errorCode?: string;
 };
@@ -142,7 +144,8 @@ export function conversationMapReducer(state: ConversationMapViewState, action: 
   const event = action.event;
   if (event.requestId !== state.activeRequestId || !state.request || state.status !== 'running') return state;
   switch (event.type) {
-    case 'conversation-map.progress': return { ...state, progress: event };
+    case 'conversation-map.progress': return { ...state, progress: event,
+      progressHistory: { ...state.progressHistory, [event.phase]: event } };
     case 'conversation-map.completed': return { status: 'completed', result: { request: state.request, value: event.result } };
     case 'conversation-map.failed': return { ...retained, status: 'failed', error: event.message, errorCode: event.code };
     case 'conversation-map.cancelled': return { ...retained, status: 'cancelled' };
