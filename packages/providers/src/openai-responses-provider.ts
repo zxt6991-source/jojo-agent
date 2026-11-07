@@ -1,4 +1,4 @@
-import { ProviderStateSchema, type ModelRequest, type ModelEvent, type ModelProvider, type DiscoveredModel } from '@desktop-agent/contracts';
+import { ProviderStateSchema, type ModelRequest, type ModelEvent, type ModelProvider, type DiscoveredModel, type ToolCall } from '@desktop-agent/contracts';
 import { toChatMessages, SYSTEM_PROMPT } from './chat-completions-request.js';
 import { OpenAICompatibleProvider } from './openai-compatible-provider.js';
 import { readSseData } from './sse.js';
@@ -83,22 +83,39 @@ export async function* parseResponsesStream(body: ReadableStream<Uint8Array>, mo
       if (item?.type === 'function_call') {
         const call = calls.get(String(item.id));
         if (!call || call.completed || call.id !== item.call_id || call.name !== item.name || typeof item.arguments !== 'string' || item.arguments.length > 2000000 || (call.arguments && call.arguments !== item.arguments)) protocolError('Conflicting completed function call.');
-        let input: unknown;
-        try { input = JSON.parse(item.arguments); } catch { protocolError('Invalid completed function JSON.'); }
+        call.arguments = item.arguments;
         call.completed = true;
-        yield { type: 'tool_call_completed', call: { id: call.id, name: call.name, input } };
       }
       if (item?.type === 'reasoning' && item.encrypted_content) reasoning.push({ type: 'reasoning', id: item.id, encrypted_content: item.encrypted_content, summary: item.summary ?? [] });
     }
     if (type === 'response.completed' || type === 'response.incomplete') {
       const response = object(payload.response);
       if (!response) protocolError('Missing terminal response.');
-      if ([...calls.values()].some(call => !call.completed)) protocolError('Unfinished function call at response completion.');
-      if (reasoning.length) yield { type: 'provider_state', state: ProviderStateSchema.parse({ protocol: 'openai_responses', model, reasoning }) };
       const incompleteReason = object(response.incomplete_details)?.reason;
       const usage = object(response.usage);
       const cached = object(usage?.input_tokens_details)?.cached_tokens;
       if (usage) yield { type: 'usage', ...(typeof usage.input_tokens === 'number' ? { inputTokens: usage.input_tokens } : {}), ...(typeof usage.output_tokens === 'number' ? { outputTokens: usage.output_tokens } : {}), ...(typeof cached === 'number' ? { cacheReadInputTokens: cached } : {}) };
+      signal?.throwIfAborted();
+      if (type === 'response.incomplete' && calls.size) {
+        if (incompleteReason === 'max_output_tokens') {
+          throw new ProviderStreamError('provider_tool_output_limit',
+            'Tool arguments reached the output limit. No tools from this response were executed. Retry with smaller tool calls.');
+        }
+        throw new ProviderStreamError('provider_content_filtered', 'The provider filtered this response.');
+      }
+      if ([...calls.values()].some(call => !call.completed)) protocolError('Unfinished function call at response completion.');
+      // Validate the whole batch before publishing any completed calls.
+      const completedCalls: ToolCall[] = [...calls.values()].map(call => {
+        let input: unknown;
+        try { input = JSON.parse(call.arguments); } catch { protocolError('Invalid completed function JSON.'); }
+        return { id: call.id, name: call.name, input };
+      });
+      if (reasoning.length) yield { type: 'provider_state', state: ProviderStateSchema.parse({ protocol: 'openai_responses', model, reasoning }) };
+      for (const call of completedCalls) {
+        signal?.throwIfAborted();
+        yield { type: 'tool_call_completed', call };
+      }
+      signal?.throwIfAborted();
       completed = true;
       yield { type: 'response_completed', stopReason: type === 'response.incomplete' ? incompleteReason === 'max_output_tokens' ? 'max_tokens' : 'content_filter' : calls.size ? 'tool_calls' : 'stop' };
     }

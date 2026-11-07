@@ -8,13 +8,14 @@ import {
   appendMessage,
   createAssistantMessage,
   createContinuationMessage,
+  createToolOutputLimitMessage,
   createIterationLimitFinalMessage,
   createNoProgressFinalMessage,
   createSafetyFinalMessage,
   createToolMessage,
   createUserMessage
 } from './messages.js';
-import { runModelStep } from './model-step.js';
+import { runModelStep, type ModelStepResult } from './model-step.js';
 import { calculateContextBudget, estimateContextTokens, prepareModelContext } from './context-manager.js';
 import { createIterationBudgetPolicy, extendIterationBudget, iterationBudgetInstruction } from './iteration-budget.js';
 import { executeToolCall } from './tool-execution.js';
@@ -291,24 +292,41 @@ export async function runAgentTurn(options: AgentRunOptions): Promise<AgentRunRe
         finalResponseOnly
       });
 
-      const step = await runModelStep({
-        model: options.model,
-        messages: context.messages,
-        attachments: await resolveModelAttachments(context.messages, options.attachmentAccess, {
-          sessionId: options.sessionId,
-          workingDirectory: options.workingDirectory,
-          signal: options.signal
-        }),
-        toolDefinitions: state.toolDefinitions,
-        instructions,
-        provider: options.provider,
-        signal: options.signal,
-        emit: (event) => {
-          accrueUsage(state.usage, event);
-          options.emit(event);
-        },
-        maxOutputTokens
-      });
+      let step: ModelStepResult;
+      try {
+        step = await runModelStep({
+          model: options.model,
+          messages: context.messages,
+          attachments: await resolveModelAttachments(context.messages, options.attachmentAccess, {
+            sessionId: options.sessionId,
+            workingDirectory: options.workingDirectory,
+            signal: options.signal
+          }),
+          toolDefinitions: state.toolDefinitions,
+          instructions,
+          provider: options.provider,
+          signal: options.signal,
+          emit: (event) => {
+            accrueUsage(state.usage, event);
+            options.emit(event);
+          },
+          maxOutputTokens
+        });
+      } catch (error) {
+        throwIfAborted(options.signal);
+        if (!(error instanceof AgentError) || error.code !== 'provider_tool_output_limit'
+          || finalResponseOnly || outputContinuations >= MAX_OUTPUT_CONTINUATIONS) throw error;
+        // Discard the entire failed response, including otherwise complete calls in its batch.
+        outputContinuations += 1;
+        await appendMessage(options, state.messages, createToolOutputLimitMessage());
+        options.emit({ type: 'output.continuing', attempt: outputContinuations });
+        if (iteration + 1 >= iterationBudget.currentLimit && !options.allowPartialOnMaxIterations) {
+          finalResponseOnly = true;
+          finalResponseReason = iterationBudget.limitReason;
+          await appendMessage(options, state.messages, createIterationLimitFinalMessage(iterationBudget.currentLimit));
+        }
+        continue;
+      }
 
       let cycleDetected = false;
       if (!finalResponseOnly && step.calls.length > 0) {

@@ -414,6 +414,154 @@ describe('runtime runner', () => {
     expect(result.messages.some((message) => message.metadata?.internal)).toBe(true);
   });
 
+  it('recovers a truncated tool batch without committing or executing any failed calls', async () => {
+    const store = new MemoryAgentRuntimeStore();
+    const execute = vi.fn(echoTool.execute);
+    const requests: ModelRequest[] = [];
+    const events: AgentEvent[] = [];
+    const provider: ModelProvider = {
+      async *stream(request) {
+        requests.push(request);
+        if (requests.length === 1) {
+          yield { type: 'text_delta', text: 'unfinished preamble' };
+          yield { type: 'tool_call_completed', call: { id: 'discarded', name: 'echo', input: { unsafe: true } } };
+          yield { type: 'tool_call_delta', id: 'truncated', name: 'echo', argumentsDelta: '{"value":' };
+          yield { type: 'usage', inputTokens: 10, outputTokens: 20 };
+          yield { type: 'response_failed', code: 'provider_tool_output_limit', message: 'Tool output limit' };
+        } else if (requests.length === 2) {
+          expect((await store.loadOperation('tool-limit-recovery'))?.state).toMatchObject({
+            phase: 'model_pending', iteration: 1, outputContinuations: 1,
+            progress: { usage: { inputTokens: 10, outputTokens: 20, totalTokens: 30 }, toolCalls: 0 }
+          });
+          yield { type: 'tool_call_completed', call: { id: 'small', name: 'echo', input: { value: 1 } } };
+          yield { type: 'response_completed', stopReason: 'tool_calls' };
+        } else {
+          yield { type: 'text_delta', text: 'done' };
+          yield { type: 'response_completed', stopReason: 'stop' };
+        }
+      }
+    };
+
+    const result = await runAgentTurn(options(provider, {
+      runtimeStore: store, operationId: 'tool-limit-recovery', tools: [{ ...echoTool, execute }],
+      emit: event => events.push(event)
+    }));
+
+    expect(result.stopReason).toBe('stop');
+    expect(requests).toHaveLength(3);
+    expect(execute).toHaveBeenCalledExactlyOnceWith({ value: 1 }, expect.anything());
+    expect(events).toContainEqual({ type: 'output.continuing', attempt: 1 });
+    expect(events.some(event => event.type === 'turn.failed')).toBe(false);
+    expect(requests[1]?.messages.at(-1)).toMatchObject({ role: 'user', metadata: { internal: true } });
+    expect(requests[1]?.messages.flatMap(message => message.content).some(block => block.type === 'tool_call')).toBe(false);
+    const lane = await store.getLane('session-1', 'main');
+    const entries = await store.readPath(lane?.leafId ?? null);
+    expect(JSON.stringify(entries)).not.toContain('discarded');
+    expect(JSON.stringify(entries)).not.toContain('unfinished preamble');
+    expect((await store.loadOperation('tool-limit-recovery'))?.state).toMatchObject({ phase: 'completed' });
+  });
+
+  it('stops after two tool-output recovery attempts and preserves the failure code', async () => {
+    const store = new MemoryAgentRuntimeStore();
+    const events: AgentEvent[] = [];
+    const execute = vi.fn(echoTool.execute);
+    let requests = 0;
+    const provider: ModelProvider = {
+      async *stream() {
+        requests += 1;
+        yield { type: 'tool_call_completed', call: { id: `discarded-${requests}`, name: 'echo', input: {} } };
+        yield { type: 'response_failed', code: 'provider_tool_output_limit', message: 'Tool output limit' };
+      }
+    };
+
+    await expect(runAgentTurn(options(provider, {
+      runtimeStore: store, operationId: 'tool-limit-exhausted', tools: [{ ...echoTool, execute }],
+      emit: event => events.push(event)
+    }))).rejects.toMatchObject({ code: 'provider_tool_output_limit' });
+
+    expect(requests).toBe(3);
+    expect(execute).not.toHaveBeenCalled();
+    expect(events.filter(event => event.type === 'output.continuing')).toEqual([
+      { type: 'output.continuing', attempt: 1 }, { type: 'output.continuing', attempt: 2 }
+    ]);
+    expect((await store.loadOperation('tool-limit-exhausted'))?.state).toMatchObject({
+      phase: 'failed', error: { code: 'provider_tool_output_limit' }
+    });
+  });
+
+  it.each(['provider_stream_incomplete', 'provider_protocol_error', 'network'])('does not recover an unrelated %s failure', async code => {
+    let requests = 0;
+    const events: AgentEvent[] = [];
+    const provider: ModelProvider = {
+      async *stream() {
+        requests += 1;
+        yield { type: 'response_failed', code, message: 'Failed stream' };
+      }
+    };
+    await expect(runAgentTurn(options(provider, { emit: event => events.push(event) }))).rejects.toMatchObject({ code });
+    expect(requests).toBe(1);
+    expect(events.some(event => event.type === 'output.continuing')).toBe(false);
+  });
+
+  it.each(['tokens', 'iterations'] as const)('honors the %s budget before retrying a truncated tool batch', async budget => {
+    const requests: ModelRequest[] = [];
+    const provider: ModelProvider = {
+      async *stream(request) {
+        requests.push(request);
+        if (requests.length === 1) {
+          yield { type: 'usage', inputTokens: 10, outputTokens: 20 };
+          yield { type: 'response_failed', code: 'provider_tool_output_limit', message: 'Tool output limit' };
+        } else {
+          yield { type: 'text_delta', text: 'The requested artifact remains unfinished.' };
+          yield { type: 'response_completed', stopReason: 'stop' };
+        }
+      }
+    };
+    const result = await runAgentTurn(options(provider, budget === 'tokens'
+      ? { loopBudget: { maxTotalTokens: 30 } }
+      : { maxIterations: 1 }));
+    expect(result.stopReason).toBe(budget === 'tokens' ? 'token_budget' : 'max_iterations');
+    expect(requests).toHaveLength(2);
+    expect(requests[1]?.tools).toEqual([]);
+    expect(result.messages.at(-1)?.metadata).toMatchObject({ finalResponseOnly: true });
+  });
+
+  it('does not retry a tool-output limit during the mandatory tool-free final response', async () => {
+    const events: AgentEvent[] = [];
+    let requests = 0;
+    const provider: ModelProvider = {
+      async *stream() {
+        requests += 1;
+        if (requests === 1) {
+          yield { type: 'tool_call_completed', call: { id: 'before-limit', name: 'echo', input: {} } };
+          yield { type: 'response_completed', stopReason: 'tool_calls' };
+        } else {
+          yield { type: 'response_failed', code: 'provider_tool_output_limit', message: 'Tool output limit' };
+        }
+      }
+    };
+    await expect(runAgentTurn(options(provider, {
+      maxIterations: 1, emit: event => events.push(event)
+    }))).rejects.toMatchObject({ code: 'provider_tool_output_limit' });
+    expect(requests).toBe(2);
+    expect(events.some(event => event.type === 'output.continuing')).toBe(false);
+  });
+
+  it('honors cancellation before tool-output recovery starts another request', async () => {
+    const controller = new AbortController();
+    let requests = 0;
+    const provider: ModelProvider = {
+      async *stream() {
+        requests += 1;
+        controller.abort();
+        yield { type: 'response_failed', code: 'provider_tool_output_limit', message: 'Tool output limit' };
+      }
+    };
+    const result = await runAgentTurn(options(provider, { signal: controller.signal }));
+    expect(result.stopReason).toBe('cancelled');
+    expect(requests).toBe(1);
+  });
+
   it('settles all unfinished calls as cancelled when execution is aborted', async () => {
     const controller = new AbortController();
     const tool: Tool = {

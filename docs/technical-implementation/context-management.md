@@ -413,7 +413,7 @@ Context Manager 只返回新数组，不调用存储接口，也不覆盖 JSONL�
 
 模型可能因为输出 token 用完返回 `length`，部分兼容服务可能返回 `max_tokens`。
 
-Agent Core 会：
+纯正文被截断时，Agent Core 会：
 
 1. 保存已经生成的 Assistant 内容；
 2. 插入内部续写消息；
@@ -423,11 +423,14 @@ Agent Core 会：
 
 重新准备上下文很重要：上一段 Assistant 输出已经进入历史，不能继续使用截断前的旧请求视图。
 
+若输出上限发生在工具参数生成期间，Provider 返回 `provider_tool_output_limit`，不发布该响应中的任何已完成工具调用。Agent Core 与持久 Runtime 会丢弃该响应，加入内部提示，让模型重新生成更小且完整的调用，或将文件、表格拆成多次操作；不会续接残缺 JSON，并提示模型避免重复之前已成功执行的操作。这与正文续写共用最多两次连续恢复额度，每次仍重新准备上下文并受迭代、token、费用、时间和取消约束。成功执行工具批次后恢复额度重置。重试耗尽后保留明确错误，不把截断响应保存为完成结果；网络断流、协议错误和内容过滤不走此恢复路径。
+
 > **项目实现位置**
 >
 > - 续写次数：`MAX_OUTPUT_CONTINUATIONS = 2`
 > - 停止原因判断：[`runAgentTurn`](../../packages/agent/src/run-agent-turn.ts)
 > - 续写消息：[`createContinuationMessage`](../../packages/agent/src/messages.ts)
+> - 工具参数恢复消息：[`createToolOutputLimitMessage`](../../packages/agent/src/messages.ts)
 > - 自动化测试：[`context-manager.test.ts`](../../packages/agent/test/context-manager.test.ts)
 
 ## 14. 配置如何传到 Context Manager

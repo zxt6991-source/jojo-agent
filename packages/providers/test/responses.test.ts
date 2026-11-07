@@ -38,6 +38,47 @@ describe('native Responses protocol', () => {
     const controller = new AbortController(); controller.abort();
     await expect(collect(new OpenAIResponsesProvider({ apiKey: 'key' }).stream({ ...request(), signal: controller.signal }))).rejects.toMatchObject({ name: 'AbortError' });
   });
+  it.each(['unfinished', 'invalid_done', 'complete'])('discards all calls on output limit, including %s arguments, and retains usage', async (state) => {
+    const events = [
+      { type: 'response.output_item.added', item: { type: 'function_call', id: 'first', call_id: 'first', name: 'write' } },
+      { type: 'response.output_item.done', item: { type: 'function_call', id: 'first', call_id: 'first', name: 'write', arguments: '{}' } },
+      { type: 'response.output_item.added', item: { type: 'function_call', id: 'second', call_id: 'second', name: 'write' } },
+      { type: 'response.function_call_arguments.delta', item_id: 'second', delta: state === 'complete' ? '{}' : '{' },
+      ...(state === 'unfinished' ? [] : [{ type: 'response.output_item.done', item: { type: 'function_call', id: 'second', call_id: 'second', name: 'write', arguments: state === 'complete' ? '{}' : '{' } }]),
+      { type: 'response.incomplete', response: { incomplete_details: { reason: 'max_output_tokens' }, usage: { input_tokens: 12, output_tokens: 8192 } } }
+    ];
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(stream(events))));
+    const result = await collect(new OpenAIResponsesProvider({ apiKey: 'key' }).stream(request()));
+    expect(result).toContainEqual({ type: 'usage', inputTokens: 12, outputTokens: 8192 });
+    expect(result.at(-1)).toMatchObject({ type: 'response_failed', code: 'provider_tool_output_limit' });
+    expect(result.some(event => event.type === 'tool_call_completed' || event.type === 'response_completed')).toBe(false);
+  });
+  it.each(['eof', 'invalid_json', 'unfinished', 'filtered'])('does not release completed calls before rejecting %s', async (ending) => {
+    const events = [
+      { type: 'response.output_item.added', item: { type: 'function_call', id: 'first', call_id: 'first', name: 'write' } },
+      { type: 'response.output_item.done', item: { type: 'function_call', id: 'first', call_id: 'first', name: 'write', arguments: '{}' } },
+      { type: 'response.output_item.added', item: { type: 'function_call', id: 'second', call_id: 'second', name: 'write' } },
+      ...(ending === 'invalid_json' ? [{ type: 'response.output_item.done', item: { type: 'function_call', id: 'second', call_id: 'second', name: 'write', arguments: '{' } }] : []),
+      ...(ending === 'eof' ? [] : [{ type: ending === 'filtered' ? 'response.incomplete' : 'response.completed', response: { incomplete_details: { reason: 'content_filter' } } }])
+    ];
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(stream(events))));
+    const result = await collect(new OpenAIResponsesProvider({ apiKey: 'key' }).stream(request()));
+    expect(result.at(-1)).toMatchObject({ type: 'response_failed', code: ending === 'eof' ? 'provider_stream_incomplete' : ending === 'filtered' ? 'provider_content_filtered' : 'provider_protocol_error' });
+    expect(result.some(event => event.type === 'tool_call_completed' || event.type === 'response_completed')).toBe(false);
+  });
+  it('preserves text-only output-limit continuation and cancellation after terminal usage', async () => {
+    const terminal = { type: 'response.incomplete', response: { incomplete_details: { reason: 'max_output_tokens' }, usage: { output_tokens: 8192 } } };
+    expect(await collect(parseResponsesStream(stream([terminal]), 'fixed'))).toEqual([
+      { type: 'usage', outputTokens: 8192 }, { type: 'response_completed', stopReason: 'max_tokens' }
+    ]);
+    const controller = new AbortController();
+    const events = parseResponsesStream(stream([
+      { type: 'response.output_item.added', item: { type: 'function_call', id: 'item', call_id: 'call', name: 'write' } }, terminal
+    ]), 'fixed', controller.signal)[Symbol.asyncIterator]();
+    expect((await events.next()).value).toEqual({ type: 'usage', outputTokens: 8192 });
+    controller.abort();
+    await expect(events.next()).rejects.toMatchObject({ name: 'AbortError' });
+  });
   it('uses /responses and classifies overflow errors', async () => {
     const fetch = vi.fn().mockResolvedValue(new Response('context window exceeded', { status: 400 })); vi.stubGlobal('fetch', fetch);
     const events = await collect(new OpenAIResponsesProvider({ apiKey: 'key', baseUrl: 'https://api.example/v1/' }).stream(request()));

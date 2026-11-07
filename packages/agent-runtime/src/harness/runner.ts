@@ -40,6 +40,7 @@ import {
   createIterationLimitFinalMessage,
   createNoProgressFinalMessage,
   createSafetyFinalMessage,
+  createToolOutputLimitMessage,
   createToolMessage,
   createUserMessage,
   createIterationBudgetPolicy,
@@ -66,6 +67,7 @@ import {
   type AgentLoopSafetyPolicy,
   type LoopGuardContext,
   type LoopUsage,
+  type ModelStepResult,
   type PollingCallState,
   type ToolExecutionState
 } from '@desktop-agent/agent';
@@ -1347,25 +1349,38 @@ async function executeAgentTurn(options: RuntimeAgentRunOptions, resuming: boole
         }
 
         const pending = state;
-        const step = await runModelStep({
-          model: options.model,
-          messages: context.messages,
-          attachments: await resolveModelAttachments(context.messages, options.attachmentAccess, {
-            sessionId: options.sessionId,
-            workingDirectory: options.workingDirectory,
-            executionId: state.operationId,
-            signal: options.signal
-          }),
-          toolDefinitions: data.toolDefinitions,
-          ...(requestInstructions.length ? { instructions: requestInstructions } : {}),
-          provider: options.provider,
-          signal: options.signal,
-          emit: (event) => {
-            accrueUsage(data.usage, event);
-            options.emit(event);
-          },
-          maxOutputTokens
-        });
+        let step: ModelStepResult;
+        try {
+          step = await runModelStep({
+            model: options.model,
+            messages: context.messages,
+            attachments: await resolveModelAttachments(context.messages, options.attachmentAccess, {
+              sessionId: options.sessionId,
+              workingDirectory: options.workingDirectory,
+              executionId: state.operationId,
+              signal: options.signal
+            }),
+            toolDefinitions: data.toolDefinitions,
+            ...(requestInstructions.length ? { instructions: requestInstructions } : {}),
+            provider: options.provider,
+            signal: options.signal,
+            emit: (event) => {
+              accrueUsage(data.usage, event);
+              options.emit(event);
+            },
+            maxOutputTokens
+          });
+        } catch (error) {
+          throwIfAborted(options.signal);
+          if (!(error instanceof AgentError) || error.code !== 'provider_tool_output_limit'
+            || pending.request.finalResponseOnly || pending.outputContinuations >= MAX_OUTPUT_CONTINUATIONS) throw error;
+          // The failed response never committed a tool batch. Retry through the normal
+          // loop so usage, iteration budgets, and durable continuation counts still apply.
+          await appendDurableMessage(options, data, runtimeStore, pending, createToolOutputLimitMessage());
+          state = await transition(continueOutput(pending, false));
+          options.emit({ type: 'output.continuing', attempt: pending.outputContinuations + 1 });
+          continue;
+        }
         let cycleDetected = false;
         if (!pending.request.finalResponseOnly && step.calls.length > 0) {
           const fingerprint = fingerprintToolBatch(step.calls, data.toolsByName);

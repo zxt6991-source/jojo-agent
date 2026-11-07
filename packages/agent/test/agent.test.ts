@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { runAgentTurn, ScriptedProvider } from '../src/index.js';
 import type { AgentRunOptions } from '../src/index.js';
-import type { AgentEvent, ModelProvider, ModelRequest, PermissionGate, Tool } from '@desktop-agent/contracts';
+import type { AgentEvent, Message, ModelEvent, ModelProvider, ModelRequest, PermissionGate, Tool } from '@desktop-agent/contracts';
 
 const allow: PermissionGate = { check: async () => ({ decision: 'allow' }) };
 const echoTool: Tool = {
@@ -28,6 +28,95 @@ function createOptions(
     ...overrides
   };
 }
+
+describe('tool output limit recovery', () => {
+  const limited: ModelEvent = {
+    type: 'response_failed', code: 'provider_tool_output_limit', message: 'Tool arguments reached the output limit.'
+  };
+  const done: ModelEvent[] = [
+    { type: 'text_delta', text: 'done' }, { type: 'response_completed', stopReason: 'stop' }
+  ];
+  function scripted(scripts: ModelEvent[][]) {
+    const requests: ModelRequest[] = [];
+    const provider: ModelProvider = { async *stream(request) {
+      requests.push(request);
+      yield* scripts[requests.length - 1] ?? [];
+    } };
+    return { provider, requests };
+  }
+
+  it('discards the failed batch and asks for a smaller complete call before executing once', async () => {
+    const execute = vi.fn(echoTool.execute);
+    const committed: Message[] = [];
+    const events: AgentEvent[] = [];
+    const { provider, requests } = scripted([
+      [
+        { type: 'text_delta', text: 'discarded draft' },
+        { type: 'tool_call_completed', call: { id: 'discarded', name: 'echo', input: { value: 'unfinished' } } },
+        limited
+      ],
+      [
+        { type: 'tool_call_completed', call: { id: 'small', name: 'echo', input: { value: 'small' } } },
+        { type: 'response_completed', stopReason: 'tool_calls' }
+      ],
+      done
+    ]);
+    const result = await runAgentTurn(createOptions(provider, {
+      tools: [{ ...echoTool, execute }], emit: event => events.push(event),
+      commitMessage: async message => { committed.push(message); }
+    }));
+    expect(result.stopReason).toBe('stop');
+    expect(execute).toHaveBeenCalledExactlyOnceWith({ value: 'small' }, expect.anything());
+    expect(requests[1]?.messages.at(-1)).toMatchObject({
+      role: 'user', metadata: { internal: true },
+      content: [{ type: 'text', text: expect.stringContaining('smaller, complete tool call') }]
+    });
+    expect(JSON.stringify(committed)).not.toContain('discarded');
+    expect(JSON.stringify(requests[1]?.messages)).not.toContain('discarded');
+    expect(events).toContainEqual({ type: 'output.continuing', attempt: 1 });
+    expect(events.some(event => event.type === 'turn.failed')).toBe(false);
+  });
+
+  it('stops after two recovery attempts without saving a failed assistant response', async () => {
+    const { provider, requests } = scripted([[limited], [limited], [limited]]);
+    const committed: Message[] = [];
+    await expect(runAgentTurn(createOptions(provider, {
+      commitMessage: async message => { committed.push(message); }
+    }))).rejects.toMatchObject({ code: 'provider_tool_output_limit' });
+    expect(requests).toHaveLength(3);
+    expect(committed.some(message => message.role === 'assistant')).toBe(false);
+  });
+
+  it.each(['provider_stream_incomplete', 'provider_protocol_error', 'network'])('does not retry %s as an output limit', async code => {
+    const { provider, requests } = scripted([[{ type: 'response_failed', code, message: 'failed' }], done]);
+    await expect(runAgentTurn(createOptions(provider))).rejects.toMatchObject({ code });
+    expect(requests).toHaveLength(1);
+  });
+
+  it.each([
+    [{ maxIterations: 1 }, 'max_iterations'],
+    [{ loopBudget: { maxTotalTokens: 10 } }, 'token_budget']
+  ] as const)('respects the remaining run budget %j', async (overrides, reason) => {
+    const { provider, requests } = scripted([
+      [{ type: 'usage', inputTokens: 5, outputTokens: 5 }, limited], done
+    ]);
+    const result = await runAgentTurn(createOptions(provider, overrides));
+    expect(result.stopReason).toBe(reason);
+    expect(requests).toHaveLength(2);
+    expect(requests[1]?.tools).toEqual([]);
+  });
+
+  it('honors cancellation before starting a recovery request', async () => {
+    const controller = new AbortController();
+    const stream = vi.fn(async function* () {
+      controller.abort();
+      yield limited;
+    });
+    await expect(runAgentTurn(createOptions({ stream }, { signal: controller.signal })))
+      .resolves.toMatchObject({ stopReason: 'cancelled' });
+    expect(stream).toHaveBeenCalledOnce();
+  });
+});
 
 describe('runAgentTurn', () => {
   it('never executes collected calls from an incomplete model response', async () => {

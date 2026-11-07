@@ -148,9 +148,6 @@ export async function* parseChatCompletionStream(
             throw new ProviderStreamError('provider_content_filtered', 'The provider filtered this response.');
           }
           if (!policy.allowedFinishReasons.includes(reason)) protocolError('Unrecognized finish reason.');
-          if (reason === 'length' && calls.size) {
-            throw new ProviderStreamError('provider_stream_incomplete', 'Tool arguments reached the output limit.');
-          }
           if (!stopReason) {
             stopReason = reason;
             options.onProgress?.('finish');
@@ -167,6 +164,11 @@ export async function* parseChatCompletionStream(
     if (!stopReason && !(policy.mode === 'done_only' && sawDone && sawContent)) {
       throw new ProviderStreamError(sawContent ? 'provider_stream_incomplete' : 'empty_response',
         'The provider response ended without a valid finish reason. Response interrupted; this output was not saved as a completed result.');
+    }
+    if (stopReason === 'length' && calls.size) {
+      // Drain terminal usage, but never release any calls from a truncated batch.
+      throw new ProviderStreamError('provider_tool_output_limit',
+        'Tool arguments reached the output limit. No tools from this response were executed. Retry with smaller tool calls.');
     }
     for (const call of calls.values()) {
       if (!call.name.trim()) protocolError('A tool call has no function name.');

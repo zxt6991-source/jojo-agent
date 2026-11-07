@@ -52,6 +52,16 @@ export function createContinuationMessage(): Message {
   };
 }
 
+export function createToolOutputLimitMessage(): Message {
+  return {
+    id: createId(), role: 'user', createdAt: now(), metadata: { internal: true },
+    content: [{
+      type: 'text',
+      text: 'The previous response reached the output token limit while generating tool arguments. None of the tool calls in that response were executed or saved. Generate a new, smaller, complete tool call; do not continue the truncated JSON. Split large files, tables, or documents into smaller operations across multiple turns of the tool loop, using supported incremental edits. Do not repeat earlier successful operations. If the user only needs an answer, respond directly without a tool.'
+    }]
+  };
+}
+
 export function createNoProgressFinalMessage(): Message {
   return {
     id: createId(), role: 'user', createdAt: now(), metadata: { internal: true },

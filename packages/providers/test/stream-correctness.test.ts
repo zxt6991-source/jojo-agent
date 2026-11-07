@@ -44,7 +44,10 @@ describe('strict stream completion', () => {
     ['data: []\n\n', 'provider_protocol_error'],
     [finish('content_filter'), 'provider_content_filtered'],
     [finish('unknown'), 'provider_protocol_error'],
-    [tool() + finish('length'), 'provider_stream_incomplete'],
+    [tool() + finish('length'), 'provider_tool_output_limit'],
+    [tool() + finish('length') + delta('late'), 'provider_protocol_error'],
+    [tool() + finish('length') + 'data: broken\n\n', 'provider_protocol_error'],
+    [tool() + finish('length') + frame({ error: 'late' }), 'provider_stream_error'],
     [finish() + delta('late'), 'provider_protocol_error'],
     [finish() + finish('length'), 'provider_protocol_error'],
     [finish() + frame({ error: 'late' }), 'provider_stream_error'],
@@ -86,6 +89,18 @@ describe('strict stream completion', () => {
     await expect(collect(parseChatCompletionStream(source.stream))).resolves.toContainEqual({ type: 'response_completed', stopReason: 'stop' });
     expect(source.cancel).toHaveBeenCalledOnce();
     expect(source.stream.locked).toBe(false);
+  });
+  it('discards the entire truncated tool batch, retains usage, and does not retry at the provider', async () => {
+    const fetchMock = vi.fn(async () => new Response(
+      tool('complete', 0, 'write', '{}') + tool('partial', 1) + finish('length')
+      + frame({ choices: [], usage: { prompt_tokens: 12, completion_tokens: 8192 } }) + 'data: [DONE]\n\n'
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+    const events = await collect(provider().stream(req()));
+    expect(events).toContainEqual({ type: 'usage', inputTokens: 12, outputTokens: 8192 });
+    expect(events.at(-1)).toMatchObject({ type: 'response_failed', code: 'provider_tool_output_limit' });
+    expect(events.some(event => event.type === 'tool_call_completed' || event.type === 'response_completed')).toBe(false);
+    expect(fetchMock).toHaveBeenCalledOnce();
   });
 });
 
@@ -138,6 +153,32 @@ describe('bounded request deadlines', () => {
     await vi.advanceTimersByTimeAsync(10);
     expect(await result).toEqual([{ type: 'response_completed', stopReason: 'stop' }]);
   });
+  it.each(['drain_timeout', 'transport_failure'])('retains tool output-limit failure after %s during drain', async (ending) => {
+    vi.useFakeTimers();
+    const source = hanging(tool() + finish('length'));
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(source.stream)));
+    const result = collect(provider({ finishDrainTimeoutMs: 20 }).stream(req()));
+    await vi.advanceTimersByTimeAsync(10);
+    source.controller.enqueue(new TextEncoder().encode(frame({ choices: [], usage: { completion_tokens: 8192 } })));
+    await vi.advanceTimersByTimeAsync(0);
+    if (ending === 'transport_failure') source.controller.error(new TypeError('terminated'));
+    else await vi.advanceTimersByTimeAsync(10);
+    const events = await result;
+    expect(events).toContainEqual({ type: 'usage', outputTokens: 8192 });
+    expect(events.at(-1)).toMatchObject({ type: 'response_failed', code: 'provider_tool_output_limit' });
+    expect(events.some(event => event.type === 'tool_call_completed' || event.type === 'response_completed')).toBe(false);
+    expect(source.stream.locked).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+  it('gives total timeout priority over a truncated tool batch during drain', async () => {
+    vi.useFakeTimers();
+    const source = hanging(tool() + finish('length'));
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(source.stream)));
+    const result = collect(provider({ totalTimeoutMs: 10, finishDrainTimeoutMs: 20 }).stream(req()));
+    await vi.advanceTimersByTimeAsync(10);
+    expect((await result).at(-1)).toMatchObject({ type: 'response_failed', code: 'timeout' });
+    expect(vi.getTimerCount()).toBe(0);
+  });
   it('accepts only transport failure after finish and gives total timeout priority', async () => {
     vi.useFakeTimers();
     const source = hanging(finish());
@@ -151,9 +192,9 @@ describe('bounded request deadlines', () => {
     second.controller.error(new TypeError('terminated'));
     expect(await events).toEqual([{ type: 'response_completed', stopReason: 'stop' }]);
   });
-  it.each(['headers', 'content', 'drain'])('cancels during %s without late terminal events', async (phase) => {
+  it.each(['headers', 'content', 'drain', 'truncated_tools'])('cancels during %s without late terminal events', async (phase) => {
     vi.useFakeTimers();
-    const source = hanging(phase === 'drain' ? finish() : '');
+    const source = hanging(phase === 'drain' ? finish() : phase === 'truncated_tools' ? tool() + finish('length') : '');
     vi.stubGlobal('fetch', vi.fn(() => phase === 'headers' ? new Promise<Response>(() => {}) : Promise.resolve(new Response(source.stream))));
     const controller = new AbortController();
     const result = collect(provider().stream(req(controller.signal)));
